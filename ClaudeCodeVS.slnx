@@ -1,0 +1,15 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ClaudeCode.Acp/ClaudeCode.Acp.csproj" />
+    <Project Path="src/ClaudeCode.Contracts/ClaudeCode.Contracts.csproj" />
+    <Project Path="src/ClaudeCode.Core.ViewModels/ClaudeCode.Core.ViewModels.csproj" />
+    <Project Path="src/ClaudeCode.Core/ClaudeCode.Core.csproj" />
+    <Project Path="src/ClaudeCode.VsControl.Mcp/ClaudeCode.VsControl.Mcp.csproj" />
+    <Project Path="src/ClaudeCode.Vsix/ClaudeCode.Vsix.csproj" />
+  </Folder>
+  <Folder Name="/test/">
+    <Project Path="test/ClaudeCode.Acp.Tests/ClaudeCode.Acp.Tests.csproj" />
+    <Project Path="test/ClaudeCode.Core.Tests/ClaudeCode.Core.Tests.csproj" />
+    <Project Path="test/ClaudeCode.VsControl.Mcp.Tests/ClaudeCode.VsControl.Mcp.Tests.csproj" />
+  </Folder>
+</Solution>

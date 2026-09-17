@@ -1,0 +1,3 @@
+Claude Code for Visual Studio - development build.
+
+License terms to be finalized before public distribution.

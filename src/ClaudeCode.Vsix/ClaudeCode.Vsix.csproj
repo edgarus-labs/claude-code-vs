@@ -1,0 +1,105 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <RootNamespace>ClaudeCode.Vsix</RootNamespace>
+    <AssemblyName>ClaudeCode.Vsix</AssemblyName>
+    <UseWpf>true</UseWpf>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <!-- Overridden by CI on tagged releases: dotnet build -p:Version=1.2.3. Also drives AssemblyVersion/
+         AssemblyFileVersion/AssemblyInformationalVersion via GenerateAssemblyInfo, and the vsixmanifest
+         Identity Version is patched to match by the release workflow so the tag version is what Visual
+         Studio's Extensions/Updates dialog actually displays. -->
+    <Version Condition="'$(Version)' == ''">0.1.0</Version>
+
+    <!-- VSIX / VS SDK project shape -->
+    <GeneratePkgDefFile>true</GeneratePkgDefFile>
+    <IncludeAssemblyInVSIXContainer>true</IncludeAssemblyInVSIXContainer>
+    <IncludeDebugSymbolsInVSIXContainer>false</IncludeDebugSymbolsInVSIXContainer>
+    <IncludeDebugSymbolsInLocalVSIXDeployment>false</IncludeDebugSymbolsInLocalVSIXDeployment>
+    <CopyBuildOutputToOutputDirectory>true</CopyBuildOutputToOutputDirectory>
+    <CopyOutputSymbolsToOutputDirectory>false</CopyOutputSymbolsToOutputDirectory>
+    <CreateVsixContainer>true</CreateVsixContainer>
+    <DeployExtension>false</DeployExtension>
+    <StartAction>Program</StartAction>
+    <StartProgram>$(DevEnvDir)devenv.exe</StartProgram>
+    <StartArguments>/rootsuffix Exp</StartArguments>
+    <IsProductComponent>true</IsProductComponent>
+    <MinimumVisualStudioVersion>17.0</MinimumVisualStudioVersion>
+    <UseCodebase>true</UseCodebase>
+    <ExtensionInstallationRoot>CommonExtensions</ExtensionInstallationRoot>
+    <ExtensionInstallationFolder>ClaudeCode\ClaudeCodeVS</ExtensionInstallationFolder>
+
+    <!-- The VS SDK build tasks are compiled for the desktop CLR; on non-Windows build agents (e.g. this
+         Linux container) the CreateVsixContainer/GetVsixSourceItems task chain cannot execute even though
+         csc.exe compiles every .cs file cleanly. Building on Windows with VS installed produces the .vsix. -->
+    <SuppressVsixWorkloadPrereqs>true</SuppressVsixWorkloadPrereqs>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.VisualStudio.SDK" Version="17.13.40008" ExcludeAssets="runtime" />
+    <PackageReference Include="Microsoft.VSSDK.BuildTools" Version="17.13.2126" PrivateAssets="all" />
+    <PackageReference Include="Community.VisualStudio.Toolkit.17" Version="17.0.551" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="EnvDTE" Version="17.13.40008" />
+    <PackageReference Include="EnvDTE80" Version="17.13.40008" />
+    <PackageReference Include="Microsoft.VisualStudio.Text.UI" Version="17.13.226" />
+    <PackageReference Include="Microsoft.VisualStudio.Text.Logic" Version="17.13.226" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="System.Design" />
+    <Reference Include="System.Security" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ClaudeCode.Contracts\ClaudeCode.Contracts.csproj" />
+    <ProjectReference Include="..\ClaudeCode.Acp\ClaudeCode.Acp.csproj" />
+    <ProjectReference Include="..\ClaudeCode.Core\ClaudeCode.Core.csproj" />
+    <!-- Not a compile-time reference: ClaudeCode.VsControl.Mcp is a standalone net8.0 console exe spawned
+         as a child process (see docs/VsControlProtocol.md). ReferenceOutputAssembly=false keeps net48 from
+         ever trying to link against it; the PublishVsControlMcp target below instead `dotnet publish`s it
+         and copies the framework-dependent output next to ClaudeCode.Vsix.dll so
+         VsControlSessionRegistry's runtime path probe (next to this assembly) finds it, and so it ships
+         inside the .vsix. Requires the .NET 8+ runtime on the machine VS runs on. -->
+    <ProjectReference Include="..\ClaudeCode.VsControl.Mcp\ClaudeCode.VsControl.Mcp.csproj" ReferenceOutputAssembly="false" SkipGetTargetFrameworkProperties="true" />
+  </ItemGroup>
+
+  <Target Name="PublishVsControlMcp" BeforeTargets="AssignTargetPaths;GetVsixSourceItems">
+    <MSBuild Projects="..\ClaudeCode.VsControl.Mcp\ClaudeCode.VsControl.Mcp.csproj"
+             Targets="Publish"
+             Properties="Configuration=$(Configuration);PublishDir=$(MSBuildThisFileDirectory)obj\$(Configuration)\VsControlMcpPublish\;SelfContained=false" />
+    <ItemGroup>
+      <VsControlMcpPublishedFile Include="$(MSBuildThisFileDirectory)obj\$(Configuration)\VsControlMcpPublish\**\*.*" />
+      <None Include="@(VsControlMcpPublishedFile)">
+        <Link>%(RecursiveDir)%(Filename)%(Extension)</Link>
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        <IncludeInVSIX>true</IncludeInVSIX>
+        <VSIXSubPath></VSIXSubPath>
+      </None>
+    </ItemGroup>
+  </Target>
+
+
+  <ItemGroup>
+    <VSCTCompile Include="ClaudeCode.vsct">
+      <ResourceName>Menus.ctmenu</ResourceName>
+    </VSCTCompile>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="Resources\Icon.png">
+      <IncludeInVSIX>true</IncludeInVSIX>
+    </None>
+    <None Include="Resources\PreviewImage.png">
+      <IncludeInVSIX>true</IncludeInVSIX>
+    </None>
+    <None Include="source.extension.vsixmanifest">
+      <SubType>Designer</SubType>
+    </None>
+    <None Include="LICENSE.txt" />
+  </ItemGroup>
+
+</Project>

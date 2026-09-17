@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <RootNamespace>ClaudeCode.Core</RootNamespace>
+    <AssemblyName>ClaudeCode.Core</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../ClaudeCode.Contracts/ClaudeCode.Contracts.csproj" />
+    <!--
+      Not "Contracts only": also references the sibling ClaudeCode.Core.ViewModels project, which holds every
+      XAML-free ChatViewModel/* type. That split exists purely so the view-model logic is unit-testable from
+      a portable net8.0 xunit host - net472 test assemblies cannot execute on Linux without Mono (verified),
+      even though net472+UseWPF XAML/BAML compilation itself works fine here. Both projects are owned by this
+      task; ClaudeCode.Acp and ClaudeCode.Vsix are still never referenced.
+    -->
+    <ProjectReference Include="../ClaudeCode.Core.ViewModels/ClaudeCode.Core.ViewModels.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <RootNamespace>ClaudeCode.Core</RootNamespace>
+    <AssemblyName>ClaudeCode.Core.ViewModels</AssemblyName>
+    <!--
+      XAML-free ViewModel/logic layer for ClaudeCode.Core. Split out of the WPF (net472) Core project so it
+      can be exercised by a fast, portable net8.0 xunit test host: net472 test assemblies cannot execute on
+      this Linux dev box without Mono (verified: `dotnet test` fails with
+      "Could not find 'mono' host"), even though net472+UseWPF XAML/BAML compilation itself works fine here.
+      ClaudeCode.Core (the WPF project) references this assembly for all ChatViewModel/* types; the XAML
+      views are the only thing left in ClaudeCode.Core itself.
+    -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.3.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../ClaudeCode.Contracts/ClaudeCode.Contracts.csproj" />
+  </ItemGroup>
+
+</Project>

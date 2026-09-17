@@ -1,0 +1,259 @@
+<UserControl x:Class="ClaudeCode.Core.Views.ChatPanelView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:vm="clr-namespace:ClaudeCode.Core.ViewModels;assembly=ClaudeCode.Core.ViewModels"
+             xmlns:contracts="clr-namespace:ClaudeCode.Contracts;assembly=ClaudeCode.Contracts"
+             xmlns:conv="clr-namespace:ClaudeCode.Core.Views.Converters"
+             mc:Ignorable="d"
+             d:DesignWidth="360" d:DesignHeight="640"
+             Background="{DynamicResource ChatBackgroundBrush}"
+             TextElement.Foreground="{DynamicResource ChatForegroundBrush}">
+
+  <UserControl.Resources>
+    <ResourceDictionary>
+      <ResourceDictionary.MergedDictionaries>
+        <ResourceDictionary Source="/ClaudeCode.Core;component/Themes/ChatBrushes.xaml" />
+      </ResourceDictionary.MergedDictionaries>
+
+      <conv:BoolToVisibilityConverter x:Key="BoolToVisibilityConverter" />
+      <conv:NullToVisibilityConverter x:Key="NullToVisibilityConverter" />
+      <conv:EnumEqualsConverter x:Key="EnumEqualsConverter" />
+      <conv:PlanStatusGlyphConverter x:Key="PlanStatusGlyphConverter" />
+
+      <Style x:Key="ChatButtonStyle" TargetType="Button">
+        <Setter Property="Background" Value="{DynamicResource ChatAccentBrush}" />
+        <Setter Property="Foreground" Value="{DynamicResource ChatAccentForegroundBrush}" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Padding" Value="12,6" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="Button">
+              <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="4" Padding="{TemplateBinding Padding}">
+                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+              </Border>
+              <ControlTemplate.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                  <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ChatAccentHoverBrush}" />
+                </Trigger>
+                <Trigger Property="IsEnabled" Value="False">
+                  <Setter TargetName="Bd" Property="Opacity" Value="0.5" />
+                </Trigger>
+              </ControlTemplate.Triggers>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Style>
+
+      <Style x:Key="LinkButtonStyle" TargetType="Button">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{DynamicResource ChatSubtleForegroundBrush}" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Padding" Value="6,2" />
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="Button">
+              <Border Background="{TemplateBinding Background}" CornerRadius="3" Padding="{TemplateBinding Padding}">
+                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+              </Border>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Style>
+
+      <!-- One tool-call content entry: plain text, or a unified +/- diff. -->
+      <DataTemplate x:Key="ToolCallContentTemplate" DataType="{x:Type vm:ToolCallContentViewModel}">
+        <Grid Margin="0,4,0,0">
+          <TextBlock Text="{Binding Text}"
+                     TextWrapping="Wrap"
+                     FontFamily="Consolas"
+                     FontSize="11"
+                     Foreground="{DynamicResource ChatForegroundBrush}"
+                     Visibility="{Binding IsDiff, Converter={StaticResource BoolToVisibilityConverter}, ConverterParameter=Invert}" />
+
+          <Border Visibility="{Binding IsDiff, Converter={StaticResource BoolToVisibilityConverter}}"
+                  BorderBrush="{DynamicResource ChatBorderBrush}" BorderThickness="1" CornerRadius="3">
+            <StackPanel>
+              <TextBlock Text="{Binding Path}" FontWeight="SemiBold" FontSize="11" Margin="6,4,6,2"
+                         Foreground="{DynamicResource ChatSubtleForegroundBrush}" TextTrimming="CharacterEllipsis" />
+              <ItemsControl ItemsSource="{Binding DiffLines}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate DataType="{x:Type vm:DiffLineViewModel}">
+                    <TextBlock Text="{Binding DisplayText}" FontFamily="Consolas" FontSize="11"
+                               TextWrapping="NoWrap" Padding="6,0">
+                      <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                          <Setter Property="Foreground" Value="{DynamicResource ChatForegroundBrush}" />
+                          <Style.Triggers>
+                            <DataTrigger Binding="{Binding Kind}" Value="Added">
+                              <Setter Property="Foreground" Value="{DynamicResource ChatDiffAddedForegroundBrush}" />
+                              <Setter Property="Background" Value="{DynamicResource ChatDiffAddedBackgroundBrush}" />
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding Kind}" Value="Removed">
+                              <Setter Property="Foreground" Value="{DynamicResource ChatDiffRemovedForegroundBrush}" />
+                              <Setter Property="Background" Value="{DynamicResource ChatDiffRemovedBackgroundBrush}" />
+                            </DataTrigger>
+                          </Style.Triggers>
+                        </Style>
+                      </TextBlock.Style>
+                    </TextBlock>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+          </Border>
+        </Grid>
+      </DataTemplate>
+
+      <!-- One collapsible tool-call card. -->
+      <DataTemplate x:Key="ToolCallCardTemplate" DataType="{x:Type vm:ToolCallCardViewModel}">
+        <Expander Margin="0,6,0,0"
+                  IsExpanded="{Binding IsExpanded, Mode=TwoWay}"
+                  Background="{DynamicResource ChatInputBackgroundBrush}"
+                  BorderBrush="{DynamicResource ChatBorderBrush}"
+                  BorderThickness="1">
+          <Expander.Header>
+            <StackPanel Orientation="Horizontal">
+              <TextBlock Text="{Binding Title}" FontSize="12" VerticalAlignment="Center" />
+              <TextBlock Text="{Binding Status}" FontSize="10" Margin="8,0,0,0" VerticalAlignment="Center"
+                         Foreground="{DynamicResource ChatSubtleForegroundBrush}" />
+            </StackPanel>
+          </Expander.Header>
+          <ItemsControl ItemsSource="{Binding Content}" ItemTemplate="{StaticResource ToolCallContentTemplate}" Margin="8,4,8,8" />
+        </Expander>
+      </DataTemplate>
+
+      <!-- One chat bubble (user or assistant). -->
+      <DataTemplate x:Key="ChatMessageTemplate" DataType="{x:Type vm:ChatMessageViewModel}">
+        <Border Margin="4,6" Padding="10,8" CornerRadius="8" MaxWidth="480">
+          <Border.Style>
+            <Style TargetType="Border">
+              <Setter Property="HorizontalAlignment" Value="Left" />
+              <Setter Property="Background" Value="{DynamicResource ChatAssistantBubbleBackgroundBrush}" />
+              <Style.Triggers>
+                <DataTrigger Binding="{Binding Role}" Value="User">
+                  <Setter Property="HorizontalAlignment" Value="Right" />
+                  <Setter Property="Background" Value="{DynamicResource ChatUserBubbleBackgroundBrush}" />
+                </DataTrigger>
+              </Style.Triggers>
+            </Style>
+          </Border.Style>
+          <StackPanel>
+            <TextBlock Text="{Binding Text}" TextWrapping="Wrap" Foreground="{DynamicResource ChatForegroundBrush}" />
+            <ItemsControl ItemsSource="{Binding ToolCalls}" ItemTemplate="{StaticResource ToolCallCardTemplate}" />
+          </StackPanel>
+        </Border>
+      </DataTemplate>
+
+    </ResourceDictionary>
+  </UserControl.Resources>
+
+  <Grid>
+    <Grid.RowDefinitions>
+      <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+    </Grid.RowDefinitions>
+
+    <!-- Message history -->
+    <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto" Padding="4"
+                  d:DataContext="{d:DesignInstance vm:ChatViewModel}">
+      <ItemsControl ItemsSource="{Binding Messages}" ItemTemplate="{StaticResource ChatMessageTemplate}" />
+    </ScrollViewer>
+
+    <!-- Plan / todo strip -->
+    <Border Grid.Row="1" DataContext="{Binding CurrentPlan}"
+            Visibility="{Binding Converter={StaticResource NullToVisibilityConverter}}"
+            Background="{DynamicResource ChatInputBackgroundBrush}"
+            BorderBrush="{DynamicResource ChatBorderBrush}" BorderThickness="0,1,0,0"
+            Padding="10,6">
+      <ItemsControl ItemsSource="{Binding Entries}">
+        <ItemsControl.ItemTemplate>
+          <DataTemplate DataType="{x:Type contracts:PlanEntry}">
+            <StackPanel Orientation="Horizontal" Margin="0,1">
+              <TextBlock Text="{Binding Status, Converter={StaticResource PlanStatusGlyphConverter}}"
+                         Foreground="{DynamicResource ChatSubtleForegroundBrush}" Margin="0,0,6,0" />
+              <TextBlock Text="{Binding Content}" TextWrapping="Wrap" FontSize="12"
+                         Foreground="{DynamicResource ChatForegroundBrush}" />
+            </StackPanel>
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+    </Border>
+
+    <!-- Permission request banner -->
+    <Border Grid.Row="2" DataContext="{Binding PendingPermission}"
+            Visibility="{Binding Converter={StaticResource NullToVisibilityConverter}}"
+            Background="{DynamicResource ChatWarningBackgroundBrush}"
+            BorderBrush="{DynamicResource ChatBorderBrush}" BorderThickness="0,1,0,0"
+            Padding="10,8">
+      <StackPanel>
+        <TextBlock Text="{Binding Title}" TextWrapping="Wrap" FontWeight="SemiBold"
+                   Foreground="{DynamicResource ChatForegroundBrush}" Margin="0,0,0,6" />
+        <ItemsControl ItemsSource="{Binding Options}">
+          <ItemsControl.ItemsPanel>
+            <ItemsPanelTemplate>
+              <StackPanel Orientation="Horizontal" />
+            </ItemsPanelTemplate>
+          </ItemsControl.ItemsPanel>
+          <ItemsControl.ItemTemplate>
+            <DataTemplate DataType="{x:Type contracts:PermissionOption}">
+              <Button Content="{Binding Label}" Margin="0,0,6,0" Style="{StaticResource ChatButtonStyle}"
+                      Command="{Binding DataContext.ChooseCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                      CommandParameter="{Binding}" />
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </StackPanel>
+    </Border>
+
+    <!-- Composer, or a sign-in prompt when not authenticated -->
+    <Grid Grid.Row="3" Background="{DynamicResource ChatInputBackgroundBrush}">
+      <Grid.RowDefinitions>
+        <RowDefinition Height="Auto" />
+        <RowDefinition Height="Auto" />
+      </Grid.RowDefinitions>
+
+      <TextBlock Grid.Row="0" Text="{Binding StatusMessage}" TextWrapping="Wrap" FontSize="11" Margin="10,6,10,0"
+                 Foreground="{DynamicResource ChatSubtleForegroundBrush}"
+                 Visibility="{Binding StatusMessage, Converter={StaticResource NullToVisibilityConverter}}" />
+
+      <!-- Sign-in prompt -->
+      <StackPanel Grid.Row="1" Margin="10" Visibility="{Binding IsSignedIn, Converter={StaticResource BoolToVisibilityConverter}, ConverterParameter=Invert}">
+        <TextBlock Text="Sign in with your Claude account to start chatting." TextWrapping="Wrap"
+                   Foreground="{DynamicResource ChatForegroundBrush}" Margin="0,0,0,8" />
+        <Button Content="Sign in to Claude" HorizontalAlignment="Left" Style="{StaticResource ChatButtonStyle}"
+                Command="{Binding SignInCommand}" />
+      </StackPanel>
+
+      <!-- Composer -->
+      <Grid Grid.Row="1" Margin="8" Visibility="{Binding IsSignedIn, Converter={StaticResource BoolToVisibilityConverter}}">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="Auto" />
+        </Grid.ColumnDefinitions>
+
+        <TextBox x:Name="ComposerBox" Grid.Column="0"
+                 Text="{Binding ComposerText, UpdateSourceTrigger=PropertyChanged}"
+                 AcceptsReturn="True" TextWrapping="Wrap"
+                 MinLines="1" MaxLines="6" VerticalScrollBarVisibility="Auto"
+                 Padding="8,6" Margin="0,0,8,0"
+                 Background="{DynamicResource ChatBackgroundBrush}"
+                 Foreground="{DynamicResource ChatForegroundBrush}"
+                 BorderBrush="{DynamicResource ChatBorderBrush}"
+                 CaretBrush="{DynamicResource ChatForegroundBrush}" />
+
+        <Grid Grid.Column="1" VerticalAlignment="Bottom">
+          <Button Content="Send" Style="{StaticResource ChatButtonStyle}" Command="{Binding SendCommand}"
+                  Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibilityConverter}, ConverterParameter=Invert}" />
+          <Button Content="Stop" Style="{StaticResource ChatButtonStyle}" Command="{Binding CancelCommand}"
+                  Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibilityConverter}}" />
+        </Grid>
+      </Grid>
+    </Grid>
+  </Grid>
+</UserControl>

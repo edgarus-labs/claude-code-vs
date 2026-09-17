@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CommandTable xmlns="http://schemas.microsoft.com/VisualStudio/2005-10-18/CommandTable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+
+  <Extern href="stdidcmd.h"/>
+  <Extern href="vsshlids.h"/>
+  <Extern href="KnownImageIds.vsct"/>
+
+  <Commands package="guidClaudeCodePackage">
+
+    <Groups>
+      <Group guid="guidClaudeCodeCommandSet" id="ClaudeCodeMenuGroup" priority="0x0600">
+        <Parent guid="guidClaudeCodeCommandSet" id="ClaudeCodeMenu"/>
+      </Group>
+      <Group guid="guidClaudeCodeCommandSet" id="ClaudeCodeToolbarGroup" priority="0x0100">
+        <Parent guid="guidClaudeCodeCommandSet" id="ClaudeCodeToolbar"/>
+      </Group>
+    </Groups>
+
+    <Menus>
+      <!-- New top-level menu, inserted as a sibling of the built-in Window menu on the main menu bar. -->
+      <Menu guid="guidClaudeCodeCommandSet" id="ClaudeCodeMenu" priority="0x0600" type="Menu">
+        <Parent guid="guidSHLMainMenu" id="IDM_VS_MENU_WINDOW"/>
+        <Strings>
+          <ButtonText>Claude Code</ButtonText>
+          <CommandName>Claude Code</CommandName>
+        </Strings>
+      </Menu>
+      <Menu guid="guidClaudeCodeCommandSet" id="ClaudeCodeToolbar" type="Toolbar">
+        <CommandFlag>DefaultDocked</CommandFlag>
+        <Strings>
+          <ButtonText>Claude Code</ButtonText>
+          <CommandName>Claude Code Toolbar</CommandName>
+        </Strings>
+      </Menu>
+    </Menus>
+
+    <Buttons>
+      <Button guid="guidClaudeCodeCommandSet" id="OpenChatWindowCommandId" priority="0x0100" type="Button">
+        <Parent guid="guidClaudeCodeCommandSet" id="ClaudeCodeMenuGroup"/>
+        <Icon guid="ImageCatalogGuid" id="CommentSparkle"/>
+        <CommandFlag>IconIsMoniker</CommandFlag>
+        <Strings>
+          <ButtonText>Claude Code Chat</ButtonText>
+          <CommandName>ClaudeCode.OpenChatWindow</CommandName>
+          <ToolTipText>Open the Claude Code chat window</ToolTipText>
+        </Strings>
+      </Button>
+      <Button guid="guidClaudeCodeCommandSet" id="SignInCommandId" priority="0x0110" type="Button">
+        <Parent guid="guidClaudeCodeCommandSet" id="ClaudeCodeMenuGroup"/>
+        <Icon guid="ImageCatalogGuid" id="Account"/>
+        <CommandFlag>IconIsMoniker</CommandFlag>
+        <Strings>
+          <ButtonText>Sign In to Claude Code…</ButtonText>
+          <CommandName>ClaudeCode.SignIn</CommandName>
+          <ToolTipText>Sign in with your Anthropic account via the Claude Code CLI</ToolTipText>
+        </Strings>
+      </Button>
+      <Button guid="guidClaudeCodeCommandSet" id="SignOutCommandId" priority="0x0120" type="Button">
+        <Parent guid="guidClaudeCodeCommandSet" id="ClaudeCodeMenuGroup"/>
+        <Icon guid="ImageCatalogGuid" id="Lock"/>
+        <CommandFlag>IconIsMoniker</CommandFlag>
+        <Strings>
+          <ButtonText>Sign Out of Claude Code</ButtonText>
+          <CommandName>ClaudeCode.SignOut</CommandName>
+          <ToolTipText>Sign out and remove the stored Claude Code credential</ToolTipText>
+        </Strings>
+      </Button>
+      <!-- Same open-chat-window command, mirrored onto the dedicated toolbar for a docked/sidebar-style
+           launcher icon in addition to the menu entry above. -->
+      <Button guid="guidClaudeCodeCommandSet" id="OpenChatWindowCommandId" priority="0x0100" type="Button">
+        <Parent guid="guidClaudeCodeCommandSet" id="ClaudeCodeToolbarGroup"/>
+        <Icon guid="ImageCatalogGuid" id="CommentSparkle"/>
+        <CommandFlag>IconIsMoniker</CommandFlag>
+        <Strings>
+          <ButtonText>Claude Code Chat</ButtonText>
+          <CommandName>ClaudeCode.OpenChatWindow</CommandName>
+          <ToolTipText>Open the Claude Code chat window</ToolTipText>
+        </Strings>
+      </Button>
+    </Buttons>
+
+  </Commands>
+
+  <KeyBindings>
+    <KeyBinding guid="guidClaudeCodeCommandSet" id="OpenChatWindowCommandId" editor="guidVSStd97" key1="C" mod1="Control Shift"/>
+  </KeyBindings>
+
+  <Symbols>
+    <GuidSymbol name="guidClaudeCodePackage" value="{8f5a6e3b-8f1a-4a6a-9d1a-3c2f7f9d2b40}"/>
+
+    <GuidSymbol name="guidClaudeCodeCommandSet" value="{3a9b6f1e-3e7c-4f2f-9c2a-2b6f5a7d9e11}">
+      <IDSymbol name="ClaudeCodeMenuGroup" value="0x1020"/>
+      <IDSymbol name="ClaudeCodeMenu" value="0x1030"/>
+      <IDSymbol name="ClaudeCodeToolbar" value="0x1040"/>
+      <IDSymbol name="ClaudeCodeToolbarGroup" value="0x1050"/>
+      <IDSymbol name="OpenChatWindowCommandId" value="0x0100"/>
+      <IDSymbol name="SignInCommandId" value="0x0101"/>
+      <IDSymbol name="SignOutCommandId" value="0x0102"/>
+    </GuidSymbol>
+
+  </Symbols>
+</CommandTable>

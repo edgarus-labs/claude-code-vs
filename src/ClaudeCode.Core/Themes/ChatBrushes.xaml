@@ -1,0 +1,52 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+  <!--
+    Theme-aware brush keys consumed by ChatPanelView.xaml as {DynamicResource ...}. These are ClaudeCode.Core's
+    OWN keys (not Microsoft.VisualStudio.Shell VsBrushes) - Core deliberately does not reference the VS SDK so
+    it stays buildable/testable/hostable outside Visual Studio. The values below are sensible dark-theme
+    defaults (used standalone, e.g. in the XAML designer or the Demo fallback).
+
+    The Vsix host CAN restyle the panel to track the live VS light/dark/blue theme without any code change
+    here: merge a ResourceDictionary ABOVE this one (e.g. on the hosting ToolWindow's root element) that
+    defines brushes with these SAME keys, pointing at real Microsoft.VisualStudio.Shell VsBrushes (that
+    project already references the VS SDK). WPF's DynamicResource lookup walks up the tree, so the host's
+    values win automatically - see the "Theming" section of the ClaudeCode.Core report for the exact
+    key-for-key mapping.
+  -->
+
+  <Color x:Key="ChatBackgroundColor">#FF1E1E1E</Color>
+  <Color x:Key="ChatForegroundColor">#FFD4D4D4</Color>
+  <Color x:Key="ChatSubtleForegroundColor">#FF9D9D9D</Color>
+  <Color x:Key="ChatBorderColor">#FF3F3F46</Color>
+  <Color x:Key="ChatUserBubbleBackgroundColor">#FF264F78</Color>
+  <Color x:Key="ChatAssistantBubbleBackgroundColor">#FF2D2D30</Color>
+  <Color x:Key="ChatInputBackgroundColor">#FF252526</Color>
+  <Color x:Key="ChatAccentColor">#FF0E639C</Color>
+  <Color x:Key="ChatAccentHoverColor">#FF1177BB</Color>
+  <Color x:Key="ChatAccentForegroundColor">#FFFFFFFF</Color>
+  <Color x:Key="ChatDiffAddedBackgroundColor">#FF1B3B1B</Color>
+  <Color x:Key="ChatDiffAddedForegroundColor">#FF6A9955</Color>
+  <Color x:Key="ChatDiffRemovedBackgroundColor">#FF3B1B1B</Color>
+  <Color x:Key="ChatDiffRemovedForegroundColor">#FFF14C4C</Color>
+  <Color x:Key="ChatErrorForegroundColor">#FFF14C4C</Color>
+  <Color x:Key="ChatWarningBackgroundColor">#FF3B3315</Color>
+
+  <SolidColorBrush x:Key="ChatBackgroundBrush" Color="{StaticResource ChatBackgroundColor}" />
+  <SolidColorBrush x:Key="ChatForegroundBrush" Color="{StaticResource ChatForegroundColor}" />
+  <SolidColorBrush x:Key="ChatSubtleForegroundBrush" Color="{StaticResource ChatSubtleForegroundColor}" />
+  <SolidColorBrush x:Key="ChatBorderBrush" Color="{StaticResource ChatBorderColor}" />
+  <SolidColorBrush x:Key="ChatUserBubbleBackgroundBrush" Color="{StaticResource ChatUserBubbleBackgroundColor}" />
+  <SolidColorBrush x:Key="ChatAssistantBubbleBackgroundBrush" Color="{StaticResource ChatAssistantBubbleBackgroundColor}" />
+  <SolidColorBrush x:Key="ChatInputBackgroundBrush" Color="{StaticResource ChatInputBackgroundColor}" />
+  <SolidColorBrush x:Key="ChatAccentBrush" Color="{StaticResource ChatAccentColor}" />
+  <SolidColorBrush x:Key="ChatAccentHoverBrush" Color="{StaticResource ChatAccentHoverColor}" />
+  <SolidColorBrush x:Key="ChatAccentForegroundBrush" Color="{StaticResource ChatAccentForegroundColor}" />
+  <SolidColorBrush x:Key="ChatDiffAddedBackgroundBrush" Color="{StaticResource ChatDiffAddedBackgroundColor}" />
+  <SolidColorBrush x:Key="ChatDiffAddedForegroundBrush" Color="{StaticResource ChatDiffAddedForegroundColor}" />
+  <SolidColorBrush x:Key="ChatDiffRemovedBackgroundBrush" Color="{StaticResource ChatDiffRemovedBackgroundColor}" />
+  <SolidColorBrush x:Key="ChatDiffRemovedForegroundBrush" Color="{StaticResource ChatDiffRemovedForegroundColor}" />
+  <SolidColorBrush x:Key="ChatErrorForegroundBrush" Color="{StaticResource ChatErrorForegroundColor}" />
+  <SolidColorBrush x:Key="ChatWarningBackgroundBrush" Color="{StaticResource ChatWarningBackgroundColor}" />
+
+</ResourceDictionary>

@@ -1,0 +1,81 @@
+name: CD
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Derive version from tag
+        id: version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          if ($tag -notmatch '^v(\d+\.\d+\.\d+)$') {
+            throw "Tag '$tag' does not match the required vX.Y.Z format."
+          }
+          $version = $Matches[1]
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      # The VSIX manifest's Identity/@Version is what Visual Studio's Extensions & Updates dialog displays;
+      # MSBuild's Version property only stamps the .NET assembly metadata, so both must be set from the tag.
+      - name: Stamp release version into vsixmanifest
+        shell: pwsh
+        run: |
+          $path = "src/ClaudeCode.Vsix/source.extension.vsixmanifest"
+          $xml = [xml](Get-Content $path)
+          $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
+          $ns.AddNamespace("v", "http://schemas.microsoft.com/developer/vsx-schema/2011")
+          $identity = $xml.SelectSingleNode("//v:Identity", $ns)
+          $identity.SetAttribute("Version", "${{ steps.version.outputs.version }}")
+          $xml.Save($path)
+
+      - name: Restore
+        run: dotnet restore ClaudeCodeVS.slnx
+
+      - name: Build (Release, versioned)
+        run: msbuild ClaudeCodeVS.slnx -t:Build -p:Configuration=Release -p:Version=${{ steps.version.outputs.version }} -m -restore:false
+
+      - name: Test - ClaudeCode.Acp.Tests
+        run: dotnet test test/ClaudeCode.Acp.Tests/ClaudeCode.Acp.Tests.csproj -c Release --no-build
+
+      - name: Test - ClaudeCode.Core.Tests
+        run: dotnet test test/ClaudeCode.Core.Tests/ClaudeCode.Core.Tests.csproj -c Release --no-build
+
+      - name: Test - ClaudeCode.VsControl.Mcp.Tests
+        run: dotnet test test/ClaudeCode.VsControl.Mcp.Tests/ClaudeCode.VsControl.Mcp.Tests.csproj -c Release --no-build
+
+      - name: Locate VSIX
+        id: vsix
+        shell: pwsh
+        run: |
+          $vsix = Get-ChildItem -Path "src/ClaudeCode.Vsix/bin/Release/net48" -Filter *.vsix -Recurse | Select-Object -First 1
+          if (-not $vsix) { throw "No .vsix produced under src/ClaudeCode.Vsix/bin/Release/net48." }
+          "path=$($vsix.FullName)" >> $env:GITHUB_OUTPUT
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "Claude Code for Visual Studio ${{ steps.version.outputs.version }}"
+          generate_release_notes: true
+          files: ${{ steps.vsix.outputs.path }}
