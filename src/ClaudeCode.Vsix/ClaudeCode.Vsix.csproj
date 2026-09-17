@@ -13,7 +13,7 @@
          AssemblyFileVersion/AssemblyInformationalVersion via GenerateAssemblyInfo, and the vsixmanifest
          Identity Version is patched to match by the release workflow so the tag version is what Visual
          Studio's Extensions/Updates dialog actually displays. -->
-    <Version Condition="'$(Version)' == ''">1.2.1</Version>
+    <Version Condition="'$(Version)' == ''">0.3.0</Version>
 
     <!-- VSIX / VS SDK project shape -->
     <!-- Keep packaging intermediates and archive paths explicit. The SDK imports below are ordered
