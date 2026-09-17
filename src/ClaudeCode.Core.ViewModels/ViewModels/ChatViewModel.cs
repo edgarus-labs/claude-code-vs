@@ -699,9 +699,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         var encoding = File.Exists(fullPath) ? DetectEncodingFromBom(fullPath) : new UTF8Encoding(false);
         var tempPath = fullPath + ".tmp" + Guid.NewGuid().ToString("N");
-        File.WriteAllText(tempPath, content, encoding);
         try
         {
+            File.WriteAllText(tempPath, content, encoding);
             if (File.Exists(fullPath)) File.Replace(tempPath, fullPath, null);
             else File.Move(tempPath, fullPath);
         }

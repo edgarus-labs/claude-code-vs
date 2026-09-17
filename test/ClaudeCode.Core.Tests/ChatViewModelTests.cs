@@ -8,6 +8,26 @@ namespace ClaudeCode.Core.Tests;
 
 public sealed class ChatViewModelTests
 {
+    // F-7-15: NullChatSessionServices + FakeAcpAgentConnection/FakeAcpAgentConnectionFactory (in
+    // ViewModels/Demo/) are a live production fallback (ChatPanelView.xaml.cs falls back to
+    // NullChatSessionServices when no host-provided IChatSessionServices is available) that had no
+    // test coverage. This asserts the combination is wired correctly end to end: sending a prompt
+    // produces a visible assistant reply. It intentionally does not assert the exact echo wording,
+    // which is an implementation detail of the demo double, not an observable contract.
+    [Fact]
+    public async Task SendAsync_WithNullChatSessionServices_ProducesAssistantMessage()
+    {
+        using var vm = new ChatViewModel(new ClaudeCode.Core.ViewModels.Demo.NullChatSessionServices());
+        await vm.InitializeAsync();
+
+        vm.InputText = "hello there";
+        await vm.SendAsync();
+
+        var assistantMessage = Assert.Single(vm.Messages, m => m.Role == ChatRole.Assistant);
+        Assert.False(string.IsNullOrWhiteSpace(assistantMessage.Text));
+        Assert.False(vm.IsBusy);
+    }
+
     [Fact]
     public async Task PlanSessionUpdate_ReplacesPreviousPlan_AndReleaseConnectionClearsIt()
     {

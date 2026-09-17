@@ -6,7 +6,7 @@ namespace ClaudeCode.Core.ViewModels;
 
 public sealed class ToolCallContentViewModel
 {
-    public ToolCallContentViewModel(ToolCallContent content)
+    public ToolCallContentViewModel(ToolCallContent content, IReadOnlyList<DiffLineViewModel>? diffLines = null)
     {
         if (content is null)
         {
@@ -16,7 +16,7 @@ public sealed class ToolCallContentViewModel
         Text = content.Text;
         Path = content.Path;
         IsDiff = content.IsDiff;
-        DiffLines = IsDiff ? DiffBuilder.Build(content.OldText ?? string.Empty, content.NewText ?? string.Empty) : Array.Empty<DiffLineViewModel>();
+        DiffLines = IsDiff ? diffLines ?? DiffBuilder.Build(content.OldText ?? string.Empty, content.NewText ?? string.Empty) : Array.Empty<DiffLineViewModel>();
     }
 
     public string? Text { get; }

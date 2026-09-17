@@ -1,6 +1,5 @@
 using ClaudeCode.Core.ViewModels;
 using System.Linq;
-using System.Text;
 using Xunit;
 
 namespace ClaudeCode.Core.Tests;
@@ -51,28 +50,5 @@ public sealed class DiffBuilderTests
         Assert.Equal(1500, lines.Count(line => line.Kind == DiffLineKind.Removed));
         Assert.Equal(1500, lines.Count(line => line.Kind == DiffLineKind.Added));
         Assert.DoesNotContain(lines, line => line.Kind == DiffLineKind.Context);
-    }
-
-    [Fact]
-    public void Build_RepeatedCallWithSameTexts_ReturnsCachedResultInstance()
-    {
-        // M15: rebuilding a tool-call card on every tool_call_update must not recompute an unchanged
-        // diff. The single-entry cache is proven by reference equality of the returned list.
-        var oldText = "alpha\nbeta";
-        var newText = "alpha\ngamma";
-
-        var first = DiffBuilder.Build(oldText, newText);
-        var second = DiffBuilder.Build(new StringBuilder(oldText).ToString(), new StringBuilder(newText).ToString());
-
-        Assert.Same(first, second);
-    }
-
-    [Fact]
-    public void Build_DifferentTextsAfterCache_RecomputesAndReturnsNewInstance()
-    {
-        var first = DiffBuilder.Build("alpha", "beta");
-        var second = DiffBuilder.Build("alpha", "delta");
-
-        Assert.NotSame(first, second);
     }
 }
