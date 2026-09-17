@@ -4,5 +4,10 @@ obj/
 *.suo
 .vs/
 artifacts/
-*.vsix
+# NOTE: do NOT add "*.vsix" here. On case-insensitive filesystems (Windows) it also
+# matches the src/ClaudeCode.Vsix directory, silently ignoring every untracked source
+# file beneath it. Build output (.vsix) already lives under bin/, ignored above.
 TestResults/
+# VS SDK build generates these from source.extension.vsixmanifest (which IS tracked)
+src/ClaudeCode.Vsix/extension.vsixmanifest
+src/ClaudeCode.Vsix/merged.source.extension.vsixmanifest
