@@ -13,7 +13,7 @@
          AssemblyFileVersion/AssemblyInformationalVersion via GenerateAssemblyInfo, and the vsixmanifest
          Identity Version is patched to match by the release workflow so the tag version is what Visual
          Studio's Extensions/Updates dialog actually displays. -->
-    <Version Condition="'$(Version)' == ''">0.1.0</Version>
+    <Version Condition="'$(Version)' == ''">1.2.1</Version>
 
     <!-- VSIX / VS SDK project shape -->
     <!-- Keep packaging intermediates and archive paths explicit. The SDK imports below are ordered
@@ -26,8 +26,8 @@
     <CtoCacheFile>obj\$(Configuration)\net48\mergeCto.cache</CtoCacheFile>
     <CreateTemplateManifestsCacheFile>obj\$(Configuration)\net48\createTemplateManifests.cache</CreateTemplateManifestsCacheFile>
     <IntermediateVsixManifest>obj\$(Configuration)\net48\extension.vsixmanifest</IntermediateVsixManifest>
-    <TargetVsixContainerName>EdgarusLabs.ClaudeCode.Vsix.vsix</TargetVsixContainerName>
-    <TargetVsixContainer>bin\$(Configuration)\net48\EdgarusLabs.ClaudeCode.Vsix.vsix</TargetVsixContainer>
+    <TargetVsixContainerName>EdgarusLabs.ClaudeCode.v$(Version).vsix</TargetVsixContainerName>
+    <TargetVsixContainer>bin\$(Configuration)\net48\EdgarusLabs.ClaudeCode.v$(Version).vsix</TargetVsixContainer>
     <!-- Keep the pkgdef input aligned with the packaged assembly output. -->
     <CreatePkgDefAssemblyToProcess>bin\$(Configuration)\net48\EdgarusLabs.ClaudeCode.Vsix.dll</CreatePkgDefAssemblyToProcess>
     <GeneratePkgDefFile>true</GeneratePkgDefFile>
