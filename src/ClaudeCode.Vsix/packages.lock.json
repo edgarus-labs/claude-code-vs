@@ -1438,6 +1438,15 @@
           "System.Threading.Tasks.Extensions": "4.5.4"
         }
       },
+      "System.IO.Pipes.AccessControl": {
+        "type": "Transitive",
+        "resolved": "5.0.0",
+        "contentHash": "P0FIsXSFNL1AXlHO9zpJ9atRUzVyoPZCkcbkYGZfXXMx9xlGA2H3HOGBwIhpKhB+h0eL3hry/z0UcfJZ+yb2kQ==",
+        "dependencies": {
+          "System.Security.AccessControl": "5.0.0",
+          "System.Security.Principal.Windows": "5.0.0"
+        }
+      },
       "System.Memory": {
         "type": "Transitive",
         "resolved": "4.5.5",
@@ -1644,7 +1653,8 @@
       "EdgarusLabs.ClaudeCode.Contracts": {
         "type": "Project",
         "dependencies": {
-          "Microsoft.Bcl.AsyncInterfaces": "[8.0.0, )"
+          "Microsoft.Bcl.AsyncInterfaces": "[8.0.0, )",
+          "System.IO.Pipes.AccessControl": "[5.0.0, )"
         }
       },
       "EdgarusLabs.ClaudeCode.Core": {

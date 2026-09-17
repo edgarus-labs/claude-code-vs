@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using ClaudeCode.Contracts;
 using Xunit;
@@ -105,5 +106,53 @@ public sealed class WorkspacePathGuardTests
 
         Assert.True(result);
         Assert.Equal(Path.GetFullPath(upperCased), fullPath);
+    }
+
+    [Fact]
+    public void TryResolveWithinWorkspace_PathThroughJunctionEscapingRoot_IsRejected()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            // NTFS junctions are a Windows-only reparse-point mechanism; nothing to verify elsewhere.
+            return;
+        }
+
+        string workspace = Directory.CreateTempSubdirectory("wpg-workspace-").FullName;
+        string outside = Directory.CreateTempSubdirectory("wpg-outside-").FullName;
+        string junctionPath = Path.Combine(workspace, "link");
+
+        try
+        {
+            File.WriteAllText(Path.Combine(outside, "secret.txt"), "top secret");
+
+            var startInfo = new ProcessStartInfo("cmd.exe", $"/c mklink /J \"{junctionPath}\" \"{outside}\"")
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            using var mklink = Process.Start(startInfo)!;
+            mklink.WaitForExit(10_000);
+            Assert.Equal(0, mklink.ExitCode);
+
+            var candidate = Path.Combine(junctionPath, "secret.txt");
+
+            var result = WorkspacePathGuard.TryResolveWithinWorkspace(workspace, candidate, out _);
+
+            // The junction lexically resolves under `workspace`, but the real target lives in
+            // `outside`: containment must be evaluated against the reparse-resolved path.
+            Assert.False(result);
+        }
+        finally
+        {
+            if (Directory.Exists(junctionPath))
+            {
+                Directory.Delete(junctionPath);
+            }
+
+            Directory.Delete(workspace, recursive: true);
+            Directory.Delete(outside, recursive: true);
+        }
     }
 }

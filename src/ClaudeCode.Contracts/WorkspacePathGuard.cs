@@ -1,5 +1,7 @@
 using System;
 using System.IO;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 
 namespace ClaudeCode.Contracts;
 
@@ -47,9 +49,34 @@ public static class WorkspacePathGuard
             return false;
         }
 
+        if (!IsWithinRoot(resolvedCandidate, resolvedRoot))
+        {
+            return false;
+        }
+
+        // Path.GetFullPath is purely lexical and never follows NTFS reparse points. A junction or
+        // symlink living inside the workspace can retarget any descendant path to a location outside
+        // it, so re-check containment against the reparse-resolved ("canonical") form of both paths.
+        // When a segment does not exist yet (e.g. a new file about to be written), canonicalize the
+        // nearest existing ancestor instead, and fail closed if no ancestor can be resolved at all.
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            if (!TryGetCanonicalPathOrNearestAncestor(resolvedCandidate, out string canonicalCandidate)
+                || !TryGetCanonicalPathOrNearestAncestor(resolvedRoot, out string canonicalRoot)
+                || !IsWithinRoot(canonicalCandidate, canonicalRoot))
+            {
+                return false;
+            }
+        }
+
+        fullPath = resolvedCandidate;
+        return true;
+    }
+
+    private static bool IsWithinRoot(string resolvedCandidate, string resolvedRoot)
+    {
         if (string.Equals(resolvedCandidate, resolvedRoot, StringComparison.OrdinalIgnoreCase))
         {
-            fullPath = resolvedCandidate;
             return true;
         }
 
@@ -59,12 +86,90 @@ public static class WorkspacePathGuard
             ? resolvedRoot
             : resolvedRoot + Path.DirectorySeparatorChar;
 
-        if (!resolvedCandidate.StartsWith(rootWithSeparator, StringComparison.OrdinalIgnoreCase))
+        return resolvedCandidate.StartsWith(rootWithSeparator, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Resolves <paramref name="path"/> (or its nearest existing ancestor, when the leaf and
+    /// possibly further ancestors do not exist yet) to its NTFS reparse-resolved final path.
+    /// </summary>
+    private static bool TryGetCanonicalPathOrNearestAncestor(string path, out string canonical)
+    {
+        string current = path;
+        string suffix = string.Empty;
+
+        while (true)
+        {
+            if (TryGetFinalPath(current, out string resolvedCurrent))
+            {
+                canonical = suffix.Length == 0
+                    ? resolvedCurrent
+                    : resolvedCurrent.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar + suffix;
+                return true;
+            }
+
+            string? parent = Path.GetDirectoryName(current);
+            if (string.IsNullOrEmpty(parent) || string.Equals(parent, current, StringComparison.OrdinalIgnoreCase))
+            {
+                // Not even the root could be opened (e.g. a drive that does not exist): canonicalization
+                // is impossible, so the caller must fail closed rather than trust the lexical path.
+                canonical = string.Empty;
+                return false;
+            }
+
+            string segment = current.Substring(parent.Length).TrimStart(Path.DirectorySeparatorChar);
+            suffix = suffix.Length == 0 ? segment : segment + Path.DirectorySeparatorChar + suffix;
+            current = parent;
+        }
+    }
+
+    private static bool TryGetFinalPath(string path, out string finalPath)
+    {
+        finalPath = string.Empty;
+
+        using SafeFileHandle handle = CreateFileW(
+            path,
+            dwDesiredAccess: 0,
+            dwShareMode: FileShareReadWriteDelete,
+            lpSecurityAttributes: IntPtr.Zero,
+            dwCreationDisposition: OpenExisting,
+            dwFlagsAndAttributes: FileFlagBackupSemantics,
+            hTemplateFile: IntPtr.Zero);
+
+        if (handle.IsInvalid)
         {
             return false;
         }
 
-        fullPath = resolvedCandidate;
+        var buffer = new char[short.MaxValue];
+        uint length = GetFinalPathNameByHandleW(handle, buffer, (uint)buffer.Length, dwFlags: 0);
+        if (length == 0 || length >= buffer.Length)
+        {
+            return false;
+        }
+
+        finalPath = new string(buffer, 0, (int)length);
         return true;
     }
+
+    private const uint FileShareReadWriteDelete = 0x00000001 | 0x00000002 | 0x00000004;
+    private const uint OpenExisting = 3;
+    private const uint FileFlagBackupSemantics = 0x02000000;
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, ExactSpelling = true)]
+    private static extern SafeFileHandle CreateFileW(
+        string lpFileName,
+        uint dwDesiredAccess,
+        uint dwShareMode,
+        IntPtr lpSecurityAttributes,
+        uint dwCreationDisposition,
+        uint dwFlagsAndAttributes,
+        IntPtr hTemplateFile);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, ExactSpelling = true)]
+    private static extern uint GetFinalPathNameByHandleW(
+        SafeFileHandle hFile,
+        char[] lpszFilePath,
+        uint cchFilePath,
+        uint dwFlags);
 }
