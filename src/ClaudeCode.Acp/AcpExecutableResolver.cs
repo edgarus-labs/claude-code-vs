@@ -2,94 +2,137 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 
-namespace ClaudeCode.Acp
+namespace ClaudeCode.Acp;
+
+public static class AcpExecutableResolver
 {
-    /// <summary>A resolved agent executable plus the arguments needed to put it into ACP mode.</summary>
-    public sealed class AcpExecutableSpec
+    private static readonly bool _isWindows = Path.DirectorySeparatorChar == '\\';
+    private static readonly string[] _acpAdapterCandidateNames = _isWindows
+        ? new[] { "claude-agent-acp.exe", "claude-agent-acp.cmd" }
+        : new[] { "claude-agent-acp" };
+
+    public static AcpExecutableSpec? TryResolveDefault() => TryResolveDefault(Environment.GetEnvironmentVariable("PATH"));
+
+    public static AcpExecutableSpec? TryResolveDefault(string? searchPath)
     {
-        public AcpExecutableSpec(string fileName, IReadOnlyList<string> arguments)
+        foreach (string directory in GetSearchDirectories(searchPath))
         {
-            FileName = fileName;
-            Arguments = arguments;
+            foreach (string candidate in _acpAdapterCandidateNames)
+            {
+                var resolved = TryResolve(Path.Combine(directory, candidate), searchPath);
+                if (resolved is not null)
+                {
+                    return resolved;
+                }
+            }
         }
 
-        /// <summary>Absolute path to the resolved executable.</summary>
-        public string FileName { get; }
-
-        /// <summary>Arguments required to run it in ACP mode (empty for `claude-code-acp`, `["--acp"]` for `claude`).</summary>
-        public IReadOnlyList<string> Arguments { get; }
+        return null;
     }
 
-    /// <summary>
-    /// Locates a usable ACP agent executable on PATH without ever throwing: prefers a dedicated
-    /// `claude-code-acp` adapter binary, then falls back to the `claude` CLI itself with `--acp` appended.
-    /// Callers surface a friendly "CLI not found" error when this returns null (e.g. so a VS Options page
-    /// can prompt the user for an explicit path) instead of this type raising an exception.
-    /// </summary>
-    public static class AcpExecutableResolver
+    public static AcpExecutableSpec? TryResolve(string executablePath) =>
+        TryResolve(executablePath, Environment.GetEnvironmentVariable("PATH"));
+
+    public static AcpExecutableSpec? TryResolve(string executablePath, string? searchPath)
     {
-        private static readonly bool IsWindows = Path.DirectorySeparatorChar == '\\';
-
-        private static readonly string[] AcpAdapterCandidateNames = IsWindows
-            ? new[] { "claude-code-acp.cmd", "claude-code-acp.exe", "claude-code-acp" }
-            : new[] { "claude-code-acp" };
-
-        private static readonly string[] ClaudeCliCandidateNames = IsWindows
-            ? new[] { "claude.cmd", "claude.exe", "claude" }
-            : new[] { "claude" };
-
-        public static AcpExecutableSpec? TryResolveDefault()
+        if (string.IsNullOrWhiteSpace(executablePath) || !File.Exists(executablePath))
         {
-            string? adapterPath = FindOnPath(AcpAdapterCandidateNames);
-            if (adapterPath != null)
-            {
-                return new AcpExecutableSpec(adapterPath, Array.Empty<string>());
-            }
-
-            string? claudePath = FindOnPath(ClaudeCliCandidateNames);
-            if (claudePath != null)
-            {
-                return new AcpExecutableSpec(claudePath, new[] { "--acp" });
-            }
-
             return null;
         }
 
-        private static string? FindOnPath(IReadOnlyList<string> candidateFileNames)
+        string fullPath = Path.GetFullPath(executablePath);
+        string extension = Path.GetExtension(fullPath);
+        string directory = Path.GetDirectoryName(fullPath)!;
+        string? scriptPath = null;
+        if (_isWindows && (extension.Equals(".cmd", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".bat", StringComparison.OrdinalIgnoreCase)))
         {
-            string? pathVariable = Environment.GetEnvironmentVariable("PATH");
-            if (string.IsNullOrEmpty(pathVariable))
+            // Never execute a command shell or interpolate arguments into an npm shim.
+            if (!Path.GetFileNameWithoutExtension(fullPath).Equals("claude-agent-acp", StringComparison.OrdinalIgnoreCase))
             {
                 return null;
             }
 
-            foreach (string directory in pathVariable.Split(Path.PathSeparator))
+            scriptPath = Path.Combine(directory, "node_modules", "@agentclientprotocol", "claude-agent-acp", "dist", "index.js");
+            if (!File.Exists(scriptPath) && Path.GetFileName(directory).Equals(".bin", StringComparison.OrdinalIgnoreCase))
             {
-                if (directory.Length == 0)
-                {
-                    continue;
-                }
-
-                foreach (string candidate in candidateFileNames)
-                {
-                    string full;
-                    try
-                    {
-                        full = Path.Combine(directory, candidate);
-                    }
-                    catch (ArgumentException)
-                    {
-                        continue; // malformed PATH entry.
-                    }
-
-                    if (File.Exists(full))
-                    {
-                        return full;
-                    }
-                }
+                scriptPath = Path.Combine(directory, "..", "@agentclientprotocol", "claude-agent-acp", "dist", "index.js");
             }
 
-            return null;
+            if (!File.Exists(scriptPath))
+            {
+                return null;
+            }
+        }
+        else if (extension.Equals(".js", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!fullPath.Replace('\\', '/').EndsWith("/@agentclientprotocol/claude-agent-acp/dist/index.js", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            scriptPath = fullPath;
+        }
+        else
+        {
+            string adapterName = _isWindows ? "claude-agent-acp.exe" : "claude-agent-acp";
+            if (!Path.GetFileName(fullPath).Equals(adapterName, StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            return new AcpExecutableSpec(fullPath, Array.Empty<string>());
+        }
+
+        string nodeName = _isWindows ? "node.exe" : "node";
+        string? nodePath = Path.Combine(directory, nodeName);
+        if (!File.Exists(nodePath))
+        {
+            nodePath = FindOnPath(nodeName, searchPath);
+        }
+
+        return nodePath is null ? null : new AcpExecutableSpec(nodePath, new[] { Path.GetFullPath(scriptPath) });
+    }
+
+    private static string? FindOnPath(string fileName, string? searchPath)
+    {
+        foreach (string directory in GetSearchDirectories(searchPath))
+        {
+            string path = Path.Combine(directory, fileName);
+            if (File.Exists(path))
+            {
+                return path;
+            }
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<string> GetSearchDirectories(string? searchPath)
+    {
+        if (searchPath is null || searchPath.Length == 0)
+        {
+            yield break;
+        }
+
+        foreach (string entry in searchPath.Split(Path.PathSeparator))
+        {
+            string directory = entry.Trim().Trim('"');
+            if (directory.Length == 0)
+            {
+                continue;
+            }
+
+            try
+            {
+                directory = Path.GetFullPath(directory);
+            }
+            catch (Exception ex) when (ex is ArgumentException || ex is NotSupportedException || ex is PathTooLongException)
+            {
+                continue;
+            }
+
+            yield return directory;
         }
     }
 }

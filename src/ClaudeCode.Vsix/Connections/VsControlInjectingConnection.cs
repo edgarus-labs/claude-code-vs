@@ -1,93 +1,125 @@
+using ClaudeCode.Contracts;
+using ClaudeCode.Vsix.VsControl;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
-using ClaudeCode.Contracts;
-using ClaudeCode.Vsix.VsControl;
 
-namespace ClaudeCode.Vsix.Connections
+namespace ClaudeCode.Vsix.Connections;
+
+internal sealed class VsControlInjectingConnection : IAcpAgentConnection
 {
-    /// <summary>
-    /// Wraps a real <see cref="IAcpAgentConnection"/> so every <see cref="NewSessionAsync"/> call
-    /// transparently gets the "visual-studio" MCP server merged into its <c>mcpServers</c> argument -
-    /// ClaudeCode.Core's view model calls <c>NewSessionAsync</c> knowing nothing about VS-control pipes,
-    /// ClaudeCode.VsControl.Mcp.exe, or its install path.
-    /// </summary>
-    internal sealed class VsControlInjectingConnection : IAcpAgentConnection
+    private readonly IAcpAgentConnection _inner;
+    private readonly VsControlSessionRegistry _registry;
+    private readonly ConcurrentDictionary<string, byte> _correlationIds = new ConcurrentDictionary<string, byte>();
+    private int _disposed;
+
+    public VsControlInjectingConnection(IAcpAgentConnection inner, VsControlSessionRegistry registry)
     {
-        private readonly IAcpAgentConnection _inner;
-        private readonly VsControlSessionRegistry _registry;
-        private string? _correlationId;
+        _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+        _registry = registry ?? throw new ArgumentNullException(nameof(registry));
+        _inner.SessionUpdate += OnSessionUpdate;
+        _inner.PermissionRequested += OnPermissionRequested;
+        _inner.FileReadRequested += OnFileReadRequested;
+        _inner.FileWriteRequested += OnFileWriteRequested;
+        _inner.Disconnected += OnDisconnected;
+    }
 
-        public VsControlInjectingConnection(IAcpAgentConnection inner, VsControlSessionRegistry registry)
+    public bool IsInitialized => _inner.IsInitialized;
+
+    public Task InitializeAsync(CancellationToken cancellationToken) => _inner.InitializeAsync(cancellationToken);
+
+    public async Task<NewSessionResult> NewSessionAsync(string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken)
+    {
+        var merged = new List<McpServerConfig>(mcpServers ?? Array.Empty<McpServerConfig>());
+        string? correlationId = null;
+
+        if (_registry.IsAvailable)
         {
-            _inner = inner ?? throw new ArgumentNullException(nameof(inner));
-            _registry = registry ?? throw new ArgumentNullException(nameof(registry));
+            merged.Add(_registry.StartSession(out correlationId));
+            _correlationIds.TryAdd(correlationId, 0);
         }
+        // else: the VsControlMcp sidecar payload hasn't been built/deployed beside this assembly yet - the
+        // session still starts, just without editor/solution tool support, rather than failing outright.
 
-        public bool IsInitialized => _inner.IsInitialized;
-
-        public Task InitializeAsync(CancellationToken cancellationToken) => _inner.InitializeAsync(cancellationToken);
-
-        public async Task<string> NewSessionAsync(string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken)
+        try
         {
-            var merged = new List<McpServerConfig>(mcpServers ?? Array.Empty<McpServerConfig>());
-
-            if (_registry.IsAvailable)
-            {
-                merged.Add(_registry.StartSession(out _correlationId));
-            }
-            // else: ClaudeCode.VsControl.Mcp.exe hasn't been built/deployed next to this assembly yet - the
-            // session still starts, just without editor/solution tool support, rather than failing outright.
-
             return await _inner.NewSessionAsync(cwd, merged, cancellationToken).ConfigureAwait(false);
         }
-
-        public Task SendPromptAsync(string sessionId, IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken) =>
-            _inner.SendPromptAsync(sessionId, content, cancellationToken);
-
-        public Task CancelAsync(string sessionId, CancellationToken cancellationToken) =>
-            _inner.CancelAsync(sessionId, cancellationToken);
-
-        public event EventHandler<SessionUpdateEventArgs> SessionUpdate
+        catch
         {
-            add => _inner.SessionUpdate += value;
-            remove => _inner.SessionUpdate -= value;
-        }
-
-        public event EventHandler<PermissionRequestEventArgs> PermissionRequested
-        {
-            add => _inner.PermissionRequested += value;
-            remove => _inner.PermissionRequested -= value;
-        }
-
-        public event EventHandler<FileReadRequestEventArgs> FileReadRequested
-        {
-            add => _inner.FileReadRequested += value;
-            remove => _inner.FileReadRequested -= value;
-        }
-
-        public event EventHandler<FileWriteRequestEventArgs> FileWriteRequested
-        {
-            add => _inner.FileWriteRequested += value;
-            remove => _inner.FileWriteRequested -= value;
-        }
-
-        public event EventHandler<Exception?> Disconnected
-        {
-            add => _inner.Disconnected += value;
-            remove => _inner.Disconnected -= value;
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            if (_correlationId != null)
+            if (correlationId is not null && _correlationIds.TryRemove(correlationId, out _))
             {
-                _registry.EndSession(_correlationId);
-                _correlationId = null;
+                _registry.EndSession(correlationId);
             }
 
-            await _inner.DisposeAsync().ConfigureAwait(false);
+            throw;
         }
+    }
+
+    public Task<IReadOnlyList<SessionConfigOption>> SetSessionConfigOptionAsync(string sessionId, string configId, string value, CancellationToken cancellationToken) =>
+        _inner.SetSessionConfigOptionAsync(sessionId, configId, value, cancellationToken);
+
+    public Task SendPromptAsync(string sessionId, IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken) =>
+        _inner.SendPromptAsync(sessionId, content, cancellationToken);
+
+    public Task CancelAsync(string sessionId, CancellationToken cancellationToken) =>
+        _inner.CancelAsync(sessionId, cancellationToken);
+
+    public event EventHandler<SessionUpdateEventArgs>? SessionUpdate;
+
+    public event EventHandler<PermissionRequestEventArgs>? PermissionRequested;
+
+    public event EventHandler<FileReadRequestEventArgs>? FileReadRequested;
+
+    public event EventHandler<FileWriteRequestEventArgs>? FileWriteRequested;
+
+    public event EventHandler<Exception?>? Disconnected;
+
+    private void OnSessionUpdate(object? sender, SessionUpdateEventArgs e)
+    {
+        if (Volatile.Read(ref _disposed) == 0) SessionUpdate?.Invoke(this, e);
+    }
+
+    private void OnPermissionRequested(object? sender, PermissionRequestEventArgs e)
+    {
+        if (Volatile.Read(ref _disposed) == 0) PermissionRequested?.Invoke(this, e);
+    }
+
+    private void OnFileReadRequested(object? sender, FileReadRequestEventArgs e)
+    {
+        if (Volatile.Read(ref _disposed) == 0) FileReadRequested?.Invoke(this, e);
+    }
+
+    private void OnFileWriteRequested(object? sender, FileWriteRequestEventArgs e)
+    {
+        if (Volatile.Read(ref _disposed) == 0) FileWriteRequested?.Invoke(this, e);
+    }
+
+    private void OnDisconnected(object? sender, Exception? e)
+    {
+        if (Volatile.Read(ref _disposed) == 0) Disconnected?.Invoke(this, e);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+
+        _inner.SessionUpdate -= OnSessionUpdate;
+        _inner.PermissionRequested -= OnPermissionRequested;
+        _inner.FileReadRequested -= OnFileReadRequested;
+        _inner.FileWriteRequested -= OnFileWriteRequested;
+        _inner.Disconnected -= OnDisconnected;
+
+        foreach (string correlationId in _correlationIds.Keys)
+        {
+            if (_correlationIds.TryRemove(correlationId, out _))
+            {
+                _registry.EndSession(correlationId);
+            }
+        }
+
+        await _inner.DisposeAsync().ConfigureAwait(false);
     }
 }

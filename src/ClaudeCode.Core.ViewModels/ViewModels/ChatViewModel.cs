@@ -1,412 +1,753 @@
+using ClaudeCode.Contracts;
+using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using ClaudeCode.Contracts;
-using CommunityToolkit.Mvvm.ComponentModel;
-using CommunityToolkit.Mvvm.Input;
 
-namespace ClaudeCode.Core.ViewModels
+namespace ClaudeCode.Core.ViewModels;
+
+public sealed class ChatViewModel : ObservableObject, IDisposable
 {
-    /// <summary>
-    /// Owns one chat session: message history, composer state, and the lazily-created ACP connection.
-    /// Never connects at construction time - the child process is only spawned on the first send, so simply
-    /// opening the tool window has no side effects.
-    /// </summary>
-    public sealed class ChatViewModel : ObservableObject, IDisposable
+    private readonly IChatSessionServices _services;
+    private readonly SynchronizationContext? _uiContext;
+    private readonly SemaphoreSlim _connectGate = new SemaphoreSlim(1, 1);
+    private readonly CancellationTokenSource _lifetime = new CancellationTokenSource();
+    private IAcpAgentConnection? _connection;
+    private string? _sessionId;
+    private SessionConfigOption? _modelOption;
+    private SessionConfigOption? _effortOption;
+    private SessionConfigValue? _selectedModel;
+    private SessionConfigValue? _selectedEffort;
+    private ChatMessageViewModel? _currentAssistantMessage;
+    private IReadOnlyList<AvailableCommand> _availableCommands = Array.Empty<AvailableCommand>();
+    private Dictionary<string, IReadOnlyList<AvailableCommand>>? _pendingCommandCatalogs;
+    private AvailableCommand? _selectedSlashSuggestion;
+    private bool _hasCommandCatalog;
+    private bool _slashSuggestionsDismissed;
+    private bool _areSlashSuggestionsVisible;
+    private bool _isCapturingDocument;
+    private string _commandCatalogStatus = "Connect to Claude to discover commands.";
+    private string _activityText = string.Empty;
+    private string? _attachmentError;
+    private bool _disposed;
+    private bool _isBusy;
+    private bool _isConnecting;
+    private bool _isConfigBusy;
+    private bool _isSignedIn;
+    private bool _needsAuthentication;
+    private string _inputText = string.Empty;
+    private string? _statusMessage;
+    private PlanViewModel? _currentPlan;
+    private PermissionRequestViewModel? _pendingPermission;
+
+    public ChatViewModel(IChatSessionServices services)
     {
-        private readonly IChatSessionServices _services;
-        private readonly SynchronizationContext? _uiContext;
-        private readonly SemaphoreSlim _connectGate = new SemaphoreSlim(1, 1);
-
-        private IAcpAgentConnection? _connection;
-        private string? _sessionId;
-        private ChatMessageViewModel? _currentAssistantMessage;
-        private bool _disposed;
-
-        public ChatViewModel(IChatSessionServices services)
+        _services = services ?? throw new ArgumentNullException(nameof(services));
+        _uiContext = SynchronizationContext.Current;
+        SendCommand = new AsyncRelayCommand(SendAsync, CanSend);
+        CancelCommand = new AsyncRelayCommand(CancelAsync, () => IsBusy && !_disposed);
+        SignInCommand = new AsyncRelayCommand(SignInAsync, () => !IsSignedIn && !_disposed);
+        AttachActiveDocumentCommand = new AsyncRelayCommand(AttachActiveDocumentAsync, () => CanEditDraft && !_isCapturingDocument);
+        ApplySlashSuggestionCommand = new RelayCommand<AvailableCommand>(ApplySlashSuggestion,
+            command => CanEditDraft && AreSlashSuggestionsVisible && command is not null && SlashSuggestions.Contains(command));
+        RemoveAttachmentCommand = new RelayCommand<ChatAttachmentViewModel>(attachment =>
         {
-            _services = services ?? throw new ArgumentNullException(nameof(services));
-            _uiContext = SynchronizationContext.Current;
-
-            SendCommand = new AsyncRelayCommand(SendAsync, CanSend);
-            CancelCommand = new AsyncRelayCommand(CancelAsync, () => IsBusy);
-            SignInCommand = new AsyncRelayCommand(SignInAsync, () => !IsSignedIn);
-
-            _services.AuthService.StateChanged += OnAuthStateChanged;
-            ApplyAuthState(_services.AuthService.CurrentState);
-
-            // "On construction (or first activation)": kick off the async, authoritative sign-in check now.
-            // Errors surface via StatusMessage rather than throwing out of the constructor.
-            _ = InitializeAsync();
-        }
-
-        public ObservableCollection<ChatMessageViewModel> Messages { get; } = new ObservableCollection<ChatMessageViewModel>();
-
-        private string _composerText = string.Empty;
-
-        public string ComposerText
-        {
-            get => _composerText;
-            set => SetProperty(ref _composerText, value);
-        }
-
-        private bool _isBusy;
-
-        public bool IsBusy
-        {
-            get => _isBusy;
-            private set
+            if (attachment is not null && CanEditDraft)
             {
-                if (SetProperty(ref _isBusy, value))
-                {
-                    NotifyCommandsCanExecuteChanged();
-                }
+                Attachments.Remove(attachment);
+            }
+        }, _ => CanEditDraft);
+        Attachments.CollectionChanged += (_, __) => SendCommand.NotifyCanExecuteChanged();
+        _services.AuthService.StateChanged += OnAuthStateChanged;
+        ApplyAuthState(_services.AuthService.CurrentState);
+        Initialization = InitializeAsync();
+    }
+
+    public ObservableCollection<ChatMessageViewModel> Messages { get; } = new ObservableCollection<ChatMessageViewModel>();
+    public ObservableCollection<ChatAttachmentViewModel> Attachments { get; } = new ObservableCollection<ChatAttachmentViewModel>();
+    public ObservableCollection<SessionConfigValue> AvailableModels { get; } = new ObservableCollection<SessionConfigValue>();
+    public ObservableCollection<SessionConfigValue> AvailableEfforts { get; } = new ObservableCollection<SessionConfigValue>();
+    public ObservableCollection<AvailableCommand> SlashSuggestions { get; } = new ObservableCollection<AvailableCommand>();
+    public IAsyncRelayCommand SendCommand { get; }
+    public IAsyncRelayCommand CancelCommand { get; }
+    public IAsyncRelayCommand SignInCommand { get; }
+    public IRelayCommand<ChatAttachmentViewModel> RemoveAttachmentCommand { get; }
+    public IAsyncRelayCommand AttachActiveDocumentCommand { get; }
+    public IRelayCommand<AvailableCommand> ApplySlashSuggestionCommand { get; }
+    public Task Initialization { get; }
+
+    public string InputText
+    {
+        get => _inputText;
+        set
+        {
+            if (SetProperty(ref _inputText, value))
+            {
+                _slashSuggestionsDismissed = false;
+                RefreshSlashSuggestions();
+                SendCommand.NotifyCanExecuteChanged();
             }
         }
+    }
 
-        private bool _isSignedIn;
+    public bool IsBusy
+    {
+        get => _isBusy;
+        private set { if (SetProperty(ref _isBusy, value)) NotifyStateChanged(); }
+    }
 
-        public bool IsSignedIn
+    public bool IsConnecting
+    {
+        get => _isConnecting;
+        private set { if (SetProperty(ref _isConnecting, value)) NotifyStateChanged(); }
+    }
+
+    public bool IsConfigBusy
+    {
+        get => _isConfigBusy;
+        private set { if (SetProperty(ref _isConfigBusy, value)) NotifyStateChanged(); }
+    }
+
+    public bool IsSignedIn
+    {
+        get => _isSignedIn;
+        private set { if (SetProperty(ref _isSignedIn, value)) NotifyStateChanged(); }
+    }
+
+    public bool NeedsAuthentication
+    {
+        get => _needsAuthentication;
+        private set { if (SetProperty(ref _needsAuthentication, value)) NotifyStateChanged(); }
+    }
+
+    private bool CanEditDraft => !_disposed && !NeedsAuthentication && !IsConnecting && !IsBusy && !IsConfigBusy;
+    public bool CanConfigure => CanEditDraft && !_isCapturingDocument && _sessionId is not null;
+    public bool HasEffort => AvailableEfforts.Count > 0;
+    public string ActiveModelName => _selectedModel?.Name ?? "Model unavailable";
+    public string ActiveEffortName => _selectedEffort?.Name ?? string.Empty;
+
+    public SessionConfigValue? SelectedModel
+    {
+        get => _selectedModel;
+        set => _ = SelectModelAsync(value);
+    }
+
+    public SessionConfigValue? SelectedEffort
+    {
+        get => _selectedEffort;
+        set => _ = SelectEffortAsync(value);
+    }
+
+    public string? StatusMessage
+    {
+        get => _statusMessage;
+        private set => SetProperty(ref _statusMessage, value);
+    }
+
+    public string? AttachmentError
+    {
+        get => _attachmentError;
+        set => SetProperty(ref _attachmentError, value);
+    }
+
+    public string ActivityText
+    {
+        get => _activityText;
+        private set => SetProperty(ref _activityText, value);
+    }
+
+    public AvailableCommand? SelectedSlashSuggestion
+    {
+        get => _selectedSlashSuggestion;
+        set => SetProperty(ref _selectedSlashSuggestion, value);
+    }
+
+    public bool AreSlashSuggestionsVisible
+    {
+        get => _areSlashSuggestionsVisible;
+        private set => SetProperty(ref _areSlashSuggestionsVisible, value);
+    }
+
+    public string CommandCatalogStatus
+    {
+        get => _commandCatalogStatus;
+        private set => SetProperty(ref _commandCatalogStatus, value);
+    }
+
+    public PlanViewModel? CurrentPlan
+    {
+        get => _currentPlan;
+        private set => SetProperty(ref _currentPlan, value);
+    }
+
+    public PermissionRequestViewModel? PendingPermission
+    {
+        get => _pendingPermission;
+        private set => SetProperty(ref _pendingPermission, value);
+    }
+
+    public void AddImageAttachment(string name, string mimeType, string base64Data)
+    {
+        if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("An image name is required.", nameof(name));
+        if (string.IsNullOrWhiteSpace(mimeType) || !mimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("An image media type is required.", nameof(mimeType));
+        if (string.IsNullOrWhiteSpace(base64Data)) throw new ArgumentException("Image data is required.", nameof(base64Data));
+        RunOnUi(() =>
         {
-            get => _isSignedIn;
-            private set
+            if (CanEditDraft)
             {
-                if (SetProperty(ref _isSignedIn, value))
-                {
-                    NotifyCommandsCanExecuteChanged();
-                }
+                Attachments.Add(new ChatAttachmentViewModel(name, mimeType, base64Data));
+                AttachmentError = null;
             }
-        }
+        });
+    }
 
-        private string? _statusMessage;
+    private Task AttachActiveDocumentAsync(CancellationToken cancellationToken) =>
+        OnUiAsync(() => AttachActiveDocumentCoreAsync(cancellationToken));
 
-        public string? StatusMessage
+    private async Task AttachActiveDocumentCoreAsync(CancellationToken cancellationToken)
+    {
+        if (!CanEditDraft || _isCapturingDocument) return;
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
+        _isCapturingDocument = true;
+        NotifyStateChanged();
+        AttachmentError = null;
+        try
         {
-            get => _statusMessage;
-            private set => SetProperty(ref _statusMessage, value);
-        }
-
-        private PlanViewModel? _currentPlan;
-
-        public PlanViewModel? CurrentPlan
-        {
-            get => _currentPlan;
-            private set => SetProperty(ref _currentPlan, value);
-        }
-
-        private PermissionRequestViewModel? _pendingPermission;
-
-        public PermissionRequestViewModel? PendingPermission
-        {
-            get => _pendingPermission;
-            private set => SetProperty(ref _pendingPermission, value);
-        }
-
-        public IAsyncRelayCommand SendCommand { get; }
-
-        public IAsyncRelayCommand CancelCommand { get; }
-
-        public IAsyncRelayCommand SignInCommand { get; }
-
-        /// <summary>Refreshes <see cref="IsSignedIn"/> from the authoritative async check. Safe to call repeatedly.</summary>
-        public async Task InitializeAsync(CancellationToken cancellationToken = default)
-        {
-            try
+            var document = await _services.CaptureActiveDocumentAsync(linked.Token).ConfigureAwait(true);
+            linked.Token.ThrowIfCancellationRequested();
+            if (!CanEditDraft) return;
+            if (document is null)
             {
-                var signedIn = await _services.AuthService.IsSignedInAsync(cancellationToken).ConfigureAwait(true);
-                IsSignedIn = signedIn;
-            }
-            catch (Exception ex)
-            {
-                StatusMessage = $"Could not check sign-in state: {ex.Message}";
-            }
-        }
-
-        public async Task SignInAsync()
-        {
-            StatusMessage = "Signing in to Claude...";
-            var progress = new Progress<string>(message => RunOnUi(() => StatusMessage = message));
-            try
-            {
-                await _services.AuthService.SignInAsync(CancellationToken.None, progress).ConfigureAwait(true);
-                IsSignedIn = await _services.AuthService.IsSignedInAsync(CancellationToken.None).ConfigureAwait(true);
-                StatusMessage = IsSignedIn ? null : "Sign-in did not complete.";
-            }
-            catch (Exception ex)
-            {
-                StatusMessage = $"Sign-in failed: {ex.Message}";
-            }
-        }
-
-        private bool CanSend() => IsSignedIn && !IsBusy;
-
-        public async Task SendAsync()
-        {
-            var text = ComposerText?.Trim();
-            if (string.IsNullOrEmpty(text))
-            {
+                AttachmentError = "Open a text document in the editor before attaching it.";
                 return;
             }
 
-            ComposerText = string.Empty;
-            Messages.Add(new ChatMessageViewModel(ChatRole.User, text!));
+            var attachment = new ChatAttachmentViewModel(document);
+            for (var index = 0; index < Attachments.Count; index++)
+            {
+                if (string.Equals(Attachments[index].DocumentPath, attachment.DocumentPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    Attachments[index] = attachment;
+                    return;
+                }
+            }
+            Attachments.Add(attachment);
+        }
+        catch (OperationCanceledException) when (linked.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            if (!_disposed) AttachmentError = $"Could not attach the active document: {ex.Message}";
+        }
+        finally
+        {
+            _isCapturingDocument = false;
+            NotifyStateChanged();
+        }
+    }
+
+    public void DismissSlashSuggestions() => RunOnUi(() =>
+    {
+        _slashSuggestionsDismissed = true;
+        UpdateSlashPresentation();
+    });
+
+    private void ApplySlashSuggestion(AvailableCommand? command)
+    {
+        if (!CanEditDraft || !AreSlashSuggestionsVisible || command is null || !SlashSuggestions.Contains(command)) return;
+        InputText = "/" + command.Name + " ";
+    }
+
+    private void ApplyCommandCatalog(IReadOnlyList<AvailableCommand> commands)
+    {
+        _availableCommands = commands;
+        _hasCommandCatalog = true;
+        RefreshSlashSuggestions();
+    }
+
+    private bool IsSlashToken => InputText.StartsWith("/", StringComparison.Ordinal) && !InputText.Any(char.IsWhiteSpace);
+
+    private void RefreshSlashSuggestions()
+    {
+        var isSlashToken = IsSlashToken;
+        var selectedName = SelectedSlashSuggestion?.Name;
+        SlashSuggestions.Clear();
+        if (isSlashToken)
+        {
+            var prefix = InputText.Substring(1);
+            foreach (var command in _availableCommands)
+                if (command.Name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) SlashSuggestions.Add(command);
+        }
+        SelectedSlashSuggestion = SlashSuggestions.FirstOrDefault(command => command.Name == selectedName)
+            ?? SlashSuggestions.FirstOrDefault();
+        UpdateSlashPresentation();
+    }
+
+    private void UpdateSlashPresentation()
+    {
+        var isSlashToken = IsSlashToken;
+        AreSlashSuggestionsVisible = CanEditDraft && isSlashToken && !_slashSuggestionsDismissed;
+        CommandCatalogStatus = _sessionId is null
+            ? (IsConnecting ? "Connecting to discover commands…" : "Connect to Claude to discover commands.")
+            : !_hasCommandCatalog ? "Discovering commands from Claude…"
+            : _availableCommands.Count == 0 ? "Claude has not advertised any commands for this session."
+            : isSlashToken && SlashSuggestions.Count == 0 ? "No commands match this name."
+            : string.Empty;
+        ApplySlashSuggestionCommand.NotifyCanExecuteChanged();
+    }
+
+    private void UpdateActivity(string activity)
+    {
+        if (IsBusy) ActivityText = PendingPermission is null ? activity : "Waiting for permission…";
+    }
+
+    public Task SelectModelAsync(SessionConfigValue? value) => OnUiAsync(() => ChangeConfigAsync(_modelOption, value));
+    public Task SelectEffortAsync(SessionConfigValue? value) => OnUiAsync(() => ChangeConfigAsync(_effortOption, value));
+
+    private async Task ChangeConfigAsync(SessionConfigOption? option, SessionConfigValue? value)
+    {
+        if (!CanConfigure || option is null || value is null || value.Value == option.CurrentValue ||
+            !option.Options.Any(candidate => candidate.Value == value.Value))
+        {
+            NotifySelectionsChanged();
+            return;
+        }
+
+        var connection = _connection!;
+        var sessionId = _sessionId!;
+        IsConfigBusy = true;
+        StatusMessage = null;
+        try
+        {
+            var options = await connection.SetSessionConfigOptionAsync(sessionId, option.Id, value.Value, _lifetime.Token).ConfigureAwait(true);
+            if (!_disposed && ReferenceEquals(connection, _connection) && sessionId == _sessionId)
+                ApplyConfigOptions(options);
+        }
+        catch (OperationCanceledException) when (_disposed) { }
+        catch (Exception ex)
+        {
+            if (!_disposed) StatusMessage = $"Could not change session settings: {ex.Message}";
+        }
+        finally
+        {
+            // Never publish an optimistic selection: failures retain the last acknowledged state.
+            IsConfigBusy = false;
+            NotifySelectionsChanged();
+        }
+    }
+
+    public Task InitializeAsync(CancellationToken cancellationToken = default) => OnUiAsync(() => InitializeCoreAsync(cancellationToken));
+
+    private async Task InitializeCoreAsync(CancellationToken cancellationToken)
+    {
+        if (_disposed) return;
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
+        IsConnecting = true;
+        try
+        {
+            var signedIn = await _services.AuthService.IsSignedInAsync(linked.Token).ConfigureAwait(true);
+            if (_disposed) return;
+            IsSignedIn = signedIn || (_sessionId is not null && _services.AuthService.CurrentState != AuthState.SignedOut);
+            NeedsAuthentication = !signedIn && _services.AuthService.CurrentState == AuthState.SignedOut;
+            if (!NeedsAuthentication) await EnsureConnectedAsync(linked.Token).ConfigureAwait(true);
+            else await ReleaseConnectionAsync().ConfigureAwait(true);
+        }
+        catch (OperationCanceledException) when (linked.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            if (!_disposed) StatusMessage = $"Could not prepare Claude: {ex.Message}";
+        }
+        finally
+        {
+            IsConnecting = false;
+        }
+    }
+
+    public Task SignInAsync() => OnUiAsync(SignInCoreAsync);
+
+    private async Task SignInCoreAsync()
+    {
+        if (_disposed) return;
+        StatusMessage = "Signing in to Claude...";
+        var progress = new Progress<string>(message => RunOnUi(() => { if (!_disposed) StatusMessage = message; }));
+        try
+        {
+            await _services.AuthService.SignInAsync(_lifetime.Token, progress).ConfigureAwait(true);
+            await InitializeCoreAsync(_lifetime.Token).ConfigureAwait(true);
+            if (!_disposed && !IsSignedIn) StatusMessage = "Sign-in did not complete.";
+        }
+        catch (OperationCanceledException) when (_disposed) { }
+        catch (Exception ex)
+        {
+            if (!_disposed) StatusMessage = $"Sign-in failed: {ex.Message}";
+        }
+    }
+
+    private bool CanSend() => CanEditDraft && !_isCapturingDocument &&
+        (!string.IsNullOrWhiteSpace(InputText) || Attachments.Count > 0);
+
+    public Task SendAsync() => OnUiAsync(SendCoreAsync);
+
+    private async Task SendCoreAsync()
+    {
+        if (!CanSend()) return;
+        ActivityText = "Working…";
+        IsBusy = true;
+        StatusMessage = null;
+        try
+        {
+            // Acquire before consuming the draft: failed startup must not lose text or attachments.
+            var (connection, sessionId) = await EnsureConnectedAsync(_lifetime.Token).ConfigureAwait(true);
+            if (_disposed) return;
+            var text = InputText.Trim();
+            var attachments = Attachments.ToArray();
+            var content = new List<ContentBlock>(attachments.Length + 1);
+            if (text.Length > 0) content.Add(new ContentBlock.Text(text));
+            foreach (var attachment in attachments)
+                content.Add(attachment.ToContentBlock());
+
+            var transcriptText = string.Join(Environment.NewLine, new[] { text }
+                .Where(part => part.Length > 0).Concat(attachments.Select(attachment =>
+                    (attachment.IsImage ? "[Image: " : "[Document: ") + attachment.Name + "]")));
+            Messages.Add(new ChatMessageViewModel(ChatRole.User, transcriptText));
+            InputText = string.Empty;
+            Attachments.Clear();
+            AttachmentError = null;
             _currentAssistantMessage = null;
-            IsBusy = true;
-
-            try
-            {
-                var (connection, sessionId) = await EnsureConnectedAsync(CancellationToken.None).ConfigureAwait(true);
-                var content = new ContentBlock[] { new ContentBlock.Text(text!) };
-                await connection.SendPromptAsync(sessionId, content, CancellationToken.None).ConfigureAwait(true);
-            }
-            catch (Exception ex)
-            {
-                StatusMessage = $"Error: {ex.Message}";
-            }
-            finally
-            {
-                // Normally cleared by the TurnEnded SessionUpdate; this is a safety net for failures where
-                // the agent never gets a chance to report one.
-                IsBusy = false;
-            }
+            // Once submitted, acceptance is ambiguous on transport failure. Do not restore/resend it.
+            await connection.SendPromptAsync(sessionId, content, _lifetime.Token).ConfigureAwait(true);
         }
-
-        public async Task CancelAsync()
+        catch (OperationCanceledException) when (_disposed) { }
+        catch (Exception ex)
         {
-            if (_connection == null || _sessionId == null)
-            {
-                return;
-            }
-
-            try
-            {
-                await _connection.CancelAsync(_sessionId, CancellationToken.None).ConfigureAwait(true);
-            }
-            catch (Exception ex)
-            {
-                StatusMessage = $"Cancel failed: {ex.Message}";
-            }
+            if (!_disposed) StatusMessage = $"Error: {ex.Message}";
         }
-
-        private async Task<(IAcpAgentConnection connection, string sessionId)> EnsureConnectedAsync(CancellationToken cancellationToken)
+        finally
         {
-            if (_connection != null && _sessionId != null)
+            IsBusy = false;
+            ActivityText = string.Empty;
+            _currentAssistantMessage = null;
+        }
+    }
+
+    public Task CancelAsync() => OnUiAsync(CancelCoreAsync);
+
+    private async Task CancelCoreAsync()
+    {
+        if (_disposed || _connection is null || _sessionId is null) return;
+        try
+        {
+            await _connection.CancelAsync(_sessionId, _lifetime.Token).ConfigureAwait(true);
+        }
+        catch (OperationCanceledException) when (_disposed) { }
+        catch (Exception ex)
+        {
+            if (!_disposed) StatusMessage = $"Cancel failed: {ex.Message}";
+        }
+    }
+
+    private async Task<(IAcpAgentConnection connection, string sessionId)> EnsureConnectedAsync(CancellationToken cancellationToken)
+    {
+        await _connectGate.WaitAsync(cancellationToken).ConfigureAwait(true);
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (_connection is not null && _sessionId is not null) return (_connection, _sessionId);
+            IsConnecting = true;
+            var connection = await _services.ConnectionFactory.ConnectAsync(cancellationToken).ConfigureAwait(true);
+            if (_disposed || cancellationToken.IsCancellationRequested)
             {
-                return (_connection, _sessionId);
+                await connection.DisposeAsync().ConfigureAwait(true);
+                cancellationToken.ThrowIfCancellationRequested();
+                throw new ObjectDisposedException(nameof(ChatViewModel));
             }
 
-            await _connectGate.WaitAsync(cancellationToken).ConfigureAwait(true);
+            _connection = connection;
+            connection.SessionUpdate += OnSessionUpdate;
+            connection.PermissionRequested += OnPermissionRequested;
+            connection.FileReadRequested += OnFileReadRequested;
+            connection.FileWriteRequested += OnFileWriteRequested;
+            connection.Disconnected += OnDisconnected;
             try
             {
-                if (_connection != null && _sessionId != null)
-                {
-                    return (_connection, _sessionId);
-                }
-
-                var connection = await _services.ConnectionFactory.ConnectAsync(cancellationToken).ConfigureAwait(true);
-                connection.SessionUpdate += OnSessionUpdate;
-                connection.PermissionRequested += OnPermissionRequested;
-                connection.FileReadRequested += OnFileReadRequested;
-                connection.FileWriteRequested += OnFileWriteRequested;
-                connection.Disconnected += OnDisconnected;
-
                 await connection.InitializeAsync(cancellationToken).ConfigureAwait(true);
-                var workspaceRoot = _services.WorkspaceRoot ?? Environment.CurrentDirectory;
-                var sessionId = await connection.NewSessionAsync(workspaceRoot, null, cancellationToken).ConfigureAwait(true);
-
-                _connection = connection;
-                _sessionId = sessionId;
-                return (connection, sessionId);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!ReferenceEquals(connection, _connection) || NeedsAuthentication)
+                    throw new InvalidOperationException("The agent disconnected before the session was ready.");
+                _pendingCommandCatalogs = new Dictionary<string, IReadOnlyList<AvailableCommand>>(StringComparer.Ordinal);
+                var session = await connection.NewSessionAsync(_services.WorkspaceRoot ?? Environment.CurrentDirectory, null, cancellationToken).ConfigureAwait(true);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!ReferenceEquals(connection, _connection) || NeedsAuthentication)
+                    throw new InvalidOperationException("The agent disconnected before the session was ready.");
+                _sessionId = session.SessionId;
+                if (_pendingCommandCatalogs.TryGetValue(session.SessionId, out var commands)) ApplyCommandCatalog(commands);
+                _pendingCommandCatalogs = null;
+                IsSignedIn = true;
+                NeedsAuthentication = false;
+                ApplyConfigOptions(session.ConfigOptions);
+                StatusMessage = null;
+                return (connection, session.SessionId);
+            }
+            catch
+            {
+                if (ReferenceEquals(connection, _connection)) await ReleaseConnectionAsync().ConfigureAwait(true);
+                throw;
             }
             finally
             {
-                _connectGate.Release();
+                _pendingCommandCatalogs = null;
             }
         }
-
-        private void OnSessionUpdate(object? sender, SessionUpdateEventArgs e)
+        finally
         {
-            if (e.SessionId != _sessionId)
+            IsConnecting = false;
+            _connectGate.Release();
+            NotifyStateChanged();
+        }
+    }
+
+    private void ApplyConfigOptions(IReadOnlyList<SessionConfigOption> options)
+    {
+        _modelOption = options.FirstOrDefault(option => option.Category == "model")
+            ?? options.FirstOrDefault(option => option.Id == "model");
+        _effortOption = options.FirstOrDefault(option => option.Category == "thought_level")
+            ?? options.FirstOrDefault(option => option.Id == "effort");
+        ReplaceOptions(AvailableModels, _modelOption);
+        ReplaceOptions(AvailableEfforts, _effortOption);
+        _selectedModel = AvailableModels.FirstOrDefault(option => option.Value == _modelOption?.CurrentValue);
+        _selectedEffort = AvailableEfforts.FirstOrDefault(option => option.Value == _effortOption?.CurrentValue);
+        NotifySelectionsChanged();
+        OnPropertyChanged(nameof(HasEffort));
+        NotifyStateChanged();
+    }
+
+    private static void ReplaceOptions(ObservableCollection<SessionConfigValue> target, SessionConfigOption? option)
+    {
+        target.Clear();
+        if (option is null) return;
+        foreach (var value in option.Options) target.Add(value);
+    }
+
+    private void NotifySelectionsChanged()
+    {
+        OnPropertyChanged(nameof(SelectedModel));
+        OnPropertyChanged(nameof(SelectedEffort));
+        OnPropertyChanged(nameof(ActiveModelName));
+        OnPropertyChanged(nameof(ActiveEffortName));
+    }
+
+    private void OnSessionUpdate(object? sender, SessionUpdateEventArgs e)
+    {
+        // Capture eligibility at notification arrival, not after a queued UI dispatch.
+        // Only session/new may publish a catalog before the session ID is known.
+        var pendingCatalogs = _pendingCommandCatalogs;
+        var belongsToKnownSession = _sessionId is not null && e.SessionId == _sessionId;
+        RunOnUi(() =>
+        {
+            if (_disposed || !ReferenceEquals(sender, _connection)) return;
+            if (e.Update is SessionUpdate.AvailableCommandsChanged catalog)
             {
+                if (e.SessionId == _sessionId && (belongsToKnownSession || pendingCatalogs is not null))
+                    ApplyCommandCatalog(catalog.Commands);
+                else if (pendingCatalogs is not null && ReferenceEquals(pendingCatalogs, _pendingCommandCatalogs))
+                    pendingCatalogs[e.SessionId] = catalog.Commands;
                 return;
             }
-
-            RunOnUi(() =>
+            if (e.SessionId != _sessionId) return;
+            switch (e.Update)
             {
-                switch (e.Update)
-                {
-                    case SessionUpdate.AgentMessageChunk chunk:
-                        EnsureAssistantMessage().AppendText(chunk.Text);
-                        break;
-
-                    case SessionUpdate.AgentThoughtChunk thought:
-                        EnsureAssistantMessage().AppendText(thought.Text);
-                        break;
-
-                    case SessionUpdate.ToolCall toolCall:
-                        UpsertToolCall(toolCall.Call);
-                        break;
-
-                    case SessionUpdate.Plan plan:
-                        CurrentPlan = new PlanViewModel(plan.Entries);
-                        break;
-
-                    case SessionUpdate.TurnEnded:
-                        IsBusy = false;
-                        _currentAssistantMessage = null;
-                        break;
-                }
-            });
-        }
-
-        private void UpsertToolCall(ToolCallUpdate call)
-        {
-            var message = EnsureAssistantMessage();
-            var existing = message.ToolCalls.FirstOrDefault(t => t.ToolCallId == call.ToolCallId);
-            if (existing != null)
-            {
-                existing.Apply(call);
+                case SessionUpdate.ConfigOptionsChanged config:
+                    ApplyConfigOptions(config.ConfigOptions);
+                    break;
+                case SessionUpdate.AgentMessageChunk chunk:
+                    EnsureAssistantMessage().AppendText(chunk.Text);
+                    UpdateActivity("Responding…");
+                    break;
+                case SessionUpdate.AgentThoughtChunk:
+                    UpdateActivity("Thinking…");
+                    break;
+                case SessionUpdate.ToolCall toolCall:
+                    UpsertToolCall(toolCall.Call);
+                    break;
+                case SessionUpdate.Plan plan:
+                    CurrentPlan = new PlanViewModel(plan.Entries);
+                    break;
+                case SessionUpdate.TurnEnded:
+                    // The prompt task owns IsBusy, preventing a new send/config before it returns.
+                    _currentAssistantMessage = null;
+                    UpdateActivity("Working…");
+                    break;
             }
-            else
-            {
-                message.ToolCalls.Add(new ToolCallCardViewModel(call));
-            }
-        }
+        });
+    }
 
-        private ChatMessageViewModel EnsureAssistantMessage()
+    private void UpsertToolCall(ToolCallUpdate call)
+    {
+        var message = EnsureAssistantMessage();
+        var existing = message.ToolCalls.FirstOrDefault(t => t.ToolCallId == call.ToolCallId);
+        if (existing is not null) existing.Apply(call);
+        else message.ToolCalls.Add(new ToolCallCardViewModel(call));
+        var title = existing?.Title ?? call.Title;
+        UpdateActivity((call.Status == ToolCallStatus.Pending || call.Status == ToolCallStatus.InProgress) &&
+            !string.IsNullOrWhiteSpace(title) ? title : "Working…");
+    }
+
+    private ChatMessageViewModel EnsureAssistantMessage()
+    {
+        if (_currentAssistantMessage is null)
         {
-            if (_currentAssistantMessage == null)
-            {
-                _currentAssistantMessage = new ChatMessageViewModel(ChatRole.Assistant);
-                Messages.Add(_currentAssistantMessage);
-            }
-
-            return _currentAssistantMessage;
+            _currentAssistantMessage = new ChatMessageViewModel(ChatRole.Assistant);
+            Messages.Add(_currentAssistantMessage);
         }
+        return _currentAssistantMessage;
+    }
 
-        private void OnPermissionRequested(object? sender, PermissionRequestEventArgs e)
+    private void OnPermissionRequested(object? sender, PermissionRequestEventArgs e)
+    {
+        RunOnUi(() =>
         {
-            if (e.SessionId != _sessionId)
+            if (_disposed || !ReferenceEquals(sender, _connection) || e.SessionId != _sessionId)
             {
+                e.Response.SetException(new OperationCanceledException("The permission request no longer belongs to an active session."));
                 return;
             }
-
-            RunOnUi(() =>
+            PendingPermission = new PermissionRequestViewModel(e.Call.Title, e.Options, option =>
             {
-                PendingPermission = new PermissionRequestViewModel(e.Call.Title, e.Options, option =>
-                {
-                    e.Response.SetResult(option.OptionId);
-                    PendingPermission = null;
-                });
+                e.Response.SetResult(option.OptionId);
+                PendingPermission = null;
+                UpdateActivity("Working…");
             });
-        }
+            UpdateActivity("Waiting for permission…");
+        });
+    }
 
-        /// <summary>
-        /// Default fs/read_text_file handler: reads straight off disk via System.IO. The Vsix host may want
-        /// to override this (by wrapping/replacing the connection) to route through live, unsaved editor
-        /// buffers instead - this default is enough to make the pipeline work end-to-end today.
-        /// </summary>
-        private void OnFileReadRequested(object? sender, FileReadRequestEventArgs e)
+    private void OnFileReadRequested(object? sender, FileReadRequestEventArgs e)
+    {
+        try
         {
-            try
+            var text = File.ReadAllText(e.Path);
+            if (e.Line.HasValue || e.Limit.HasValue)
             {
-                var text = File.ReadAllText(e.Path);
-                if (e.Line.HasValue || e.Limit.HasValue)
-                {
-                    var lines = text.Replace("\r\n", "\n").Split('\n');
-                    var start = Math.Max(0, (e.Line ?? 1) - 1);
-                    var count = e.Limit ?? Math.Max(0, lines.Length - start);
-                    text = string.Join("\n", lines.Skip(start).Take(count));
-                }
-
-                e.Response.SetResult(text);
+                var lines = text.Replace("\r\n", "\n").Split('\n');
+                var start = Math.Max(0, (e.Line ?? 1) - 1);
+                var count = e.Limit ?? Math.Max(0, lines.Length - start);
+                text = string.Join("\n", lines.Skip(start).Take(count));
             }
-            catch (Exception ex)
-            {
-                e.Response.SetException(ex);
-            }
+            e.Response.SetResult(text);
         }
+        catch (Exception ex) { e.Response.SetException(ex); }
+    }
 
-        /// <summary>Default fs/write_text_file handler: writes straight to disk via System.IO. See remarks on <see cref="OnFileReadRequested"/>.</summary>
-        private void OnFileWriteRequested(object? sender, FileWriteRequestEventArgs e)
+    private void OnFileWriteRequested(object? sender, FileWriteRequestEventArgs e)
+    {
+        try
         {
-            try
-            {
-                File.WriteAllText(e.Path, e.Content);
-                e.Response.SetResult(true);
-            }
-            catch (Exception ex)
-            {
-                e.Response.SetException(ex);
-            }
+            File.WriteAllText(e.Path, e.Content);
+            e.Response.SetResult(true);
         }
+        catch (Exception ex) { e.Response.SetException(ex); }
+    }
 
-        private void OnDisconnected(object? sender, Exception? ex)
+    private void OnDisconnected(object? sender, Exception? ex)
+    {
+        RunOnUi(() =>
         {
-            RunOnUi(() =>
-            {
-                IsBusy = false;
-                StatusMessage = ex != null ? $"Agent disconnected: {ex.Message}" : "Agent disconnected.";
-            });
-        }
+            if (_disposed || !ReferenceEquals(sender, _connection)) return;
+            _ = ReleaseConnectionAsync();
+            StatusMessage = ex is not null ? $"Agent disconnected: {ex.Message}" : "Agent disconnected.";
+        });
+    }
 
-        private void OnAuthStateChanged(object? sender, AuthStateChangedEventArgs e)
+    private async Task ReleaseConnectionAsync()
+    {
+        var connection = _connection;
+        _connection = null;
+        _sessionId = null;
+        _pendingCommandCatalogs = null;
+        _availableCommands = Array.Empty<AvailableCommand>();
+        _hasCommandCatalog = false;
+        RefreshSlashSuggestions();
+        ActivityText = string.Empty;
+        IsSignedIn = _services.AuthService.CurrentState == AuthState.SignedIn;
+        PendingPermission = null;
+        CurrentPlan = null;
+        ApplyConfigOptions(Array.Empty<SessionConfigOption>());
+        if (connection is null) return;
+        connection.SessionUpdate -= OnSessionUpdate;
+        connection.PermissionRequested -= OnPermissionRequested;
+        connection.FileReadRequested -= OnFileReadRequested;
+        connection.FileWriteRequested -= OnFileWriteRequested;
+        connection.Disconnected -= OnDisconnected;
+        try { await connection.DisposeAsync().ConfigureAwait(true); }
+        catch (Exception ex)
         {
-            RunOnUi(() => ApplyAuthState(e.State, e.Detail));
+            if (!_disposed) StatusMessage = $"Could not close the agent: {ex.Message}";
         }
+    }
 
-        private void ApplyAuthState(AuthState state, string? detail = null)
+    private void OnAuthStateChanged(object? sender, AuthStateChangedEventArgs e)
+    {
+        RunOnUi(() =>
         {
-            IsSignedIn = state == AuthState.SignedIn;
-            if (detail != null)
-            {
-                StatusMessage = detail;
-            }
-        }
+            if (_disposed) return;
+            ApplyAuthState(e.State, e.Detail);
+            if (!NeedsAuthentication && _sessionId is null && !IsConnecting) _ = InitializeAsync();
+            else if (NeedsAuthentication) _ = ReleaseConnectionAsync();
+        });
+    }
 
-        private void NotifyCommandsCanExecuteChanged()
+    private void ApplyAuthState(AuthState state, string? detail = null)
+    {
+        IsSignedIn = state == AuthState.SignedIn || (state != AuthState.SignedOut && _sessionId is not null);
+        NeedsAuthentication = state == AuthState.SignedOut;
+        if (detail is not null) StatusMessage = detail;
+    }
+
+    private void NotifyStateChanged()
+    {
+        OnPropertyChanged(nameof(CanConfigure));
+        SendCommand.NotifyCanExecuteChanged();
+        CancelCommand.NotifyCanExecuteChanged();
+        SignInCommand.NotifyCanExecuteChanged();
+        RemoveAttachmentCommand.NotifyCanExecuteChanged();
+        AttachActiveDocumentCommand.NotifyCanExecuteChanged();
+        UpdateSlashPresentation();
+    }
+
+    private void RunOnUi(Action action)
+    {
+        if (_uiContext is not null && _uiContext != SynchronizationContext.Current) _uiContext.Post(_ => action(), null);
+        else action();
+    }
+
+    private Task OnUiAsync(Func<Task> action)
+    {
+        if (_uiContext is null || _uiContext == SynchronizationContext.Current) return action();
+        var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _uiContext.Post(async _ =>
         {
-            SendCommand.NotifyCanExecuteChanged();
-            CancelCommand.NotifyCanExecuteChanged();
-            SignInCommand.NotifyCanExecuteChanged();
-        }
+            try { await action().ConfigureAwait(true); completion.TrySetResult(true); }
+            catch (Exception ex) { completion.TrySetException(ex); }
+        }, null);
+        return completion.Task;
+    }
 
-        private void RunOnUi(Action action)
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _services.AuthService.StateChanged -= OnAuthStateChanged;
+        _lifetime.Cancel();
+        RunOnUi(() =>
         {
-            if (_uiContext != null && _uiContext != SynchronizationContext.Current)
-            {
-                _uiContext.Post(_ => action(), null);
-            }
-            else
-            {
-                action();
-            }
-        }
-
-        public void Dispose()
-        {
-            if (_disposed)
-            {
-                return;
-            }
-
-            _disposed = true;
-            _services.AuthService.StateChanged -= OnAuthStateChanged;
-
-            if (_connection != null)
-            {
-                _connection.SessionUpdate -= OnSessionUpdate;
-                _connection.PermissionRequested -= OnPermissionRequested;
-                _connection.FileReadRequested -= OnFileReadRequested;
-                _connection.FileWriteRequested -= OnFileWriteRequested;
-                _connection.Disconnected -= OnDisconnected;
-                _ = _connection.DisposeAsync();
-            }
-
-            _connectGate.Dispose();
-        }
+            _ = ReleaseConnectionAsync();
+            NotifyStateChanged();
+        });
+        // In-flight continuations still release the gate/use the token. Neither owns a wait handle.
     }
 }

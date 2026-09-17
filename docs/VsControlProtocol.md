@@ -9,6 +9,17 @@ executes everything on the UI thread via `JoinableTaskFactory.SwitchToMainThread
 JSON-RPC), get 1:1 translated to a `VsControlRequest` on the pipe, and the `VsControlResponse` becomes the
 MCP tool result. It is spawned per ACP session with `--pipe <name>` and exits when stdin closes.
 
+## Packaged runtime layout
+
+The VSIX publishes the .NET 8 MCP executable and its runtime dependencies under `VsControlMcp/`,
+alongside (not mixed with) the .NET Framework 4.8 extension assemblies at the package root. The
+extension launches the MCP server from that subdirectory. Keep the published payload together when
+packaging; flattening it into the root can introduce dependency collisions in the Visual Studio host.
+
+The host's `[ProvideBindingPath]` probes the extension root. Visual Studio-provided `System.*` and
+BCL runtime dependencies are intentionally excluded from the VSIX with `SuppressFromVsix`; the
+standalone MCP payload retains its own published dependencies in `VsControlMcp/`.
+
 ## Methods
 
 - `listOpenDocuments` → `{}` → `{ documents: [{ path, isDirty, isActive }] }`

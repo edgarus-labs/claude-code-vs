@@ -3,23 +3,21 @@ using System.Globalization;
 using System.Windows;
 using System.Windows.Data;
 
-namespace ClaudeCode.Core.Views.Converters
-{
-    /// <summary>non-null -> Visible, null -> Collapsed. Pass converter parameter "Invert" to flip the mapping.</summary>
-    public sealed class NullToVisibilityConverter : IValueConverter
-    {
-        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
-        {
-            var isNotNull = value != null;
-            if (string.Equals(parameter as string, "Invert", StringComparison.OrdinalIgnoreCase))
-            {
-                isNotNull = !isNotNull;
-            }
+namespace ClaudeCode.Core.Views.Converters;
 
-            return isNotNull ? Visibility.Visible : Visibility.Collapsed;
+public sealed class NullToVisibilityConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+    {
+        var isNotNull = value is not null;
+        if (string.Equals(parameter as string, "Invert", StringComparison.OrdinalIgnoreCase))
+        {
+            isNotNull = !isNotNull;
         }
 
-        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) =>
-            throw new NotSupportedException();
+        return isNotNull ? Visibility.Visible : Visibility.Collapsed;
     }
+
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) =>
+        throw new NotSupportedException();
 }

@@ -1,29 +1,18 @@
+using ClaudeCode.Contracts;
 using System;
 using System.IO;
 using System.Linq;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
-using ClaudeCode.Contracts;
 
 namespace ClaudeCode.VsControl.Mcp;
 
-/// <summary>
-/// A minimal MCP server speaking newline-delimited JSON-RPC 2.0 on stdio (see the "Framing choice"
-/// note below). Understands exactly the handshake and tool-call surface an ACP agent needs: `initialize`,
-/// `notifications/initialized`, `ping`, `tools/list`, and `tools/call`. Every tool call is forwarded 1:1
-/// to the Visual Studio control named pipe via <see cref="VsControlPipeClient"/>.
-///
-/// Framing choice: the published MCP stdio transport spec ("Messages are delimited by newlines, and
-/// MUST NOT contain embedded newlines" - modelcontextprotocol.io/specification/.../transports/stdio) uses
-/// one-JSON-object-per-line (NDJSON), not LSP-style Content-Length framing. This server follows that spec:
-/// NDJSON in both directions on stdio.
-/// </summary>
 public sealed class McpServer
 {
-    private const string ServerName = "claude-code-vscontrol-mcp";
-    private const string ServerVersion = "1.0.0";
-    private const string DefaultProtocolVersion = "2024-11-05";
+    private const string _serverName = "claude-code-vscontrol-mcp";
+    private const string _serverVersion = "1.0.0";
+    private const string _defaultProtocolVersion = "2024-11-05";
 
     private readonly VsControlPipeClient _pipeClient;
     private readonly TextReader _input;
@@ -37,7 +26,6 @@ public sealed class McpServer
         _output = output;
     }
 
-    /// <summary>Reads and dispatches one request per stdin line until EOF, then returns (clean shutdown).</summary>
     public async Task RunAsync(CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
@@ -77,6 +65,7 @@ public sealed class McpServer
         {
             await Console.Error.WriteLineAsync(
                 $"ClaudeCode.VsControl.Mcp: ignoring malformed request line ({ex.Message}).").ConfigureAwait(false);
+
             return;
         }
 
@@ -99,6 +88,7 @@ public sealed class McpServer
         if (method is null)
         {
             await WriteResponseAsync(JsonRpcMessages.CreateErrorResponse(id, -32600, "Invalid Request: missing 'method'."), cancellationToken).ConfigureAwait(false);
+
             return;
         }
 
@@ -116,7 +106,7 @@ public sealed class McpServer
 
     private static JsonObject HandleInitialize(JsonNode id, JsonNode? @params)
     {
-        string protocolVersion = DefaultProtocolVersion;
+        string protocolVersion = _defaultProtocolVersion;
         if (@params is JsonObject paramsObject
             && paramsObject.TryGetPropertyValue("protocolVersion", out var versionNode)
             && versionNode is JsonValue versionValue
@@ -132,7 +122,7 @@ public sealed class McpServer
         {
             ["protocolVersion"] = protocolVersion,
             ["capabilities"] = new JsonObject { ["tools"] = new JsonObject() },
-            ["serverInfo"] = new JsonObject { ["name"] = ServerName, ["version"] = ServerVersion },
+            ["serverInfo"] = new JsonObject { ["name"] = _serverName, ["version"] = _serverVersion },
         };
 
         return JsonRpcMessages.CreateSuccessResponse(id, result);

@@ -6,8 +6,12 @@
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <RootNamespace>ClaudeCode.Core</RootNamespace>
-    <AssemblyName>ClaudeCode.Core</AssemblyName>
+    <AssemblyName>EdgarusLabs.ClaudeCode.Core</AssemblyName>
   </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Markdig.Wpf" Version="0.5.0.1" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="../ClaudeCode.Contracts/ClaudeCode.Contracts.csproj" />

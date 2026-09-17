@@ -2,34 +2,6 @@ using System.Collections.Generic;
 
 namespace ClaudeCode.VsControl.Mcp;
 
-/// <summary>
-/// One MCP tool definition exposed by this server: an allow-listed VS control pipe method
-/// (see docs/VsControlProtocol.md), its description, and a permissive JSON Schema for its params.
-/// </summary>
-public sealed class VsControlToolDefinition
-{
-    public VsControlToolDefinition(string name, string description, string inputSchemaJson)
-    {
-        Name = name;
-        Description = description;
-        InputSchemaJson = inputSchemaJson;
-    }
-
-    /// <summary>Tool name, identical to the VS control pipe method name it forwards to.</summary>
-    public string Name { get; }
-
-    /// <summary>One-line, human/LLM-readable summary of what the tool does.</summary>
-    public string Description { get; }
-
-    /// <summary>Raw JSON Schema (draft-07 style "type": "object" document) describing the tool's input.</summary>
-    public string InputSchemaJson { get; }
-}
-
-/// <summary>
-/// The fixed catalog of tools this MCP server advertises: one entry per method documented in
-/// docs/VsControlProtocol.md. Each tool call is forwarded verbatim to the named-pipe VS control
-/// channel by <see cref="VsControlPipeClient"/>; this catalog only owns the MCP-facing metadata.
-/// </summary>
 public static class VsControlToolCatalog
 {
     public static IReadOnlyList<VsControlToolDefinition> Tools { get; } = new List<VsControlToolDefinition>

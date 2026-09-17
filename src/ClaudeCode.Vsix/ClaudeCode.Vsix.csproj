@@ -1,11 +1,12 @@
-<Project Sdk="Microsoft.NET.Sdk">
+<Project>
+  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
 
   <PropertyGroup>
     <TargetFramework>net48</TargetFramework>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <RootNamespace>ClaudeCode.Vsix</RootNamespace>
-    <AssemblyName>ClaudeCode.Vsix</AssemblyName>
+    <AssemblyName>EdgarusLabs.ClaudeCode.Vsix</AssemblyName>
     <UseWpf>true</UseWpf>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <!-- Overridden by CI on tagged releases: dotnet build -p:Version=1.2.3. Also drives AssemblyVersion/
@@ -15,6 +16,20 @@
     <Version Condition="'$(Version)' == ''">0.1.0</Version>
 
     <!-- VSIX / VS SDK project shape -->
+    <!-- Keep packaging intermediates and archive paths explicit. The SDK imports below are ordered
+         so VS SDK build hooks extend the finalized .NET build graph rather than being overwritten. -->
+    <TemplateOutputDirectory>obj\$(Configuration)\net48\</TemplateOutputDirectory>
+    <FileManifest>obj\$(Configuration)\net48\files.json</FileManifest>
+    <TemplateFileManifest>obj\$(Configuration)\net48\templateFiles.json</TemplateFileManifest>
+    <ResourceManifest>obj\$(Configuration)\net48\resources.json</ResourceManifest>
+    <CtoFileManifest>obj\$(Configuration)\net48\ctoFiles.json</CtoFileManifest>
+    <CtoCacheFile>obj\$(Configuration)\net48\mergeCto.cache</CtoCacheFile>
+    <CreateTemplateManifestsCacheFile>obj\$(Configuration)\net48\createTemplateManifests.cache</CreateTemplateManifestsCacheFile>
+    <IntermediateVsixManifest>obj\$(Configuration)\net48\extension.vsixmanifest</IntermediateVsixManifest>
+    <TargetVsixContainerName>EdgarusLabs.ClaudeCode.Vsix.vsix</TargetVsixContainerName>
+    <TargetVsixContainer>bin\$(Configuration)\net48\EdgarusLabs.ClaudeCode.Vsix.vsix</TargetVsixContainer>
+    <!-- Keep the pkgdef input aligned with the packaged assembly output. -->
+    <CreatePkgDefAssemblyToProcess>bin\$(Configuration)\net48\EdgarusLabs.ClaudeCode.Vsix.dll</CreatePkgDefAssemblyToProcess>
     <GeneratePkgDefFile>true</GeneratePkgDefFile>
     <IncludeAssemblyInVSIXContainer>true</IncludeAssemblyInVSIXContainer>
     <IncludeDebugSymbolsInVSIXContainer>false</IncludeDebugSymbolsInVSIXContainer>
@@ -26,11 +41,17 @@
     <StartAction>Program</StartAction>
     <StartProgram>$(DevEnvDir)devenv.exe</StartProgram>
     <StartArguments>/rootsuffix Exp</StartArguments>
-    <IsProductComponent>true</IsProductComponent>
+    <!-- IsProductComponent=true and ExtensionInstallationRoot=CommonExtensions are for extensions
+         shipped as part of the Visual Studio product itself (registered in Microsoft's internal
+         setup-engine catalog, installed machine-wide under Program Files, requiring admin rights).
+         This is a normal third-party Marketplace extension: it must install per-user via the
+         standard VSIXInstaller flow. Leaving IsProductComponent=true made every install attempt
+         fail with "Wartość dla klasy 'Component' musi być określona w wykazie." (no catalog entry
+         exists for a non-Microsoft component), and ExtensionInstallationRoot=CommonExtensions would
+         have required /admin and installed to Program Files instead of the per-user Extensions
+         folder. -->
     <MinimumVisualStudioVersion>17.0</MinimumVisualStudioVersion>
     <UseCodebase>true</UseCodebase>
-    <ExtensionInstallationRoot>CommonExtensions</ExtensionInstallationRoot>
-    <ExtensionInstallationFolder>ClaudeCode\ClaudeCodeVS</ExtensionInstallationFolder>
 
     <!-- The VS SDK build tasks are compiled for the desktop CLR; on non-Windows build agents (e.g. this
          Linux container) the CreateVsixContainer/GetVsixSourceItems task chain cannot execute even though
@@ -40,7 +61,7 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.VisualStudio.SDK" Version="17.13.40008" ExcludeAssets="runtime" />
-    <PackageReference Include="Microsoft.VSSDK.BuildTools" Version="17.13.2126" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.VSSDK.BuildTools" Version="18.5.40034" PrivateAssets="all" />
     <PackageReference Include="Community.VisualStudio.Toolkit.17" Version="17.0.551" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageReference Include="EnvDTE" Version="17.13.40008" />
@@ -61,9 +82,9 @@
     <!-- Not a compile-time reference: ClaudeCode.VsControl.Mcp is a standalone net8.0 console exe spawned
          as a child process (see docs/VsControlProtocol.md). ReferenceOutputAssembly=false keeps net48 from
          ever trying to link against it; the PublishVsControlMcp target below instead `dotnet publish`s it
-         and copies the framework-dependent output next to ClaudeCode.Vsix.dll so
-         VsControlSessionRegistry's runtime path probe (next to this assembly) finds it, and so it ships
-         inside the .vsix. Requires the .NET 8+ runtime on the machine VS runs on. -->
+         and copies the framework-dependent output into a dedicated VsControlMcp subdirectory
+         beside EdgarusLabs.ClaudeCode.Vsix.dll. Keep that payload isolated from the net48 host's
+         dependencies in both build output and the .vsix. Requires the .NET 8+ runtime on the machine. -->
     <ProjectReference Include="..\ClaudeCode.VsControl.Mcp\ClaudeCode.VsControl.Mcp.csproj" ReferenceOutputAssembly="false" SkipGetTargetFrameworkProperties="true" />
   </ItemGroup>
 
@@ -73,12 +94,14 @@
              Properties="Configuration=$(Configuration);PublishDir=$(MSBuildThisFileDirectory)obj\$(Configuration)\VsControlMcpPublish\;SelfContained=false" />
     <ItemGroup>
       <VsControlMcpPublishedFile Include="$(MSBuildThisFileDirectory)obj\$(Configuration)\VsControlMcpPublish\**\*.*" />
-      <None Include="@(VsControlMcpPublishedFile)">
-        <Link>%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <!-- Content is required for IncludeInVSIX. Link supplies the output TargetPath and, with
+           VSIXSubPath unset, the VS SDK derives the archive directory from Link. Preserve the
+           publish layout under VsControlMcp so sidecar dependencies never replace host assemblies. -->
+      <Content Include="@(VsControlMcpPublishedFile)">
+        <Link>VsControlMcp\%(RecursiveDir)%(Filename)%(Extension)</Link>
         <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
         <IncludeInVSIX>true</IncludeInVSIX>
-        <VSIXSubPath></VSIXSubPath>
-      </None>
+      </Content>
     </ItemGroup>
   </Target>
 
@@ -90,16 +113,35 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="Resources\Icon.png">
+    <!-- Microsoft.VsSDK.targets only picks up IncludeInVSIX="true" from @(Content) items (see its
+         GetVsixSourceItems target), never from @(None) - these must be Content, not None, or they
+         silently never make it into the .vsix despite compiling/building without any warning. -->
+    <Content Include="Resources\Icon.png">
       <IncludeInVSIX>true</IncludeInVSIX>
-    </None>
-    <None Include="Resources\PreviewImage.png">
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Resources\PreviewImage.png">
       <IncludeInVSIX>true</IncludeInVSIX>
-    </None>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </Content>
     <None Include="source.extension.vsixmanifest">
       <SubType>Designer</SubType>
     </None>
-    <None Include="LICENSE.txt" />
+    <Content Include="LICENSE.txt">
+      <IncludeInVSIX>true</IncludeInVSIX>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
+
+  <!-- Finish SDK/NuGet imports first: BuildTools initializes VSToolsPath, and the .NET SDK
+       initializes the build dependency properties that the VS SDK must extend for packaging. -->
+  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
+  <Import Project="$(VSToolsPath)\VSSDK\Microsoft.VsSDK.targets"
+          Condition="'$(VsSdkBuildTargetsImported)' != 'true' and Exists('$(VSToolsPath)\VSSDK\Microsoft.VsSDK.targets')" />
+
+  <Target Name="RequireVsixPackagingTargets" BeforeTargets="PrepareForBuild" Condition="'$(DesignTimeBuild)' != 'true'">
+    <Error Condition="'$(VsSdkBuildTargetsImported)' != 'true'"
+           Text="VSIX packaging targets are unavailable. Restore Microsoft.VSSDK.BuildTools and build with Visual Studio desktop MSBuild. Expected: $(VSToolsPath)\VSSDK\Microsoft.VsSDK.targets" />
+  </Target>
 
 </Project>

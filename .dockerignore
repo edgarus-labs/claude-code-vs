@@ -1,0 +1,12 @@
+.git
+.github
+**/node_modules
+**/.next
+**/bin
+**/obj
+**/__pycache__
+*.pyc
+*.pyo
+.env
+.env.*
+docs.zip

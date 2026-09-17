@@ -5,7 +5,7 @@
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <RootNamespace>ClaudeCode.Core</RootNamespace>
-    <AssemblyName>ClaudeCode.Core.ViewModels</AssemblyName>
+    <AssemblyName>EdgarusLabs.ClaudeCode.Core.ViewModels</AssemblyName>
     <!--
       XAML-free ViewModel/logic layer for ClaudeCode.Core. Split out of the WPF (net472) Core project so it
       can be exercised by a fast, portable net8.0 xunit test host: net472 test assemblies cannot execute on
