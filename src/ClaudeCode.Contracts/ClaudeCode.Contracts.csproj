@@ -5,6 +5,13 @@
     <Nullable>enable</Nullable>
     <RootNamespace>ClaudeCode.Contracts</RootNamespace>
     <AssemblyName>EdgarusLabs.ClaudeCode.Contracts</AssemblyName>
+    <!-- Explicit rather than relying on the SDK default: when this project is built as a
+         ProjectReference from a solution-driven desktop-MSBuild build (as ClaudeCode.Vsix's
+         packaging graph does), an unset DebugType can resolve to no /debug flag at all, so csc.exe
+         emits no .pdb and the referencing project's CopyFilesMarkedCopyLocal step fails with
+         MSB3030. Pin it so every entry point (dotnet build, dotnet test, desktop msbuild, VS) is
+         guaranteed to produce a portable PDB. -->
+    <DebugType>portable</DebugType>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="8.0.0" />

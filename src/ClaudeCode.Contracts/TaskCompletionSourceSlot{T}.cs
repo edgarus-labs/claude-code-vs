@@ -10,7 +10,7 @@ public sealed class TaskCompletionSourceSlot<T>
 
     public System.Threading.Tasks.Task<T> Task => _tcs.Task;
 
-    public void SetResult(T value) => _tcs.TrySetResult(value);
+    public bool TrySetResult(T value) => _tcs.TrySetResult(value);
 
-    public void SetException(Exception ex) => _tcs.TrySetException(ex);
+    public bool TrySetException(Exception ex) => _tcs.TrySetException(ex);
 }
