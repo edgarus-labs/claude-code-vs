@@ -14,8 +14,6 @@ using System.IO;
 using System.IO.Pipes;
 using System.Linq;
 using System.Runtime.InteropServices;
-using System.Security.AccessControl;
-using System.Security.Principal;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -154,13 +152,7 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
 
     private static PipeSecurity CreatePipeSecurity()
     {
-        var owner = WindowsIdentity.GetCurrent().Owner
-            ?? throw new InvalidOperationException("Unable to determine the current Windows user identity.");
-
-        var security = new PipeSecurity();
-        security.AddAccessRule(new PipeAccessRule(owner, PipeAccessRights.ReadWrite, AccessControlType.Allow));
-
-        return security;
+        return PipeSecurityFactory.CreateCurrentUserOnly(PipeAccessRights.ReadWrite);
     }
 
     private async Task<string> HandleRequestLineAsync(string line, CancellationToken cancellationToken)

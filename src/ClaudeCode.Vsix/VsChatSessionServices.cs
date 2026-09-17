@@ -52,12 +52,12 @@ internal sealed class VsChatSessionServices : IChatSessionServices
             return false;
         }
 
-        using (var edit = view.TextBuffer.CreateEdit())
-        {
-            edit.Replace(new Span(0, view.TextBuffer.CurrentSnapshot.Length), text);
-            edit.Apply();
-        }
+        using var edit = view.TextBuffer.CreateEdit();
+        edit.Replace(new Span(0, view.TextBuffer.CurrentSnapshot.Length), text);
+        edit.Apply();
 
-        return true;
+        // Apply() can silently fail to commit (e.g. a read-only region) without throwing;
+        // HasFailedChanges/Canceled are the documented signals that the buffer was not changed.
+        return !edit.HasFailedChanges && !edit.Canceled;
     }
 }

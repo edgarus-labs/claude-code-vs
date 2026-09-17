@@ -94,9 +94,12 @@ internal sealed class AcpAuthService : IAcpAuthService
             }
         }
 
-        string detail = CurrentState == AuthState.SignedOut
-            ? "The native CLI reports no configured authentication. " + _loginInstructions
-            : "Native sign-in status is unavailable. Verify the ACP executable path and run 'claude-agent-acp --cli auth status --json' in a terminal. " + _loginInstructions;
+        string detail = CurrentState switch
+        {
+            AuthState.SignedOut => "The native CLI reports no configured authentication. " + _loginInstructions,
+            AuthState.Error => "Native sign-in status check failed: the CLI returned an unexpected response. " + _loginInstructions,
+            _ => "Native sign-in status is unavailable. Verify the ACP executable path and run 'claude-agent-acp --cli auth status --json' in a terminal. " + _loginInstructions,
+        };
         SetState(CurrentState, detail);
         throw new InvalidOperationException(detail);
     }

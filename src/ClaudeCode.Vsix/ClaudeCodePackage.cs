@@ -23,8 +23,8 @@ namespace ClaudeCode.Vsix;
 [SuppressMessage("Design", "CA1001:Types that own disposable fields should be disposable",
     Justification = "AsyncPackage already implements IDisposable; this type owns its disposable " +
     "fields correctly via the overridden Dispose(bool) below, which disposes " +
-    "_vsControlSessionRegistry. The analyzer does not see through the VS SDK base type's disposal " +
-    "pattern.")]
+    "_vsControlSessionRegistry inside a finally block so it runs even if the earlier UI-thread " +
+    "cleanup throws. The analyzer does not see through the VS SDK base type's disposal pattern.")]
 public sealed class ClaudeCodePackage : AsyncPackage
 {
     private AcpAuthService? _authService;
@@ -68,23 +68,30 @@ public sealed class ClaudeCodePackage : AsyncPackage
     {
         if (disposing)
         {
-            JoinableTaskFactory.Run(async () =>
+            try
             {
-                await JoinableTaskFactory.SwitchToMainThreadAsync();
-                _editorDocumentTracker?.Dispose();
-                if (_solutionEvents is not null)
+                JoinableTaskFactory.Run(async () =>
                 {
-                    _solutionEvents.OnAfterOpenSolution -= OnSolutionOpened;
-                    _solutionEvents.OnAfterCloseSolution -= OnSolutionClosed;
-                }
-            });
-            _vsControlSessionRegistry?.Dispose();
+                    await JoinableTaskFactory.SwitchToMainThreadAsync();
+                    _editorDocumentTracker?.Dispose();
+                    if (_solutionEvents is not null)
+                    {
+                        _solutionEvents.OnAfterOpenSolution -= OnSolutionOpened;
+                        _solutionEvents.OnAfterCloseSolution -= OnSolutionClosed;
+                    }
+                });
+            }
+            finally
+            {
+                // Must run even if the UI-thread cleanup above throws, or the registry and the
+                // extension-scoped globals below would leak/outlive this package instance.
+                _vsControlSessionRegistry?.Dispose();
 
-            // These extension-scoped globals must not outlive this package instance.
-            ClaudeCodeServices.ConnectionFactory = null;
-            ClaudeCodeServices.AuthService = null;
-            ClaudeCodeServices.GetWorkspaceRoot = null;
-            ClaudeCode.Core.Views.ChatPanelView.ServicesFactory = null;
+                ClaudeCodeServices.ConnectionFactory = null;
+                ClaudeCodeServices.AuthService = null;
+                ClaudeCodeServices.GetWorkspaceRoot = null;
+                ClaudeCode.Core.Views.ChatPanelView.ServicesFactory = null;
+            }
         }
 
         base.Dispose(disposing);
