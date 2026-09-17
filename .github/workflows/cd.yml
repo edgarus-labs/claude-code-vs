@@ -5,6 +5,10 @@ on:
     tags:
       - "v*.*.*"
 
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
@@ -14,17 +18,32 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
+        with:
+          fetch-tags: true
       - name: Derive version from tag
         id: version
         shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
-          $tag = "${{ github.ref_name }}"
+          $tag = $env:TAG
           if ($tag -notmatch '^v(\d+\.\d+\.\d+)$') {
             throw "Tag '$tag' does not match the required vX.Y.Z format."
           }
           $version = $Matches[1]
           "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Verify version is newer than the previous tag
+        shell: pwsh
+        run: |
+          $tags = @(git tag --list 'v*.*.*' --sort=-v:refname)
+          if ($tags.Count -gt 1) {
+            $previous = [version]($tags[1] -replace '^v', '')
+            $current = [version]"${{ steps.version.outputs.version }}"
+            if ($current -le $previous) {
+              throw "Tag version $current is not newer than the previous release tag $previous."
+            }
+          }
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
@@ -50,7 +69,7 @@ jobs:
           $xml.Save($path)
 
       - name: Restore
-        run: dotnet restore ClaudeCodeVS.slnx
+        run: dotnet restore ClaudeCodeVS.slnx --locked-mode
 
       - name: Build (Release, versioned)
         run: msbuild ClaudeCodeVS.slnx -t:Build -p:Configuration=Release -p:Version=${{ steps.version.outputs.version }} -m -restore:false
@@ -72,10 +91,22 @@ jobs:
           if (-not $vsix) { throw "No .vsix produced under src/ClaudeCode.Vsix/bin/Release/net48." }
           "path=$($vsix.FullName)" >> $env:GITHUB_OUTPUT
 
+      - name: Generate checksum
+        id: checksum
+        shell: pwsh
+        run: |
+          $vsix = Get-Item "${{ steps.vsix.outputs.path }}"
+          $hash = Get-FileHash -Path $vsix.FullName -Algorithm SHA256
+          $checksumPath = Join-Path $vsix.DirectoryName "SHA256SUMS"
+          "$($hash.Hash.ToLowerInvariant())  $($vsix.Name)" | Set-Content -Path $checksumPath -Encoding ascii
+          "path=$checksumPath" >> $env:GITHUB_OUTPUT
+
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ github.ref_name }}
           name: "v${{ steps.version.outputs.version }}"
           generate_release_notes: true
-          files: ${{ steps.vsix.outputs.path }}
+          files: |
+            ${{ steps.vsix.outputs.path }}
+            ${{ steps.checksum.outputs.path }}

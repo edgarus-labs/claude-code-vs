@@ -10,6 +10,9 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   build-and-test:
     # VSIX packaging (Microsoft.VSSDK.BuildTools' CreateVsixContainer/GeneratePkgDefFile) only runs on the
@@ -30,7 +33,7 @@ jobs:
         uses: microsoft/setup-msbuild@v2
 
       - name: Restore
-        run: dotnet restore ClaudeCodeVS.slnx
+        run: dotnet restore ClaudeCodeVS.slnx --locked-mode
 
       - name: Build (Release)
         run: msbuild ClaudeCodeVS.slnx -t:Build -p:Configuration=Release -m -restore:false
@@ -52,9 +55,8 @@ jobs:
           path: test/**/TestResults/*.trx
 
       - name: Upload VSIX (build artifact, not a release)
-        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ClaudeCode.Vsix-unsigned
           path: src/ClaudeCode.Vsix/bin/Release/net48/*.vsix
-          if-no-files-found: warn
+          if-no-files-found: error

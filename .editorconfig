@@ -243,14 +243,7 @@ dotnet_naming_style._fieldname.required_prefix = _
 dotnet_naming_style._fieldname.required_suffix =
 dotnet_naming_style._fieldname.word_separator =
 dotnet_naming_style._fieldname.capitalization = camel_case
-dotnet_diagnostic.RCS1079.severity = error
-dotnet_diagnostic.CC0001.severity = silent
-dotnet_diagnostic.CC0105.severity = silent
-dotnet_diagnostic.CC0021.severity = silent
-dotnet_diagnostic.CC0072.severity = silent
-dotnet_diagnostic.MA0004.severity = silent
-dotnet_diagnostic.MA0006.severity = silent
-dotnet_diagnostic.S6602.severity = none
+
 csharp_prefer_system_threading_lock = true:suggestion
 csharp_style_prefer_implicitly_typed_lambda_expression = true:suggestion
 csharp_style_prefer_unbound_generic_type_in_nameof = true:suggestion
@@ -259,15 +252,9 @@ csharp_style_prefer_unbound_generic_type_in_nameof = true:suggestion
 dotnet_diagnostic.CA1873.severity = none
 
 [*.{cs,vb}]
-dotnet_diagnostic.S108.severity = none
 dotnet_diagnostic.IDE0079.severity = none
-dotnet_diagnostic.S112.severity = none
-dotnet_diagnostic.ASP0006.severity = none
 dotnet_diagnostic.CA1873.severity = none
-dotnet_diagnostic.IDE0059.severity = none
 
-# CA1720: Identifier contains type name -- "Signed"/"Unsigned" are the correct Modbus decoding
-# vocabulary (matches raw register interpretation), not accidental collisions with type names.
 dotnet_diagnostic.CA1720.severity = none
 
 [*.{json,yml,yaml,md,xml,config}]
