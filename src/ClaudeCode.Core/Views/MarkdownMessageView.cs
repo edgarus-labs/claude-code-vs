@@ -1,3 +1,4 @@
+using ClaudeCode.Core.ViewModels;
 using Markdig;
 using Markdig.Renderers;
 using Markdig.Renderers.Wpf;
@@ -8,7 +9,6 @@ using System;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Security;
-using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
@@ -30,9 +30,6 @@ public sealed class MarkdownMessageView : RichTextBox
         .UsePipeTables()
         .UseAutoLinks()
         .Build();
-
-    internal const int MaxMarkdownLength = 200_000;
-    internal const int MaxBlockquoteDepth = 20;
 
     public static readonly DependencyProperty MarkdownProperty = DependencyProperty.Register(
         nameof(Markdown), typeof(string), typeof(MarkdownMessageView),
@@ -62,7 +59,7 @@ public sealed class MarkdownMessageView : RichTextBox
 
         _renderTimer = new DispatcherTimer(DispatcherPriority.Background, Dispatcher)
         {
-            Interval = ComputeRenderInterval(0)
+            Interval = MarkdownSafetyLimits.ComputeRenderInterval(0)
         };
         _renderTimer.Tick += OnRenderTick;
         Loaded += OnLoaded;
@@ -120,7 +117,7 @@ public sealed class MarkdownMessageView : RichTextBox
         // A hidden assistant template also exists for user messages: never parse it.
         if (IsLoaded && IsVisible && !_renderTimer.IsEnabled)
         {
-            _renderTimer.Interval = ComputeRenderInterval((Markdown ?? string.Empty).Length);
+            _renderTimer.Interval = MarkdownSafetyLimits.ComputeRenderInterval((Markdown ?? string.Empty).Length);
             _renderTimer.Start();
         }
     }
@@ -161,7 +158,7 @@ public sealed class MarkdownMessageView : RichTextBox
         var preserveSelection = !Selection.IsEmpty || IsKeyboardFocusWithin;
         var selectionStart = preserveSelection ? Document.ContentStart.GetOffsetToPosition(Selection.Start) : 0;
         var selectionEnd = preserveSelection ? Document.ContentStart.GetOffsetToPosition(Selection.End) : 0;
-        var renderableMarkdown = LimitBlockquoteNesting(LimitMarkdownLength(markdown));
+        var renderableMarkdown = MarkdownSafetyLimits.LimitBlockquoteNesting(MarkdownSafetyLimits.LimitMarkdownLength(markdown));
         Document = Markdig.Wpf.Markdown.ToFlowDocument(renderableMarkdown, Pipeline, new SafeWpfRenderer(this));
         _renderedMarkdown = markdown;
 
@@ -176,81 +173,6 @@ public sealed class MarkdownMessageView : RichTextBox
             }
         }
     }
-
-    /// <summary>
-    /// Truncates markdown text before it reaches Markdig, bounding parser work and rendered DOM
-    /// size for arbitrarily large model output. Pure string-in/string-out: safe to unit test without WPF.
-    /// </summary>
-    internal static string LimitMarkdownLength(string markdown, int maxLength = MaxMarkdownLength)
-    {
-        if (markdown.Length <= maxLength)
-        {
-            return markdown;
-        }
-
-        return markdown.Substring(0, maxLength) +
-            "\n\n*(message truncated: exceeded the maximum renderable size)*";
-    }
-
-    /// <summary>
-    /// Caps consecutive leading '&gt;' blockquote markers per line so a pathological input cannot
-    /// force Markdig to build an arbitrarily deep nested block tree. Pure string-in/string-out.
-    /// </summary>
-    internal static string LimitBlockquoteNesting(string markdown, int maxDepth = MaxBlockquoteDepth)
-    {
-        if (string.IsNullOrEmpty(markdown))
-        {
-            return markdown;
-        }
-
-        var lines = markdown.Split('\n');
-        var changed = false;
-        for (var i = 0; i < lines.Length; i++)
-        {
-            var line = lines[i];
-            var indent = 0;
-            while (indent < line.Length && (line[indent] == ' ' || line[indent] == '\t'))
-            {
-                indent++;
-            }
-
-            var depth = 0;
-            var markerEnd = indent;
-            while (markerEnd < line.Length && line[markerEnd] == '>')
-            {
-                depth++;
-                markerEnd++;
-                if (markerEnd < line.Length && line[markerEnd] == ' ')
-                {
-                    markerEnd++;
-                }
-            }
-
-            if (depth <= maxDepth)
-            {
-                continue;
-            }
-
-            var kept = new StringBuilder(line.Substring(0, indent));
-            for (var d = 0; d < maxDepth; d++)
-            {
-                kept.Append("> ");
-            }
-            kept.Append(line, markerEnd, line.Length - markerEnd);
-            lines[i] = kept.ToString();
-            changed = true;
-        }
-
-        return changed ? string.Join("\n", lines) : markdown;
-    }
-
-    /// <summary>
-    /// Scales the streaming re-render throttle with the current text length: short messages stay
-    /// snappy at 100ms, very long ones back off up to 1000ms so re-parsing large documents on every
-    /// tick cannot starve the UI thread. Pure int-in/TimeSpan-out.
-    /// </summary>
-    internal static TimeSpan ComputeRenderInterval(int textLength) =>
-        TimeSpan.FromMilliseconds(textLength < 8000 ? 100 : Math.Min(1000, textLength / 80));
 
     private Hyperlink CreateHyperlink(string? target)
     {
@@ -267,7 +189,7 @@ public sealed class MarkdownMessageView : RichTextBox
         e.Handled = true;
         var hyperlink = (Hyperlink)sender;
         var target = hyperlink.Tag as string;
-        if (!Uri.TryCreate(target, UriKind.Absolute, out var uri) || !IsNavigableLink(uri))
+        if (!Uri.TryCreate(target, UriKind.Absolute, out var uri) || !MarkdownSafetyLimits.IsNavigableLink(uri))
         {
             ReportLinkFailure(hyperlink, "This link cannot be opened. Only absolute HTTP and HTTPS links are allowed.");
             return;
@@ -285,15 +207,6 @@ public sealed class MarkdownMessageView : RichTextBox
             ReportLinkFailure(hyperlink, "Could not open the link in your browser: " + exception.Message);
         }
     }
-
-    /// <summary>
-    /// True only for absolute http/https links whose host is not loopback (localhost/127.0.0.1/[::1]).
-    /// Pure Uri-in/bool-out: safe to unit test without WPF or a live click.
-    /// </summary>
-    internal static bool IsNavigableLink(Uri uri) =>
-        (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp) &&
-        !string.IsNullOrEmpty(uri.Host) &&
-        !uri.IsLoopback;
 
     private void ReportLinkFailure(Hyperlink hyperlink, string message)
     {

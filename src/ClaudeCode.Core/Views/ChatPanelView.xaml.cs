@@ -328,19 +328,11 @@ public partial class ChatPanelView : UserControl, IDisposable
     {
         var wasAtBottom = _isAtBottom;
         _isAtBottom = e.VerticalOffset + e.ViewportHeight >= e.ExtentHeight - 1;
-        if (ShouldAutoScroll(wasAtBottom, e.ExtentHeightChange))
+        if (ChatTranscriptScrollPolicy.ShouldAutoScroll(wasAtBottom, e.ExtentHeightChange))
         {
             ((ScrollViewer)sender).ScrollToEnd();
         }
     }
-
-    /// <summary>
-    /// True only when new content was added (extent grew) while the user was already scrolled to the
-    /// bottom: never yanks the viewport out from under someone who scrolled up to read history.
-    /// Pure bool/double-in, bool-out: safe to unit test without a live ScrollViewer.
-    /// </summary>
-    internal static bool ShouldAutoScroll(bool wasAtBottom, double extentHeightChange) =>
-        wasAtBottom && extentHeightChange > 0;
 
     private bool HandleSlashKey(KeyEventArgs e)
     {
