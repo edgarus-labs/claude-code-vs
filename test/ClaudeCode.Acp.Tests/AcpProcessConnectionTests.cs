@@ -2,6 +2,7 @@ using ClaudeCode.Contracts;
 using System;
 using System.Collections.Generic;
 using System.IO.Pipelines;
+using System.Reflection;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
@@ -9,7 +10,7 @@ using Xunit;
 
 namespace ClaudeCode.Acp.Tests;
 
-public sealed class AcpProcessConnectionTests : IAsyncLifetime
+public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
 {
     // "toAgent" = what the connection under test WRITES (requests/notifications/responses it sends
     // toward the "agent"); the test reads from toAgent.Reader to observe them.
@@ -28,6 +29,10 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime
 
     public async Task DisposeAsync() => await _connection.DisposeAsync();
 
+    // Explicit IAsyncDisposable purely so CA1001 recognizes this type as disposable; xUnit drives
+    // teardown through IAsyncLifetime.DisposeAsync() (Task-returning) above, not through this.
+    ValueTask IAsyncDisposable.DisposeAsync() => new ValueTask(DisposeAsync());
+
     [Fact]
     public async Task InboundReadTextFileRequest_SurfacesFileReadRequested_AndWritesResponseBackOverTheWire()
     {
@@ -35,7 +40,7 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime
         {
             Assert.Equal("/workspace/foo.txt", e.Path);
             Assert.Equal(3, e.Line);
-            e.Response.SetResult("hello world");
+            e.Response.TrySetResult("hello world");
         };
 
         await PipeTestHelpers.WriteLineAsync(
@@ -53,7 +58,7 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime
     [Fact]
     public async Task InboundWriteTextFileRequest_HandlerReportsFailure_RespondsWithJsonRpcError()
     {
-        _connection.FileWriteRequested += (_, e) => e.Response.SetResult(false);
+        _connection.FileWriteRequested += (_, e) => e.Response.TrySetResult(false);
 
         await PipeTestHelpers.WriteLineAsync(
             _fromAgent.Writer,
@@ -197,6 +202,95 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime
         // A session/cancel notification (no "id") is written first; scan past it to the id:3 response.
         JsonObject response = await ReadResponseWithIdAsync(_toAgent.Reader, 3);
         Assert.Equal("cancelled", response["result"]!["outcome"]!["outcome"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task RequestPermission_AfterResolution_RemovesEmptySessionBagInsteadOfLeakingItForever()
+    {
+        _connection.PermissionRequested += (_, e) => e.Response.TrySetResult(e.Options[0].OptionId);
+
+        await PipeTestHelpers.WriteLineAsync(
+            _fromAgent.Writer,
+            "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"session/request_permission\",\"params\":{\"sessionId\":\"leak-session\"," +
+            "\"toolCall\":{\"toolCallId\":\"tc1\",\"title\":\"Run\",\"status\":\"pending\"}," +
+            "\"options\":[{\"optionId\":\"allow\",\"name\":\"Allow\",\"kind\":\"allow_once\"}]}}");
+
+        await ReadResponseWithIdAsync(_toAgent.Reader, 11);
+
+        FieldInfo field = typeof(AcpProcessConnection).GetField("_pendingPermissionsBySession", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var bySession = (System.Collections.IDictionary)field.GetValue(_connection)!;
+        Assert.False(bySession.Contains("leak-session"),
+            "a resolved session's now-empty permission bag must be removed, not retained for the life of the connection.");
+    }
+
+    [Fact]
+    public async Task DisposeAsync_OnAHealthyConnection_DoesNotRaiseDisconnected()
+    {
+        // The consumer initiated this shutdown itself by calling DisposeAsync(); it must not also
+        // receive an unsolicited "the connection was lost" notification for its own intentional action.
+        int disconnectedCount = 0;
+        _connection.Disconnected += (_, _) => Interlocked.Increment(ref disconnectedCount);
+
+        await _connection.DisposeAsync();
+
+        Assert.Equal(0, disconnectedCount);
+    }
+
+    [Fact]
+    public async Task HandleReadTextFileAsync_CancelledWhilePending_UnblocksInsteadOfHangingForever()
+    {
+        var handlerInvoked = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _connection.FileReadRequested += (_, e) => handlerInvoked.TrySetResult(true); // deliberately never resolves e.Response.
+
+        using var cts = new CancellationTokenSource();
+        MethodInfo method = typeof(AcpProcessConnection).GetMethod("HandleReadTextFileAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var resultTask = (Task<JsonNode?>)method.Invoke(_connection, new object[] { new JsonObject { ["path"] = "/workspace/foo.txt" }, cts.Token })!;
+
+        await handlerInvoked.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => resultTask.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
+    public async Task HandleWriteTextFileAsync_CancelledWhilePending_UnblocksInsteadOfHangingForever()
+    {
+        var handlerInvoked = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _connection.FileWriteRequested += (_, e) => handlerInvoked.TrySetResult(true); // deliberately never resolves e.Response.
+
+        using var cts = new CancellationTokenSource();
+        MethodInfo method = typeof(AcpProcessConnection).GetMethod("HandleWriteTextFileAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var resultTask = (Task<JsonNode?>)method.Invoke(_connection, new object[]
+        {
+            new JsonObject { ["path"] = "/workspace/foo.txt", ["content"] = "x" }, cts.Token,
+        })!;
+
+        await handlerInvoked.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => resultTask.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
+    public async Task HandleRequestPermissionAsync_CancelledWhilePending_UnblocksInsteadOfHangingForever()
+    {
+        var handlerInvoked = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _connection.PermissionRequested += (_, e) => handlerInvoked.TrySetResult(true); // deliberately never resolves e.Response.
+
+        using var cts = new CancellationTokenSource();
+        MethodInfo method = typeof(AcpProcessConnection).GetMethod("HandleRequestPermissionAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var paramsObj = new JsonObject
+        {
+            ["sessionId"] = "s1",
+            ["toolCall"] = new JsonObject { ["toolCallId"] = "tc1", ["title"] = "Run", ["status"] = "pending" },
+            ["options"] = new JsonArray(new JsonObject { ["optionId"] = "allow", ["name"] = "Allow", ["kind"] = "allow_once" }),
+        };
+        var resultTask = (Task<JsonNode?>)method.Invoke(_connection, new object[] { paramsObj, cts.Token })!;
+
+        await handlerInvoked.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => resultTask.WaitAsync(TimeSpan.FromSeconds(5)));
     }
 
     [Fact]

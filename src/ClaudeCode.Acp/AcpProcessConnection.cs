@@ -2,8 +2,11 @@ using ClaudeCode.Contracts;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
@@ -16,6 +19,11 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
 
     private static readonly TimeSpan _gracefulShutdownTimeout = TimeSpan.FromSeconds(3);
 
+    // The connection is already known to be broken when SetSessionConfigOptionAsync's error path
+    // disposes it - there is no well-behaved agent left to wait politely for, so use a much shorter
+    // grace period before moving on to killing the process.
+    private static readonly TimeSpan _errorPathShutdownTimeout = TimeSpan.FromMilliseconds(200);
+
     public const string CancelledPermissionOptionId = "__acp_cancelled__";
 
     private readonly JsonRpcConnection _rpc;
@@ -26,6 +34,7 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
 
     private int _disposed;
     private int _disconnected;
+    private int _isInitialized;
 
     public AcpProcessConnection(
         string executableFileName,
@@ -71,6 +80,10 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         {
             if (e.Data is not null)
             {
+                // Trace (not Debug - [Conditional("DEBUG")] compiles it out of Release builds) so
+                // diagnostic stderr output is never silently lost when nothing has subscribed to
+                // StandardErrorReceived.
+                Trace.WriteLine("[ACP stderr] " + e.Data);
                 StandardErrorReceived?.Invoke(this, e.Data);
             }
         };
@@ -91,7 +104,7 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         _rpc.Start();
     }
 
-    public bool IsInitialized { get; private set; }
+    public bool IsInitialized => Volatile.Read(ref _isInitialized) != 0;
 
     public event EventHandler<SessionUpdateEventArgs>? SessionUpdate;
 
@@ -119,8 +132,15 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
             return;
         }
 
-        IsInitialized = false;
+        Volatile.Write(ref _isInitialized, 0);
         FailAllPendingPermissions(error ?? new IOException("The ACP agent connection was closed."));
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            // DisposeAsync() already initiated this shutdown intentionally - the consumer asked for
+            // it and does not need an unsolicited "the connection was lost" notification too.
+            return;
+        }
+
         Disconnected?.Invoke(this, error);
     }
 
@@ -146,9 +166,16 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         };
 
         await _rpc.SendRequestAsync("initialize", @params, cancellationToken).ConfigureAwait(false);
-        IsInitialized = true;
+        Volatile.Write(ref _isInitialized, 1);
     }
 
+    /// <summary>
+    /// Starts a new ACP session rooted at <paramref name="cwd"/>. <paramref name="cwd"/> is sent to
+    /// the remote agent process as-is - this class does not validate, canonicalize, or sandbox it in
+    /// any way. The caller MUST pass only a path it already trusts (e.g. one already checked against
+    /// a workspace boundary); this class has no way to distinguish an intentionally-opened workspace
+    /// from an attacker-controlled path.
+    /// </summary>
     public async Task<NewSessionResult> NewSessionAsync(string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken)
     {
         var @params = new JsonObject
@@ -192,7 +219,7 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
             }
             finally
             {
-                await DisposeAsync().ConfigureAwait(false);
+                await DisposeAsync(_errorPathShutdownTimeout).ConfigureAwait(false);
             }
 
             throw;
@@ -232,7 +259,9 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         CancelPendingPermissions(sessionId);
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync() => DisposeAsync(_gracefulShutdownTimeout);
+
+    internal async ValueTask DisposeAsync(TimeSpan gracefulShutdownTimeout)
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
@@ -245,17 +274,10 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
 
             if (_process is not null)
             {
-                await WaitForExitAsync(_process, _gracefulShutdownTimeout).ConfigureAwait(false);
+                await WaitForExitAsync(_process, gracefulShutdownTimeout).ConfigureAwait(false);
                 if (!_process.HasExited)
                 {
-                    try
-                    {
-                        _process.Kill();
-                    }
-                    catch (InvalidOperationException)
-                    {
-                        // already exited between the check and the call.
-                    }
+                    TerminateProcessTree(_process);
                 }
             }
         }
@@ -291,6 +313,56 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
     }
 
+    private static void TerminateProcessTree(Process process)
+    {
+        try
+        {
+            if (process.HasExited)
+            {
+                return;
+            }
+
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                // .NET Standard 2.0 has no Process.Kill(entireProcessTree: true): target this process
+                // (and any children it spawned, e.g. a launcher script execing a real runtime) via
+                // taskkill instead of only killing the direct child and orphaning its descendants. Use
+                // taskkill's full path to avoid resolving it against an attacker-influenced PATH.
+                using var cleanup = Process.Start(new ProcessStartInfo
+                {
+                    FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "taskkill.exe"),
+                    Arguments = "/PID " + process.Id.ToString(CultureInfo.InvariantCulture) + " /T /F",
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                });
+                if (cleanup is not null && !cleanup.WaitForExit(2000))
+                {
+                    cleanup.Kill();
+                }
+            }
+        }
+        catch (Exception ex) when (ex is Win32Exception || ex is InvalidOperationException)
+        {
+            // The process may exit between the check and the targeted cleanup.
+        }
+        finally
+        {
+            try
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill();
+                }
+            }
+            catch (Exception ex) when (ex is Win32Exception || ex is InvalidOperationException)
+            {
+                // already exited between the check and the call.
+            }
+        }
+    }
+
     private void TrackPendingPermission(string sessionId, PermissionRequestEventArgs args)
     {
         var bag = _pendingPermissionsBySession.GetOrAdd(sessionId, _ => new ConcurrentDictionary<PermissionRequestEventArgs, byte>());
@@ -302,6 +374,14 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         if (_pendingPermissionsBySession.TryGetValue(sessionId, out var bag))
         {
             bag.TryRemove(args, out _);
+            if (bag.IsEmpty)
+            {
+                // Compare-and-remove: only drop the session entry if it still holds this exact
+                // (now-empty) bag instance, so a permission request that raced in concurrently and
+                // installed a fresh bag for the same session id is never dropped.
+                var entry = new KeyValuePair<string, ConcurrentDictionary<PermissionRequestEventArgs, byte>>(sessionId, bag);
+                ((ICollection<KeyValuePair<string, ConcurrentDictionary<PermissionRequestEventArgs, byte>>>)_pendingPermissionsBySession).Remove(entry);
+            }
         }
     }
 
@@ -311,7 +391,7 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         {
             foreach (var args in bag.Keys)
             {
-                args.Response.SetResult(CancelledPermissionOptionId);
+                args.Response.TrySetResult(CancelledPermissionOptionId);
             }
         }
     }
@@ -322,7 +402,7 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         {
             foreach (var args in bag.Keys)
             {
-                args.Response.SetException(cause);
+                args.Response.TrySetException(cause);
             }
         }
     }

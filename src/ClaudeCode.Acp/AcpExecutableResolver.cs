@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 
 namespace ClaudeCode.Acp;
 
@@ -44,6 +45,7 @@ public static class AcpExecutableResolver
         string extension = Path.GetExtension(fullPath);
         string directory = Path.GetDirectoryName(fullPath)!;
         string? scriptPath = null;
+        bool preferAdjacentNode = false;
         if (_isWindows && (extension.Equals(".cmd", StringComparison.OrdinalIgnoreCase)
             || extension.Equals(".bat", StringComparison.OrdinalIgnoreCase)))
         {
@@ -63,6 +65,12 @@ public static class AcpExecutableResolver
             {
                 return null;
             }
+
+            // An npm-global install's shim legitimately colocates its own node.exe next to it. An
+            // npm-local install's shim lives under node_modules/.bin (or another node_modules-rooted
+            // directory), where anything sitting next to it is untrusted package content, not a
+            // trusted npm runtime - never prefer it over a PATH-resolved node in that case.
+            preferAdjacentNode = !ContainsNodeModulesSegment(directory);
         }
         else if (extension.Equals(".js", StringComparison.OrdinalIgnoreCase))
         {
@@ -71,6 +79,8 @@ public static class AcpExecutableResolver
                 return null;
             }
 
+            // Always PATH-first: the entry point's directory is package content (node_modules), so a
+            // "node.exe" found there is never a trusted adjacent runtime.
             scriptPath = fullPath;
         }
         else
@@ -85,14 +95,27 @@ public static class AcpExecutableResolver
         }
 
         string nodeName = _isWindows ? "node.exe" : "node";
-        string? nodePath = Path.Combine(directory, nodeName);
-        if (!File.Exists(nodePath))
+        string? nodePath = null;
+        if (preferAdjacentNode)
+        {
+            string adjacentNode = Path.Combine(directory, nodeName);
+            if (File.Exists(adjacentNode))
+            {
+                nodePath = adjacentNode;
+            }
+        }
+
+        if (nodePath is null)
         {
             nodePath = FindOnPath(nodeName, searchPath);
         }
 
         return nodePath is null ? null : new AcpExecutableSpec(nodePath, new[] { Path.GetFullPath(scriptPath) });
     }
+
+    private static bool ContainsNodeModulesSegment(string directory) =>
+        directory.Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries)
+            .Any(segment => segment.Equals("node_modules", StringComparison.OrdinalIgnoreCase));
 
     private static string? FindOnPath(string fileName, string? searchPath)
     {
@@ -118,8 +141,11 @@ public static class AcpExecutableResolver
         foreach (string entry in searchPath.Split(Path.PathSeparator))
         {
             string directory = entry.Trim().Trim('"');
-            if (directory.Length == 0)
+            if (directory.Length == 0 || !Path.IsPathRooted(directory))
             {
+                // A relative PATH entry resolves against the process's current working directory,
+                // which for an opened workspace can be attacker-controlled; only ever trust absolute
+                // entries here.
                 continue;
             }
 

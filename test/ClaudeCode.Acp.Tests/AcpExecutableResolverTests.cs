@@ -81,6 +81,46 @@ public sealed class AcpExecutableResolverTests : IDisposable
     }
 
     [Fact]
+    public void ExplicitJsEntryPoint_PrefersPathNodeOverAdjacentPackageNode()
+    {
+        // Unlike an npm-global .cmd shim (which legitimately colocates its own node.exe), an explicit
+        // .js entry point's directory is untrusted package content (node_modules); a "node.exe" sitting
+        // next to it must never be preferred over a PATH-resolved node.
+        string nodeName = OperatingSystem.IsWindows() ? "node.exe" : "node";
+        string script = CreateFile(Path.Combine("node_modules", "@agentclientprotocol", "claude-agent-acp", "dist", "index.js"));
+        CreateFile(Path.Combine("node_modules", "@agentclientprotocol", "claude-agent-acp", "dist", nodeName));
+        string pathNode = CreateFile(Path.Combine("other", nodeName));
+
+        var resolved = AcpExecutableResolver.TryResolve(script, Path.GetDirectoryName(pathNode));
+
+        Assert.NotNull(resolved);
+        Assert.Equal(pathNode, resolved.FileName);
+        Assert.Equal(new[] { script }, resolved.Arguments);
+    }
+
+    [Fact]
+    public void GetSearchDirectories_IgnoresRelativePathEntries_ToAvoidUntrustedWorkingDirectoryResolution()
+    {
+        string originalCwd = Directory.GetCurrentDirectory();
+        try
+        {
+            Directory.CreateDirectory(_root);
+            Directory.SetCurrentDirectory(_root);
+            string adapterName = OperatingSystem.IsWindows() ? "claude-agent-acp.exe" : "claude-agent-acp";
+            CreateFile(Path.Combine("relative-dir", adapterName));
+
+            // A relative PATH entry must never be resolved against the current working directory - a
+            // malicious repository could otherwise plant an adapter executable that gets launched just
+            // because the process's CWD happens to be inside (or under) the opened workspace.
+            Assert.Null(AcpExecutableResolver.TryResolveDefault("relative-dir"));
+        }
+        finally
+        {
+            Directory.SetCurrentDirectory(originalCwd);
+        }
+    }
+
+    [Fact]
     public void WindowsNpmShim_RequiresPackageAndNodeInsteadOfReturningCmd()
     {
         if (!OperatingSystem.IsWindows())
