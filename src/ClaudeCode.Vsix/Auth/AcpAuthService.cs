@@ -57,9 +57,13 @@ internal sealed class AcpAuthService : IAcpAuthService
         }
 
         AuthState state = await Task.Run(() => ReadNativeStatusAsync(executable, cancellationToken), cancellationToken).ConfigureAwait(false);
-        SetState(state, state == AuthState.Unknown
-            ? "Native sign-in status could not be determined. You can still attempt a session; the native CLI handles credentials and refresh. " + _loginInstructions
-            : state == AuthState.SignedOut ? _loginInstructions : null);
+        SetState(state, state switch
+        {
+            AuthState.Unknown => "Native sign-in status could not be determined. You can still attempt a session; the native CLI handles credentials and refresh. " + _loginInstructions,
+            AuthState.SignedOut => _loginInstructions,
+            AuthState.Error => "Native sign-in status check failed: the CLI returned an unexpected response. " + _loginInstructions,
+            _ => null,
+        });
         return state == AuthState.SignedIn;
     }
 
@@ -79,6 +83,15 @@ internal sealed class AcpAuthService : IAcpAuthService
         {
             SetState(AuthState.Unknown);
             throw;
+        }
+        finally
+        {
+            // An unexpected (non-cancellation) exception from IsSignedInAsync must not leave the
+            // extension stuck reporting SigningIn forever.
+            if (CurrentState == AuthState.SigningIn)
+            {
+                SetState(AuthState.Unknown);
+            }
         }
 
         string detail = CurrentState == AuthState.SignedOut
@@ -153,7 +166,12 @@ internal sealed class AcpAuthService : IAcpAuthService
             return status["loggedIn"]!.Value<bool>() || externalProvider || apiKeyConfigured
                 ? AuthState.SignedIn : AuthState.SignedOut;
         }
-        catch (Exception ex) when (ex is Win32Exception || ex is IOException || ex is InvalidOperationException || ex is JsonException)
+        catch (JsonException)
+        {
+            // Unparsable output from the CLI is a hard failure, distinct from an inconclusive probe.
+            return AuthState.Error;
+        }
+        catch (Exception ex) when (ex is Win32Exception || ex is IOException || ex is InvalidOperationException)
         {
             return AuthState.Unknown;
         }

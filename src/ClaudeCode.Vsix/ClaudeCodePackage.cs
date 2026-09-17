@@ -6,6 +6,7 @@ using Community.VisualStudio.Toolkit;
 using Microsoft.VisualStudio;
 using Microsoft.VisualStudio.Shell;
 using System;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -14,18 +15,23 @@ namespace ClaudeCode.Vsix;
 
 [PackageRegistration(UseManagedResourcesOnly = true, AllowsBackgroundLoading = true)]
 [ProvideBindingPath]
-[InstalledProductRegistration("Claude Code for Visual Studio", "Chat with Claude Code from a native sidebar tool window, backed by the Agent Client Protocol.", "0.1")]
+[InstalledProductRegistration("Claude Code for Visual Studio", "Chat with Claude Code from a native sidebar tool window, backed by the Agent Client Protocol.", GeneratedProductVersion.Value)]
 [ProvideMenuResource("Menus.ctmenu", 1)]
 [ProvideToolWindow(typeof(ChatToolWindowPane), Style = VsDockStyle.Tabbed, Window = Microsoft.VisualStudio.Shell.Interop.ToolWindowGuids80.SolutionExplorer)]
 [ProvideOptionPage(typeof(ClaudeCodeOptionsPage), "Claude Code", "General", 0, 0, true)]
-[ProvideAutoLoad(VSConstants.UICONTEXT.NoSolution_string, PackageAutoLoadFlags.BackgroundLoad)]
-[ProvideAutoLoad(VSConstants.UICONTEXT.SolutionExists_string, PackageAutoLoadFlags.BackgroundLoad)]
 [Guid(PackageGuids.ClaudeCodePackageString)]
+[SuppressMessage("Design", "CA1001:Types that own disposable fields should be disposable",
+    Justification = "AsyncPackage already implements IDisposable; this type owns its disposable " +
+    "fields correctly via the overridden Dispose(bool) below, which disposes " +
+    "_vsControlSessionRegistry. The analyzer does not see through the VS SDK base type's disposal " +
+    "pattern.")]
 public sealed class ClaudeCodePackage : AsyncPackage
 {
     private AcpAuthService? _authService;
     private VsControlSessionRegistry? _vsControlSessionRegistry;
     private ActiveEditorDocumentTracker? _editorDocumentTracker;
+    private SolutionEvents? _solutionEvents;
+    private string? _cachedWorkspaceRoot;
 
     protected override async Task InitializeAsync(CancellationToken cancellationToken, IProgress<ServiceProgressData> progress)
     {
@@ -37,6 +43,14 @@ public sealed class ClaudeCodePackage : AsyncPackage
 
         _authService = new AcpAuthService(() => GetOptions().CliExecutablePath);
         _vsControlSessionRegistry = new VsControlSessionRegistry();
+
+        // Seed the workspace-root cache once on the UI thread, then keep it current via solution
+        // events instead of blocking every GetWorkspaceRoot() call on JoinableTaskFactory.Run.
+        _solutionEvents = VS.Events.SolutionEvents;
+        _solutionEvents.OnAfterOpenSolution += OnSolutionOpened;
+        _solutionEvents.OnAfterCloseSolution += OnSolutionClosed;
+        var currentSolution = await VS.Solutions.GetCurrentSolutionAsync();
+        _cachedWorkspaceRoot = ComputeWorkspaceRoot(currentSolution?.FullPath);
 
         var connectionFactory = new ClaudeCodeConnectionFactory(GetOptions, GetWorkspaceRoot, _vsControlSessionRegistry);
 
@@ -58,8 +72,19 @@ public sealed class ClaudeCodePackage : AsyncPackage
             {
                 await JoinableTaskFactory.SwitchToMainThreadAsync();
                 _editorDocumentTracker?.Dispose();
+                if (_solutionEvents is not null)
+                {
+                    _solutionEvents.OnAfterOpenSolution -= OnSolutionOpened;
+                    _solutionEvents.OnAfterCloseSolution -= OnSolutionClosed;
+                }
             });
             _vsControlSessionRegistry?.Dispose();
+
+            // These extension-scoped globals must not outlive this package instance.
+            ClaudeCodeServices.ConnectionFactory = null;
+            ClaudeCodeServices.AuthService = null;
+            ClaudeCodeServices.GetWorkspaceRoot = null;
+            ClaudeCode.Core.Views.ChatPanelView.ServicesFactory = null;
         }
 
         base.Dispose(disposing);
@@ -72,14 +97,19 @@ public sealed class ClaudeCodePackage : AsyncPackage
         return (ClaudeCodeOptionsPage)GetDialogPage(typeof(ClaudeCodeOptionsPage));
     }
 
-    private string? GetWorkspaceRoot()
-    {
-        return ThreadHelper.JoinableTaskFactory.Run(async () =>
-        {
-            await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
-            var solution = await VS.Solutions.GetCurrentSolutionAsync();
+    private string? GetWorkspaceRoot() => _cachedWorkspaceRoot;
 
-            return solution?.FullPath is string path ? System.IO.Path.GetDirectoryName(path) : null;
-        });
+    private void OnSolutionOpened(Solution? solution)
+    {
+        _cachedWorkspaceRoot = ComputeWorkspaceRoot(solution?.FullPath);
     }
+
+    private void OnSolutionClosed()
+    {
+        _cachedWorkspaceRoot = null;
+    }
+
+    /// Pure so it can be exercised without a live VS host; not itself VS-SDK dependent.
+    internal static string? ComputeWorkspaceRoot(string? solutionFullPath) =>
+        solutionFullPath is string path ? System.IO.Path.GetDirectoryName(path) : null;
 }

@@ -59,6 +59,35 @@
     <SuppressVsixWorkloadPrereqs>true</SuppressVsixWorkloadPrereqs>
   </PropertyGroup>
 
+  <!-- Release builds must not produce a .pdb sidecar at all; IncludeDebugSymbolsIn*=false above only
+       keeps an already-produced PDB out of the VSIX/local deploy, it does not stop csc.exe from
+       emitting one into bin/obj in the first place. -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+
+  <!-- InstalledProductRegistrationAttribute's version argument must be a compile-time constant, so it
+       cannot read $(Version)/AssemblyVersion at runtime. Generate a tiny const-string source file from
+       $(Version) instead of hand-maintaining a separate literal that drifts from the real package
+       version (see ClaudeCodePackage.cs's InstalledProductRegistration attribute). -->
+  <Target Name="GenerateProductVersionConstant" BeforeTargets="CoreCompile">
+    <!-- $(IntermediateOutputPath) only resolves to its final obj\$(Configuration)\$(TargetFramework)\
+         value once Sdk.targets (imported below) has run, so it must be read here at target-execution
+         time rather than from a PropertyGroup evaluated earlier during the static pass. -->
+    <PropertyGroup>
+      <GeneratedProductVersionFile>$(IntermediateOutputPath)GeneratedProductVersion.cs</GeneratedProductVersionFile>
+    </PropertyGroup>
+    <WriteLinesToFile
+        File="$(GeneratedProductVersionFile)"
+        Lines="namespace ClaudeCode.Vsix%3B internal static class GeneratedProductVersion { internal const string Value = &quot;$(Version)&quot;%3B }"
+        Overwrite="true"
+        WriteOnlyWhenDifferent="true" />
+    <ItemGroup>
+      <Compile Include="$(GeneratedProductVersionFile)" />
+      <FileWrites Include="$(GeneratedProductVersionFile)" />
+    </ItemGroup>
+  </Target>
+
   <ItemGroup>
     <PackageReference Include="Microsoft.VisualStudio.SDK" Version="17.13.40008" ExcludeAssets="runtime" />
     <PackageReference Include="Microsoft.VSSDK.BuildTools" Version="18.5.40034" PrivateAssets="all" />
@@ -102,6 +131,19 @@
         <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
         <IncludeInVSIX>true</IncludeInVSIX>
       </Content>
+    </ItemGroup>
+  </Target>
+
+  <!-- Community.VisualStudio.Toolkit.17/EnvDTE/Text.UI/Text.Logic pull in a few transitive assemblies
+       that are never used by this extension but still land in the .vsix as CopyLocal runtime output
+       (e.g. Microsoft.VisualStudio.Linux.ConnectionManager.Store.dll, System.Text.Encodings.Web.dll).
+       Drop them from the packaged container by name rather than risk breaking compilation by excluding
+       runtime assets on their owning PackageReference. -->
+  <Target Name="ExcludeStrayVsixAssemblies" AfterTargets="GetVsixSourceItems">
+    <ItemGroup>
+      <VSIXSourceItem Remove="@(VSIXSourceItem)"
+                       Condition="'%(Filename)%(Extension)' == 'Microsoft.VisualStudio.Linux.ConnectionManager.Store.dll'
+                                  or '%(Filename)%(Extension)' == 'System.Text.Encodings.Web.dll'" />
     </ItemGroup>
   </Target>
 

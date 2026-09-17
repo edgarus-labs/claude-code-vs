@@ -21,7 +21,7 @@ internal sealed class SignInCommand : BaseCommand<SignInCommand>
 
         var progress = new Progress<string>(line => VS.StatusBar.ShowMessageAsync($"Claude Code: {line}").FireAndForget());
 
-        await VS.StatusBar.ShowMessageAsync("Claude Code: opening browser sign-in…");
+        await VS.StatusBar.ShowMessageAsync("Claude Code: checking CLI sign-in…");
         try
         {
             await authService.SignInAsync(Package.DisposalToken, progress);

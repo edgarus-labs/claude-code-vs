@@ -46,8 +46,14 @@ internal sealed class ClaudeCodeConnectionFactory : IAcpAgentConnectionFactory
         }
 
         // The adapter and native SDK own credential discovery and refresh, including CLAUDE_CONFIG_DIR.
-        var inner = new AcpProcessConnectionFactory(resolved.FileName, resolved.Arguments, _workingDirectoryProvider());
-        var connection = await inner.ConnectAsync(cancellationToken).ConfigureAwait(false);
+        var workingDirectory = _workingDirectoryProvider();
+
+        // Spawning the ACP adapter process must not run on the UI thread; hop to the thread pool first.
+        var connection = await Task.Run(async () =>
+        {
+            var inner = new AcpProcessConnectionFactory(resolved.FileName, resolved.Arguments, workingDirectory);
+            return await inner.ConnectAsync(cancellationToken).ConfigureAwait(false);
+        }, cancellationToken).ConfigureAwait(false);
 
         return new VsControlInjectingConnection(connection, _vsControlSessionRegistry);
     }

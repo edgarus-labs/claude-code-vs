@@ -16,6 +16,6 @@ internal sealed class SignOutCommand : BaseCommand<SignOutCommand>
         }
 
         await authService.SignOutAsync(Package.DisposalToken);
-        await VS.StatusBar.ShowMessageAsync("Claude Code: signed out.");
+        await VS.StatusBar.ShowMessageAsync("Claude Code: sign-in state cleared (native credentials unchanged).");
     }
 }

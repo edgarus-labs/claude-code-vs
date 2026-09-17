@@ -51,6 +51,9 @@ For everyday use, open the built or release `.vsix`, select your regular Visual 
 the VSIX Installer, close Visual Studio when prompted, and restart it after installation. Building the
 project alone does not install an updated extension into your regular instance.
 
+The extension also requires the .NET 8+ runtime installed alongside Visual Studio; it hosts the
+`ClaudeCode.VsControl.Mcp` sidecar process that every chat session spawns to drive VS automation.
+
 F5 on `ClaudeCode.Vsix` launches a separate **Experimental Instance** for extension debugging. Its
 extension installation is separate from regular Visual Studio; testing there does not update the
 extension you use in your normal IDE. To use a rebuilt version normally, install the new `.vsix`.

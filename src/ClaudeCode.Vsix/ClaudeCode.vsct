@@ -43,9 +43,9 @@
         <Icon guid="ImageCatalogGuid" id="Account"/>
         <CommandFlag>IconIsMoniker</CommandFlag>
         <Strings>
-          <ButtonText>Sign In to Claude Code…</ButtonText>
+          <ButtonText>Check Claude Code CLI Sign-in</ButtonText>
           <CommandName>ClaudeCode.SignIn</CommandName>
-          <ToolTipText>Sign in with your Anthropic account via the Claude Code CLI</ToolTipText>
+          <ToolTipText>Check whether the Claude Code CLI is signed in with your Anthropic account</ToolTipText>
         </Strings>
       </Button>
       <Button guid="guidClaudeCodeCommandSet" id="SignOutCommandId" priority="0x0120" type="Button">
@@ -53,9 +53,9 @@
         <Icon guid="ImageCatalogGuid" id="Lock"/>
         <CommandFlag>IconIsMoniker</CommandFlag>
         <Strings>
-          <ButtonText>Sign Out of Claude Code</ButtonText>
+          <ButtonText>Clear Claude Code Sign-in State</ButtonText>
           <CommandName>ClaudeCode.SignOut</CommandName>
-          <ToolTipText>Sign out and remove the stored Claude Code credential</ToolTipText>
+          <ToolTipText>Clear the sign-in state shown in Visual Studio; native Claude credentials are not changed (use 'claude auth logout' in a terminal).</ToolTipText>
         </Strings>
       </Button>
       <!-- Same command, also placed under View > Other Windows so the tool window is discoverable

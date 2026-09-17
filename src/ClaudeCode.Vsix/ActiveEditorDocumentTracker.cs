@@ -78,15 +78,20 @@ internal sealed class ActiveEditorDocumentTracker : IDisposable
         }
     }
 
-    private static DocumentView? GetOpenTextView(WindowFrame frame)
+    private static DocumentView? GetOpenTextView(WindowFrame? frame)
     {
         ThreadHelper.ThrowIfNotOnUIThread();
+        if (frame is null)
+        {
+            return null;
+        }
+
         try
         {
             var view = VsShellUtilities.GetTextView(frame)?.ToDocumentView();
             return IsOpenTextView(view) ? view : null;
         }
-        catch (COMException)
+        catch (Exception ex) when (ex is COMException || ex is NullReferenceException || ex is InvalidOperationException)
         {
             // A frame can be torn down while VS delivers the activation notification.
             return null;

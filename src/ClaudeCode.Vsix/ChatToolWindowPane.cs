@@ -19,6 +19,13 @@ public sealed class ChatToolWindowPane : ToolWindowPane
     public ChatToolWindowPane() : base(null)
     {
         Caption = "Claude Code";
+        // TODO(imagemanifest-missing, Low/cosmetic): this GUID/ID moniker is only auto-registered with
+        // the VS image service when used from the VSCT-compiled command table (see the OpenChatWindow
+        // <Button><Icon> in ClaudeCode.vsct). Whether it also resolves correctly here, assigned directly
+        // to a ToolWindowPane's tab bitmap outside any VSCT <Button>, needs live-VS visual verification;
+        // if it does not, switch to BitmapResourceID/BitmapIndex (legacy VSCT strip addressing) or add a
+        // full .imagemanifest. Left as-is: no observed rendering defect, and both alternatives are a
+        // larger change than this cosmetic finding warrants without a live repro.
         BitmapImageMoniker = new ImageMoniker { Guid = PackageGuids.ClaudeCodeImages, Id = 1 };
         _view = new ChatPanelView();
         ApplyTheme();
