@@ -237,7 +237,17 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
                     }
                     finally
                     {
-                        _inboundRequestThrottle.Release();
+                        try
+                        {
+                            _inboundRequestThrottle.Release();
+                        }
+                        catch (ObjectDisposedException)
+                        {
+                            // Teardown already disposed the throttle while this handler was still in
+                            // flight (DisposeAsync only bounds its wait on the pump task, not on
+                            // fire-and-forget request handlers) - the slot this handler held no longer
+                            // needs releasing once nothing can acquire it again.
+                        }
                     }
                 });
             }
@@ -431,6 +441,7 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
 
         _writeLock.Dispose();
         _inboundRequestThrottle.Dispose();
+        _cts.Dispose();
     }
 
     private readonly struct WireId

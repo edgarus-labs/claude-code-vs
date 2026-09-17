@@ -56,9 +56,11 @@ public static class AcpExecutableResolver
             }
 
             scriptPath = Path.Combine(directory, "node_modules", "@agentclientprotocol", "claude-agent-acp", "dist", "index.js");
+            bool usedBinFallback = false;
             if (!File.Exists(scriptPath) && Path.GetFileName(directory).Equals(".bin", StringComparison.OrdinalIgnoreCase))
             {
                 scriptPath = Path.Combine(directory, "..", "@agentclientprotocol", "claude-agent-acp", "dist", "index.js");
+                usedBinFallback = true;
             }
 
             if (!File.Exists(scriptPath))
@@ -69,8 +71,13 @@ public static class AcpExecutableResolver
             // An npm-global install's shim legitimately colocates its own node.exe next to it. An
             // npm-local install's shim lives under node_modules/.bin (or another node_modules-rooted
             // directory), where anything sitting next to it is untrusted package content, not a
-            // trusted npm runtime - never prefer it over a PATH-resolved node in that case.
-            preferAdjacentNode = !ContainsNodeModulesSegment(directory);
+            // trusted npm runtime - never prefer it over a PATH-resolved node in that case. The
+            // ".bin" fallback above is reached precisely when the shim's own directory has no
+            // "node_modules" segment for ContainsNodeModulesSegment to detect (e.g. a literal
+            // ".bin" directory reached only via the ".." escape) - by the same untrusted-content
+            // rationale it must unconditionally refuse to prefer an adjacent node.exe too, not just
+            // when a literal "node_modules" path segment happens to be present.
+            preferAdjacentNode = !usedBinFallback && !ContainsNodeModulesSegment(directory);
         }
         else if (extension.Equals(".js", StringComparison.OrdinalIgnoreCase))
         {

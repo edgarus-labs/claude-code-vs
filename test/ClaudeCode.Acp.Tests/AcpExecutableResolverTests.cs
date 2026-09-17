@@ -81,6 +81,32 @@ public sealed class AcpExecutableResolverTests : IDisposable
     }
 
     [Fact]
+    public void WindowsNpmShim_BinFallback_NeverPrefersAdjacentNodeEvenWithoutNodeModulesSegment()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        // Attack: a shim directory literally named ".bin" without "node_modules" anywhere in its
+        // path still reaches the ".bin" fallback (ContainsNodeModulesSegment finds no literal
+        // "node_modules" segment and would otherwise treat the directory as trusted) - a planted
+        // node.exe sitting next to the shim must never be trusted just because that literal path
+        // segment happens to be absent.
+        string shim = CreateFile(Path.Combine("tools", ".bin", "claude-agent-acp.cmd"));
+        string script = CreateFile(Path.Combine("tools", "@agentclientprotocol", "claude-agent-acp", "dist", "index.js"));
+        string plantedNode = CreateFile(Path.Combine("tools", ".bin", "node.exe"));
+        string pathNode = CreateFile(Path.Combine("real-node", "node.exe"));
+
+        var resolved = AcpExecutableResolver.TryResolve(shim, Path.GetDirectoryName(pathNode));
+
+        Assert.NotNull(resolved);
+        Assert.Equal(pathNode, resolved.FileName);
+        Assert.NotEqual(plantedNode, resolved.FileName);
+        Assert.Equal(new[] { script }, resolved.Arguments);
+    }
+
+    [Fact]
     public void ExplicitJsEntryPoint_PrefersPathNodeOverAdjacentPackageNode()
     {
         // Unlike an npm-global .cmd shim (which legitimately colocates its own node.exe), an explicit

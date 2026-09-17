@@ -334,8 +334,6 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
                     Arguments = "/PID " + process.Id.ToString(CultureInfo.InvariantCulture) + " /T /F",
                     UseShellExecute = false,
                     CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
                 });
                 if (cleanup is not null && !cleanup.WaitForExit(2000))
                 {
