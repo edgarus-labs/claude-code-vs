@@ -34,7 +34,7 @@ public static class Program
         using var input = new StreamReader(Console.OpenStandardInput(), utf8NoBom);
         using var output = new StreamWriter(Console.OpenStandardOutput(), utf8NoBom) { AutoFlush = false, NewLine = "\n" };
 
-        var server = new McpServer(pipeClient, input, output);
+        using var server = new McpServer(pipeClient, input, output);
         await server.RunAsync(cancellationSource.Token).ConfigureAwait(false);
 
         return 0;

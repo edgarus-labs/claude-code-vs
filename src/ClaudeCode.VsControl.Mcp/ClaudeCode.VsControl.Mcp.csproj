@@ -11,6 +11,16 @@
     <RollForward>LatestMajor</RollForward>
   </PropertyGroup>
 
+  <!-- Local (not passed as a global property from the nested publish invocation in
+       ClaudeCode.Vsix.csproj's PublishVsControlMcp target): a global DebugType=none passed via
+       <MSBuild Properties="..."> cascades down through this project's own ProjectReference to
+       ClaudeCode.Contracts, silently overwriting Contracts' already-built portable .pdb with a
+       symbol-less one and breaking Vsix's own CopyFilesMarkedCopyLocal step (MSB3030). Scoping it
+       here instead keeps it local to this project's own compile. -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="../ClaudeCode.Contracts/ClaudeCode.Contracts.csproj" />
   </ItemGroup>

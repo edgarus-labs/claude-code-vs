@@ -72,6 +72,8 @@ public sealed class McpServerTests
             using var reader = new StreamReader(server, new UTF8Encoding(false), false, 1024, leaveOpen: true);
             using var writer = new StreamWriter(server, new UTF8Encoding(false), 1024, leaveOpen: true) { AutoFlush = true, NewLine = "\n" };
 
+            _ = await reader.ReadLineAsync(); // handshake token line, written before any MCP request (F1)
+
             string? requestLine = await reader.ReadLineAsync();
             Assert.NotNull(requestLine);
             var request = JsonSerializer.Deserialize<VsControlRequest>(requestLine!, _wireOptions);
@@ -96,7 +98,77 @@ public sealed class McpServerTests
         var result = Assert.IsType<JsonObject>(response["result"]);
         Assert.False(result["isError"]!.GetValue<bool>());
         var content = Assert.IsType<JsonArray>(result["content"]);
-        Assert.Equal("{}", content[0]!["text"]!.GetValue<string>());
+        string text = content[0]!["text"]!.GetValue<string>();
+        Assert.StartsWith("<<<UNTRUSTED_TOOL_OUTPUT>>>\n", text);
+        Assert.EndsWith("\n<<<END_UNTRUSTED_TOOL_OUTPUT>>>", text);
+        Assert.Contains("{}", text);
+    }
+
+    [Fact]
+    public async Task ToolsCall_TruncatesResultTextLongerThan256Kb_AndAppendsTruncationMarker()
+    {
+        string pipeName = $"vscontrol-test-truncate-{Guid.NewGuid():N}";
+        using var serverStarted = new SemaphoreSlim(0, 1);
+        string hugeValue = new string('a', 300_000);
+
+        Task serverTask = Task.Run(async () =>
+        {
+            using var server = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+            serverStarted.Release();
+            await server.WaitForConnectionAsync();
+
+            using var reader = new StreamReader(server, new UTF8Encoding(false), false, 1024, leaveOpen: true);
+            using var writer = new StreamWriter(server, new UTF8Encoding(false), 1024, leaveOpen: true) { AutoFlush = true, NewLine = "\n" };
+
+            _ = await reader.ReadLineAsync(); // handshake token
+            string? requestLine = await reader.ReadLineAsync();
+            var request = JsonSerializer.Deserialize<VsControlRequest>(requestLine!, _wireOptions);
+
+            var canned = new VsControlResponse { Id = request!.Id, ResultJson = hugeValue };
+            await writer.WriteLineAsync(JsonSerializer.Serialize(canned, _wireOptions));
+        });
+
+        await serverStarted.WaitAsync();
+
+        await using var pipeClient = new VsControlPipeClient(pipeName, TimeSpan.FromSeconds(5));
+
+        JsonObject response = await RunSingleRequestAsync(
+            pipeClient,
+            """{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"getSolutionInfo","arguments":{}}}""");
+
+        await serverTask;
+
+        var result = Assert.IsType<JsonObject>(response["result"]);
+        var content = Assert.IsType<JsonArray>(result["content"]);
+        string text = content[0]!["text"]!.GetValue<string>();
+        Assert.Contains("[truncated: response exceeded 256KB]", text);
+        Assert.True(text.Length < hugeValue.Length, "Expected the oversized result to actually be truncated.");
+    }
+
+    [Fact]
+    public async Task Initialize_WithUnsupportedProtocolVersion_RespondsWithASupportedVersion_NotAnEcho()
+    {
+        await using var pipeClient = new VsControlPipeClient($"unused-{Guid.NewGuid():N}");
+
+        JsonObject response = await RunSingleRequestAsync(
+            pipeClient,
+            """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1999-01-01"}}""");
+
+        string protocolVersion = response["result"]!["protocolVersion"]!.GetValue<string>();
+        Assert.NotEqual("1999-01-01", protocolVersion);
+        Assert.Equal("2024-11-05", protocolVersion);
+    }
+
+    [Fact]
+    public async Task Initialize_WithASupportedProtocolVersion_EchoesItBack()
+    {
+        await using var pipeClient = new VsControlPipeClient($"unused-{Guid.NewGuid():N}");
+
+        JsonObject response = await RunSingleRequestAsync(
+            pipeClient,
+            """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}""");
+
+        Assert.Equal("2024-11-05", response["result"]!["protocolVersion"]!.GetValue<string>());
     }
 
     [Fact]

@@ -13,6 +13,9 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Pipes;
 using System.Linq;
+using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -26,63 +29,138 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
         ContractResolver = new CamelCasePropertyNamesContractResolver(),
     };
 
+    // RPC_E_SERVERCALL_RETRYLATER: the VS main-thread COM message pump momentarily refused this call
+    // (e.g. it is mid another automation call or a modal dialog is up); not a real failure.
+    private const int _rpcServerCallRetryLaterHResult = unchecked((int)0x8001010A);
+
+    // Only commands that never execute code from the open solution/workspace are allow-listed here.
+    // Debug.Start, Debug.StartWithoutDebugging, Build.BuildSolution, and Build.RebuildSolution are
+    // deliberately excluded: an ACP agent (or anything impersonating one over this pipe) must not be
+    // able to trigger arbitrary code execution by driving the debugger or MSBuild.
+    private static readonly HashSet<string> _allowedCommands = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "Edit.FormatDocument",
+        "Edit.FormatSelection",
+        "Debug.StopDebugging",
+        "File.SaveAll",
+        "View.ErrorList",
+    };
+
     private readonly string _pipeName;
+    private readonly string? _workspaceRoot;
+    private readonly string _token;
     private readonly CancellationTokenSource _cts = new CancellationTokenSource();
     private Microsoft.VisualStudio.Threading.JoinableTask? _listenTask;
-    private NamedPipeServerStream? _pipe;
+    private volatile NamedPipeServerStream? _pipe;
 
-    public VsControlPipeServer(string pipeName)
+    public VsControlPipeServer(string pipeName, string? workspaceRoot, string token)
     {
         _pipeName = pipeName;
+        _workspaceRoot = workspaceRoot;
+        _token = token ?? string.Empty;
     }
 
     public void Start()
     {
+        // VSSDK007 does not see across methods: _listenTask is captured here and joined in
+        // DisposeAsync (below) as part of the shutdown sequence. Start() intentionally returns
+        // immediately; this is a tracked, not fire-and-forget, background listen loop.
+#pragma warning disable VSSDK007
         _listenTask = ThreadHelper.JoinableTaskFactory.RunAsync(() => RunAsync(_cts.Token));
+#pragma warning restore VSSDK007
     }
 
     private async Task RunAsync(CancellationToken cancellationToken)
     {
-        try
+        while (!cancellationToken.IsCancellationRequested)
         {
-            using var pipe = new NamedPipeServerStream(_pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
-            _pipe = pipe;
-
-            await pipe.WaitForConnectionAsync(cancellationToken).ConfigureAwait(false);
-
-            var utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
-            using var reader = new StreamReader(pipe, utf8NoBom, detectEncodingFromByteOrderMarks: false, bufferSize: 4096, leaveOpen: true);
-            using var writer = new StreamWriter(pipe, utf8NoBom, bufferSize: 4096, leaveOpen: true) { AutoFlush = true, NewLine = "\n" };
-
-            while (!cancellationToken.IsCancellationRequested)
+            try
             {
-                var line = await reader.ReadLineAsync().ConfigureAwait(false);
-                if (line is null)
-                {
-                    break; // client disconnected
-                }
+                using var pipe = new NamedPipeServerStream(
+                    _pipeName,
+                    PipeDirection.InOut,
+                    1,
+                    PipeTransmissionMode.Byte,
+                    PipeOptions.Asynchronous,
+                    4096,
+                    4096,
+                    CreatePipeSecurity());
+                _pipe = pipe;
 
-                if (string.IsNullOrWhiteSpace(line))
+                await pipe.WaitForConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                var utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+                using var reader = new StreamReader(pipe, utf8NoBom, detectEncodingFromByteOrderMarks: false, bufferSize: 4096, leaveOpen: true);
+                using var writer = new StreamWriter(pipe, utf8NoBom, bufferSize: 4096, leaveOpen: true) { AutoFlush = true, NewLine = "\n" };
+
+                if (!await TryHandshakeAsync(reader).ConfigureAwait(false))
                 {
+                    // Missing/wrong token: another process on this machine (permitted by the pipe ACL
+                    // because it runs as the same Windows user) guessed the pipe name. Drop the
+                    // connection without processing any request and wait for the next one, instead of
+                    // tearing down the whole listener.
                     continue;
                 }
 
-                var responseLine = await HandleRequestLineAsync(line, cancellationToken).ConfigureAwait(false);
-                await writer.WriteLineAsync(responseLine).ConfigureAwait(false);
+                while (!cancellationToken.IsCancellationRequested)
+                {
+                    var line = await reader.ReadLineAsync().ConfigureAwait(false);
+                    if (line is null)
+                    {
+                        break; // client disconnected
+                    }
+
+                    if (string.IsNullOrWhiteSpace(line))
+                    {
+                        continue;
+                    }
+
+                    var responseLine = await HandleRequestLineAsync(line, cancellationToken).ConfigureAwait(false);
+                    await writer.WriteLineAsync(responseLine).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                break; // Session ended; expected on dispose.
+            }
+            catch (IOException)
+            {
+                // Pipe broken or closed by the client mid-request; expected when the Mcp server
+                // process exits abruptly. Loop back and accept the next connection instead of ending
+                // the listener.
+            }
+            catch (ObjectDisposedException)
+            {
+                // Pipe disposed concurrently with a pending read/write; expected on dispose.
+                break;
             }
         }
-        catch (OperationCanceledException)
+    }
+
+    private async Task<bool> TryHandshakeAsync(StreamReader reader)
+    {
+        string? tokenLine;
+        try
         {
-            // Session ended; expected on dispose.
+            tokenLine = await reader.ReadLineAsync().ConfigureAwait(false);
         }
         catch (IOException)
         {
-            // Pipe broken or closed by the client; expected when the Mcp server process exits.
+            return false;
         }
-        catch (ObjectDisposedException)
-        {
-            // Pipe disposed concurrently with a pending read/write; expected on dispose.
-        }
+
+        return tokenLine is not null && ConstantTimeTokenComparer.Equals(tokenLine, _token);
+    }
+
+    private static PipeSecurity CreatePipeSecurity()
+    {
+        var owner = WindowsIdentity.GetCurrent().Owner
+            ?? throw new InvalidOperationException("Unable to determine the current Windows user identity.");
+
+        var security = new PipeSecurity();
+        security.AddAccessRule(new PipeAccessRule(owner, PipeAccessRights.ReadWrite, AccessControlType.Allow));
+
+        return security;
     }
 
     private async Task<string> HandleRequestLineAsync(string line, CancellationToken cancellationToken)
@@ -158,13 +236,22 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
         return new JObject { ["documents"] = documents };
     }
 
-    private static async Task<JObject> OpenDocumentAsync(JObject args)
+    private async Task<JObject> OpenDocumentAsync(JObject args)
     {
         var path = RequireString(args, "path");
-        var view = await VS.Documents.OpenAsync(path);
+        if (!WorkspacePathGuard.TryResolveWithinWorkspace(_workspaceRoot, path, out var fullPath))
+        {
+            throw new InvalidOperationException($"Path '{path}' is outside the workspace.");
+        }
+
+        var view = await VS.Documents.OpenAsync(fullPath);
+        if (view is null)
+        {
+            throw new InvalidOperationException($"'{path}' could not be opened.");
+        }
 
         var line = args["line"]?.Value<int?>();
-        if (line.HasValue && view?.TextView is not null && view.TextBuffer is not null)
+        if (line.HasValue && view.TextView is not null && view.TextBuffer is not null)
         {
             MoveCaretToLine(view.TextView, view.TextBuffer, line.Value);
         }
@@ -226,12 +313,16 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
         };
     }
 
-    private static async Task<JObject> ReplaceSelectionAsync(JObject args)
+    private async Task<JObject> ReplaceSelectionAsync(JObject args)
     {
         var path = RequireString(args, "path");
         var text = RequireString(args, "text");
+        if (!WorkspacePathGuard.TryResolveWithinWorkspace(_workspaceRoot, path, out var fullPath))
+        {
+            throw new InvalidOperationException($"Path '{path}' is outside the workspace.");
+        }
 
-        var view = await VS.Documents.GetDocumentViewAsync(path) ?? await VS.Documents.OpenAsync(path);
+        var view = await VS.Documents.GetDocumentViewAsync(fullPath) ?? await VS.Documents.OpenAsync(fullPath);
         if (view?.TextView is null || view.TextBuffer is null)
         {
             throw new InvalidOperationException($"'{path}' could not be opened.");
@@ -239,14 +330,21 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
 
         var span = view.TextView.Selection.StreamSelectionSpan.SnapshotSpan;
         var edit = view.TextBuffer.CreateEdit();
+        bool canceled;
         try
         {
             edit.Replace(span.Span, text);
             edit.Apply();
+            canceled = edit.Canceled;
         }
         finally
         {
             edit.Dispose();
+        }
+
+        if (canceled)
+        {
+            throw new InvalidOperationException("The edit was rejected (read-only buffer or vetoed by another extension).");
         }
 
         return new JObject();
@@ -261,6 +359,14 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
         return new JObject();
     }
 
+    /// <summary>
+    /// Builds the current solution and waits for completion. <c>errorCount</c>/<c>warningCount</c>
+    /// reflect the Error List window's contents right after the build - which are themselves subject
+    /// to the Error List's own Build/IntelliSense scope filters - not a raw MSBuild diagnostic count.
+    /// The VS SDK does not expose MSBuild's own diagnostic totals without driving
+    /// <c>IVsSolutionBuildManager</c> directly; the Error List is the diagnostic surface
+    /// <see cref="Community.VisualStudio.Toolkit"/> already gives us.
+    /// </summary>
     private static async Task<JObject> BuildSolutionAsync(JObject args)
     {
         // The optional `configuration` param only takes effect if it matches an existing solution
@@ -324,16 +430,21 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
         return new JObject { ["errors"] = errors };
     }
 
-    private static async Task<JObject> GetDiagnosticsAsync(JObject args)
+    private async Task<JObject> GetDiagnosticsAsync(JObject args)
     {
         var path = RequireString(args, "path");
-        var view = await VS.Documents.GetDocumentViewAsync(path) ?? await VS.Documents.OpenAsync(path);
-        var diagnostics = new JArray();
-        if (view?.TextView is null || view.TextBuffer is null)
+        if (!WorkspacePathGuard.TryResolveWithinWorkspace(_workspaceRoot, path, out var fullPath))
         {
-            return new JObject { ["diagnostics"] = diagnostics };
+            throw new InvalidOperationException($"Path '{path}' is outside the workspace.");
         }
 
+        var view = await VS.Documents.GetDocumentViewAsync(fullPath) ?? await VS.Documents.OpenAsync(fullPath);
+        if (view?.TextView is null || view.TextBuffer is null)
+        {
+            throw new InvalidOperationException($"'{path}' could not be opened.");
+        }
+
+        var diagnostics = new JArray();
         var tagAggregatorFactory = await VS.GetMefServiceAsync<IViewTagAggregatorFactoryService>();
         using var aggregator = tagAggregatorFactory.CreateTagAggregator<IErrorTag>(view.TextView);
 
@@ -371,23 +482,24 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
         var commandArgs = args["args"]?.Value<string>() ?? string.Empty;
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
         var dte = await VS.GetRequiredServiceAsync<DTE, DTE>();
-        dte.ExecuteCommand(commandName, commandArgs);
+        try
+        {
+            dte.ExecuteCommand(commandName, commandArgs);
+        }
+        catch (COMException ex) when (ex.HResult == _rpcServerCallRetryLaterHResult)
+        {
+            throw new InvalidOperationException("Visual Studio is busy, try again.");
+        }
+        catch (COMException)
+        {
+            // Swallow the raw COM/HRESULT text (e.g. "Exception from HRESULT: 0x80010001") - it is
+            // meaningless to the agent on the other end of the pipe and can leak host implementation
+            // detail; a flat, actionable message is all a tool caller needs.
+            throw new InvalidOperationException($"Command '{commandName}' could not be executed.");
+        }
 
         return new JObject();
     }
-
-    private static readonly HashSet<string> _allowedCommands = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-    {
-        "Edit.FormatDocument",
-        "Edit.FormatSelection",
-        "Debug.Start",
-        "Debug.StartWithoutDebugging",
-        "Debug.StopDebugging",
-        "File.SaveAll",
-        "Build.BuildSolution",
-        "Build.RebuildSolution",
-        "View.ErrorList",
-    };
 
     private static async Task<JObject> GetSolutionInfoAsync()
     {
@@ -483,6 +595,8 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _cts.Cancel();
+        _pipe?.Dispose();
+
         try
         {
             if (_listenTask is not null)
@@ -494,7 +608,6 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
         {
         }
 
-        _pipe?.Dispose();
         _cts.Dispose();
     }
 }

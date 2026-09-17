@@ -1,5 +1,3 @@
-using System.Collections.Generic;
-
 namespace ClaudeCode.VsControl.Mcp;
 
 public sealed class VsControlToolDefinition

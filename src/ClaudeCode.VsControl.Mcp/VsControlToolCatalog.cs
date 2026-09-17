@@ -71,7 +71,8 @@ public static class VsControlToolCatalog
 
         new(
             "runCommand",
-            "Invoke an arbitrary Visual Studio DTE command by name (allow-listed by the extension host), such as Edit.FormatDocument or Debug.Start.",
+            "Invoke a Visual Studio DTE command by name. Allow-listed by the extension host to: " +
+            "Edit.FormatDocument, Edit.FormatSelection, Debug.StopDebugging, File.SaveAll, View.ErrorList.",
             """
             {"type":"object","properties":{
               "commandName":{"type":"string","description":"DTE command name, e.g. Edit.FormatDocument."},

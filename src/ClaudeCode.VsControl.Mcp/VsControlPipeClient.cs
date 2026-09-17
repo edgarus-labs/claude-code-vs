@@ -12,11 +12,17 @@ namespace ClaudeCode.VsControl.Mcp;
 
 public sealed class VsControlPipeClient : IAsyncDisposable
 {
+    private const string _handshakeTokenEnvironmentVariable = "CLAUDECODE_VSCONTROL_TOKEN";
+    private const string _buildSolutionMethod = "buildSolution";
+
     private static readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly UTF8Encoding _utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
 
     private readonly string _pipeName;
     private readonly TimeSpan _connectTimeout;
+    private readonly TimeSpan _requestTimeout;
+    private readonly TimeSpan _buildTimeout;
+    private readonly string _handshakeToken;
     private readonly SemaphoreSlim _connectLock = new(1, 1);
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private readonly ConcurrentDictionary<string, TaskCompletionSource<VsControlResponse>> _pending = new();
@@ -27,7 +33,12 @@ public sealed class VsControlPipeClient : IAsyncDisposable
     private Task? _readLoopTask;
     private bool _disposed;
 
-    public VsControlPipeClient(string pipeName, TimeSpan? connectTimeout = null)
+    public VsControlPipeClient(
+        string pipeName,
+        TimeSpan? connectTimeout = null,
+        TimeSpan? requestTimeout = null,
+        TimeSpan? buildTimeout = null,
+        string? handshakeToken = null)
     {
         if (string.IsNullOrWhiteSpace(pipeName))
         {
@@ -36,6 +47,9 @@ public sealed class VsControlPipeClient : IAsyncDisposable
 
         _pipeName = pipeName;
         _connectTimeout = connectTimeout ?? TimeSpan.FromSeconds(5);
+        _requestTimeout = requestTimeout ?? TimeSpan.FromSeconds(60);
+        _buildTimeout = buildTimeout ?? TimeSpan.FromMinutes(5);
+        _handshakeToken = handshakeToken ?? Environment.GetEnvironmentVariable(_handshakeTokenEnvironmentVariable) ?? string.Empty;
     }
 
     public async Task<VsControlResponse> SendAsync(VsControlRequest request, CancellationToken cancellationToken)
@@ -59,7 +73,7 @@ public sealed class VsControlPipeClient : IAsyncDisposable
             try
             {
                 await writer.WriteLineAsync(line).ConfigureAwait(false);
-                await writer.FlushAsync().ConfigureAwait(false);
+                await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
             finally
             {
@@ -73,10 +87,24 @@ public sealed class VsControlPipeClient : IAsyncDisposable
             throw;
         }
 
+        var timeout = string.Equals(request.Method, _buildSolutionMethod, StringComparison.Ordinal) ? _buildTimeout : _requestTimeout;
+        using var timeoutCts = new CancellationTokenSource(timeout);
+        await using var timeoutRegistration = timeoutCts.Token.Register(static state => ((TaskCompletionSource<VsControlResponse>)state!).TrySetCanceled(), tcs);
         await using var registration = cancellationToken.Register(static state => ((TaskCompletionSource<VsControlResponse>)state!).TrySetCanceled(), tcs);
         try
         {
             return await tcs.Task.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // Not the caller's own cancellation: our internal per-request timeoutCts fired instead.
+            // Surface this as a normal VsControlResponse error, never an unhandled exception - a slow
+            // or wedged VS host must not hang the MCP tool call indefinitely.
+            return new VsControlResponse
+            {
+                Id = request.Id,
+                Error = $"Timed out waiting for a response to '{request.Method}' after {timeout.TotalSeconds:0.#}s.",
+            };
         }
         finally
         {
@@ -101,7 +129,7 @@ public sealed class VsControlPipeClient : IAsyncDisposable
 
             DisposeConnectionState();
 
-            var pipe = new NamedPipeClientStream(".", _pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+            var pipe = new NamedPipeClientStream(".", _pipeName, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(_connectTimeout);
             try
@@ -126,7 +154,19 @@ public sealed class VsControlPipeClient : IAsyncDisposable
             _pipe = pipe;
             _reader = new StreamReader(pipe, _utf8NoBom, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
             _writer = new StreamWriter(pipe, _utf8NoBom, bufferSize: 1024, leaveOpen: true) { AutoFlush = false, NewLine = "\n" };
-            _readLoopTask = Task.Run(() => ReadLoopAsync(pipe, _reader));
+
+            // Handshake: the first line on every connection must be the shared token (see
+            // VsControlSessionRegistry.StartSession / VsControlPipeServer.TryHandshakeAsync), written
+            // before any MCP tool call is ever translated onto this pipe.
+            await _writer.WriteLineAsync(_handshakeToken).ConfigureAwait(false);
+            await _writer.FlushAsync(cancellationToken).ConfigureAwait(false);
+
+            // Intentionally CancellationToken.None: this read loop's lifetime is tied to the pipe
+            // connection itself (see ReadLoopAsync's own disconnect handling and DisposeAsync),
+            // not to EnsureConnectedAsync's connect-scoped cancellationToken, which may legitimately
+            // be cancelled (e.g. a caller's per-request timeout) well before the connection - and
+            // this background read loop - should end.
+            _readLoopTask = Task.Run(() => ReadLoopAsync(pipe, _reader), CancellationToken.None);
         }
         finally
         {
@@ -190,11 +230,14 @@ public sealed class VsControlPipeClient : IAsyncDisposable
         {
             disposable?.Dispose();
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException || ex is ObjectDisposedException)
         {
             // The remote end may have already closed the pipe (e.g. after sending its final
             // response); StreamWriter/StreamReader/PipeStream.Dispose can try to flush against
-            // that closed pipe and throw. This is a normal teardown race, not a real failure.
+            // that closed pipe and throw IOException or, once the underlying PipeStream has
+            // already torn itself down, ObjectDisposedException. This is a normal teardown race
+            // between the read loop noticing disconnection and an explicit DisposeAsync call, not
+            // a real failure.
         }
     }
 

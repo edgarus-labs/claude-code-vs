@@ -8,11 +8,22 @@ using System.Threading.Tasks;
 
 namespace ClaudeCode.VsControl.Mcp;
 
-public sealed class McpServer
+public sealed class McpServer : IDisposable
 {
     private const string _serverName = "claude-code-vscontrol-mcp";
     private const string _serverVersion = "1.0.0";
-    private const string _defaultProtocolVersion = "2024-11-05";
+    private static readonly string[] _supportedProtocolVersions = { "2024-11-05" };
+
+    // Hard cap on tool-result text returned to the model: 256 KiB of UTF-16 chars. Guards against an
+    // oversized VS response (e.g. a huge file body) blowing up the agent's context.
+    private const int _maxToolResultTextLength = 262_144;
+    private const string _truncationSuffix = "\n\n[truncated: response exceeded 256KB]";
+
+    // VsControl tool output originates from the open workspace/solution (file contents, build output,
+    // diagnostics) and from the ACP agent's own tool arguments - both untrusted with respect to the
+    // model. Delimiting it marks it as data to reason about, never as instructions to follow.
+    private const string _untrustedOutputPrefix = "<<<UNTRUSTED_TOOL_OUTPUT>>>\n";
+    private const string _untrustedOutputSuffix = "\n<<<END_UNTRUSTED_TOOL_OUTPUT>>>";
 
     private readonly VsControlPipeClient _pipeClient;
     private readonly TextReader _input;
@@ -50,6 +61,13 @@ public sealed class McpServer
                 continue;
             }
 
+            // Sequential by design (F5): each line is fully handled - including its own
+            // VsControlPipeClient.SendAsync call, which now enforces its own per-request timeout -
+            // before the next stdin line is read. Wrapping this call in an additional outer timeout
+            // would let a slow request's line be abandoned mid-flight while its response was still
+            // pending, letting a later request's response reach stdout first: that would break
+            // response ordering, which JSON-RPC callers rely on. The per-request timeout inside
+            // SendAsync is therefore the sole bound on how long any one call can block this loop.
             await HandleLineAsync(line, cancellationToken).ConfigureAwait(false);
         }
     }
@@ -63,6 +81,10 @@ public sealed class McpServer
         }
         catch (Exception ex)
         {
+            // No response is sent for an unparsable line: JSON-RPC requires echoing the caller's
+            // `id`, which cannot be recovered from JSON that failed to parse. Whichever caller sent
+            // this line will wait for a reply that never arrives - a limitation of line-oriented
+            // JSON-RPC without a full batch/error-recovery story, not a bug in this handler.
             await Console.Error.WriteLineAsync(
                 $"ClaudeCode.VsControl.Mcp: ignoring malformed request line ({ex.Message}).").ConfigureAwait(false);
 
@@ -106,17 +128,18 @@ public sealed class McpServer
 
     private static JsonObject HandleInitialize(JsonNode id, JsonNode? @params)
     {
-        string protocolVersion = _defaultProtocolVersion;
+        string protocolVersion = _supportedProtocolVersions[0];
         if (@params is JsonObject paramsObject
             && paramsObject.TryGetPropertyValue("protocolVersion", out var versionNode)
             && versionNode is JsonValue versionValue
             && versionValue.TryGetValue(out string? requestedVersion)
-            && !string.IsNullOrEmpty(requestedVersion))
+            && !string.IsNullOrEmpty(requestedVersion)
+            && Array.IndexOf(_supportedProtocolVersions, requestedVersion) >= 0)
         {
-            // Echo the client's requested version back: this is a fixed-capability server, not a
-            // version-negotiating one, so there is nothing to actually negotiate.
             protocolVersion = requestedVersion;
         }
+        // Else: unrecognized/missing version - respond with the newest version this fixed-capability
+        // server actually supports instead of blindly echoing whatever the client asked for.
 
         var result = new JsonObject
         {
@@ -196,11 +219,21 @@ public sealed class McpServer
         return JsonRpcMessages.CreateSuccessResponse(id, CreateToolResult(isError: false, vsResponse.ResultJson ?? "{}"));
     }
 
-    private static JsonObject CreateToolResult(bool isError, string text) => new()
+    private static JsonObject CreateToolResult(bool isError, string text)
     {
-        ["content"] = new JsonArray(new JsonObject { ["type"] = "text", ["text"] = text }),
-        ["isError"] = isError,
-    };
+        if (text.Length > _maxToolResultTextLength)
+        {
+            text = string.Concat(text.AsSpan(0, _maxToolResultTextLength), _truncationSuffix);
+        }
+
+        text = _untrustedOutputPrefix + text + _untrustedOutputSuffix;
+
+        return new JsonObject
+        {
+            ["content"] = new JsonArray(new JsonObject { ["type"] = "text", ["text"] = text }),
+            ["isError"] = isError,
+        };
+    }
 
     private async Task WriteResponseAsync(JsonObject response, CancellationToken cancellationToken)
     {
@@ -209,11 +242,13 @@ public sealed class McpServer
         try
         {
             await _output.WriteLineAsync(json).ConfigureAwait(false);
-            await _output.FlushAsync().ConfigureAwait(false);
+            await _output.FlushAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
             _writeLock.Release();
         }
     }
+
+    public void Dispose() => _writeLock.Dispose();
 }
