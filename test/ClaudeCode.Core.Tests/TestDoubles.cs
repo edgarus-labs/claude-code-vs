@@ -65,6 +65,20 @@ internal sealed class RecordingAcpAgentConnection : IAcpAgentConnection
         return args;
     }
 
+    public FileReadRequestEventArgs RaiseFileReadRequested(string path, int? line = null, int? limit = null)
+    {
+        var args = new FileReadRequestEventArgs(path, line, limit);
+        FileReadRequested?.Invoke(this, args);
+        return args;
+    }
+
+    public FileWriteRequestEventArgs RaiseFileWriteRequested(string path, string content)
+    {
+        var args = new FileWriteRequestEventArgs(path, content);
+        FileWriteRequested?.Invoke(this, args);
+        return args;
+    }
+
     public ValueTask DisposeAsync()
     {
         DisposeCount++;

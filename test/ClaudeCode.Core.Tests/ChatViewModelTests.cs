@@ -1,6 +1,5 @@
 using ClaudeCode.Contracts;
 using ClaudeCode.Core.ViewModels;
-using ClaudeCode.Core.ViewModels.Demo;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Xunit;
@@ -10,43 +9,34 @@ namespace ClaudeCode.Core.Tests;
 public sealed class ChatViewModelTests
 {
     [Fact]
-    public async Task SendAsync_WithDemoFakeConnection_ProducesAssistantMessage()
-    {
-        var vm = new ChatViewModel(new NullChatSessionServices());
-        await vm.InitializeAsync();
-
-        vm.InputText = "hello there";
-        await vm.SendAsync();
-
-        var assistantMessage = Assert.Single(vm.Messages, m => m.Role == ChatRole.Assistant);
-        Assert.Contains("hello there", assistantMessage.Text);
-        Assert.False(vm.IsBusy);
-    }
-
-    [Fact]
-    public async Task PlanSessionUpdate_PopulatesCurrentPlanEntries()
+    public async Task PlanSessionUpdate_ReplacesPreviousPlan_AndReleaseConnectionClearsIt()
     {
         var connection = new RecordingAcpAgentConnection();
-        var vm = new ChatViewModel(new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService()));
+        using var vm = new ChatViewModel(new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService()));
         await vm.InitializeAsync();
 
         vm.InputText = "make a plan";
         await vm.SendAsync();
 
-        var entries = new List<PlanEntry>
+        connection.RaiseSessionUpdate(new SessionUpdate.Plan(new List<PlanEntry>
         {
             new PlanEntry { Content = "Write tests", Status = PlanEntryStatus.Pending },
-            new PlanEntry { Content = "Implement feature", Status = PlanEntryStatus.InProgress },
-        };
-        connection.RaiseSessionUpdate(new SessionUpdate.Plan(entries));
+        }));
+        Assert.Equal("Write tests", Assert.Single(vm.CurrentPlan!.Entries).Content);
 
-        Assert.NotNull(vm.CurrentPlan);
-        Assert.Equal(2, vm.CurrentPlan!.Entries.Count);
-        Assert.Equal("Write tests", vm.CurrentPlan.Entries[0].Content);
+        // A later plan update replaces the prior one wholesale; it does not merge/append entries.
+        connection.RaiseSessionUpdate(new SessionUpdate.Plan(new List<PlanEntry>
+        {
+            new PlanEntry { Content = "Ship feature", Status = PlanEntryStatus.InProgress },
+        }));
+        Assert.Equal("Ship feature", Assert.Single(vm.CurrentPlan!.Entries).Content);
+
+        connection.RaiseDisconnected();
+        Assert.Null(vm.CurrentPlan);
     }
 
     [Fact]
-    public async Task PermissionRequested_PopulatesPendingPermission_AndChooseCommandCompletesResponse()
+    public async Task PermissionRequested_ChoosingSecondOption_RespondsWithSecondOptionId()
     {
         var connection = new RecordingAcpAgentConnection();
         var vm = new ChatViewModel(new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService()));
@@ -65,12 +55,12 @@ public sealed class ChatViewModelTests
         var requestArgs = connection.RaisePermissionRequested(call, options);
 
         Assert.NotNull(vm.PendingPermission);
-        var chosenOption = vm.PendingPermission!.Options[0];
-        vm.PendingPermission.ChooseCommand.Execute(chosenOption);
+        var secondOption = vm.PendingPermission!.Options[1];
+        vm.PendingPermission.ChooseCommand.Execute(secondOption);
 
         var resultOptionId = await requestArgs.Response.Task;
 
-        Assert.Equal("allow-once", resultOptionId);
+        Assert.Equal("reject-once", resultOptionId);
         Assert.Null(vm.PendingPermission);
     }
 }

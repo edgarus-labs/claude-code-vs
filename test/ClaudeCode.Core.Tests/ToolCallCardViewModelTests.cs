@@ -34,4 +34,29 @@ public sealed class ToolCallCardViewModelTests
         Assert.Equal(ToolCallStatus.Completed, card.Status);
         Assert.Single(card.Content);
     }
+
+    [Fact]
+    public void Apply_ContentOnlyUpdate_DoesNotRegressCompletedStatus()
+    {
+        var initial = new ToolCallUpdate
+        {
+            ToolCallId = "tc-1",
+            Title = "Edit file.txt",
+            Status = ToolCallStatus.Completed,
+            Content = new[] { new ToolCallContent { Text = "done" } },
+        };
+        var card = new ToolCallCardViewModel(initial);
+
+        // A partial update carrying only new content (no explicit status change from the agent)
+        // materializes Status as the enum default (Pending). That must not regress a terminal status.
+        var contentOnlyUpdate = new ToolCallUpdate
+        {
+            ToolCallId = "tc-1",
+            Content = new[] { new ToolCallContent { Text = "more output" } },
+        };
+        card.Apply(contentOnlyUpdate);
+
+        Assert.Equal(ToolCallStatus.Completed, card.Status);
+        Assert.Single(card.Content);
+    }
 }

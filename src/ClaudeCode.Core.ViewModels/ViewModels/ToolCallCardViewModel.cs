@@ -48,7 +48,10 @@ public sealed class ToolCallCardViewModel : ObservableObject
             Title = call.Title;
         }
 
-        Status = call.Status;
+        if (call.Status != ToolCallStatus.Pending || Status == ToolCallStatus.Pending)
+        {
+            Status = call.Status;
+        }
 
         if (call.Content.Count > 0)
         {

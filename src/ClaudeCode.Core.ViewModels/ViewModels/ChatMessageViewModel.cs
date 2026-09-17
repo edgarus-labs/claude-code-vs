@@ -1,5 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using System.Collections.ObjectModel;
+using System.Text;
 
 namespace ClaudeCode.Core.ViewModels;
 
@@ -8,18 +9,14 @@ public sealed class ChatMessageViewModel : ObservableObject
     public ChatMessageViewModel(ChatRole role, string text = "")
     {
         Role = role;
-        _text = text;
+        _textBuilder = new StringBuilder(text);
     }
 
     public ChatRole Role { get; }
 
-    private string _text;
+    private readonly StringBuilder _textBuilder;
 
-    public string Text
-    {
-        get => _text;
-        private set => SetProperty(ref _text, value);
-    }
+    public string Text => _textBuilder.ToString();
 
     public ObservableCollection<ToolCallCardViewModel> ToolCalls { get; } = new ObservableCollection<ToolCallCardViewModel>();
 
@@ -30,6 +27,7 @@ public sealed class ChatMessageViewModel : ObservableObject
             return;
         }
 
-        Text += chunk;
+        _textBuilder.Append(chunk);
+        OnPropertyChanged(nameof(Text));
     }
 }

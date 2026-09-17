@@ -7,7 +7,25 @@ internal static class DiffBuilder
 {
     private const long _maxAlignmentCells = 2_000_000;
 
+    private static string? _cachedOldText;
+    private static string? _cachedNewText;
+    private static IReadOnlyList<DiffLineViewModel>? _cachedResult;
+
     public static IReadOnlyList<DiffLineViewModel> Build(string oldText, string newText)
+    {
+        if (_cachedResult is not null && _cachedOldText == oldText && _cachedNewText == newText)
+        {
+            return _cachedResult;
+        }
+
+        var result = BuildCore(oldText, newText);
+        _cachedOldText = oldText;
+        _cachedNewText = newText;
+        _cachedResult = result;
+        return result;
+    }
+
+    private static List<DiffLineViewModel> BuildCore(string oldText, string newText)
     {
         var oldLines = SplitLines(oldText);
         var newLines = SplitLines(newText);
@@ -79,5 +97,6 @@ internal static class DiffBuilder
         return result;
     }
 
-    private static string[] SplitLines(string text) => (text ?? string.Empty).Replace("\r\n", "\n").Split('\n');
+    private static string[] SplitLines(string text) =>
+        string.IsNullOrEmpty(text) ? Array.Empty<string>() : text.Replace("\r\n", "\n").Split('\n');
 }
