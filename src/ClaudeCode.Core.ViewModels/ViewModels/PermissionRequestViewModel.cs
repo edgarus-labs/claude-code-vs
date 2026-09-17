@@ -1,37 +1,34 @@
+using ClaudeCode.Contracts;
+using CommunityToolkit.Mvvm.Input;
 using System;
 using System.Collections.Generic;
 using System.Windows.Input;
-using ClaudeCode.Contracts;
-using CommunityToolkit.Mvvm.Input;
 
-namespace ClaudeCode.Core.ViewModels
+namespace ClaudeCode.Core.ViewModels;
+
+public sealed class PermissionRequestViewModel
 {
-    /// <summary>Backs the permission-request banner: one tool call awaiting Allow/Allow-always/Reject.</summary>
-    public sealed class PermissionRequestViewModel
+    public PermissionRequestViewModel(string title, IReadOnlyList<PermissionOption> options, Action<PermissionOption> choose)
     {
-        public PermissionRequestViewModel(string title, IReadOnlyList<PermissionOption> options, Action<PermissionOption> choose)
+        if (choose is null)
         {
-            if (choose == null)
-            {
-                throw new ArgumentNullException(nameof(choose));
-            }
-
-            Title = title;
-            Options = options;
-            ChooseCommand = new RelayCommand<PermissionOption>(option =>
-            {
-                if (option != null)
-                {
-                    choose(option);
-                }
-            });
+            throw new ArgumentNullException(nameof(choose));
         }
 
-        public string Title { get; }
-
-        public IReadOnlyList<PermissionOption> Options { get; }
-
-        /// <summary>Parameter is the chosen <see cref="PermissionOption"/>.</summary>
-        public ICommand ChooseCommand { get; }
+        Title = title;
+        Options = options;
+        ChooseCommand = new RelayCommand<PermissionOption>(option =>
+        {
+            if (option is not null)
+            {
+                choose(option);
+            }
+        });
     }
+
+    public string Title { get; }
+
+    public IReadOnlyList<PermissionOption> Options { get; }
+
+    public ICommand ChooseCommand { get; }
 }

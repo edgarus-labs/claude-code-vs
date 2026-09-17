@@ -1,8 +1,7 @@
-namespace ClaudeCode.Core.ViewModels
+namespace ClaudeCode.Core.ViewModels;
+
+public enum ChatRole
 {
-    public enum ChatRole
-    {
-        User,
-        Assistant,
-    }
+    User,
+    Assistant,
 }

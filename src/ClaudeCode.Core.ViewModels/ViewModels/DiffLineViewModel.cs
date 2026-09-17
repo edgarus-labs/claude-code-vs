@@ -1,32 +1,23 @@
-namespace ClaudeCode.Core.ViewModels
+namespace ClaudeCode.Core.ViewModels;
+
+public sealed class DiffLineViewModel
 {
-    public enum DiffLineKind
+    public DiffLineViewModel(DiffLineKind kind, string text)
     {
-        Context,
-        Added,
-        Removed,
+        Kind = kind;
+        Text = text;
     }
 
-    /// <summary>One rendered line of a unified diff view for a tool-call's file edit.</summary>
-    public sealed class DiffLineViewModel
+    public DiffLineKind Kind { get; }
+
+    public string Text { get; }
+
+    public string Prefix => Kind switch
     {
-        public DiffLineViewModel(DiffLineKind kind, string text)
-        {
-            Kind = kind;
-            Text = text;
-        }
+        DiffLineKind.Added => "+",
+        DiffLineKind.Removed => "-",
+        _ => " ",
+    };
 
-        public DiffLineKind Kind { get; }
-
-        public string Text { get; }
-
-        public string Prefix => Kind switch
-        {
-            DiffLineKind.Added => "+",
-            DiffLineKind.Removed => "-",
-            _ => " ",
-        };
-
-        public string DisplayText => Prefix + " " + Text;
-    }
+    public string DisplayText => Prefix + " " + Text;
 }

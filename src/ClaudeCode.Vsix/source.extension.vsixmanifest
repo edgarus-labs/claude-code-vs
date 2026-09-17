@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
   <Metadata>
-    <Identity Id="ClaudeCodeForVisualStudio.b7e6a1c4-2f9d-4e3a-8b5c-7d1a9e3f6c02" Version="0.1.0" Language="en-US" Publisher="ClaudeCodeVS" />
+    <Identity Id="ClaudeCodeForVisualStudio.b7e6a1c4-2f9d-4e3a-8b5c-7d1a9e3f6c02" Version="0.1.0" Language="en-US" Publisher="EdgarusLabs" />
     <DisplayName>Claude Code for Visual Studio</DisplayName>
-    <Description xml:space="preserve">Chat with Claude Code from a native sidebar tool window in Visual Studio, backed by the Agent Client Protocol (ACP) over the claude-code-acp CLI. Streaming responses, diff review, tool-call approval, and plan tracking - authenticated with your existing Anthropic account, no API key required.</Description>
+    <Description xml:space="preserve">Chat with Claude Code from a native sidebar tool window in Visual Studio, backed by the Agent Client Protocol (ACP) over the @agentclientprotocol/claude-agent-acp adapter. Streaming responses, diff review, tool-call approval, and plan tracking - authenticated with your existing Anthropic account, no API key required.</Description>
     <MoreInfo>https://github.com/edgarus-labs/claude-code-vs</MoreInfo>
     <License>LICENSE.txt</License>
     <Icon>Resources\Icon.png</Icon>
@@ -11,9 +11,15 @@
     <Tags>Claude;Claude Code;Anthropic;AI;Chat;Assistant;Agent</Tags>
   </Metadata>
   <Installation>
-    <InstallationTarget Id="Microsoft.VisualStudio.Community" Version="[17.0,19.0)" />
-    <InstallationTarget Id="Microsoft.VisualStudio.Pro" Version="[17.0,19.0)" />
-    <InstallationTarget Id="Microsoft.VisualStudio.Enterprise" Version="[17.0,19.0)" />
+    <InstallationTarget Id="Microsoft.VisualStudio.Community" Version="[17.0,19.0)">
+      <ProductArchitecture>amd64</ProductArchitecture>
+    </InstallationTarget>
+    <InstallationTarget Id="Microsoft.VisualStudio.Pro" Version="[17.0,19.0)">
+      <ProductArchitecture>amd64</ProductArchitecture>
+    </InstallationTarget>
+    <InstallationTarget Id="Microsoft.VisualStudio.Enterprise" Version="[17.0,19.0)">
+      <ProductArchitecture>amd64</ProductArchitecture>
+    </InstallationTarget>
   </Installation>
   <Dependencies>
     <Dependency Id="Microsoft.Framework.NDP" DisplayName="Microsoft .NET Framework" d:Source="Manual" Version="[4.7.2,)" />

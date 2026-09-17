@@ -1,215 +1,244 @@
+using ClaudeCode.Acp;
+using ClaudeCode.Contracts;
+using Microsoft.VisualStudio.Shell;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using System;
+using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
-using System.Security.Cryptography;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
-using ClaudeCode.Contracts;
 
-namespace ClaudeCode.Vsix.Auth
+namespace ClaudeCode.Vsix.Auth;
+
+/// <summary>
+/// Reports native Claude authentication without reading credentials or owning a login flow.
+/// The adapter's bundled CLI inherits the environment (including CLAUDE_CONFIG_DIR) and owns
+/// credential lookup and refresh. An inconclusive status probe must not prevent a session attempt.
+/// </summary>
+internal sealed class AcpAuthService : IAcpAuthService
 {
-    /// <summary>
-    /// Wraps the Claude Code CLI's own OAuth browser login (`claude setup-token`). Never handles a raw API
-    /// key: it shells out to the CLI, scrapes the long-lived OAuth token the CLI itself prints/persists, and
-    /// stores that token DPAPI-encrypted (current user scope) in a local file under
-    /// <c>%LOCALAPPDATA%\ClaudeCodeVs\auth.bin</c>. The decrypted token is exposed only via
-    /// <see cref="TryGetOauthToken"/> for injection into the agent child process's environment - it is never
-    /// written to a command line or logged.
-    /// </summary>
-    internal sealed class AcpAuthService : IAcpAuthService
+    private const string _loginInstructions = "Run 'claude auth login' in a terminal, or "
+        + "'claude-agent-acp --cli auth login' to use the adapter's bundled CLI, then check sign-in again. "
+        + "Use the same CLAUDE_CONFIG_DIR environment as Visual Studio and restart Visual Studio after changing it.";
+    private readonly Func<string?> _adapterPathProvider;
+    private readonly object _stateLock = new object();
+    private AuthState _currentState = AuthState.Unknown;
+
+    public AcpAuthService(Func<string?> adapterPathProvider)
     {
-        private static readonly Regex OauthTokenPattern = new Regex(@"sk-ant-oat01-[A-Za-z0-9\-_]+", RegexOptions.Compiled);
+        _adapterPathProvider = adapterPathProvider ?? throw new ArgumentNullException(nameof(adapterPathProvider));
+    }
 
-        private readonly Func<string> _cliPathProvider;
-        private readonly string _authFilePath;
-        private readonly object _stateLock = new object();
-        private AuthState _currentState = AuthState.Unknown;
+    public AuthState CurrentState
+    {
+        get { lock (_stateLock) { return _currentState; } }
+    }
 
-        /// <param name="cliPathProvider">Resolves the `claude` executable to invoke for `setup-token`, evaluated fresh on every sign-in attempt so a later change to the VS Options CLI path override takes effect immediately.</param>
-        public AcpAuthService(Func<string> cliPathProvider)
+    public event EventHandler<AuthStateChangedEventArgs>? StateChanged;
+
+    public async Task<bool> IsSignedInAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        // The options callback uses GetDialogPage, which is UI-thread affine.
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
+        string? overridePath = _adapterPathProvider();
+        var executable = string.IsNullOrWhiteSpace(overridePath)
+            ? AcpExecutableResolver.TryResolveDefault()
+            : AcpExecutableResolver.TryResolve(overridePath!);
+        if (executable is null)
         {
-            _cliPathProvider = cliPathProvider ?? throw new ArgumentNullException(nameof(cliPathProvider));
-            var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            _authFilePath = Path.Combine(localAppData, "ClaudeCodeVs", "auth.bin");
+            SetState(AuthState.Unknown, "Install @agentclientprotocol/claude-agent-acp and Node.js 22 or newer, "
+                + "or configure its ACP executable path in Tools > Options > Claude Code. Native sign-in has not been checked.");
+            return false;
         }
 
-        public AuthState CurrentState
+        AuthState state = await Task.Run(() => ReadNativeStatusAsync(executable, cancellationToken), cancellationToken).ConfigureAwait(false);
+        SetState(state, state == AuthState.Unknown
+            ? "Native sign-in status could not be determined. You can still attempt a session; the native CLI handles credentials and refresh. " + _loginInstructions
+            : state == AuthState.SignedOut ? _loginInstructions : null);
+        return state == AuthState.SignedIn;
+    }
+
+    public async Task SignInAsync(CancellationToken cancellationToken, IProgress<string>? progress = null)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        SetState(AuthState.SigningIn);
+        progress?.Report("Checking native Claude sign-in status; no credentials are read or changed by the extension.");
+        try
         {
-            get { lock (_stateLock) { return _currentState; } }
-        }
-
-        public event EventHandler<AuthStateChangedEventArgs>? StateChanged;
-
-        public Task<bool> IsSignedInAsync(CancellationToken cancellationToken)
-        {
-            var signedIn = TryGetOauthToken(out _);
-            SetState(signedIn ? AuthState.SignedIn : AuthState.SignedOut);
-            return Task.FromResult(signedIn);
-        }
-
-        public async Task SignInAsync(CancellationToken cancellationToken, IProgress<string>? progress = null)
-        {
-            SetState(AuthState.SigningIn);
-
-            var cliPath = _cliPathProvider();
-            var startInfo = new ProcessStartInfo
+            if (await IsSignedInAsync(cancellationToken).ConfigureAwait(false))
             {
-                FileName = cliPath,
-                Arguments = "setup-token",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
+                return;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            SetState(AuthState.Unknown);
+            throw;
+        }
+
+        string detail = CurrentState == AuthState.SignedOut
+            ? "The native CLI reports no configured authentication. " + _loginInstructions
+            : "Native sign-in status is unavailable. Verify the ACP executable path and run 'claude-agent-acp --cli auth status --json' in a terminal. " + _loginInstructions;
+        SetState(CurrentState, detail);
+        throw new InvalidOperationException(detail);
+    }
+
+    public Task SignOutAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        // Only reset this extension's displayed state; never modify shared native credentials.
+        SetState(AuthState.SignedOut, "Visual Studio sign-in state cleared. Native Claude credentials have not been changed.");
+        return Task.CompletedTask;
+    }
+
+    private static async Task<AuthState> ReadNativeStatusAsync(AcpExecutableSpec executable, CancellationToken cancellationToken)
+    {
+        var arguments = new List<string>(executable.Arguments) { "--cli", "auth", "status", "--json" };
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = executable.FileName,
+                Arguments = ProcessArgumentEscaping.ToArgumentsString(arguments),
                 UseShellExecute = false,
                 CreateNoWindow = true,
-            };
-
-            string? capturedToken = null;
-            var outputLog = new StringBuilder();
-
-            void OnLine(string? data)
-            {
-                if (data == null)
-                {
-                    return;
-                }
-
-                outputLog.AppendLine(data);
-                progress?.Report(data);
-
-                if (capturedToken == null)
-                {
-                    var match = OauthTokenPattern.Match(data);
-                    if (match.Success)
-                    {
-                        capturedToken = match.Value;
-                    }
-                }
-            }
-
-            using var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
-            process.OutputDataReceived += (_, e) => OnLine(e.Data);
-            process.ErrorDataReceived += (_, e) => OnLine(e.Data);
-
-            try
-            {
-                process.Start();
-            }
-            catch (Exception ex)
-            {
-                SetState(AuthState.Error, ex.Message);
-                throw new InvalidOperationException($"Failed to start '{cliPath} setup-token': {ex.Message}", ex);
-            }
-
-            process.BeginOutputReadLine();
-            process.BeginErrorReadLine();
-
-            using (cancellationToken.Register(() =>
-            {
-                try
-                {
-                    if (!process.HasExited)
-                    {
-                        process.Kill();
-                    }
-                }
-                catch (InvalidOperationException)
-                {
-                    // Process already exited between the check and the kill attempt.
-                }
-            }))
-            {
-                await Task.Run(() => process.WaitForExit(), cancellationToken).ConfigureAwait(false);
-            }
-
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            },
+            EnableRaisingEvents = true,
+        };
+        bool started = false;
+        try
+        {
             cancellationToken.ThrowIfCancellationRequested();
-
-            if (capturedToken == null)
+            var exited = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            process.Exited += (_, __) => exited.TrySetResult(true);
+            started = process.Start();
+            if (!started)
             {
-                // The token may have arrived split across OutputDataReceived callbacks; re-scan the full log.
-                var match = OauthTokenPattern.Match(outputLog.ToString());
-                if (match.Success)
-                {
-                    capturedToken = match.Value;
-                }
+                return AuthState.Unknown;
             }
 
-            if (process.ExitCode != 0 || capturedToken == null)
+            // Discard stderr and cap stdout; neither stream is ever published.
+            Task stderr = process.StandardError.BaseStream.CopyToAsync(Stream.Null);
+            Task<string> output = ReadStatusOutputAsync(process.StandardOutput);
+            Task complete = Task.WhenAll(stderr, output, exited.Task);
+            // Closing pipes during cleanup can fault pending reads after the bounded wait ends.
+            _ = complete.ContinueWith(task => { _ = task.Exception; },
+                CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            Task finished = await Task.WhenAny(complete, Task.Delay(TimeSpan.FromSeconds(5), cancellationToken)).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (finished != complete)
             {
-                var detail = $"'{cliPath} setup-token' exited with code {process.ExitCode} without producing an OAuth token.";
-                SetState(AuthState.Error, detail);
-                throw new InvalidOperationException(detail);
+                return AuthState.Unknown;
             }
 
-            PersistToken(capturedToken);
-            SetState(AuthState.SignedIn);
+            await complete.ConfigureAwait(false);
+            // A logged-out CLI can exit 1 while still returning valid status JSON.
+            var status = JObject.Parse(await output.ConfigureAwait(false));
+            if (status["loggedIn"]?.Type != JTokenType.Boolean)
+            {
+                return AuthState.Unknown;
+            }
+
+            string? provider = status["apiProvider"]?.Type == JTokenType.String ? status["apiProvider"]!.Value<string>() : null;
+            bool externalProvider = !string.IsNullOrEmpty(provider) && provider != "firstParty";
+            bool apiKeyConfigured = status["apiKeySource"]?.Type == JTokenType.String
+                && !string.IsNullOrEmpty(status["apiKeySource"]!.Value<string>());
+            return status["loggedIn"]!.Value<bool>() || externalProvider || apiKeyConfigured
+                ? AuthState.SignedIn : AuthState.SignedOut;
+        }
+        catch (Exception ex) when (ex is Win32Exception || ex is IOException || ex is InvalidOperationException || ex is JsonException)
+        {
+            return AuthState.Unknown;
+        }
+        finally
+        {
+            if (started)
+            {
+                TerminateOwnedProbe(process);
+                process.StandardOutput.Dispose();
+                process.StandardError.Dispose();
+            }
+        }
+    }
+
+    private static async Task<string> ReadStatusOutputAsync(StreamReader reader)
+    {
+        const int maxCharacters = 64 * 1024;
+        var buffer = new char[1024];
+        var output = new StringBuilder();
+        int count;
+        while ((count = await reader.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false)) != 0)
+        {
+            if (output.Length + count > maxCharacters)
+            {
+                throw new InvalidOperationException("Native authentication status exceeded the output limit.");
+            }
+
+            output.Append(buffer, 0, count);
         }
 
-        public Task SignOutAsync(CancellationToken cancellationToken)
+        return output.ToString();
+    }
+
+    private static void TerminateOwnedProbe(Process process)
+    {
+        try
+        {
+            if (process.HasExited)
+            {
+                return;
+            }
+
+            // .NET Framework lacks Kill(entireProcessTree). Target only this freshly spawned
+            // probe and its native CLI child, never other Claude processes or user sessions.
+            using var cleanup = Process.Start(new ProcessStartInfo
+            {
+                FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "taskkill.exe"),
+                Arguments = "/PID " + process.Id.ToString(System.Globalization.CultureInfo.InvariantCulture) + " /T /F",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            });
+            if (cleanup is not null && !cleanup.WaitForExit(2000))
+            {
+                cleanup.Kill();
+            }
+        }
+        catch (Exception ex) when (ex is Win32Exception || ex is InvalidOperationException)
+        {
+            // The probe may exit between the check and the targeted cleanup.
+        }
+        finally
         {
             try
             {
-                if (File.Exists(_authFilePath))
+                if (!process.HasExited)
                 {
-                    File.Delete(_authFilePath);
+                    process.Kill();
                 }
             }
-            catch (IOException)
+            catch (Exception ex) when (ex is Win32Exception || ex is InvalidOperationException)
             {
-                // Best-effort delete; the file may be locked momentarily by another process.
+                // Already exited or no longer accessible.
             }
-
-            SetState(AuthState.SignedOut);
-            return Task.CompletedTask;
         }
+    }
 
-        /// <summary>
-        /// Decrypts and returns the stored OAuth token, if any. Used by
-        /// <see cref="ClaudeCode.Vsix.Connections.ClaudeCodeConnectionFactory"/> to populate the
-        /// CLAUDE_CODE_OAUTH_TOKEN environment variable for the spawned agent process - never via a CLI argument.
-        /// </summary>
-        internal bool TryGetOauthToken(out string token)
+    private void SetState(AuthState state, string? detail = null)
+    {
+        lock (_stateLock)
         {
-            token = string.Empty;
-            try
-            {
-                if (!File.Exists(_authFilePath))
-                {
-                    return false;
-                }
-
-                var protectedBytes = File.ReadAllBytes(_authFilePath);
-                var rawBytes = ProtectedData.Unprotect(protectedBytes, null, DataProtectionScope.CurrentUser);
-                token = Encoding.UTF8.GetString(rawBytes);
-                return !string.IsNullOrWhiteSpace(token);
-            }
-            catch (Exception ex) when (ex is IOException || ex is CryptographicException || ex is UnauthorizedAccessException)
-            {
-                return false;
-            }
+            _currentState = state;
         }
 
-        private void PersistToken(string token)
-        {
-            var directory = Path.GetDirectoryName(_authFilePath);
-            if (!string.IsNullOrEmpty(directory))
-            {
-                Directory.CreateDirectory(directory);
-            }
-
-            var rawBytes = Encoding.UTF8.GetBytes(token);
-            var protectedBytes = ProtectedData.Protect(rawBytes, null, DataProtectionScope.CurrentUser);
-            File.WriteAllBytes(_authFilePath, protectedBytes);
-        }
-
-        private void SetState(AuthState state, string? detail = null)
-        {
-            lock (_stateLock)
-            {
-                _currentState = state;
-            }
-
-            StateChanged?.Invoke(this, new AuthStateChangedEventArgs(state, detail));
-        }
+        StateChanged?.Invoke(this, new AuthStateChangedEventArgs(state, detail));
     }
 }

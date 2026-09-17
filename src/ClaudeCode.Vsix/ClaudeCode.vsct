@@ -11,9 +11,6 @@
       <Group guid="guidClaudeCodeCommandSet" id="ClaudeCodeMenuGroup" priority="0x0600">
         <Parent guid="guidClaudeCodeCommandSet" id="ClaudeCodeMenu"/>
       </Group>
-      <Group guid="guidClaudeCodeCommandSet" id="ClaudeCodeToolbarGroup" priority="0x0100">
-        <Parent guid="guidClaudeCodeCommandSet" id="ClaudeCodeToolbar"/>
-      </Group>
     </Groups>
 
     <Menus>
@@ -25,20 +22,16 @@
           <CommandName>Claude Code</CommandName>
         </Strings>
       </Menu>
-      <Menu guid="guidClaudeCodeCommandSet" id="ClaudeCodeToolbar" type="Toolbar">
-        <CommandFlag>DefaultDocked</CommandFlag>
-        <Strings>
-          <ButtonText>Claude Code</ButtonText>
-          <CommandName>Claude Code Toolbar</CommandName>
-        </Strings>
-      </Menu>
     </Menus>
+
+    <Bitmaps>
+      <Bitmap guid="guidClaudeCodeImages" href="Resources\CommandIcon.png" usedList="ClaudeCodeIcon"/>
+    </Bitmaps>
 
     <Buttons>
       <Button guid="guidClaudeCodeCommandSet" id="OpenChatWindowCommandId" priority="0x0100" type="Button">
         <Parent guid="guidClaudeCodeCommandSet" id="ClaudeCodeMenuGroup"/>
-        <Icon guid="ImageCatalogGuid" id="CommentSparkle"/>
-        <CommandFlag>IconIsMoniker</CommandFlag>
+        <Icon guid="guidClaudeCodeImages" id="ClaudeCodeIcon"/>
         <Strings>
           <ButtonText>Claude Code Chat</ButtonText>
           <CommandName>ClaudeCode.OpenChatWindow</CommandName>
@@ -65,15 +58,15 @@
           <ToolTipText>Sign out and remove the stored Claude Code credential</ToolTipText>
         </Strings>
       </Button>
-      <!-- Same open-chat-window command, mirrored onto the dedicated toolbar for a docked/sidebar-style
-           launcher icon in addition to the menu entry above. -->
+      <!-- Same command, also placed under View > Other Windows so the tool window is discoverable
+           and reopenable through Visual Studio's standard mechanism for closed/undocked tool
+           windows, independent of the custom top-level "Claude Code" menu above. -->
       <Button guid="guidClaudeCodeCommandSet" id="OpenChatWindowCommandId" priority="0x0100" type="Button">
-        <Parent guid="guidClaudeCodeCommandSet" id="ClaudeCodeToolbarGroup"/>
-        <Icon guid="ImageCatalogGuid" id="CommentSparkle"/>
-        <CommandFlag>IconIsMoniker</CommandFlag>
+        <Parent guid="guidSHLMainMenu" id="IDG_VS_WNDO_OTRWNDWS1"/>
+        <Icon guid="guidClaudeCodeImages" id="ClaudeCodeIcon"/>
         <Strings>
-          <ButtonText>Claude Code Chat</ButtonText>
-          <CommandName>ClaudeCode.OpenChatWindow</CommandName>
+          <ButtonText>Claude Code</ButtonText>
+          <CommandName>ClaudeCode.OpenChatWindow.OtherWindows</CommandName>
           <ToolTipText>Open the Claude Code chat window</ToolTipText>
         </Strings>
       </Button>
@@ -81,18 +74,17 @@
 
   </Commands>
 
-  <KeyBindings>
-    <KeyBinding guid="guidClaudeCodeCommandSet" id="OpenChatWindowCommandId" editor="guidVSStd97" key1="C" mod1="Control Shift"/>
-  </KeyBindings>
 
   <Symbols>
     <GuidSymbol name="guidClaudeCodePackage" value="{8f5a6e3b-8f1a-4a6a-9d1a-3c2f7f9d2b40}"/>
 
+    <GuidSymbol name="guidClaudeCodeImages" value="{6a1e4f2b-9c3d-47a8-b5e1-2d8f6c4a9e70}">
+      <IDSymbol name="ClaudeCodeIcon" value="1"/>
+    </GuidSymbol>
+
     <GuidSymbol name="guidClaudeCodeCommandSet" value="{3a9b6f1e-3e7c-4f2f-9c2a-2b6f5a7d9e11}">
       <IDSymbol name="ClaudeCodeMenuGroup" value="0x1020"/>
       <IDSymbol name="ClaudeCodeMenu" value="0x1030"/>
-      <IDSymbol name="ClaudeCodeToolbar" value="0x1040"/>
-      <IDSymbol name="ClaudeCodeToolbarGroup" value="0x1050"/>
       <IDSymbol name="OpenChatWindowCommandId" value="0x0100"/>
       <IDSymbol name="SignInCommandId" value="0x0101"/>
       <IDSymbol name="SignOutCommandId" value="0x0102"/>
