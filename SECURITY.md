@@ -6,7 +6,9 @@ details.
 
 ## Reporting a vulnerability
 
-- Preferred: open a GitHub issue on this repository and mark it security-sensitive, or
+- Preferred: use GitHub's private vulnerability reporting for this repository
+  ([github.com/edgarus-labs/claude-code-vs/security/advisories/new](https://github.com/edgarus-labs/claude-code-vs/security/advisories/new)),
+  which is visible only to maintainers, not a public issue, or
 - Contact the maintainers listed in the repository (see the `Publisher`/organization on
   [github.com/edgarus-labs](https://github.com/edgarus-labs)).
 
