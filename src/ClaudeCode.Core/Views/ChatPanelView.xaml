@@ -21,9 +21,13 @@
 
       <conv:BoolToVisibilityConverter x:Key="BoolToVisibilityConverter" />
       <conv:NullToVisibilityConverter x:Key="NullToVisibilityConverter" />
-      <conv:EnumEqualsConverter x:Key="EnumEqualsConverter" />
       <conv:PlanStatusGlyphConverter x:Key="PlanStatusGlyphConverter" />
       <views:ChatTextFontSizeConverter x:Key="ChatTextFontSizeConverter" />
+      <conv:ToolCallStatusToDisplayTextConverter x:Key="ToolCallStatusToDisplayTextConverter" />
+
+      <Style x:Key="ButtonIconStrokeStyle" TargetType="Path">
+        <Setter Property="Stroke" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+      </Style>
 
       <Style x:Key="ChatButtonStyle" TargetType="Button">
         <Setter Property="Background" Value="{DynamicResource ChatAccentBrush}" />
@@ -225,7 +229,7 @@
             <StackPanel Orientation="Horizontal">
               <TextBlock Text="{Binding Title}" VerticalAlignment="Center"
                          FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType=views:ChatPanelView}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}" />
-              <TextBlock Text="{Binding Status}" Margin="8,0,0,0" VerticalAlignment="Center"
+              <TextBlock Text="{Binding Status, Converter={StaticResource ToolCallStatusToDisplayTextConverter}}" Margin="8,0,0,0" VerticalAlignment="Center"
                          FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType=views:ChatPanelView}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=10}"
                          Foreground="{DynamicResource ChatSubtleForegroundBrush}" />
             </StackPanel>
@@ -327,11 +331,19 @@
     </Grid.RowDefinitions>
 
     <!-- Message history -->
-    <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="12,4"
-                  d:DataContext="{d:DesignInstance vm:ChatViewModel}">
-      <StackPanel MaxWidth="760" HorizontalAlignment="Stretch">
-        <ItemsControl ItemsSource="{Binding Messages}" ItemTemplate="{StaticResource ChatMessageTemplate}" />
-      </StackPanel>
+    <ScrollViewer x:Name="TranscriptScrollViewer" Grid.Row="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                  CanContentScroll="True" Padding="12,4"
+                  d:DataContext="{d:DesignInstance vm:ChatViewModel}"
+                  ScrollChanged="TranscriptScrollViewer_ScrollChanged">
+      <ItemsControl ItemsSource="{Binding Messages}" ItemTemplate="{StaticResource ChatMessageTemplate}"
+                    MaxWidth="760" HorizontalAlignment="Stretch"
+                    VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling">
+        <ItemsControl.ItemsPanel>
+          <ItemsPanelTemplate>
+            <VirtualizingStackPanel />
+          </ItemsPanelTemplate>
+        </ItemsControl.ItemsPanel>
+      </ItemsControl>
     </ScrollViewer>
 
     <StackPanel Grid.Row="0" VerticalAlignment="Center" Margin="24,20" IsHitTestVisible="False">
@@ -535,7 +547,7 @@
                         AutomationProperties.Name="Attach active Visual Studio document"
                         AutomationProperties.HelpText="Captures the current editor text now. Attach documents from multiple tabs before sending.">
                   <Path Data="M 0,6 L 12,6 M 6,0 L 6,12" StrokeThickness="1.5"
-                        Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                        Style="{StaticResource ButtonIconStrokeStyle}" />
                 </Button>
                 <Button Width="32" Height="32" Click="AttachImageButton_Click"
                         Style="{StaticResource LinkButtonStyle}" ToolTip="Attach an image file (or paste with Ctrl+V)"
@@ -562,7 +574,7 @@
                   <Run Text=" · " /><Run Text="{Binding ActiveEffortName, Mode=OneWay}" />
                 </TextBlock>
                 <Path Grid.Column="2" Data="M 0,0 L 4,4 L 8,0" Margin="7,0,0,2" VerticalAlignment="Center"
-                      Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.3" />
+                      Style="{StaticResource ButtonIconStrokeStyle}" StrokeThickness="1.3" />
               </Grid>
             </Button>
             <Grid Grid.Column="2">
@@ -570,7 +582,7 @@
                       Style="{StaticResource ChatButtonStyle}" ToolTip="Send message (Enter)" AutomationProperties.Name="Send message"
                       Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibilityConverter}, ConverterParameter=Invert}">
                 <Path Data="M 7,14 L 7,0 M 1,6 L 7,0 L 13,6" StrokeThickness="1.8"
-                      Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                      Style="{StaticResource ButtonIconStrokeStyle}" />
               </Button>
               <Button Width="32" Height="32" Padding="0" Command="{Binding CancelCommand}"
                       Style="{StaticResource ChatButtonStyle}" ToolTip="Stop response" AutomationProperties.Name="Stop response"
@@ -677,7 +689,7 @@
                     <TextBlock Grid.Column="1" Text="{Binding ActiveEffortName}" Margin="12,0"
                                Foreground="{DynamicResource ChatSubtleForegroundBrush}" VerticalAlignment="Center" />
                     <Path Grid.Column="2" Data="M 0,0 L 4,4 L 0,8" VerticalAlignment="Center" StrokeThickness="1.3"
-                          Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                          Style="{StaticResource ButtonIconStrokeStyle}" />
                   </Grid>
                 </Button>
               </StackPanel>
@@ -693,7 +705,7 @@
                       ToolTip="Back to models (Escape or Left)">
                 <StackPanel Orientation="Horizontal">
                   <Path Data="M 4,0 L 0,4 L 4,8" VerticalAlignment="Center" Margin="0,0,12,0" StrokeThickness="1.3"
-                        Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                        Style="{StaticResource ButtonIconStrokeStyle}" />
                   <TextBlock Text="Effort" FontSize="12" FontWeight="SemiBold" />
                 </StackPanel>
               </Button>

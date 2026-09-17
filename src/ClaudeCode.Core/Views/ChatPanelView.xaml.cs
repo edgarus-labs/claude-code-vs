@@ -25,6 +25,7 @@ public partial class ChatPanelView : UserControl, IDisposable
     private const long MaxImagePixels = 20_000_000;
     private const int MaxImages = 5;
     internal const double DefaultChatTextFontSize = 13d;
+    private const int CopyFeedbackDisplayMilliseconds = 4000;
 
     public static readonly DependencyProperty ChatTextFontSizeProperty = DependencyProperty.Register(
         nameof(ChatTextFontSize), typeof(double), typeof(ChatPanelView),
@@ -33,7 +34,9 @@ public partial class ChatPanelView : UserControl, IDisposable
     public static Func<IChatSessionServices>? ServicesFactory { get; set; }
 
     private readonly ChatViewModel _viewModel;
+    private readonly DispatcherTimer _copyFeedbackTimer;
     private bool _disposed;
+    private bool _isAtBottom = true;
 
     public ChatPanelView()
     {
@@ -44,6 +47,11 @@ public partial class ChatPanelView : UserControl, IDisposable
         DataContext = _viewModel;
         CommandManager.AddPreviewCanExecuteHandler(ComposerBox, ComposerBox_PreviewCanExecute);
         CommandManager.AddPreviewExecutedHandler(ComposerBox, ComposerBox_PreviewExecuted);
+        _copyFeedbackTimer = new DispatcherTimer(DispatcherPriority.Background, Dispatcher)
+        {
+            Interval = TimeSpan.FromMilliseconds(CopyFeedbackDisplayMilliseconds)
+        };
+        _copyFeedbackTimer.Tick += OnCopyFeedbackTimerTick;
         Unloaded += OnUnloaded;
     }
 
@@ -83,11 +91,14 @@ public partial class ChatPanelView : UserControl, IDisposable
 
         _disposed = true;
         Unloaded -= OnUnloaded;
+        _copyFeedbackTimer.Stop();
+        _copyFeedbackTimer.Tick -= OnCopyFeedbackTimerTick;
         ModelPopup.IsOpen = false;
         _viewModel.DismissSlashSuggestions();
         CommandManager.RemovePreviewCanExecuteHandler(ComposerBox, ComposerBox_PreviewCanExecute);
         CommandManager.RemovePreviewExecutedHandler(ComposerBox, ComposerBox_PreviewExecuted);
         _viewModel.Dispose();
+        GC.SuppressFinalize(this);
     }
 
     private void ComposerBox_PreviewKeyDown(object sender, KeyEventArgs e)
@@ -300,10 +311,36 @@ public partial class ChatPanelView : UserControl, IDisposable
         var peer = UIElementAutomationPeer.FromElement(CopyFeedback) ??
             UIElementAutomationPeer.CreatePeerForElement(CopyFeedback);
         peer?.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
+        _copyFeedbackTimer.Stop();
+        _copyFeedbackTimer.Start();
+    }
+
+    private void OnCopyFeedbackTimerTick(object? sender, EventArgs e)
+    {
+        _copyFeedbackTimer.Stop();
+        CopyFeedback.Visibility = Visibility.Collapsed;
     }
 
     private void MarkdownMessage_Feedback(object sender, RoutedPropertyChangedEventArgs<string> e) =>
         ShowCopyFeedback(e.NewValue);
+
+    private void TranscriptScrollViewer_ScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        var wasAtBottom = _isAtBottom;
+        _isAtBottom = e.VerticalOffset + e.ViewportHeight >= e.ExtentHeight - 1;
+        if (ShouldAutoScroll(wasAtBottom, e.ExtentHeightChange))
+        {
+            ((ScrollViewer)sender).ScrollToEnd();
+        }
+    }
+
+    /// <summary>
+    /// True only when new content was added (extent grew) while the user was already scrolled to the
+    /// bottom: never yanks the viewport out from under someone who scrolled up to read history.
+    /// Pure bool/double-in, bool-out: safe to unit test without a live ScrollViewer.
+    /// </summary>
+    internal static bool ShouldAutoScroll(bool wasAtBottom, double extentHeightChange) =>
+        wasAtBottom && extentHeightChange > 0;
 
     private bool HandleSlashKey(KeyEventArgs e)
     {
@@ -332,7 +369,12 @@ public partial class ChatPanelView : UserControl, IDisposable
                 break;
             case Key.Enter:
             case Key.Tab:
-                AcceptSlashSuggestion();
+                // Nothing was actually selected/applicable: let the key fall through to its normal
+                // behavior (e.g. inserting a newline or moving focus) instead of swallowing it.
+                if (!AcceptSlashSuggestion())
+                {
+                    return false;
+                }
                 break;
             default:
                 return false;
@@ -342,17 +384,18 @@ public partial class ChatPanelView : UserControl, IDisposable
         return true;
     }
 
-    private void AcceptSlashSuggestion()
+    private bool AcceptSlashSuggestion()
     {
         var command = _viewModel.SelectedSlashSuggestion;
         if (!CanEditDraft || command == null || !_viewModel.ApplySlashSuggestionCommand.CanExecute(command))
         {
-            return;
+            return false;
         }
 
         _viewModel.ApplySlashSuggestionCommand.Execute(command);
         ComposerBox.Focus();
         ComposerBox.CaretIndex = ComposerBox.Text.Length;
+        return true;
     }
 
     private void SlashList_PreviewKeyDown(object sender, KeyEventArgs e) => HandleSlashKey(e);
