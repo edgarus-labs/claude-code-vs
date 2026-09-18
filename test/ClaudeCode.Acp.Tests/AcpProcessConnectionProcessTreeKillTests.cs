@@ -160,7 +160,7 @@ public sealed class AcpProcessConnectionProcessTreeKillTests
                 }
             }
 
-            Directory.Delete(directory);
+            await DeleteDirectoryWithRetryAsync(directory, TimeSpan.FromSeconds(5));
         }
         catch (Exception cleanupFailure) when (failure is not null)
         {
@@ -239,5 +239,27 @@ public sealed class AcpProcessConnectionProcessTreeKillTests
         }
 
         return false;
+    }
+
+    private static async Task DeleteDirectoryWithRetryAsync(string path, TimeSpan timeout)
+    {
+        DateTime deadline = DateTime.UtcNow + timeout;
+        while (true)
+        {
+            try
+            {
+                Directory.Delete(path, recursive: true);
+                return;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                if (DateTime.UtcNow >= deadline)
+                {
+                    throw;
+                }
+
+                await Task.Delay(100);
+            }
+        }
     }
 }
