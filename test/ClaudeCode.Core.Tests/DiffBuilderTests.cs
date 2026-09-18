@@ -1,4 +1,5 @@
 using ClaudeCode.Core.ViewModels;
+using System;
 using System.Linq;
 using Xunit;
 
@@ -50,5 +51,35 @@ public sealed class DiffBuilderTests
         Assert.Equal(1500, lines.Count(line => line.Kind == DiffLineKind.Removed));
         Assert.Equal(1500, lines.Count(line => line.Kind == DiffLineKind.Added));
         Assert.DoesNotContain(lines, line => line.Kind == DiffLineKind.Context);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Build_EmptySide_DoesNotAllocateAnAlignmentTable(bool emptyOld)
+    {
+        // Repeated empty lines make output allocation predictable without allocating line strings.
+        // The nonempty comparison already takes the bounded full-remove/add path.
+        var text = new string('\n', 100_000);
+        var fallbackSide = new string('\n', 20);
+        _ = DiffBuilder.Build(string.Empty, "warmup");
+        _ = DiffBuilder.Build("warmup", string.Empty);
+
+        var beforeFallback = GC.GetAllocatedBytesForCurrentThread();
+        _ = DiffBuilder.Build(emptyOld ? fallbackSide : text, emptyOld ? text : fallbackSide);
+        var fallbackAllocation = GC.GetAllocatedBytesForCurrentThread() - beforeFallback;
+
+        var beforeEmpty = GC.GetAllocatedBytesForCurrentThread();
+        var lines = DiffBuilder.Build(emptyOld ? string.Empty : text, emptyOld ? text : string.Empty);
+        var emptyAllocation = GC.GetAllocatedBytesForCurrentThread() - beforeEmpty;
+
+        Assert.Equal(100_001, lines.Count);
+        Assert.All(lines, line =>
+        {
+            Assert.Equal(emptyOld ? DiffLineKind.Added : DiffLineKind.Removed, line.Kind);
+            Assert.Equal(string.Empty, line.Text);
+        });
+        Assert.True(emptyAllocation <= fallbackAllocation + 16_384,
+            $"Empty side allocated {emptyAllocation} bytes versus {fallbackAllocation} for full-remove/add.");
     }
 }

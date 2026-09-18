@@ -356,20 +356,25 @@
     </Grid>
 
     <!-- Message history -->
-    <ScrollViewer x:Name="TranscriptScrollViewer" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
-                  CanContentScroll="True" Padding="12,4"
+    <ItemsControl Grid.Row="1" ItemsSource="{Binding Messages}" ItemTemplate="{StaticResource ChatMessageTemplate}"
                   d:DataContext="{d:DesignInstance vm:ChatViewModel}"
-                  ScrollChanged="TranscriptScrollViewer_ScrollChanged">
-      <ItemsControl ItemsSource="{Binding Messages}" ItemTemplate="{StaticResource ChatMessageTemplate}"
-                    MaxWidth="760" HorizontalAlignment="Stretch"
-                    VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling">
-        <ItemsControl.ItemsPanel>
-          <ItemsPanelTemplate>
-            <VirtualizingStackPanel />
-          </ItemsPanelTemplate>
-        </ItemsControl.ItemsPanel>
-      </ItemsControl>
-    </ScrollViewer>
+                  VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
+                  VirtualizingPanel.ScrollUnit="Pixel">
+      <ItemsControl.Template>
+        <ControlTemplate TargetType="{x:Type ItemsControl}">
+          <ScrollViewer x:Name="TranscriptScrollViewer" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                        CanContentScroll="True" Padding="12,4"
+                        ScrollChanged="TranscriptScrollViewer_ScrollChanged">
+            <ItemsPresenter MaxWidth="760" HorizontalAlignment="Stretch" />
+          </ScrollViewer>
+        </ControlTemplate>
+      </ItemsControl.Template>
+      <ItemsControl.ItemsPanel>
+        <ItemsPanelTemplate>
+          <VirtualizingStackPanel />
+        </ItemsPanelTemplate>
+      </ItemsControl.ItemsPanel>
+    </ItemsControl>
 
     <StackPanel Grid.Row="1" VerticalAlignment="Center" Margin="24,20" IsHitTestVisible="False">
       <StackPanel.Style>

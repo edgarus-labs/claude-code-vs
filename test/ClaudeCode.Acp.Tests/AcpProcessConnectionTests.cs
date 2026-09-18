@@ -400,6 +400,68 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
     }
 
     [Fact]
+    public async Task CancelAsync_ConcurrentPermissionCompletionAndRegistration_CancelsEveryOutstandingRequest()
+    {
+        var outstanding = new System.Collections.Concurrent.ConcurrentBag<Task<JsonNode?>>();
+        _connection.PermissionRequested += (_, args) =>
+        {
+            if (args.Call.ToolCallId == "complete")
+            {
+                args.Response.TrySetResult("allow");
+            }
+        };
+        MethodInfo method = typeof(AcpProcessConnection).GetMethod("HandleRequestPermissionAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        using var cancellation = new CancellationTokenSource();
+        using var start = new ManualResetEventSlim();
+        var workers = new Task[8];
+        for (int worker = 0; worker < workers.Length; worker++)
+        {
+            workers[worker] = Task.Run(() =>
+            {
+                start.Wait();
+                for (int iteration = 0; iteration < 2000; iteration++)
+                {
+                    // Each pair races the last completion in a session with a new pending request.
+                    // Distinct sessions let the race repeat without retaining an always-nonempty bag.
+                    string sessionId = "race-" + iteration;
+                    foreach (string toolCallId in new[] { "complete", "pending" })
+                    {
+                        var parameters = new JsonObject
+                        {
+                            ["sessionId"] = sessionId,
+                            ["toolCall"] = new JsonObject { ["toolCallId"] = toolCallId },
+                            ["options"] = new JsonArray(),
+                        };
+                        outstanding.Add((Task<JsonNode?>)method.Invoke(_connection, new object[] { parameters, cancellation.Token })!);
+                    }
+                }
+            });
+        }
+
+        try
+        {
+            start.Set();
+            await Task.WhenAll(workers).WaitAsync(TimeSpan.FromSeconds(30));
+            for (int iteration = 0; iteration < 2000; iteration++)
+            {
+                await _connection.CancelAsync("race-" + iteration, CancellationToken.None);
+                await ReadRequestAsync("session/cancel");
+            }
+
+            JsonNode?[] responses = await Task.WhenAll(outstanding).WaitAsync(TimeSpan.FromSeconds(5));
+            foreach (JsonNode? response in responses)
+            {
+                string outcome = response!["outcome"]!["outcome"]!.GetValue<string>();
+                Assert.True(outcome == "selected" || outcome == "cancelled");
+            }
+        }
+        finally
+        {
+            cancellation.Cancel();
+        }
+    }
+
+    [Fact]
     public async Task NewSessionAsync_ReadsCurrentConfigOptions_AndFlattensGroupedChoices()
     {
         Task<NewSessionResult> pending = _connection.NewSessionAsync("/workspace", null, CancellationToken.None);

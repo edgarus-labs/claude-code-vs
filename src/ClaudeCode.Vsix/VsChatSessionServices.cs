@@ -4,6 +4,7 @@ using Community.VisualStudio.Toolkit;
 using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Text;
 using System;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -53,11 +54,12 @@ internal sealed class VsChatSessionServices : IChatSessionServices
         }
 
         using var edit = view.TextBuffer.CreateEdit();
-        edit.Replace(new Span(0, view.TextBuffer.CurrentSnapshot.Length), text);
+        if (!edit.Replace(new Span(0, view.TextBuffer.CurrentSnapshot.Length), text) || edit.HasFailedChanges)
+            throw new IOException("The editor rejected the document edit.");
         edit.Apply();
 
-        // Apply() can silently fail to commit (e.g. a read-only region) without throwing;
-        // HasFailedChanges/Canceled are the documented signals that the buffer was not changed.
-        return !edit.HasFailedChanges && !edit.Canceled;
+        if (edit.HasFailedChanges || edit.Canceled)
+            throw new IOException("The editor rejected the document edit.");
+        return true;
     }
 }

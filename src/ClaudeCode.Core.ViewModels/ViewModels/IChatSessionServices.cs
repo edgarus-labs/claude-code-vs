@@ -24,7 +24,8 @@ public interface IChatSessionServices
     /// <summary>
     /// Attempts to write <paramref name="text"/> into an editor buffer currently open in the host for
     /// <paramref name="path"/>, bypassing a raw disk write. Returns false when no such buffer is open —
-    /// caller falls back to writing the file to disk.
+    /// caller falls back to writing the file to disk. A rejected edit must throw, never return false,
+    /// so a host permission or read-only restriction cannot become a disk-write fallback.
     /// </summary>
     Task<bool> TryWriteOpenDocumentAsync(string path, string text, CancellationToken cancellationToken);
 }

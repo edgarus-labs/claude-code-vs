@@ -1,7 +1,11 @@
 using ClaudeCode.Acp;
 using System;
 using System.Diagnostics;
+using System.Globalization;
+using System.IO;
 using System.Reflection;
+using System.Runtime.ExceptionServices;
+using System.Text;
 using System.Threading.Tasks;
 using Xunit;
 
@@ -46,6 +50,126 @@ public sealed class AcpProcessConnectionProcessTreeKillTests
         finally
         {
             await connection.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task DisposeAsync_LauncherExitedBeforeDisposal_TerminatesItsSurvivingChild()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        string childPidFile = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".pid");
+        int? childPid = null;
+        var connection = new AcpProcessConnection("powershell.exe", new[]
+        {
+            "-NoProfile", "-NonInteractive", "-Command",
+            "$child = Start-Process -FilePath \"$env:SystemRoot\\System32\\ping.exe\" -ArgumentList '-n 60 127.0.0.1' -WindowStyle Hidden -PassThru; " +
+            "[IO.File]::WriteAllText('" + childPidFile.Replace("'", "''") + "', [string]$child.Id)",
+        });
+        try
+        {
+            var process = (Process)typeof(AcpProcessConnection)
+                .GetField("_process", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(connection)!;
+            Assert.True(await WaitForProcessExitAsync(process.Id, TimeSpan.FromSeconds(10)),
+                "The launcher must already have exited before connection disposal.");
+            childPid = int.Parse(await File.ReadAllTextAsync(childPidFile), CultureInfo.InvariantCulture);
+            using (var child = Process.GetProcessById(childPid.Value))
+            {
+                Assert.False(child.HasExited);
+            }
+
+            await connection.DisposeAsync(TimeSpan.FromMilliseconds(200));
+
+            Assert.True(await WaitForProcessExitAsync(childPid.Value, TimeSpan.FromSeconds(10)),
+                "A launcher exiting first must not orphan its still-running child.");
+        }
+        finally
+        {
+            await connection.DisposeAsync();
+            if (childPid.HasValue)
+            {
+                try
+                {
+                    using var child = Process.GetProcessById(childPid.Value);
+                    if (!child.HasExited)
+                    {
+                        child.Kill();
+                    }
+                }
+                catch (ArgumentException)
+                {
+                    // A passing test has already terminated the child.
+                }
+            }
+
+            File.Delete(childPidFile);
+        }
+    }
+
+    [Fact]
+    public async Task ContainedLaunch_PreservesWorkingDirectoryEnvironmentAndRedirectedStreams()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        string directory = Path.Combine(Path.GetTempPath(), "acp launch " + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        WindowsJobProcess? process = null;
+        Exception? failure = null;
+        try
+        {
+            const string script = "[Console]::Out.WriteLine([IO.Directory]::GetCurrentDirectory()); " +
+                "[Console]::Out.WriteLine($env:ACP_LAUNCH_VALUE); " +
+                "[Console]::Error.WriteLine([Console]::In.ReadLine()); Start-Sleep -Seconds 60";
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                Arguments = "-NoProfile -NonInteractive -EncodedCommand " + Convert.ToBase64String(Encoding.Unicode.GetBytes(script)),
+                WorkingDirectory = directory,
+            };
+            startInfo.Environment["ACP_LAUNCH_VALUE"] = "spaces & percent% equals=value";
+            process = WindowsJobProcess.Start(startInfo);
+            using var output = new StreamReader(process.StandardOutput);
+            using var input = new StreamWriter(process.StandardInput) { AutoFlush = true };
+            await input.WriteLineAsync("redirected input");
+
+            Assert.Equal(directory, await output.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(10)));
+            Assert.Equal("spaces & percent% equals=value", await output.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(10)));
+            Assert.Equal("redirected input", await process.StandardError.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(10)));
+        }
+        catch (Exception ex)
+        {
+            failure = ex;
+        }
+
+        try
+        {
+            using (process)
+            {
+                if (process is not null)
+                {
+                    // Closing the job requests termination; wait for the cwd handle to close
+                    // even when an assertion or redirected read failed.
+                    process.Terminate();
+                    await process.Process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+                }
+            }
+
+            await DeleteDirectoryWithRetryAsync(directory, TimeSpan.FromSeconds(5));
+        }
+        catch (Exception cleanupFailure) when (failure is not null)
+        {
+            throw new AggregateException("Contained launch and its cleanup both failed.", failure, cleanupFailure);
+        }
+
+        if (failure is not null)
+        {
+            ExceptionDispatchInfo.Capture(failure).Throw();
         }
     }
 
@@ -115,5 +239,27 @@ public sealed class AcpProcessConnectionProcessTreeKillTests
         }
 
         return false;
+    }
+
+    private static async Task DeleteDirectoryWithRetryAsync(string path, TimeSpan timeout)
+    {
+        DateTime deadline = DateTime.UtcNow + timeout;
+        while (true)
+        {
+            try
+            {
+                Directory.Delete(path, recursive: true);
+                return;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                if (DateTime.UtcNow >= deadline)
+                {
+                    throw;
+                }
+
+                await Task.Delay(100);
+            }
+        }
     }
 }

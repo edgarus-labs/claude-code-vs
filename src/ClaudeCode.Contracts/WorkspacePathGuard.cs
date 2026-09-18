@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using Microsoft.Win32.SafeHandles;
 
 namespace ClaudeCode.Contracts;
@@ -12,16 +13,28 @@ namespace ClaudeCode.Contracts;
 /// </summary>
 public static class WorkspacePathGuard
 {
+    /// <summary>Acquires a confined file operation; dispose it after all asynchronous work completes.</summary>
+    public static WorkspacePathLease AcquireFile(string? workspaceRoot, string? candidatePath) =>
+        WorkspacePathLease.Acquire(workspaceRoot, candidatePath, document: false);
+
     /// <summary>
-    /// Resolves <paramref name="candidatePath"/> to an absolute path and verifies it is
-    /// <paramref name="workspaceRoot"/> itself or lies strictly underneath it. Rejects UNC paths
-    /// (<c>\\server\share</c>) and Win32 device-namespace paths (<c>\\?\</c>, <c>\\.\</c>) outright,
-    /// since those never denote a location under a local directory root.
+    /// Pins an existing Windows document and its ancestors against replacement for VS path-based APIs.
+    /// Reparse points and missing files are rejected rather than reopening an unprotected path.
+    /// </summary>
+    public static WorkspacePathLease AcquireDocument(string? workspaceRoot, string? candidatePath) =>
+        WorkspacePathLease.Acquire(workspaceRoot, candidatePath, document: true);
+
+    /// <summary>
+    /// Performs a point-in-time containment check, including existing symlink targets.
+    /// This does not authorize later path-based I/O: use <see cref="AcquireFile"/> or
+    /// <see cref="AcquireDocument"/> to retain protection through the operation.
     /// </summary>
     /// <returns><c>true</c> and the resolved absolute path when containment holds; otherwise <c>false</c>.</returns>
     public static bool TryResolveWithinWorkspace(string? workspaceRoot, string? candidatePath, out string fullPath)
     {
         fullPath = string.Empty;
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows) && !RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+            return false;
 
         if (string.IsNullOrEmpty(workspaceRoot) || string.IsNullOrEmpty(candidatePath))
         {
@@ -59,14 +72,11 @@ public static class WorkspacePathGuard
         // it, so re-check containment against the reparse-resolved ("canonical") form of both paths.
         // When a segment does not exist yet (e.g. a new file about to be written), canonicalize the
         // nearest existing ancestor instead, and fail closed if no ancestor can be resolved at all.
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        if (!TryGetCanonicalPathOrNearestAncestor(resolvedCandidate, out string canonicalCandidate)
+            || !TryGetCanonicalPathOrNearestAncestor(resolvedRoot, out string canonicalRoot)
+            || !IsWithinRoot(canonicalCandidate, canonicalRoot))
         {
-            if (!TryGetCanonicalPathOrNearestAncestor(resolvedCandidate, out string canonicalCandidate)
-                || !TryGetCanonicalPathOrNearestAncestor(resolvedRoot, out string canonicalRoot)
-                || !IsWithinRoot(canonicalCandidate, canonicalRoot))
-            {
-                return false;
-            }
+            return false;
         }
 
         fullPath = resolvedCandidate;
@@ -75,7 +85,8 @@ public static class WorkspacePathGuard
 
     private static bool IsWithinRoot(string resolvedCandidate, string resolvedRoot)
     {
-        if (string.Equals(resolvedCandidate, resolvedRoot, StringComparison.OrdinalIgnoreCase))
+        var comparison = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        if (string.Equals(resolvedCandidate, resolvedRoot, comparison))
         {
             return true;
         }
@@ -86,12 +97,12 @@ public static class WorkspacePathGuard
             ? resolvedRoot
             : resolvedRoot + Path.DirectorySeparatorChar;
 
-        return resolvedCandidate.StartsWith(rootWithSeparator, StringComparison.OrdinalIgnoreCase);
+        return resolvedCandidate.StartsWith(rootWithSeparator, comparison);
     }
 
     /// <summary>
     /// Resolves <paramref name="path"/> (or its nearest existing ancestor, when the leaf and
-    /// possibly further ancestors do not exist yet) to its NTFS reparse-resolved final path.
+    /// possibly further ancestors do not exist yet) to its filesystem-resolved final path.
     /// </summary>
     private static bool TryGetCanonicalPathOrNearestAncestor(string path, out string canonical)
     {
@@ -106,6 +117,17 @@ public static class WorkspacePathGuard
                     ? resolvedCurrent
                     : resolvedCurrent.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar + suffix;
                 return true;
+            }
+
+            // Only a genuinely absent component may be represented by an ancestor. Permission
+            // failures and dangling links are not evidence that the path is safe.
+            int error = Marshal.GetLastWin32Error();
+            bool windows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
+            if ((windows && error != 2 && error != 3)
+                || (!windows && (error != 2 || ReadLink(GetUnixPathBytes(current), new byte[1], new UIntPtr(1)).ToInt64() >= 0)))
+            {
+                canonical = string.Empty;
+                return false;
             }
 
             string? parent = Path.GetDirectoryName(current);
@@ -126,6 +148,21 @@ public static class WorkspacePathGuard
     private static bool TryGetFinalPath(string path, out string finalPath)
     {
         finalPath = string.Empty;
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux)) return false;
+            IntPtr resolved = RealPath(GetUnixPathBytes(path), IntPtr.Zero);
+            if (resolved == IntPtr.Zero) return false;
+            try
+            {
+                finalPath = Marshal.PtrToStringAnsi(resolved)!;
+                return true;
+            }
+            finally
+            {
+                Free(resolved);
+            }
+        }
 
         using SafeFileHandle handle = CreateFileW(
             path,
@@ -172,4 +209,21 @@ public static class WorkspacePathGuard
         char[] lpszFilePath,
         uint cchFilePath,
         uint dwFlags);
+
+    internal static byte[] GetUnixPathBytes(string path)
+    {
+        if (path.IndexOf('\0') >= 0) throw new ArgumentException("Filesystem paths cannot contain NUL.", nameof(path));
+        var bytes = new byte[Encoding.UTF8.GetByteCount(path) + 1];
+        Encoding.UTF8.GetBytes(path, 0, path.Length, bytes, 0);
+        return bytes;
+    }
+
+    [DllImport("libc", EntryPoint = "realpath", SetLastError = true)]
+    private static extern IntPtr RealPath(byte[] path, IntPtr buffer);
+
+    [DllImport("libc", EntryPoint = "readlink", SetLastError = true)]
+    private static extern IntPtr ReadLink(byte[] path, byte[] buffer, UIntPtr bufferSize);
+
+    [DllImport("libc", EntryPoint = "free")]
+    private static extern void Free(IntPtr pointer);
 }

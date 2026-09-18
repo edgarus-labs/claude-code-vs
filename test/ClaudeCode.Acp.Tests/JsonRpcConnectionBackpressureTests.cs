@@ -41,6 +41,43 @@ public sealed class JsonRpcConnectionBackpressureTests
         await Assert.ThrowsAnyAsync<Exception>(() => pendingSend);
     }
 
+    [Fact]
+    public async Task DisposeAsync_WriteFinishesAfterDisposal_PreservesCancellationInsteadOfDisposalFault()
+    {
+        var fromTest = new Pipe();
+        using var output = new DelayedWriteStream();
+        var connection = new JsonRpcConnection(fromTest.Reader.AsStream(), output);
+        Task notification = connection.SendNotificationAsync("test", null, CancellationToken.None);
+
+        try
+        {
+            await output.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await connection.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+            output.Release.TrySetResult(true);
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => notification.WaitAsync(TimeSpan.FromSeconds(5)));
+        }
+        finally
+        {
+            output.Release.TrySetResult(true);
+            await connection.DisposeAsync();
+        }
+    }
+
+    private sealed class DelayedWriteStream : MemoryStream
+    {
+        internal TaskCompletionSource<bool> Entered { get; } = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource<bool> Release { get; } = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override async Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        {
+            Entered.TrySetResult(true);
+            await Release.Task;
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+    }
+
     private sealed class NonDisposingStream : Stream
     {
         private readonly Stream _inner;

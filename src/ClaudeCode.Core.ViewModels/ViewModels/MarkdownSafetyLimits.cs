@@ -1,4 +1,5 @@
 using System;
+using System.Net;
 using System.Text;
 
 namespace ClaudeCode.Core.ViewModels;
@@ -12,6 +13,7 @@ public static class MarkdownSafetyLimits
 {
     public const int MaxMarkdownLength = 200_000;
     public const int MaxBlockquoteDepth = 20;
+    internal const string TruncationNotice = "\n\n*(message truncated: exceeded the maximum renderable size)*";
 
     /// <summary>
     /// Truncates markdown text before it reaches Markdig, bounding parser work and rendered DOM
@@ -24,8 +26,7 @@ public static class MarkdownSafetyLimits
             return markdown;
         }
 
-        return markdown.Substring(0, maxLength) +
-            "\n\n*(message truncated: exceeded the maximum renderable size)*";
+        return markdown.Substring(0, maxLength) + TruncationNotice;
     }
 
     /// <summary>
@@ -89,13 +90,29 @@ public static class MarkdownSafetyLimits
         TimeSpan.FromMilliseconds(textLength < 8000 ? 100 : Math.Min(1000, textLength / 80));
 
     /// <summary>
-    /// True only for absolute http/https links whose host is not loopback (localhost/127.0.0.1/[::1])
-    /// and not the all-zeroes address 0.0.0.0, which <see cref="Uri.IsLoopback"/> does not classify
-    /// as loopback even though it routes to the local host on most platforms.
+    /// True only for absolute http/https links whose host is neither loopback nor an unspecified
+    /// IP address. IPv4-mapped IPv6 addresses are checked as IPv4 destinations.
     /// </summary>
-    public static bool IsNavigableLink(Uri uri) =>
-        (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp) &&
-        !string.IsNullOrEmpty(uri.Host) &&
-        !uri.IsLoopback &&
-        !string.Equals(uri.Host, "0.0.0.0", StringComparison.OrdinalIgnoreCase);
+    public static bool IsNavigableLink(Uri uri)
+    {
+        if ((uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp) ||
+            string.IsNullOrEmpty(uri.Host) || uri.IsLoopback)
+        {
+            return false;
+        }
+
+        if (!IPAddress.TryParse(uri.DnsSafeHost, out var address))
+        {
+            return true;
+        }
+
+        if (address.IsIPv4MappedToIPv6)
+        {
+            address = address.MapToIPv4();
+        }
+
+        return !IPAddress.IsLoopback(address) &&
+            !address.Equals(IPAddress.Any) &&
+            !address.Equals(IPAddress.IPv6Any);
+    }
 }

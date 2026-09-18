@@ -1,8 +1,7 @@
 using System;
+using System.IO;
 using System.IO.Pipelines;
-using System.Linq;
-using System.Reflection;
-using System.Text;
+using System.Collections.Generic;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
@@ -41,91 +40,146 @@ public sealed class JsonRpcConnectionDisposeBoundTests
     }
 
     [Fact]
-    public async Task DisposeAsync_DisposesCancellationTokenSource()
+    public async Task DisposeAsync_NotificationSubscriberBlocks_FailsPendingRequestBeforePumpExits()
     {
         var toTest = new Pipe();
         var fromTest = new Pipe();
         var connection = new JsonRpcConnection(fromTest.Reader.AsStream(), toTest.Writer.AsStream());
+        using var releaseNotification = new ManualResetEventSlim(false);
+        var notificationEntered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var disconnected = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.NotificationReceived += (_, _) =>
+        {
+            notificationEntered.TrySetResult(true);
+            releaseNotification.Wait();
+        };
+        connection.Disconnected += (_, _) => disconnected.TrySetResult(true);
         connection.Start();
 
-        FieldInfo ctsField = typeof(JsonRpcConnection).GetField("_cts", BindingFlags.NonPublic | BindingFlags.Instance)!;
-        var cts = (CancellationTokenSource)ctsField.GetValue(connection)!;
+        Task<JsonNode?> pending = connection.SendRequestAsync("session/new", new JsonObject(), CancellationToken.None);
+        await PipeTestHelpers.ReadLineAsync(toTest.Reader).WaitAsync(TimeSpan.FromSeconds(5));
+        await PipeTestHelpers.WriteLineAsync(fromTest.Writer, "{\"jsonrpc\":\"2.0\",\"method\":\"blocked\"}");
 
-        await connection.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
-
-        // Cancel() throws ObjectDisposedException only once the source itself has been disposed -
-        // calling it again on a merely-cancelled-but-undisposed source is a documented no-op, so this
-        // is proof _cts.Dispose() actually ran, not just _cts.Cancel().
-        Assert.Throws<ObjectDisposedException>(() => cts.Cancel());
-    }
-
-    [Fact]
-    public async Task DisposeAsync_BlockedInboundRequestHandler_ThrottleReleaseAfterDisposal_NeverEscapesUnobserved()
-    {
-        var toTest = new Pipe();
-        var fromTest = new Pipe();
-        var connection = new JsonRpcConnection(fromTest.Reader.AsStream(), toTest.Writer.AsStream());
-
-        var handlerEntered = new SemaphoreSlim(0);
-        var releaseHandler = new ManualResetEventSlim(false);
-        connection.RequestHandler = (method, @params, ct) =>
-        {
-            handlerEntered.Release();
-            releaseHandler.Wait(TimeSpan.FromSeconds(10), CancellationToken.None); // deliberately not "ct": must survive _cts.Cancel() to simulate a handler still in flight across disposal.
-            return Task.FromResult<JsonNode?>(new JsonObject());
-        };
-        connection.Start();
-
-        byte[] requestBytes = Encoding.UTF8.GetBytes("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"test\",\"params\":{}}\n");
-        await fromTest.Writer.WriteAsync(requestBytes);
-        await handlerEntered.WaitAsync(TimeSpan.FromSeconds(5));
-
-        // Clean EOF - the pump exits (and thus DisposeAsync's bounded wait on it completes) almost
-        // immediately, well before the still-blocked inbound-request handler task returns, because
-        // requests are dispatched off the pump via Task.Run rather than awaited inline.
-        fromTest.Writer.Complete();
-
-        // TaskScheduler.UnobservedTaskException is process-global and other test classes run
-        // concurrently in this assembly, so filter narrowly to the exact defect under test (an
-        // ObjectDisposedException raised against _inboundRequestThrottle specifically) rather than
-        // any exception, to avoid false positives from unrelated tests' own unobserved tasks.
-        ObjectDisposedException? unobserved = null;
-        EventHandler<UnobservedTaskExceptionEventArgs> onUnobserved = (_, e) =>
-        {
-            ObjectDisposedException? match = e.Exception.Flatten().InnerExceptions
-                .OfType<ObjectDisposedException>()
-                .FirstOrDefault(ode => ode.ObjectName == typeof(SemaphoreSlim).FullName
-                    && ode.StackTrace != null && ode.StackTrace.Contains(nameof(JsonRpcConnection), StringComparison.Ordinal));
-            if (match is not null)
-            {
-                unobserved = match;
-            }
-
-            e.SetObserved();
-        };
-        TaskScheduler.UnobservedTaskException += onUnobserved;
         try
         {
+            await notificationEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
             await connection.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
 
-            // Unblock the handler now that _inboundRequestThrottle has already been disposed - its
-            // finally block's Release() call is the exact defect under test.
-            releaseHandler.Set();
-
-            for (int attempt = 0; attempt < 20 && unobserved is null; attempt++)
-            {
-                GC.Collect();
-                GC.WaitForPendingFinalizers();
-                GC.Collect();
-                await Task.Delay(TimeSpan.FromMilliseconds(100));
-            }
+            await Assert.ThrowsAsync<IOException>(() => pending.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.False(disconnected.Task.IsCompleted);
         }
         finally
         {
-            TaskScheduler.UnobservedTaskException -= onUnobserved;
-            releaseHandler.Set();
+            releaseNotification.Set();
+            await connection.DisposeAsync();
+            await disconnected.Task.WaitAsync(TimeSpan.FromSeconds(5));
         }
+    }
 
-        Assert.Null(unobserved);
+    [Fact]
+    public async Task DisposeAsync_ThrowingCancellationCallback_FailsPendingRequestAndPreservesCallbackFailure()
+    {
+        var toTest = new Pipe();
+        var fromTest = new Pipe();
+        var connection = new JsonRpcConnection(fromTest.Reader.AsStream(), toTest.Writer.AsStream());
+        using var requestCancellation = new CancellationTokenSource();
+        var releaseHandler = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var callbackFailure = new InvalidOperationException("Shutdown callback failed.");
+        connection.RequestHandler = async (_, _, cancellationToken) =>
+        {
+            using CancellationTokenRegistration registration = cancellationToken.Register(() => throw callbackFailure);
+            await releaseHandler.Task;
+            return new JsonObject();
+        };
+
+        Task<JsonNode?> pending = connection.SendRequestAsync("pending", null, requestCancellation.Token);
+        await PipeTestHelpers.ReadLineAsync(toTest.Reader).WaitAsync(TimeSpan.FromSeconds(5));
+        Task inbound = connection.HandleInboundRequestThrottledAsync(JsonValue.Create(1L), "held", null);
+
+        try
+        {
+            AggregateException failure = await Assert.ThrowsAsync<AggregateException>(
+                () => connection.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.Contains(callbackFailure, failure.InnerExceptions);
+            await Assert.ThrowsAsync<IOException>(() => pending.WaitAsync(TimeSpan.FromSeconds(5)));
+        }
+        finally
+        {
+            releaseHandler.TrySetResult(true);
+            requestCancellation.Cancel();
+            await inbound.WaitAsync(TimeSpan.FromSeconds(5));
+            await Record.ExceptionAsync(() => pending);
+            await connection.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task DisposeAsync_NoActiveOperations_LateInboundRequestIsCanceled()
+    {
+        var toTest = new Pipe();
+        var fromTest = new Pipe();
+        var connection = new JsonRpcConnection(fromTest.Reader.AsStream(), toTest.Writer.AsStream());
+        int handlerCalls = 0;
+        connection.RequestHandler = (_, _, _) =>
+        {
+            handlerCalls++;
+            return Task.FromResult<JsonNode?>(new JsonObject());
+        };
+
+        await connection.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            connection.HandleInboundRequestThrottledAsync(JsonValue.Create(1L), "late", null));
+        Assert.Equal(0, handlerCalls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DisposeAsync_QueuedInboundRequest_CancelsWithoutInvokingHandler(bool startBeforeDisposal)
+    {
+        var toTest = new Pipe();
+        var fromTest = new Pipe();
+        var connection = new JsonRpcConnection(fromTest.Reader.AsStream(), toTest.Writer.AsStream());
+        var releaseHandlers = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        int handlerCalls = 0;
+        connection.RequestHandler = async (_, _, _) =>
+        {
+            Interlocked.Increment(ref handlerCalls);
+            await releaseHandlers.Task;
+            return new JsonObject();
+        };
+        var runningHandlers = new List<Task>();
+        Task? queued = null;
+
+        try
+        {
+            // Direct invocation of the dispatch helper deterministically fills every slot before
+            // creating the queued operation, without relying on thread-pool scheduling.
+            for (int i = 0; i < 16; i++)
+            {
+                runningHandlers.Add(connection.HandleInboundRequestThrottledAsync(JsonValue.Create((long)i), "held", null));
+            }
+
+            Assert.Equal(16, handlerCalls);
+            if (startBeforeDisposal)
+            {
+                queued = connection.HandleInboundRequestThrottledAsync(JsonValue.Create(16L), "queued", null);
+                Assert.False(queued.IsCompleted);
+            }
+
+            await connection.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+
+            // The other ordering models Task.Run work that starts only after teardown finishes.
+            queued ??= connection.HandleInboundRequestThrottledAsync(JsonValue.Create(16L), "queued", null);
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => queued.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.Equal(16, handlerCalls);
+        }
+        finally
+        {
+            releaseHandlers.TrySetResult(true);
+            await connection.DisposeAsync();
+            await Task.WhenAll(runningHandlers).WaitAsync(TimeSpan.FromSeconds(5));
+        }
     }
 }

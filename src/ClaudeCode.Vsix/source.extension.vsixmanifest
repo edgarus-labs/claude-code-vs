@@ -23,10 +23,11 @@
   </Installation>
   <Dependencies>
     <Dependency Id="Microsoft.Framework.NDP" DisplayName="Microsoft .NET Framework" d:Source="Manual" Version="[4.7.2,)" />
-    <Dependency Id="Microsoft.NetCore.App" DisplayName=".NET Runtime" d:Source="Manual" Version="[8.0,)" />
   </Dependencies>
   <Prerequisites>
     <Prerequisite Id="Microsoft.VisualStudio.Component.CoreEditor" Version="[17.0,)" DisplayName="Visual Studio core editor" />
+    <!-- Component versions follow Visual Studio servicing, not .NET runtime versions. -->
+    <Prerequisite Id="Microsoft.NetCore.Component.Runtime.8.0" Version="[17.0,)" DisplayName=".NET 8.0 Runtime (Long Term Support)" />
   </Prerequisites>
   <Assets>
     <Asset Type="Microsoft.VisualStudio.VsPackage" d:Source="Project" d:ProjectName="%CurrentProject%" Path="|%CurrentProject%;PkgdefProjectOutputGroup|" />

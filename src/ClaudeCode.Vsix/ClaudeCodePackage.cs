@@ -21,10 +21,9 @@ namespace ClaudeCode.Vsix;
 [ProvideOptionPage(typeof(ClaudeCodeOptionsPage), "Claude Code", "General", 0, 0, true)]
 [Guid(PackageGuids.ClaudeCodePackageString)]
 [SuppressMessage("Design", "CA1001:Types that own disposable fields should be disposable",
-    Justification = "AsyncPackage already implements IDisposable; this type owns its disposable " +
-    "fields correctly via the overridden Dispose(bool) below, which disposes " +
-    "_vsControlSessionRegistry inside a finally block so it runs even if the earlier UI-thread " +
-    "cleanup throws. The analyzer does not see through the VS SDK base type's disposal pattern.")]
+    Justification = "AsyncPackage uses the Visual Studio-managed Dispose(bool) lifecycle rather than " +
+    "implementing IDisposable. This override disposes its owned fields; the session registry is " +
+    "disposed in finally even if earlier UI-thread cleanup throws.")]
 public sealed class ClaudeCodePackage : AsyncPackage
 {
     private AcpAuthService? _authService;
