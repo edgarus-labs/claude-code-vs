@@ -12,6 +12,16 @@ public abstract class SessionUpdate
         public string Text { get; }
     }
 
+    /// <summary>A chunk of the user's own prompt, replayed by the agent when resuming a session
+    /// (e.g. via <see cref="IAcpAgentConnection.LoadSessionAsync"/>); never sent for the client's own
+    /// live prompts.</summary>
+    public sealed class UserMessageChunk : SessionUpdate
+    {
+        public UserMessageChunk(string text) => Text = text;
+
+        public string Text { get; }
+    }
+
     public sealed class AgentThoughtChunk : SessionUpdate
     {
         public AgentThoughtChunk(string text) => Text = text;
