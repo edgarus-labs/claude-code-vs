@@ -181,6 +181,112 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
     }
 
     [Fact]
+    public async Task InitializeAsync_AdvertisesFormElicitationCapability()
+    {
+        var pending = _connection.InitializeAsync(CancellationToken.None);
+        JsonObject request = await ReadRequestAsync("initialize");
+
+        Assert.NotNull(request["params"]!["clientCapabilities"]!["elicitation"]!["form"]);
+
+        await ReplyAsync(request, """{"protocolVersion":1}""");
+        await pending.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task InboundElicitationCreateRequest_FormMode_ParsesFieldsAndRoundTripsAcceptedAnswer()
+    {
+        var received = new TaskCompletionSource<ElicitationRequestEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _connection.ElicitationRequested += (_, e) => received.TrySetResult(e);
+
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer, JsonNode.Parse("""
+            {"jsonrpc":"2.0","id":21,"method":"elicitation/create","params":{
+              "mode":"form","sessionId":"s1","message":"Pick one",
+              "requestedSchema":{"type":"object","properties":{
+                "question_0":{"type":"string","title":"Color","oneOf":[
+                  {"const":"red","title":"Red"},{"const":"blue","title":"Blue","description":"Cool colors"}
+                ]},
+                "question_0_custom":{"type":"string","title":"Other"},
+                "question_1":{"type":"array","title":"Sides","items":{"anyOf":[
+                  {"const":"left","title":"Left"},{"const":"right","title":"Right"}
+                ]}}
+              }}
+            }}
+            """)!.ToJsonString());
+
+        ElicitationRequestEventArgs args = await received.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal("s1", args.SessionId);
+        Assert.Equal("Pick one", args.Message);
+        Assert.Collection(args.Fields,
+            field =>
+            {
+                Assert.Equal("question_0", field.Key);
+                Assert.Equal("Color", field.Title);
+                Assert.Equal(ElicitationFieldKind.SingleSelect, field.Kind);
+                Assert.Collection(field.Options,
+                    option => { Assert.Equal("red", option.Value); Assert.Equal("Red", option.Label); },
+                    option => { Assert.Equal("blue", option.Value); Assert.Equal("Cool colors", option.Description); });
+            },
+            field =>
+            {
+                Assert.Equal("question_0_custom", field.Key);
+                Assert.Equal(ElicitationFieldKind.Text, field.Kind);
+            },
+            field =>
+            {
+                Assert.Equal("question_1", field.Key);
+                Assert.Equal(ElicitationFieldKind.MultiSelect, field.Kind);
+                Assert.Collection(field.Options,
+                    option => Assert.Equal("left", option.Value),
+                    option => Assert.Equal("right", option.Value));
+            });
+
+        args.Response.TrySetResult(new ElicitationAnswer(ElicitationAction.Accept, new Dictionary<string, IReadOnlyList<string>>
+        {
+            ["question_0"] = new[] { "red" },
+            ["question_1"] = new[] { "left", "right" },
+        }));
+
+        JsonObject response = await ReadResponseWithIdAsync(_toAgent.Reader, 21);
+        Assert.Equal("accept", response["result"]!["action"]!.GetValue<string>());
+        Assert.Equal("red", response["result"]!["content"]!["question_0"]!.GetValue<string>());
+        Assert.Equal(2, response["result"]!["content"]!["question_1"]!.AsArray().Count);
+        Assert.Null(response["result"]!["content"]!["question_0_custom"]); // left blank -> omitted, not an empty string.
+    }
+
+    [Fact]
+    public async Task InboundElicitationCreateRequest_UnsupportedMode_DeclinesImmediately()
+    {
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer,
+            """{"jsonrpc":"2.0","id":22,"method":"elicitation/create","params":{"mode":"url","sessionId":"s1","message":"Open this","url":"https://example.test"}}""");
+
+        JsonObject response = await ReadResponseWithIdAsync(_toAgent.Reader, 22);
+        Assert.Equal("decline", response["result"]!["action"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task CancelAsync_ResolvesStillPendingElicitationRequest_AsCancelledAction()
+    {
+        var elicitationReceived = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _connection.ElicitationRequested += (_, _) => elicitationReceived.TrySetResult(true);
+
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer, JsonNode.Parse("""
+            {"jsonrpc":"2.0","id":23,"method":"elicitation/create","params":{
+              "mode":"form","sessionId":"s1","message":"Pick one",
+              "requestedSchema":{"type":"object","properties":{
+                "question_0":{"type":"string","oneOf":[{"const":"red","title":"Red"}]}
+              }}
+            }}
+            """)!.ToJsonString());
+
+        await elicitationReceived.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await _connection.CancelAsync("s1", CancellationToken.None);
+
+        JsonObject response = await ReadResponseWithIdAsync(_toAgent.Reader, 23);
+        Assert.Equal("cancel", response["result"]!["action"]!.GetValue<string>());
+    }
+
+    [Fact]
     public async Task CancelAsync_ResolvesStillPendingPermissionRequest_AsCancelledOutcome()
     {
         // Handler deliberately never completes e.Response - simulating a UI permission dialog the user
@@ -351,6 +457,80 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
                 Assert.Equal("medium", effort.CurrentValue);
                 Assert.Equal("default", effort.Options[0].Value);
             });
+    }
+
+    [Fact]
+    public async Task ListSessionsAsync_SendsCwdFilter_AndParsesSessionSummaries()
+    {
+        Task<IReadOnlyList<SessionSummary>> pending = _connection.ListSessionsAsync("/workspace", CancellationToken.None);
+        JsonObject request = await ReadRequestAsync("session/list");
+        Assert.Equal("/workspace", request["params"]!["cwd"]!.GetValue<string>());
+
+        await ReplyAsync(request, """
+            {
+              "sessions": [
+                { "sessionId": "s1", "cwd": "/workspace", "title": "Fix the bug", "updatedAt": "2026-09-18T12:00:00Z" },
+                { "sessionId": "s2", "cwd": "/workspace", "updatedAt": null }
+              ]
+            }
+            """);
+
+        IReadOnlyList<SessionSummary> result = await pending.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Collection(result,
+            first =>
+            {
+                Assert.Equal("s1", first.SessionId);
+                Assert.Equal("/workspace", first.Cwd);
+                Assert.Equal("Fix the bug", first.Title);
+                Assert.Equal(DateTimeOffset.Parse("2026-09-18T12:00:00Z", System.Globalization.CultureInfo.InvariantCulture), first.UpdatedAt);
+            },
+            second =>
+            {
+                Assert.Equal("s2", second.SessionId);
+                Assert.Null(second.Title);
+                Assert.Null(second.UpdatedAt);
+            });
+    }
+
+    [Fact]
+    public async Task LoadSessionAsync_SendsSessionIdCwdAndEmptyMcpServers_AndParsesConfigOptions()
+    {
+        Task<NewSessionResult> pending = _connection.LoadSessionAsync("s1", "/workspace", null, CancellationToken.None);
+        JsonObject request = await ReadRequestAsync("session/load");
+        Assert.Equal("s1", request["params"]!["sessionId"]!.GetValue<string>());
+        Assert.Equal("/workspace", request["params"]!["cwd"]!.GetValue<string>());
+        Assert.Empty(request["params"]!["mcpServers"]!.AsArray());
+
+        await ReplyAsync(request, """
+            {
+              "configOptions": [
+                { "id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": "sonnet",
+                  "options": [ { "value": "sonnet", "name": "Sonnet" } ] }
+              ]
+            }
+            """);
+
+        NewSessionResult result = await pending.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal("s1", result.SessionId);
+        Assert.Equal("model", Assert.Single(result.ConfigOptions).Id);
+    }
+
+    [Fact]
+    public async Task SessionUpdateNotification_UserMessageChunk_RaisesSessionUpdateWithUserMessageChunk()
+    {
+        var received = new TaskCompletionSource<SessionUpdateEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _connection.SessionUpdate += (_, e) => received.TrySetResult(e);
+
+        await PipeTestHelpers.WriteLineAsync(
+            _fromAgent.Writer,
+            "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\"," +
+            "\"update\":{\"sessionUpdate\":\"user_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"What does this do?\"}}}}");
+
+        SessionUpdateEventArgs args = await received.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal("s1", args.SessionId);
+        var chunk = Assert.IsType<SessionUpdate.UserMessageChunk>(args.Update);
+        Assert.Equal("What does this do?", chunk.Text);
     }
 
     [Fact]

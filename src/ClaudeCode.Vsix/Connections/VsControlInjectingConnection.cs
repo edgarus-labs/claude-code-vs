@@ -21,6 +21,7 @@ internal sealed class VsControlInjectingConnection : IAcpAgentConnection
         _registry = registry ?? throw new ArgumentNullException(nameof(registry));
         _inner.SessionUpdate += OnSessionUpdate;
         _inner.PermissionRequested += OnPermissionRequested;
+        _inner.ElicitationRequested += OnElicitationRequested;
         _inner.FileReadRequested += OnFileReadRequested;
         _inner.FileWriteRequested += OnFileWriteRequested;
         _inner.Disconnected += OnDisconnected;
@@ -58,6 +59,35 @@ internal sealed class VsControlInjectingConnection : IAcpAgentConnection
         }
     }
 
+    public Task<IReadOnlyList<SessionSummary>> ListSessionsAsync(string? cwd, CancellationToken cancellationToken) =>
+        _inner.ListSessionsAsync(cwd, cancellationToken);
+
+    public async Task<NewSessionResult> LoadSessionAsync(string sessionId, string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken)
+    {
+        var merged = new List<McpServerConfig>(mcpServers ?? Array.Empty<McpServerConfig>());
+        string? correlationId = null;
+
+        if (_registry.IsAvailable)
+        {
+            merged.Add(_registry.StartSession(cwd, out correlationId));
+            _correlationIds.TryAdd(correlationId, 0);
+        }
+
+        try
+        {
+            return await _inner.LoadSessionAsync(sessionId, cwd, merged, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            if (correlationId is not null && _correlationIds.TryRemove(correlationId, out _))
+            {
+                _registry.EndSession(correlationId);
+            }
+
+            throw;
+        }
+    }
+
     public Task<IReadOnlyList<SessionConfigOption>> SetSessionConfigOptionAsync(string sessionId, string configId, string value, CancellationToken cancellationToken) =>
         _inner.SetSessionConfigOptionAsync(sessionId, configId, value, cancellationToken);
 
@@ -70,6 +100,8 @@ internal sealed class VsControlInjectingConnection : IAcpAgentConnection
     public event EventHandler<SessionUpdateEventArgs>? SessionUpdate;
 
     public event EventHandler<PermissionRequestEventArgs>? PermissionRequested;
+
+    public event EventHandler<ElicitationRequestEventArgs>? ElicitationRequested;
 
     public event EventHandler<FileReadRequestEventArgs>? FileReadRequested;
 
@@ -85,6 +117,11 @@ internal sealed class VsControlInjectingConnection : IAcpAgentConnection
     private void OnPermissionRequested(object? sender, PermissionRequestEventArgs e)
     {
         if (Volatile.Read(ref _disposed) == 0) PermissionRequested?.Invoke(this, e);
+    }
+
+    private void OnElicitationRequested(object? sender, ElicitationRequestEventArgs e)
+    {
+        if (Volatile.Read(ref _disposed) == 0) ElicitationRequested?.Invoke(this, e);
     }
 
     private void OnFileReadRequested(object? sender, FileReadRequestEventArgs e)
@@ -108,6 +145,7 @@ internal sealed class VsControlInjectingConnection : IAcpAgentConnection
 
         _inner.SessionUpdate -= OnSessionUpdate;
         _inner.PermissionRequested -= OnPermissionRequested;
+        _inner.ElicitationRequested -= OnElicitationRequested;
         _inner.FileReadRequested -= OnFileReadRequested;
         _inner.FileWriteRequested -= OnFileWriteRequested;
         _inner.Disconnected -= OnDisconnected;

@@ -19,6 +19,7 @@ public sealed partial class AcpProcessConnection
             "fs/read_text_file" => HandleReadTextFileAsync(RequireObject(@params, method), cancellationToken),
             "fs/write_text_file" => HandleWriteTextFileAsync(RequireObject(@params, method), cancellationToken),
             "session/request_permission" => HandleRequestPermissionAsync(RequireObject(@params, method), cancellationToken),
+            "elicitation/create" => HandleCreateElicitationAsync(RequireObject(@params, method), cancellationToken),
             _ => throw new AcpRemoteException(-32601, $"Method not found: {method}"),
         };
     }
@@ -90,6 +91,131 @@ public sealed partial class AcpProcessConnection
         {
             UntrackPendingPermission(sessionId, args);
         }
+    }
+
+    private async Task<JsonNode?> HandleCreateElicitationAsync(JsonObject @params, CancellationToken cancellationToken)
+    {
+        // Only form mode was advertised in `initialize`'s clientCapabilities.elicitation; decline
+        // anything else (url mode, or a future mode this client predates) rather than erroring, per
+        // the protocol's "decline what you didn't advertise" convention.
+        if (GetOptionalString(@params, "mode") != "form")
+        {
+            return new JsonObject { ["action"] = "decline" };
+        }
+
+        var handler = ElicitationRequested;
+        if (handler is null)
+        {
+            throw new AcpRemoteException(-32603, "No client handler registered for elicitation/create.");
+        }
+
+        string sessionId = GetRequiredString(@params, "sessionId");
+        string message = GetRequiredString(@params, "message");
+        var schema = RequireObject(@params["requestedSchema"], "elicitation/create.requestedSchema");
+        IReadOnlyList<ElicitationField> fields = ParseElicitationFields(schema);
+
+        var args = new ElicitationRequestEventArgs(sessionId, message, fields);
+        TrackPendingElicitation(sessionId, args);
+        try
+        {
+            handler(this, args);
+            ElicitationAnswer answer = await WaitWithCancellationAsync(args.Response.Task, cancellationToken).ConfigureAwait(false);
+            return BuildElicitationResponse(answer, fields);
+        }
+        finally
+        {
+            UntrackPendingElicitation(sessionId, args);
+        }
+    }
+
+    private static IReadOnlyList<ElicitationField> ParseElicitationFields(JsonObject schema)
+    {
+        if (schema["properties"] is not JsonObject properties)
+        {
+            return Array.Empty<ElicitationField>();
+        }
+
+        var fields = new List<ElicitationField>(properties.Count);
+        foreach (KeyValuePair<string, JsonNode?> entry in properties)
+        {
+            if (entry.Value is JsonObject property)
+            {
+                fields.Add(ParseElicitationField(entry.Key, property));
+            }
+        }
+
+        return fields;
+    }
+
+    private static ElicitationField ParseElicitationField(string key, JsonObject property)
+    {
+        string? title = GetOptionalString(property, "title");
+        string? description = GetOptionalString(property, "description");
+        string? type = GetOptionalString(property, "type");
+
+        if (type == "string" && property["oneOf"] is JsonArray oneOf)
+        {
+            return new ElicitationField(key, title, description, ElicitationFieldKind.SingleSelect, ParseElicitationOptions(oneOf));
+        }
+
+        if (type == "array" && property["items"] is JsonObject items && items["anyOf"] is JsonArray anyOf)
+        {
+            return new ElicitationField(key, title, description, ElicitationFieldKind.MultiSelect, ParseElicitationOptions(anyOf));
+        }
+
+        // Any other JSON Schema property type (number/integer/boolean, or a plain string with no
+        // oneOf) - AskUserQuestion, the only realistic source of these requests, never emits them,
+        // so a plain text field is a reasonable fallback rather than a dedicated renderer per type.
+        return new ElicitationField(key, title, description, ElicitationFieldKind.Text, Array.Empty<ElicitationOption>());
+    }
+
+    private static IReadOnlyList<ElicitationOption> ParseElicitationOptions(JsonArray options)
+    {
+        if (options.Count == 0)
+        {
+            return Array.Empty<ElicitationOption>();
+        }
+
+        var result = new List<ElicitationOption>(options.Count);
+        foreach (JsonNode? entry in options)
+        {
+            if (entry is JsonObject option)
+            {
+                result.Add(new ElicitationOption(GetRequiredString(option, "const"), GetRequiredString(option, "title"), GetOptionalString(option, "description")));
+            }
+        }
+
+        return result;
+    }
+
+    private static JsonObject BuildElicitationResponse(ElicitationAnswer answer, IReadOnlyList<ElicitationField> fields)
+    {
+        string action = answer.Action switch
+        {
+            ElicitationAction.Accept => "accept",
+            ElicitationAction.Decline => "decline",
+            _ => "cancel",
+        };
+
+        if (answer.Action != ElicitationAction.Accept)
+        {
+            return new JsonObject { ["action"] = action };
+        }
+
+        var content = new JsonObject();
+        foreach (ElicitationField field in fields)
+        {
+            if (!answer.Content.TryGetValue(field.Key, out IReadOnlyList<string>? values) || values.Count == 0)
+            {
+                continue; // left blank - omit, rather than sending an empty string/array answer.
+            }
+
+            content[field.Key] = field.Kind == ElicitationFieldKind.MultiSelect
+                ? new JsonArray(values.Select(value => (JsonNode)value).ToArray())
+                : values[0];
+        }
+
+        return new JsonObject { ["action"] = action, ["content"] = content };
     }
 
     // Awaits `task`, but also completes (with an OperationCanceledException) as soon as
@@ -165,6 +291,9 @@ public sealed partial class AcpProcessConnection
             case "agent_message_chunk":
                 return new SessionUpdate.AgentMessageChunk(ExtractChunkText(update));
 
+            case "user_message_chunk":
+                return new SessionUpdate.UserMessageChunk(ExtractChunkText(update));
+
             case "agent_thought_chunk":
                 return new SessionUpdate.AgentThoughtChunk(ExtractChunkText(update));
 
@@ -192,6 +321,33 @@ public sealed partial class AcpProcessConnection
                 // silently ignored rather than throwing.
                 return null;
         }
+    }
+
+    private static IReadOnlyList<SessionSummary> ParseSessionSummaries(JsonObject response)
+    {
+        if (response["sessions"] is not JsonArray sessions)
+        {
+            throw new AcpProtocolException("Missing or invalid 'sessions' array.");
+        }
+
+        if (sessions.Count == 0)
+        {
+            return Array.Empty<SessionSummary>();
+        }
+
+        var result = new List<SessionSummary>(sessions.Count);
+        foreach (JsonNode? entry in sessions)
+        {
+            var session = entry as JsonObject ?? throw new AcpProtocolException("Invalid session summary.");
+            string? updatedAtRaw = GetOptionalString(session, "updatedAt");
+            result.Add(new SessionSummary(
+                GetRequiredString(session, "sessionId"),
+                GetRequiredString(session, "cwd"),
+                GetOptionalString(session, "title"),
+                updatedAtRaw is null ? null : DateTimeOffset.Parse(updatedAtRaw, System.Globalization.CultureInfo.InvariantCulture)));
+        }
+
+        return result;
     }
 
     private static IReadOnlyList<AvailableCommand> ParseAvailableCommands(JsonObject update)

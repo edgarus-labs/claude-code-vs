@@ -32,6 +32,9 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<PermissionRequestEventArgs, byte>> _pendingPermissionsBySession =
         new ConcurrentDictionary<string, ConcurrentDictionary<PermissionRequestEventArgs, byte>>();
 
+    private readonly ConcurrentDictionary<string, ConcurrentDictionary<ElicitationRequestEventArgs, byte>> _pendingElicitationsBySession =
+        new ConcurrentDictionary<string, ConcurrentDictionary<ElicitationRequestEventArgs, byte>>();
+
     private int _disposed;
     private int _disconnected;
     private int _isInitialized;
@@ -110,6 +113,8 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
 
     public event EventHandler<PermissionRequestEventArgs>? PermissionRequested;
 
+    public event EventHandler<ElicitationRequestEventArgs>? ElicitationRequested;
+
     public event EventHandler<FileReadRequestEventArgs>? FileReadRequested;
 
     public event EventHandler<FileWriteRequestEventArgs>? FileWriteRequested;
@@ -133,7 +138,9 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
 
         Volatile.Write(ref _isInitialized, 0);
-        FailAllPendingPermissions(error ?? new IOException("The ACP agent connection was closed."));
+        var disconnectCause = error ?? new IOException("The ACP agent connection was closed.");
+        FailAllPendingPermissions(disconnectCause);
+        FailAllPendingElicitations(disconnectCause);
         if (Volatile.Read(ref _disposed) != 0)
         {
             // DisposeAsync() already initiated this shutdown intentionally - the consumer asked for
@@ -162,6 +169,9 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
             {
                 ["fs"] = new JsonObject { ["readTextFile"] = true, ["writeTextFile"] = true },
                 ["terminal"] = false,
+                // Form support only - url-mode elicitation (directing the user to an external page)
+                // is not implemented.
+                ["elicitation"] = new JsonObject { ["form"] = new JsonObject() },
             },
         };
 
@@ -190,6 +200,30 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         var obj = result as JsonObject ?? throw new AcpProtocolException("session/new response did not contain a result object.");
 
         var sessionId = GetRequiredString(obj, "sessionId");
+        return new NewSessionResult(sessionId, ParseConfigOptions(obj));
+    }
+
+    public async Task<IReadOnlyList<SessionSummary>> ListSessionsAsync(string? cwd, CancellationToken cancellationToken)
+    {
+        var @params = new JsonObject { ["cwd"] = cwd };
+        JsonNode? result = await _rpc.SendRequestAsync("session/list", @params, cancellationToken).ConfigureAwait(false);
+        var obj = result as JsonObject ?? throw new AcpProtocolException("session/list response did not contain a result object.");
+        return ParseSessionSummaries(obj);
+    }
+
+    public async Task<NewSessionResult> LoadSessionAsync(string sessionId, string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken)
+    {
+        var @params = new JsonObject
+        {
+            ["sessionId"] = sessionId,
+            ["cwd"] = cwd,
+            // ACP marks `mcpServers` required on LoadSessionRequest (possibly empty); always send an
+            // array, mirroring NewSessionAsync's convention above.
+            ["mcpServers"] = BuildMcpServersArray(mcpServers),
+        };
+
+        JsonNode? result = await _rpc.SendRequestAsync("session/load", @params, cancellationToken).ConfigureAwait(false);
+        var obj = result as JsonObject ?? throw new AcpProtocolException("session/load response did not contain a result object.");
         return new NewSessionResult(sessionId, ParseConfigOptions(obj));
     }
 
@@ -257,6 +291,11 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         // session/request_permission calls for this session with RequestPermissionOutcome::Cancelled, even
         // if the UI never gets around to answering the prompt itself. Resolve them proactively.
         CancelPendingPermissions(sessionId);
+
+        // Same reasoning for a still-open elicitation form (e.g. an unanswered AskUserQuestion): the
+        // turn is winding down, so resolve it as cancelled rather than leaving the UI's response task
+        // hanging forever.
+        CancelPendingElicitations(sessionId);
     }
 
     public ValueTask DisposeAsync() => DisposeAsync(_gracefulShutdownTimeout);
@@ -404,4 +443,49 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
             }
         }
     }
+
+    private void TrackPendingElicitation(string sessionId, ElicitationRequestEventArgs args)
+    {
+        var bag = _pendingElicitationsBySession.GetOrAdd(sessionId, _ => new ConcurrentDictionary<ElicitationRequestEventArgs, byte>());
+        bag[args] = 0;
+    }
+
+    private void UntrackPendingElicitation(string sessionId, ElicitationRequestEventArgs args)
+    {
+        if (_pendingElicitationsBySession.TryGetValue(sessionId, out var bag))
+        {
+            bag.TryRemove(args, out _);
+            if (bag.IsEmpty)
+            {
+                // Compare-and-remove, mirroring UntrackPendingPermission above.
+                var entry = new KeyValuePair<string, ConcurrentDictionary<ElicitationRequestEventArgs, byte>>(sessionId, bag);
+                ((ICollection<KeyValuePair<string, ConcurrentDictionary<ElicitationRequestEventArgs, byte>>>)_pendingElicitationsBySession).Remove(entry);
+            }
+        }
+    }
+
+    private void CancelPendingElicitations(string sessionId)
+    {
+        if (_pendingElicitationsBySession.TryGetValue(sessionId, out var bag))
+        {
+            foreach (var args in bag.Keys)
+            {
+                args.Response.TrySetResult(new ElicitationAnswer(ElicitationAction.Cancel, _emptyElicitationContent));
+            }
+        }
+    }
+
+    private void FailAllPendingElicitations(Exception cause)
+    {
+        foreach (var bag in _pendingElicitationsBySession.Values)
+        {
+            foreach (var args in bag.Keys)
+            {
+                args.Response.TrySetException(cause);
+            }
+        }
+    }
+
+    private static readonly IReadOnlyDictionary<string, IReadOnlyList<string>> _emptyElicitationContent =
+        new Dictionary<string, IReadOnlyList<string>>();
 }
