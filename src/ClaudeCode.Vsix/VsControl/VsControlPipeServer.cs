@@ -70,22 +70,26 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
 
     private async Task RunAsync(CancellationToken cancellationToken)
     {
+        // Keep the sole server instance alive across reconnects. Recreating it would release the
+        // pipe name between clients, allowing another process to occupy that name.
+        using var pipe = new NamedPipeServerStream(
+            _pipeName,
+            PipeDirection.InOut,
+            1,
+            PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous,
+            4096,
+            4096,
+            CreatePipeSecurity());
+        _pipe = pipe;
+
         while (!cancellationToken.IsCancellationRequested)
         {
+            bool connected = false;
             try
             {
-                using var pipe = new NamedPipeServerStream(
-                    _pipeName,
-                    PipeDirection.InOut,
-                    1,
-                    PipeTransmissionMode.Byte,
-                    PipeOptions.Asynchronous,
-                    4096,
-                    4096,
-                    CreatePipeSecurity());
-                _pipe = pipe;
-
                 await pipe.WaitForConnectionAsync(cancellationToken).ConfigureAwait(false);
+                connected = true;
 
                 var utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
                 using var reader = new StreamReader(pipe, utf8NoBom, detectEncodingFromByteOrderMarks: false, bufferSize: 4096, leaveOpen: true);
@@ -131,6 +135,20 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
             {
                 // Pipe disposed concurrently with a pending read/write; expected on dispose.
                 break;
+            }
+            finally
+            {
+                if (connected && !cancellationToken.IsCancellationRequested)
+                {
+                    try
+                    {
+                        pipe.Disconnect();
+                    }
+                    catch (ObjectDisposedException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        // Session disposal closed the retained pipe while this client exited.
+                    }
+                }
             }
         }
     }
@@ -231,10 +249,8 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
     private async Task<JObject> OpenDocumentAsync(JObject args)
     {
         var path = RequireString(args, "path");
-        if (!WorkspacePathGuard.TryResolveWithinWorkspace(_workspaceRoot, path, out var fullPath))
-        {
-            throw new InvalidOperationException($"Path '{path}' is outside the workspace.");
-        }
+        using var pathLease = WorkspacePathGuard.AcquireDocument(_workspaceRoot, path);
+        var fullPath = pathLease.FullPath;
 
         var view = await VS.Documents.OpenAsync(fullPath);
         if (view is null)
@@ -309,10 +325,8 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
     {
         var path = RequireString(args, "path");
         var text = RequireString(args, "text");
-        if (!WorkspacePathGuard.TryResolveWithinWorkspace(_workspaceRoot, path, out var fullPath))
-        {
-            throw new InvalidOperationException($"Path '{path}' is outside the workspace.");
-        }
+        using var pathLease = WorkspacePathGuard.AcquireDocument(_workspaceRoot, path);
+        var fullPath = pathLease.FullPath;
 
         var view = await VS.Documents.GetDocumentViewAsync(fullPath) ?? await VS.Documents.OpenAsync(fullPath);
         if (view?.TextView is null || view.TextBuffer is null)
@@ -425,10 +439,8 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
     private async Task<JObject> GetDiagnosticsAsync(JObject args)
     {
         var path = RequireString(args, "path");
-        if (!WorkspacePathGuard.TryResolveWithinWorkspace(_workspaceRoot, path, out var fullPath))
-        {
-            throw new InvalidOperationException($"Path '{path}' is outside the workspace.");
-        }
+        using var pathLease = WorkspacePathGuard.AcquireDocument(_workspaceRoot, path);
+        var fullPath = pathLease.FullPath;
 
         var view = await VS.Documents.GetDocumentViewAsync(fullPath) ?? await VS.Documents.OpenAsync(fullPath);
         if (view?.TextView is null || view.TextBuffer is null)

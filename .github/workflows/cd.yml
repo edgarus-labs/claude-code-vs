@@ -10,51 +10,45 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
+  build:
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
           fetch-tags: true
-      - name: Derive version from tag
+          persist-credentials: false
+
+      - name: Test release version selection
+        shell: pwsh
+        run: ./.github/tests/ReleaseVersion.Tests.ps1
+
+      - name: Validate release version
         id: version
         shell: pwsh
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          $tag = $env:TAG
-          if ($tag -notmatch '^v(\d+\.\d+\.\d+)$') {
-            throw "Tag '$tag' does not match the required vX.Y.Z format."
-          }
-          $version = $Matches[1]
+          $tags = @(git tag --list)
+          if ($LASTEXITCODE -ne 0) { throw "Unable to enumerate release tags." }
+          $version = & ./.github/scripts/Get-ReleaseVersion.ps1 -Tag $env:TAG -ExistingTags $tags
           "version=$version" >> $env:GITHUB_OUTPUT
 
-      - name: Verify version is newer than the previous tag
-        shell: pwsh
-        run: |
-          $tags = @(git tag --list 'v*.*.*' --sort=-v:refname)
-          if ($tags.Count -gt 1) {
-            $previous = [version]($tags[1] -replace '^v', '')
-            $current = [version]"${{ steps.version.outputs.version }}"
-            if ($current -le $previous) {
-              throw "Tag version $current is not newer than the previous release tag $previous."
-            }
-          }
-
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           dotnet-version: |
             8.0.x
             10.0.x
 
       - name: Add MSBuild to PATH
-        uses: microsoft/setup-msbuild@v2
+        uses: microsoft/setup-msbuild@6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce # v2.0.0
 
       # The VSIX manifest's Identity/@Version is what Visual Studio's Extensions & Updates dialog displays;
       # MSBuild's Version property only stamps the .NET assembly metadata, so both must be set from the tag.
@@ -102,12 +96,34 @@ jobs:
           "$($hash.Hash.ToLowerInvariant())  $($vsix.Name)" | Set-Content -Path $checksumPath -Encoding ascii
           "path=$checksumPath" >> $env:GITHUB_OUTPUT
 
+      - name: Upload release payload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-vsix
+          path: |
+            ${{ steps.vsix.outputs.path }}
+            ${{ steps.checksum.outputs.path }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release payload
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-vsix
+          path: release
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ github.ref_name }}
-          name: "v${{ steps.version.outputs.version }}"
+          name: "v${{ needs.build.outputs.version }}"
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: |
-            ${{ steps.vsix.outputs.path }}
-            ${{ steps.checksum.outputs.path }}
+            release/*.vsix
+            release/SHA256SUMS

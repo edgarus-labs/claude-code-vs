@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 
 namespace ClaudeCode.Acp;
 
@@ -11,6 +10,24 @@ public static class AcpExecutableResolver
     private static readonly string[] _acpAdapterCandidateNames = _isWindows
         ? new[] { "claude-agent-acp.exe", "claude-agent-acp.cmd" }
         : new[] { "claude-agent-acp" };
+
+    public static bool IsFullyQualifiedPath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        if (!_isWindows)
+        {
+            return path![0] == '/';
+        }
+
+        // Rooted paths such as C:tools and \tools still depend on the current directory or drive.
+        return (path!.Length >= 2 && IsDirectorySeparator(path[0]) && IsDirectorySeparator(path[1]))
+            || (path.Length >= 3 && ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z'))
+                && path[1] == ':' && IsDirectorySeparator(path[2]));
+    }
 
     public static AcpExecutableSpec? TryResolveDefault() => TryResolveDefault(Environment.GetEnvironmentVariable("PATH"));
 
@@ -36,7 +53,7 @@ public static class AcpExecutableResolver
 
     public static AcpExecutableSpec? TryResolve(string executablePath, string? searchPath)
     {
-        if (string.IsNullOrWhiteSpace(executablePath) || !File.Exists(executablePath))
+        if (!IsFullyQualifiedPath(executablePath) || !File.Exists(executablePath))
         {
             return null;
         }
@@ -56,11 +73,9 @@ public static class AcpExecutableResolver
             }
 
             scriptPath = Path.Combine(directory, "node_modules", "@agentclientprotocol", "claude-agent-acp", "dist", "index.js");
-            bool usedBinFallback = false;
             if (!File.Exists(scriptPath) && Path.GetFileName(directory).Equals(".bin", StringComparison.OrdinalIgnoreCase))
             {
                 scriptPath = Path.Combine(directory, "..", "@agentclientprotocol", "claude-agent-acp", "dist", "index.js");
-                usedBinFallback = true;
             }
 
             if (!File.Exists(scriptPath))
@@ -68,16 +83,9 @@ public static class AcpExecutableResolver
                 return null;
             }
 
-            // An npm-global install's shim legitimately colocates its own node.exe next to it. An
-            // npm-local install's shim lives under node_modules/.bin (or another node_modules-rooted
-            // directory), where anything sitting next to it is untrusted package content, not a
-            // trusted npm runtime - never prefer it over a PATH-resolved node in that case. The
-            // ".bin" fallback above is reached precisely when the shim's own directory has no
-            // "node_modules" segment for ContainsNodeModulesSegment to detect (e.g. a literal
-            // ".bin" directory reached only via the ".." escape) - by the same untrusted-content
-            // rationale it must unconditionally refuse to prefer an adjacent node.exe too, not just
-            // when a literal "node_modules" path segment happens to be present.
-            preferAdjacentNode = !usedBinFallback && !ContainsNodeModulesSegment(directory);
+            // Only global shim directories may supply an adjacent runtime. Package directories
+            // remain untrusted regardless of which package layout supplied the script.
+            preferAdjacentNode = !IsPackageDirectory(directory);
         }
         else if (extension.Equals(".js", StringComparison.OrdinalIgnoreCase))
         {
@@ -120,14 +128,41 @@ public static class AcpExecutableResolver
         return nodePath is null ? null : new AcpExecutableSpec(nodePath, new[] { Path.GetFullPath(scriptPath) });
     }
 
-    private static bool ContainsNodeModulesSegment(string directory) =>
-        directory.Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries)
-            .Any(segment => segment.Equals("node_modules", StringComparison.OrdinalIgnoreCase));
+    private static bool IsDirectorySeparator(char value) =>
+        value == Path.DirectorySeparatorChar || value == Path.AltDirectorySeparatorChar;
+
+    private static bool IsPackageDirectory(string directory)
+    {
+        int segmentStart = 0;
+        for (int index = 0; index <= directory.Length; index++)
+        {
+            if (index != directory.Length && !IsDirectorySeparator(directory[index]))
+            {
+                continue;
+            }
+
+            int length = index - segmentStart;
+            if ((length == 12 && string.Compare(directory, segmentStart, "node_modules", 0, length, StringComparison.OrdinalIgnoreCase) == 0)
+                || (length == 4 && string.Compare(directory, segmentStart, ".bin", 0, length, StringComparison.OrdinalIgnoreCase) == 0))
+            {
+                return true;
+            }
+
+            segmentStart = index + 1;
+        }
+
+        return false;
+    }
 
     private static string? FindOnPath(string fileName, string? searchPath)
     {
         foreach (string directory in GetSearchDirectories(searchPath))
         {
+            if (IsPackageDirectory(directory))
+            {
+                continue;
+            }
+
             string path = Path.Combine(directory, fileName);
             if (File.Exists(path))
             {
@@ -148,11 +183,9 @@ public static class AcpExecutableResolver
         foreach (string entry in searchPath.Split(Path.PathSeparator))
         {
             string directory = entry.Trim().Trim('"');
-            if (directory.Length == 0 || !Path.IsPathRooted(directory))
+            if (!IsFullyQualifiedPath(directory))
             {
-                // A relative PATH entry resolves against the process's current working directory,
-                // which for an opened workspace can be attacker-controlled; only ever trust absolute
-                // entries here.
+                // Only fully qualified entries are independent of the workspace/current drive.
                 continue;
             }
 

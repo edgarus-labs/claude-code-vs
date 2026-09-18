@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -649,14 +650,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         try
         {
-            if (!WorkspacePathGuard.TryResolveWithinWorkspace(_services.WorkspaceRoot, e.Path, out var fullPath))
+            using var pathLease = WorkspacePathGuard.AcquireFile(_services.WorkspaceRoot, e.Path);
+            string? liveText = null;
+            using (var document = pathLease.ProtectDocument())
             {
-                e.Response.TrySetException(new UnauthorizedAccessException($"Path '{e.Path}' is outside the workspace."));
-                return;
+                if (document is not null || !RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                    liveText = await _services.TryReadOpenDocumentAsync(pathLease.FullPath, _lifetime.Token).ConfigureAwait(true);
             }
-
-            var liveText = await _services.TryReadOpenDocumentAsync(fullPath, _lifetime.Token).ConfigureAwait(true);
-            var text = liveText ?? File.ReadAllText(fullPath);
+            var text = liveText ?? pathLease.ReadAllText();
 
             if (e.Line.HasValue || e.Limit.HasValue)
             {
@@ -677,54 +678,21 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         try
         {
-            if (!WorkspacePathGuard.TryResolveWithinWorkspace(_services.WorkspaceRoot, e.Path, out var fullPath))
+            using var pathLease = WorkspacePathGuard.AcquireFile(_services.WorkspaceRoot, e.Path);
+            using (var document = pathLease.ProtectDocument())
             {
-                e.Response.TrySetException(new UnauthorizedAccessException($"Path '{e.Path}' is outside the workspace."));
-                return;
+                if ((document is not null || !RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                    && await _services.TryWriteOpenDocumentAsync(pathLease.FullPath, e.Content, _lifetime.Token).ConfigureAwait(true))
+                {
+                    e.Response.TrySetResult(true);
+                    return;
+                }
             }
 
-            if (await _services.TryWriteOpenDocumentAsync(fullPath, e.Content, _lifetime.Token).ConfigureAwait(true))
-            {
-                e.Response.TrySetResult(true);
-                return;
-            }
-
-            WriteFilePreservingEncoding(fullPath, e.Content);
+            pathLease.WriteAllText(e.Content);
             e.Response.TrySetResult(true);
         }
         catch (Exception ex) { e.Response.TrySetException(ex); }
-    }
-
-    private static void WriteFilePreservingEncoding(string fullPath, string content)
-    {
-        var encoding = File.Exists(fullPath) ? DetectEncodingFromBom(fullPath) : new UTF8Encoding(false);
-        var tempPath = fullPath + ".tmp" + Guid.NewGuid().ToString("N");
-        try
-        {
-            File.WriteAllText(tempPath, content, encoding);
-            if (File.Exists(fullPath)) File.Replace(tempPath, fullPath, null);
-            else File.Move(tempPath, fullPath);
-        }
-        catch
-        {
-            if (File.Exists(tempPath)) File.Delete(tempPath);
-            throw;
-        }
-    }
-
-    private static Encoding DetectEncodingFromBom(string path)
-    {
-        var buffer = new byte[4];
-        int read;
-        using (var stream = File.OpenRead(path))
-        {
-            read = stream.Read(buffer, 0, buffer.Length);
-        }
-
-        if (read >= 3 && buffer[0] == 0xEF && buffer[1] == 0xBB && buffer[2] == 0xBF) return new UTF8Encoding(true);
-        if (read >= 2 && buffer[0] == 0xFF && buffer[1] == 0xFE) return Encoding.Unicode;
-        if (read >= 2 && buffer[0] == 0xFE && buffer[1] == 0xFF) return Encoding.BigEndianUnicode;
-        return new UTF8Encoding(false);
     }
 
     private void OnDisconnected(object? sender, Exception? ex)

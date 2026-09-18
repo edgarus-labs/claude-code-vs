@@ -27,7 +27,7 @@ public sealed class PipeSecurityAclTests
     public void CurrentUserOnlyPipeSecurity_GrantsExactlyOneAllowReadWriteRuleToTheCurrentUser()
     {
         using var identity = WindowsIdentity.GetCurrent();
-        var owner = identity.Owner!;
+        var user = identity.User!;
         var security = PipeSecurityFactory.CreateCurrentUserOnly(PipeAccessRights.ReadWrite);
 
         string pipeName = $"vscontrol-acl-test-{Guid.NewGuid():N}";
@@ -35,14 +35,14 @@ public sealed class PipeSecurityAclTests
             pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 4096, 4096, security);
 
         var appliedSecurity = pipe.GetAccessControl();
-        var rules = appliedSecurity.GetAccessRules(includeExplicit: true, includeInherited: false, targetType: typeof(SecurityIdentifier))
+        var rules = appliedSecurity.GetAccessRules(includeExplicit: true, includeInherited: true, targetType: typeof(SecurityIdentifier))
             .Cast<PipeAccessRule>()
-            .Where(r => r.IdentityReference == owner)
             .ToList();
 
-        var ownerRule = Assert.Single(rules);
-        Assert.Equal(AccessControlType.Allow, ownerRule.AccessControlType);
-        Assert.True(ownerRule.PipeAccessRights.HasFlag(PipeAccessRights.ReadWrite));
+        var userRule = Assert.Single(rules);
+        Assert.Equal(user, userRule.IdentityReference);
+        Assert.Equal(AccessControlType.Allow, userRule.AccessControlType);
+        Assert.Equal(PipeAccessRights.ReadWrite | PipeAccessRights.Synchronize, userRule.PipeAccessRights);
     }
 
     [Fact]

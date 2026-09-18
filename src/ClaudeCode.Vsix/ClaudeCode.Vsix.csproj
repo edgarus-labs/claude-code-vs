@@ -122,7 +122,8 @@
              Targets="Publish"
              Properties="Configuration=$(Configuration);PublishDir=$(MSBuildThisFileDirectory)obj\$(Configuration)\VsControlMcpPublish\;SelfContained=false" />
     <ItemGroup>
-      <VsControlMcpPublishedFile Include="$(MSBuildThisFileDirectory)obj\$(Configuration)\VsControlMcpPublish\**\*.*" />
+      <VsControlMcpPublishedFile Include="$(MSBuildThisFileDirectory)obj\$(Configuration)\VsControlMcpPublish\**\*.*"
+                                 Exclude="$(MSBuildThisFileDirectory)obj\$(Configuration)\VsControlMcpPublish\**\*.pdb" />
       <!-- Content is required for IncludeInVSIX. Link supplies the output TargetPath and, with
            VSIXSubPath unset, the VS SDK derives the archive directory from Link. Preserve the
            publish layout under VsControlMcp so sidecar dependencies never replace host assemblies. -->
@@ -134,6 +135,15 @@
     </ItemGroup>
   </Target>
 
+  <!-- Keep referenced projects' portable symbols for their own consumers, but do not copy them
+       into this extension's output or offer them to the VSIX packaging targets. -->
+  <Target Name="ExcludeReferenceDebugSymbols" AfterTargets="ResolveReferences">
+    <ItemGroup>
+      <ReferenceCopyLocalPaths Remove="@(ReferenceCopyLocalPaths)"
+                               Condition="'%(ReferenceCopyLocalPaths.Extension)' == '.pdb'" />
+    </ItemGroup>
+  </Target>
+
   <!-- Community.VisualStudio.Toolkit.17/EnvDTE/Text.UI/Text.Logic pull in a few transitive assemblies
        that are never used by this extension but still land in the .vsix as CopyLocal runtime output
        (e.g. Microsoft.VisualStudio.Linux.ConnectionManager.Store.dll, System.Text.Encodings.Web.dll).
@@ -142,7 +152,8 @@
   <Target Name="ExcludeStrayVsixAssemblies" AfterTargets="GetVsixSourceItems">
     <ItemGroup>
       <VSIXSourceItem Remove="@(VSIXSourceItem)"
-                       Condition="'%(Filename)%(Extension)' == 'Microsoft.VisualStudio.Linux.ConnectionManager.Store.dll'
+                       Condition="'%(Extension)' == '.pdb'
+                                  or '%(Filename)%(Extension)' == 'Microsoft.VisualStudio.Linux.ConnectionManager.Store.dll'
                                   or '%(Filename)%(Extension)' == 'System.Text.Encodings.Web.dll'" />
     </ItemGroup>
   </Target>

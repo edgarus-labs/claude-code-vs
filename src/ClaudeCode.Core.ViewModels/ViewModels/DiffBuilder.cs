@@ -18,7 +18,7 @@ internal static class DiffBuilder
 
         var result = new List<DiffLineViewModel>(n + m);
 
-        if ((long)n * m > _maxAlignmentCells)
+        if (n == 0 || m == 0 || (long)n * m > _maxAlignmentCells)
         {
             foreach (var line in oldLines)
             {

@@ -1,6 +1,8 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using ClaudeCode.Contracts;
 using Xunit;
 
@@ -98,14 +100,14 @@ public sealed class WorkspacePathGuardTests
     }
 
     [Fact]
-    public void TryResolveWithinWorkspace_CaseInsensitiveOnWindowsStyleRoot_Succeeds()
+    public void TryResolveWithinWorkspace_PathCase_MatchesPlatformSemantics()
     {
         var upperCased = Combine("SRC", "Foo.cs").ToUpperInvariant();
 
         var result = WorkspacePathGuard.TryResolveWithinWorkspace(_root, upperCased, out var fullPath);
 
-        Assert.True(result);
-        Assert.Equal(Path.GetFullPath(upperCased), fullPath);
+        Assert.Equal(OperatingSystem.IsWindows(), result);
+        Assert.Equal(OperatingSystem.IsWindows() ? Path.GetFullPath(upperCased) : string.Empty, fullPath);
     }
 
     [Fact]
@@ -153,6 +155,104 @@ public sealed class WorkspacePathGuardTests
 
             Directory.Delete(workspace, recursive: true);
             Directory.Delete(outside, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("secret.txt")]
+    [InlineData("new.txt")]
+    public void TryResolveWithinWorkspace_UnixSymlinkOutsideRoot_IsRejected(string leaf)
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        string workspace = Directory.CreateTempSubdirectory("wpg-workspace-").FullName;
+        string outside = Directory.CreateTempSubdirectory("wpg-outside-").FullName;
+        try
+        {
+            File.WriteAllText(Path.Combine(outside, "secret.txt"), "secret");
+            Directory.CreateSymbolicLink(Path.Combine(workspace, "link"), outside);
+
+            Assert.False(WorkspacePathGuard.TryResolveWithinWorkspace(workspace, Path.Combine(workspace, "link", leaf), out _));
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+            Directory.Delete(outside, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void TryResolveWithinWorkspace_UnixDanglingSymlink_IsRejected()
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        string workspace = Directory.CreateTempSubdirectory("wpg-workspace-").FullName;
+        try
+        {
+            File.CreateSymbolicLink(Path.Combine(workspace, "dangling"), Path.Combine(workspace, "..", "missing-" + Guid.NewGuid().ToString("N")));
+
+            Assert.False(WorkspacePathGuard.TryResolveWithinWorkspace(workspace, Path.Combine(workspace, "dangling"), out _));
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void AcquireDocument_WindowsBlocksPathReplacementUntilDisposed()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        string workspace = Directory.CreateTempSubdirectory("wpg-lease-").FullName;
+        string folder = Directory.CreateDirectory(Path.Combine(workspace, "folder")).FullName;
+        string file = Path.Combine(folder, "file.txt");
+        File.WriteAllText(file, "original");
+        try
+        {
+            using (WorkspacePathGuard.AcquireDocument(workspace, file))
+            {
+                Assert.Throws<IOException>(() => Directory.Move(folder, Path.Combine(workspace, "moved")));
+                Assert.Throws<IOException>(() => File.Move(file, Path.Combine(folder, "moved.txt")));
+                Assert.Equal("original", File.ReadAllText(file));
+            }
+
+            File.Move(file, Path.Combine(folder, "moved.txt"));
+            Directory.Move(folder, Path.Combine(workspace, "moved"));
+            Assert.Equal("original", File.ReadAllText(Path.Combine(workspace, "moved", "moved.txt")));
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void AcquireFile_WindowsAtomicWrite_PreservesRestrictedDacl()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        string workspace = Directory.CreateTempSubdirectory("wpg-acl-").FullName;
+        var file = new FileInfo(Path.Combine(workspace, "private.txt"));
+        File.WriteAllText(file.FullName, "private original");
+        try
+        {
+            var security = new FileSecurity();
+            security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+            security.AddAccessRule(new FileSystemAccessRule(WindowsIdentity.GetCurrent().User!, FileSystemRights.FullControl, AccessControlType.Allow));
+            file.SetAccessControl(security);
+            string originalDacl = file.GetAccessControl().GetSecurityDescriptorSddlForm(AccessControlSections.Access);
+
+            using (var lease = WorkspacePathGuard.AcquireFile(workspace, file.FullName))
+                lease.WriteAllText("private replacement");
+
+            Assert.Equal("private replacement", File.ReadAllText(file.FullName));
+            Assert.Equal(originalDacl, file.GetAccessControl().GetSecurityDescriptorSddlForm(AccessControlSections.Access));
+            Assert.True(file.GetAccessControl().AreAccessRulesProtected);
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
         }
     }
 }

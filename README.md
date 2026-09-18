@@ -51,7 +51,11 @@ For everyday use, open the built or release `.vsix`, select your regular Visual 
 the VSIX Installer, close Visual Studio when prompted, and restart it after installation. Building the
 project alone does not install an updated extension into your regular instance.
 
-The extension also requires the .NET 8+ runtime installed alongside Visual Studio; it hosts the
+The extension requires the **.NET 8.0 Runtime (Long Term Support)** component
+(`Microsoft.NetCore.Component.Runtime.8.0`) in the target Visual Studio installation. Use
+**Visual Studio Installer → Modify → Individual components** to install it; update an older Visual
+Studio installation if the component is unavailable. A separately installed .NET runtime alone does
+not satisfy this VSIX prerequisite. The component supplies the runtime for the framework-dependent
 `ClaudeCode.VsControl.Mcp` sidecar process that every chat session spawns to drive VS automation.
 
 F5 on `ClaudeCode.Vsix` launches a separate **Experimental Instance** for extension debugging. Its

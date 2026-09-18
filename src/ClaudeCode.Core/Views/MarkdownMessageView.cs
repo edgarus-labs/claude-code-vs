@@ -150,7 +150,8 @@ public sealed class MarkdownMessageView : RichTextBox
         }
 
         var markdown = Markdown ?? string.Empty;
-        if (string.Equals(markdown, _renderedMarkdown, StringComparison.Ordinal))
+        var renderableMarkdown = MarkdownSafetyLimits.LimitBlockquoteNesting(MarkdownSafetyLimits.LimitMarkdownLength(markdown));
+        if (string.Equals(renderableMarkdown, _renderedMarkdown, StringComparison.Ordinal))
         {
             return;
         }
@@ -158,9 +159,8 @@ public sealed class MarkdownMessageView : RichTextBox
         var preserveSelection = !Selection.IsEmpty || IsKeyboardFocusWithin;
         var selectionStart = preserveSelection ? Document.ContentStart.GetOffsetToPosition(Selection.Start) : 0;
         var selectionEnd = preserveSelection ? Document.ContentStart.GetOffsetToPosition(Selection.End) : 0;
-        var renderableMarkdown = MarkdownSafetyLimits.LimitBlockquoteNesting(MarkdownSafetyLimits.LimitMarkdownLength(markdown));
         Document = Markdig.Wpf.Markdown.ToFlowDocument(renderableMarkdown, Pipeline, new SafeWpfRenderer(this));
-        _renderedMarkdown = markdown;
+        _renderedMarkdown = renderableMarkdown;
 
         if (preserveSelection)
         {

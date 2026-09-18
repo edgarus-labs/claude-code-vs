@@ -89,6 +89,24 @@ public sealed class MarkdownSafetyLimitsTests
     }
 
     [Theory]
+    [InlineData("http://[::]/")]
+    [InlineData("https://[::ffff:127.0.0.1]/")]
+    [InlineData("http://[::ffff:127.42.0.7]/")]
+    [InlineData("http://[::ffff:0.0.0.0]/")]
+    public void IsNavigableLink_RejectsLocalIpv6Destinations(string target)
+    {
+        Assert.False(MarkdownSafetyLimits.IsNavigableLink(new Uri(target)));
+    }
+
+    [Theory]
+    [InlineData("https://[2001:4860:4860::8888]/")]
+    [InlineData("https://[::ffff:8.8.8.8]/")]
+    public void IsNavigableLink_AcceptsRemoteIpDestinations(string target)
+    {
+        Assert.True(MarkdownSafetyLimits.IsNavigableLink(new Uri(target)));
+    }
+
+    [Theory]
     [InlineData(0, 100)]
     [InlineData(7999, 100)]
     [InlineData(8000, 100)]

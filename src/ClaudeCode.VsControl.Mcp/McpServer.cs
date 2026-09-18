@@ -221,6 +221,9 @@ public sealed class McpServer : IDisposable
 
     private static JsonObject CreateToolResult(bool isError, string text)
     {
+        // Escape marker characters before adding the outer boundary; workspace content must not
+        // manufacture an in-band closing marker. This labels data, not a model-enforced sandbox.
+        text = text.Replace("<<<", "\\u003C\\u003C\\u003C", StringComparison.Ordinal);
         if (text.Length > _maxToolResultTextLength)
         {
             text = string.Concat(text.AsSpan(0, _maxToolResultTextLength), _truncationSuffix);
