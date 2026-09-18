@@ -25,6 +25,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private SessionConfigValue? _selectedModel;
     private SessionConfigValue? _selectedEffort;
     private ChatMessageViewModel? _currentAssistantMessage;
+    private ChatMessageViewModel? _currentUserMessage;
+    private bool _isHistoryOpen;
+    private bool _isHistoryLoading;
+    private string? _historyError;
     private IReadOnlyList<AvailableCommand> _availableCommands = Array.Empty<AvailableCommand>();
     private Dictionary<string, IReadOnlyList<AvailableCommand>>? _pendingCommandCatalogs;
     private AvailableCommand? _selectedSlashSuggestion;
@@ -46,9 +50,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private PlanViewModel? _currentPlan;
     private PermissionRequestViewModel? _pendingPermission;
     private TaskCompletionSourceSlot<string>? _pendingPermissionResponse;
+    private ElicitationRequestViewModel? _pendingElicitation;
+    private TaskCompletionSourceSlot<ElicitationAnswer>? _pendingElicitationResponse;
 
     private const long MaxImageAttachmentBytes = 5L * 1024 * 1024;
     private const long MaxDocumentAttachmentBytes = 1L * 1024 * 1024;
+
+    private static readonly IReadOnlyDictionary<string, IReadOnlyList<string>> _emptyElicitationContent =
+        new Dictionary<string, IReadOnlyList<string>>();
 
     public ChatViewModel(IChatSessionServices services)
     {
@@ -58,6 +67,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         SendCommand = new AsyncRelayCommand(SendAsync, CanSend);
         CancelCommand = new AsyncRelayCommand(CancelAsync, () => IsBusy && !_disposed && _connection is not null && _sessionId is not null);
         SignInCommand = new AsyncRelayCommand(SignInAsync, () => !IsSignedIn && !_disposed);
+        NewSessionCommand = new AsyncRelayCommand(NewSessionAsync, () => CanEditDraft);
+        ShowHistoryCommand = new AsyncRelayCommand(ShowHistoryAsync, () => CanEditDraft);
+        OpenSessionCommand = new AsyncRelayCommand<SessionSummary>(OpenSessionAsync, session => CanEditDraft && session is not null);
         AttachActiveDocumentCommand = new AsyncRelayCommand(AttachActiveDocumentAsync, () => CanEditDraft && !_isCapturingDocument);
         ApplySlashSuggestionCommand = new RelayCommand<AvailableCommand>(ApplySlashSuggestion,
             command => CanEditDraft && AreSlashSuggestionsVisible && command is not null && SlashSuggestions.Contains(command));
@@ -79,9 +91,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     public ObservableCollection<SessionConfigValue> AvailableModels { get; } = new ObservableCollection<SessionConfigValue>();
     public ObservableCollection<SessionConfigValue> AvailableEfforts { get; } = new ObservableCollection<SessionConfigValue>();
     public ObservableCollection<AvailableCommand> SlashSuggestions { get; } = new ObservableCollection<AvailableCommand>();
+    public ObservableCollection<SessionSummary> SessionHistory { get; } = new ObservableCollection<SessionSummary>();
     public IAsyncRelayCommand SendCommand { get; }
     public IAsyncRelayCommand CancelCommand { get; }
     public IAsyncRelayCommand SignInCommand { get; }
+    public IAsyncRelayCommand NewSessionCommand { get; }
+    public IAsyncRelayCommand ShowHistoryCommand { get; }
+    public IAsyncRelayCommand<SessionSummary> OpenSessionCommand { get; }
     public IRelayCommand<ChatAttachmentViewModel> RemoveAttachmentCommand { get; }
     public IAsyncRelayCommand AttachActiveDocumentCommand { get; }
     public IRelayCommand<AvailableCommand> ApplySlashSuggestionCommand { get; }
@@ -161,6 +177,26 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         set => SetProperty(ref _attachmentError, value);
     }
 
+    public bool IsHistoryOpen
+    {
+        get => _isHistoryOpen;
+        private set => SetProperty(ref _isHistoryOpen, value);
+    }
+
+    public bool IsHistoryLoading
+    {
+        get => _isHistoryLoading;
+        private set => SetProperty(ref _isHistoryLoading, value);
+    }
+
+    public string? HistoryError
+    {
+        get => _historyError;
+        private set => SetProperty(ref _historyError, value);
+    }
+
+    public void CloseHistory() => RunOnUi(() => IsHistoryOpen = false);
+
     public string ActivityText
     {
         get => _activityText;
@@ -196,6 +232,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         get => _pendingPermission;
         private set => SetProperty(ref _pendingPermission, value);
     }
+
+    public ElicitationRequestViewModel? PendingElicitation
+    {
+        get => _pendingElicitation;
+        private set { if (SetProperty(ref _pendingElicitation, value)) OnPropertyChanged(nameof(IsElicitationOpen)); }
+    }
+
+    public bool IsElicitationOpen => _pendingElicitation is not null;
 
     public void AddImageAttachment(string name, string mimeType, string base64Data)
     {
@@ -467,6 +511,112 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
     }
 
+    public Task NewSessionAsync() => OnUiAsync(NewSessionCoreAsync);
+
+    private async Task NewSessionCoreAsync()
+    {
+        if (!CanEditDraft) return;
+        try
+        {
+            var (connection, _) = await EnsureConnectedAsync(_lifetime.Token).ConfigureAwait(true);
+            if (_disposed || !ReferenceEquals(connection, _connection)) return;
+            var cwd = _services.WorkspaceRoot ?? Environment.CurrentDirectory;
+            var session = await connection.NewSessionAsync(cwd, null, _lifetime.Token).ConfigureAwait(true);
+            if (_disposed || !ReferenceEquals(connection, _connection)) return;
+            ResetTranscriptState();
+            _sessionId = session.SessionId;
+            ApplyConfigOptions(session.ConfigOptions);
+            StatusMessage = null;
+        }
+        catch (OperationCanceledException) when (_disposed) { }
+        catch (Exception ex)
+        {
+            if (!_disposed) StatusMessage = $"Could not start a new session: {ex.Message}";
+        }
+        finally
+        {
+            NotifyStateChanged();
+        }
+    }
+
+    public Task ShowHistoryAsync() => OnUiAsync(ShowHistoryCoreAsync);
+
+    private async Task ShowHistoryCoreAsync()
+    {
+        if (!CanEditDraft) return;
+        IsHistoryOpen = true;
+        IsHistoryLoading = true;
+        HistoryError = null;
+        try
+        {
+            var (connection, _) = await EnsureConnectedAsync(_lifetime.Token).ConfigureAwait(true);
+            if (_disposed || !ReferenceEquals(connection, _connection)) return;
+            var cwd = _services.WorkspaceRoot ?? Environment.CurrentDirectory;
+            var sessions = await connection.ListSessionsAsync(cwd, _lifetime.Token).ConfigureAwait(true);
+            if (_disposed || !ReferenceEquals(connection, _connection)) return;
+            SessionHistory.Clear();
+            foreach (var session in sessions) SessionHistory.Add(session);
+        }
+        catch (OperationCanceledException) when (_disposed) { }
+        catch (Exception ex)
+        {
+            if (!_disposed) HistoryError = $"Could not load session history: {ex.Message}";
+        }
+        finally
+        {
+            IsHistoryLoading = false;
+        }
+    }
+
+    public Task OpenSessionAsync(SessionSummary? session) => OnUiAsync(() => OpenSessionCoreAsync(session));
+
+    private async Task OpenSessionCoreAsync(SessionSummary? session)
+    {
+        if (session is null || !CanEditDraft) return;
+        IsHistoryOpen = false;
+        StatusMessage = null;
+        try
+        {
+            var (connection, _) = await EnsureConnectedAsync(_lifetime.Token).ConfigureAwait(true);
+            if (_disposed || !ReferenceEquals(connection, _connection)) return;
+            ResetTranscriptState();
+            // Known upfront (unlike session/new): set it before the call below so replayed
+            // session/update notifications, tagged with this id, are not dropped by OnSessionUpdate's
+            // "belongs to the known session" check while the request is still in flight.
+            _sessionId = session.SessionId;
+            var result = await connection.LoadSessionAsync(session.SessionId, session.Cwd, null, _lifetime.Token).ConfigureAwait(true);
+            if (_disposed || !ReferenceEquals(connection, _connection)) return;
+            ApplyConfigOptions(result.ConfigOptions);
+        }
+        catch (OperationCanceledException) when (_disposed) { }
+        catch (Exception ex)
+        {
+            if (!_disposed) StatusMessage = $"Could not open session: {ex.Message}";
+        }
+        finally
+        {
+            NotifyStateChanged();
+        }
+    }
+
+    private void ResetTranscriptState()
+    {
+        Messages.Clear();
+        _currentAssistantMessage = null;
+        _currentUserMessage = null;
+        CurrentPlan = null;
+        _pendingPermissionResponse?.TrySetException(new OperationCanceledException("The session was replaced."));
+        _pendingPermissionResponse = null;
+        PendingPermission = null;
+        _pendingElicitationResponse?.TrySetResult(new ElicitationAnswer(ElicitationAction.Cancel, _emptyElicitationContent));
+        _pendingElicitationResponse = null;
+        PendingElicitation = null;
+        _availableCommands = Array.Empty<AvailableCommand>();
+        _hasCommandCatalog = false;
+        RefreshSlashSuggestions();
+        ActivityText = string.Empty;
+    }
+
     private async Task<(IAcpAgentConnection connection, string sessionId)> EnsureConnectedAsync(CancellationToken cancellationToken)
     {
         await _connectGate.WaitAsync(cancellationToken).ConfigureAwait(true);
@@ -486,6 +636,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             _connection = connection;
             connection.SessionUpdate += OnSessionUpdate;
             connection.PermissionRequested += OnPermissionRequested;
+            connection.ElicitationRequested += OnElicitationRequested;
             connection.FileReadRequested += OnFileReadRequested;
             connection.FileWriteRequested += OnFileWriteRequested;
             connection.Disconnected += OnDisconnected;
@@ -580,6 +731,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 case SessionUpdate.ConfigOptionsChanged config:
                     ApplyConfigOptions(config.ConfigOptions);
                     break;
+                case SessionUpdate.UserMessageChunk chunk:
+                    EnsureUserMessage().AppendText(chunk.Text);
+                    break;
                 case SessionUpdate.AgentMessageChunk chunk:
                     EnsureAssistantMessage().AppendText(chunk.Text);
                     UpdateActivity("Responding…");
@@ -596,6 +750,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 case SessionUpdate.TurnEnded:
                     // The prompt task owns IsBusy, preventing a new send/config before it returns.
                     _currentAssistantMessage = null;
+                    _currentUserMessage = null;
                     UpdateActivity("Working…");
                     break;
             }
@@ -615,12 +770,24 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private ChatMessageViewModel EnsureAssistantMessage()
     {
+        _currentUserMessage = null; // an agent turn starting closes off any replayed user bubble.
         if (_currentAssistantMessage is null)
         {
             _currentAssistantMessage = new ChatMessageViewModel(ChatRole.Assistant);
             Messages.Add(_currentAssistantMessage);
         }
         return _currentAssistantMessage;
+    }
+
+    private ChatMessageViewModel EnsureUserMessage()
+    {
+        _currentAssistantMessage = null; // a replayed user turn starting closes off the prior assistant bubble.
+        if (_currentUserMessage is null)
+        {
+            _currentUserMessage = new ChatMessageViewModel(ChatRole.User);
+            Messages.Add(_currentUserMessage);
+        }
+        return _currentUserMessage;
     }
 
     private void OnPermissionRequested(object? sender, PermissionRequestEventArgs e)
@@ -642,6 +809,26 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 UpdateActivity("Working…");
             });
             UpdateActivity("Waiting for permission…");
+        });
+    }
+
+    private void OnElicitationRequested(object? sender, ElicitationRequestEventArgs e)
+    {
+        RunOnUi(() =>
+        {
+            if (_disposed || !ReferenceEquals(sender, _connection) || e.SessionId != _sessionId)
+            {
+                e.Response.TrySetException(new OperationCanceledException("The elicitation request no longer belongs to an active session."));
+                return;
+            }
+            _pendingElicitationResponse?.TrySetResult(new ElicitationAnswer(ElicitationAction.Cancel, _emptyElicitationContent));
+            _pendingElicitationResponse = e.Response;
+            PendingElicitation = new ElicitationRequestViewModel(e.Message, e.Fields, answer =>
+            {
+                e.Response.TrySetResult(answer);
+                _pendingElicitationResponse = null;
+                PendingElicitation = null;
+            });
         });
     }
 
@@ -755,6 +942,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         if (connection is null) return;
         connection.SessionUpdate -= OnSessionUpdate;
         connection.PermissionRequested -= OnPermissionRequested;
+        connection.ElicitationRequested -= OnElicitationRequested;
         connection.FileReadRequested -= OnFileReadRequested;
         connection.FileWriteRequested -= OnFileWriteRequested;
         connection.Disconnected -= OnDisconnected;
@@ -791,6 +979,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         SignInCommand.NotifyCanExecuteChanged();
         RemoveAttachmentCommand.NotifyCanExecuteChanged();
         AttachActiveDocumentCommand.NotifyCanExecuteChanged();
+        NewSessionCommand.NotifyCanExecuteChanged();
+        ShowHistoryCommand.NotifyCanExecuteChanged();
+        OpenSessionCommand.NotifyCanExecuteChanged();
         UpdateSlashPresentation();
     }
 

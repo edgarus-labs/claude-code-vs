@@ -19,6 +19,10 @@ internal sealed class RecordingAcpAgentConnection : IAcpAgentConnection
     public Func<CancellationToken, Task<NewSessionResult>>? NewSessionHandler { get; set; }
     public Func<string, string, CancellationToken, Task<IReadOnlyList<SessionConfigOption>>>? ConfigHandler { get; set; }
     public Func<IReadOnlyList<ContentBlock>, Task>? PromptHandler { get; set; }
+    public Func<string?, CancellationToken, Task<IReadOnlyList<SessionSummary>>>? ListSessionsHandler { get; set; }
+    public Func<string, string, IReadOnlyList<McpServerConfig>?, CancellationToken, Task<NewSessionResult>>? LoadSessionHandler { get; set; }
+    public List<string?> ListSessionsCwds { get; } = [];
+    public List<(string SessionId, string Cwd)> LoadedSessions { get; } = [];
 
     public Task InitializeAsync(CancellationToken cancellationToken)
     {
@@ -28,6 +32,18 @@ internal sealed class RecordingAcpAgentConnection : IAcpAgentConnection
 
     public Task<NewSessionResult> NewSessionAsync(string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken) =>
         NewSessionHandler?.Invoke(cancellationToken) ?? Task.FromResult(new NewSessionResult(SessionId, ConfigOptions));
+
+    public Task<IReadOnlyList<SessionSummary>> ListSessionsAsync(string? cwd, CancellationToken cancellationToken)
+    {
+        ListSessionsCwds.Add(cwd);
+        return ListSessionsHandler?.Invoke(cwd, cancellationToken) ?? Task.FromResult<IReadOnlyList<SessionSummary>>([]);
+    }
+
+    public Task<NewSessionResult> LoadSessionAsync(string sessionId, string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken)
+    {
+        LoadedSessions.Add((sessionId, cwd));
+        return LoadSessionHandler?.Invoke(sessionId, cwd, mcpServers, cancellationToken) ?? Task.FromResult(new NewSessionResult(sessionId, ConfigOptions));
+    }
 
     public Task<IReadOnlyList<SessionConfigOption>> SetSessionConfigOptionAsync(string sessionId, string configId, string value, CancellationToken cancellationToken)
     {
@@ -49,6 +65,7 @@ internal sealed class RecordingAcpAgentConnection : IAcpAgentConnection
 
     public event EventHandler<SessionUpdateEventArgs>? SessionUpdate;
     public event EventHandler<PermissionRequestEventArgs>? PermissionRequested;
+    public event EventHandler<ElicitationRequestEventArgs>? ElicitationRequested;
     public event EventHandler<FileReadRequestEventArgs>? FileReadRequested;
     public event EventHandler<FileWriteRequestEventArgs>? FileWriteRequested;
     public event EventHandler<Exception?>? Disconnected;
@@ -62,6 +79,13 @@ internal sealed class RecordingAcpAgentConnection : IAcpAgentConnection
     {
         var args = new PermissionRequestEventArgs(SessionId, call, options);
         PermissionRequested?.Invoke(this, args);
+        return args;
+    }
+
+    public ElicitationRequestEventArgs RaiseElicitationRequested(string message, IReadOnlyList<ElicitationField> fields)
+    {
+        var args = new ElicitationRequestEventArgs(SessionId, message, fields);
+        ElicitationRequested?.Invoke(this, args);
         return args;
     }
 
