@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Reflection;
+using System.Runtime.ExceptionServices;
 using System.Text;
 using System.Threading.Tasks;
 using Xunit;
@@ -118,6 +119,8 @@ public sealed class AcpProcessConnectionProcessTreeKillTests
 
         string directory = Path.Combine(Path.GetTempPath(), "acp launch " + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
+        WindowsJobProcess? process = null;
+        Exception? failure = null;
         try
         {
             const string script = "[Console]::Out.WriteLine([IO.Directory]::GetCurrentDirectory()); " +
@@ -130,7 +133,7 @@ public sealed class AcpProcessConnectionProcessTreeKillTests
                 WorkingDirectory = directory,
             };
             startInfo.Environment["ACP_LAUNCH_VALUE"] = "spaces & percent% equals=value";
-            using var process = WindowsJobProcess.Start(startInfo);
+            process = WindowsJobProcess.Start(startInfo);
             using var output = new StreamReader(process.StandardOutput);
             using var input = new StreamWriter(process.StandardInput) { AutoFlush = true };
             await input.WriteLineAsync("redirected input");
@@ -138,13 +141,35 @@ public sealed class AcpProcessConnectionProcessTreeKillTests
             Assert.Equal(directory, await output.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(10)));
             Assert.Equal("spaces & percent% equals=value", await output.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(10)));
             Assert.Equal("redirected input", await process.StandardError.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(10)));
-            int processId = process.Process.Id;
-            process.Terminate();
-            Assert.True(await WaitForProcessExitAsync(processId, TimeSpan.FromSeconds(10)));
         }
-        finally
+        catch (Exception ex)
         {
+            failure = ex;
+        }
+
+        try
+        {
+            using (process)
+            {
+                if (process is not null)
+                {
+                    // Closing the job requests termination; wait for the cwd handle to close
+                    // even when an assertion or redirected read failed.
+                    process.Terminate();
+                    await process.Process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+                }
+            }
+
             Directory.Delete(directory);
+        }
+        catch (Exception cleanupFailure) when (failure is not null)
+        {
+            throw new AggregateException("Contained launch and its cleanup both failed.", failure, cleanupFailure);
+        }
+
+        if (failure is not null)
+        {
+            ExceptionDispatchInfo.Capture(failure).Throw();
         }
     }
 

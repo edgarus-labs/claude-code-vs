@@ -237,18 +237,27 @@ public sealed class WorkspacePathGuardTests
         File.WriteAllText(file.FullName, "private original");
         try
         {
+            SecurityIdentifier user = WindowsIdentity.GetCurrent().User!;
             var security = new FileSecurity();
             security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
-            security.AddAccessRule(new FileSystemAccessRule(WindowsIdentity.GetCurrent().User!, FileSystemRights.FullControl, AccessControlType.Allow));
+            security.AddAccessRule(new FileSystemAccessRule(user, FileSystemRights.FullControl, AccessControlType.Allow));
             file.SetAccessControl(security);
-            string originalDacl = file.GetAccessControl().GetSecurityDescriptorSddlForm(AccessControlSections.Access);
 
             using (var lease = WorkspacePathGuard.AcquireFile(workspace, file.FullName))
                 lease.WriteAllText("private replacement");
 
             Assert.Equal("private replacement", File.ReadAllText(file.FullName));
-            Assert.Equal(originalDacl, file.GetAccessControl().GetSecurityDescriptorSddlForm(AccessControlSections.Access));
-            Assert.True(file.GetAccessControl().AreAccessRulesProtected);
+            // Creation may change SE_DACL_AUTO_INHERITED bookkeeping without changing access.
+            FileSecurity replacementSecurity = file.GetAccessControl();
+            Assert.True(replacementSecurity.AreAccessRulesProtected);
+            var rule = Assert.IsType<FileSystemAccessRule>(Assert.Single(
+                replacementSecurity.GetAccessRules(includeExplicit: true, includeInherited: true, targetType: typeof(SecurityIdentifier))));
+            Assert.Equal(user, rule.IdentityReference);
+            Assert.Equal(FileSystemRights.FullControl, rule.FileSystemRights);
+            Assert.Equal(AccessControlType.Allow, rule.AccessControlType);
+            Assert.False(rule.IsInherited);
+            Assert.Equal(InheritanceFlags.None, rule.InheritanceFlags);
+            Assert.Equal(PropagationFlags.None, rule.PropagationFlags);
         }
         finally
         {

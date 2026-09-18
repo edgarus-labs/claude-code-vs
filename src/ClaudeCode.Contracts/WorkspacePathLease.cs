@@ -217,7 +217,9 @@ public sealed class WorkspacePathLease : IDisposable
 
     private static SafeFileHandle OpenWindowsDirectory(string path)
     {
-        var handle = CreateFileW(path, 0, 1, IntPtr.Zero, 3, BackupSemantics | OpenReparsePoint, IntPtr.Zero);
+        // Metadata-only handles do not reserve sharing. Directory read access makes the
+        // no-write/no-delete sharing mode protect each component of the document path.
+        var handle = CreateFileW(path, FileListDirectory, 1, IntPtr.Zero, 3, BackupSemantics | OpenReparsePoint, IntPtr.Zero);
         return VerifyWindowsHandle(handle, directory: true);
     }
 
@@ -225,7 +227,8 @@ public sealed class WorkspacePathLease : IDisposable
     {
         if (_windows)
         {
-            var handle = CreateFileW(FullPath, document ? 0u : GenericRead, document ? 1u : 7u, IntPtr.Zero, 3, OpenReparsePoint, IntPtr.Zero);
+            // A zero-access metadata handle cannot enforce the document's no-delete sharing.
+            var handle = CreateFileW(FullPath, GenericRead, document ? 1u : 7u, IntPtr.Zero, 3, OpenReparsePoint, IntPtr.Zero);
             if (handle.IsInvalid && Marshal.GetLastWin32Error() == 2)
             {
                 handle.Dispose();
@@ -277,6 +280,7 @@ public sealed class WorkspacePathLease : IDisposable
     }
 
     private const uint GenericRead = 0x80000000;
+    private const uint FileListDirectory = 0x00000001;
     private const uint BackupSemantics = 0x02000000;
     private const uint OpenReparsePoint = 0x00200000;
     private const int OpenWriteOnly = 1;

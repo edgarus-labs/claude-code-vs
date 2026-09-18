@@ -180,12 +180,26 @@ public sealed class AcpExecutableResolverTests : IDisposable
     [Fact]
     public void ExplicitExecutable_RejectsExistingRelativePath()
     {
-        string executable = CreateFile(OperatingSystem.IsWindows() ? "claude-agent-acp.exe" : "claude-agent-acp");
-        string relativePath = Path.GetRelativePath(Directory.GetCurrentDirectory(), executable);
-        Assert.True(File.Exists(relativePath));
-        Assert.False(Path.IsPathFullyQualified(relativePath));
+        string relativeDirectory = "claude-acp-relative-" + Guid.NewGuid().ToString("N");
+        string directory = Path.Combine(Directory.GetCurrentDirectory(), relativeDirectory);
+        try
+        {
+            Directory.CreateDirectory(directory);
+            string fileName = OperatingSystem.IsWindows() ? "claude-agent-acp.exe" : "claude-agent-acp";
+            File.WriteAllText(Path.Combine(directory, fileName), string.Empty);
+            string relativePath = Path.Combine(relativeDirectory, fileName);
+            Assert.True(File.Exists(relativePath));
+            Assert.False(Path.IsPathFullyQualified(relativePath));
 
-        Assert.Null(AcpExecutableResolver.TryResolve(relativePath, _root));
+            Assert.Null(AcpExecutableResolver.TryResolve(relativePath, _root));
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
     }
 
     [Fact]
