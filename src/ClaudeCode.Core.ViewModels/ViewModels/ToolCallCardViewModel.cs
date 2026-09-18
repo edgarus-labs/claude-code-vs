@@ -1,5 +1,6 @@
 using ClaudeCode.Contracts;
 using CommunityToolkit.Mvvm.ComponentModel;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
 
@@ -41,6 +42,10 @@ public sealed class ToolCallCardViewModel : ObservableObject
 
     public ObservableCollection<ToolCallContentViewModel> Content { get; } = new ObservableCollection<ToolCallContentViewModel>();
 
+    private string? _cachedDiffOldText;
+    private string? _cachedDiffNewText;
+    private IReadOnlyList<DiffLineViewModel>? _cachedDiffLines;
+
     public void Apply(ToolCallUpdate call)
     {
         if (!string.IsNullOrEmpty(call.Title))
@@ -48,14 +53,17 @@ public sealed class ToolCallCardViewModel : ObservableObject
             Title = call.Title;
         }
 
-        Status = call.Status;
+        if (call.Status != ToolCallStatus.Pending || Status == ToolCallStatus.Pending)
+        {
+            Status = call.Status;
+        }
 
         if (call.Content.Count > 0)
         {
             Content.Clear();
             foreach (var contentItem in call.Content)
             {
-                Content.Add(new ToolCallContentViewModel(contentItem));
+                Content.Add(new ToolCallContentViewModel(contentItem, ResolveDiffLines(contentItem)));
             }
         }
 
@@ -63,5 +71,30 @@ public sealed class ToolCallCardViewModel : ObservableObject
         {
             IsExpanded = true;
         }
+    }
+
+    // A tool call card is rebuilt (new ToolCallContentViewModel per item) on every tool_call_update,
+    // even when the diff content itself is unchanged. This single-entry cache is scoped to this
+    // card instance (one card per ToolCallId) so repeated updates on the same tool call reuse the
+    // previously computed diff without recomputing it, and without leaking state to other cards.
+    private IReadOnlyList<DiffLineViewModel>? ResolveDiffLines(ToolCallContent contentItem)
+    {
+        if (!contentItem.IsDiff)
+        {
+            return null;
+        }
+
+        var oldText = contentItem.OldText ?? string.Empty;
+        var newText = contentItem.NewText ?? string.Empty;
+        if (_cachedDiffLines is not null && _cachedDiffOldText == oldText && _cachedDiffNewText == newText)
+        {
+            return _cachedDiffLines;
+        }
+
+        var diffLines = DiffBuilder.Build(oldText, newText);
+        _cachedDiffOldText = oldText;
+        _cachedDiffNewText = newText;
+        _cachedDiffLines = diffLines;
+        return diffLines;
     }
 }

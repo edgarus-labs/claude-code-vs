@@ -21,20 +21,20 @@ internal sealed class SignInCommand : BaseCommand<SignInCommand>
 
         var progress = new Progress<string>(line => VS.StatusBar.ShowMessageAsync($"Claude Code: {line}").FireAndForget());
 
-        await VS.StatusBar.ShowMessageAsync("Claude Code: opening browser sign-in…");
+        await VS.StatusBar.ShowMessageAsync("Claude Code: checking CLI sign-in…");
         try
         {
             await authService.SignInAsync(Package.DisposalToken, progress);
-            await VS.StatusBar.ShowMessageAsync("Claude Code: signed in.");
+            await VS.StatusBar.ShowMessageAsync("Claude Code: CLI sign-in verified.");
         }
         catch (OperationCanceledException)
         {
-            await VS.StatusBar.ShowMessageAsync("Claude Code: sign-in cancelled.");
+            await VS.StatusBar.ShowMessageAsync("Claude Code: sign-in check cancelled.");
         }
         catch (Exception ex)
         {
-            await VS.StatusBar.ShowMessageAsync("Claude Code: sign-in failed.");
-            await VS.MessageBox.ShowErrorAsync("Claude Code sign-in failed", ex.Message);
+            await VS.StatusBar.ShowMessageAsync("Claude Code: sign-in check failed.");
+            await VS.MessageBox.ShowErrorAsync("Claude Code sign-in check failed", ex.Message);
         }
     }
 

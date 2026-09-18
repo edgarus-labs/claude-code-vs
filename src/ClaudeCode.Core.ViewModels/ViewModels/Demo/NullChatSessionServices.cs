@@ -20,4 +20,10 @@ public sealed class NullChatSessionServices : IChatSessionServices
 
     public Task<EditorDocumentSnapshot?> CaptureActiveDocumentAsync(CancellationToken cancellationToken) =>
         Task.FromResult<EditorDocumentSnapshot?>(null);
+
+    public Task<string?> TryReadOpenDocumentAsync(string path, CancellationToken cancellationToken) =>
+        Task.FromResult<string?>(null);
+
+    public Task<bool> TryWriteOpenDocumentAsync(string path, string text, CancellationToken cancellationToken) =>
+        Task.FromResult(false);
 }

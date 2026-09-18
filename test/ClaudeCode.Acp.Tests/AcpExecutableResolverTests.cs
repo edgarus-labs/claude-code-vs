@@ -81,6 +81,199 @@ public sealed class AcpExecutableResolverTests : IDisposable
     }
 
     [Fact]
+    public void WindowsNpmShim_BinFallback_NeverPrefersAdjacentNodeEvenWithoutNodeModulesSegment()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        // A .bin shim directory remains untrusted even without a node_modules ancestor.
+        string shim = CreateFile(Path.Combine("tools", ".bin", "claude-agent-acp.cmd"));
+        string script = CreateFile(Path.Combine("tools", "@agentclientprotocol", "claude-agent-acp", "dist", "index.js"));
+        string plantedNode = CreateFile(Path.Combine("tools", ".bin", "node.exe"));
+        string pathNode = CreateFile(Path.Combine("real-node", "node.exe"));
+
+        var resolved = AcpExecutableResolver.TryResolve(shim, Path.GetDirectoryName(pathNode));
+
+        Assert.NotNull(resolved);
+        Assert.Equal(pathNode, resolved.FileName);
+        Assert.NotEqual(plantedNode, resolved.FileName);
+        Assert.Equal(new[] { script }, resolved.Arguments);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void WindowsNpmShim_BinWithNestedPackage_NeverUsesPlantedAdjacentNode(bool useDefault)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        string shim = CreateFile(Path.Combine("tools", ".bin", "claude-agent-acp.cmd"));
+        string script = CreateFile(Path.Combine("tools", ".bin", "node_modules", "@agentclientprotocol", "claude-agent-acp", "dist", "index.js"));
+        CreateFile(Path.Combine("tools", ".bin", "node.exe"));
+        string trustedNode = CreateFile(Path.Combine("runtime", "node.exe"));
+        string searchPath = Path.GetDirectoryName(trustedNode)!;
+        if (useDefault)
+        {
+            searchPath = Path.GetDirectoryName(shim) + Path.PathSeparator.ToString() + searchPath;
+        }
+
+        var resolved = useDefault
+            ? AcpExecutableResolver.TryResolveDefault(searchPath)
+            : AcpExecutableResolver.TryResolve(shim, searchPath);
+
+        Assert.NotNull(resolved);
+        Assert.Equal(trustedNode, resolved.FileName);
+        Assert.Equal(new[] { script }, resolved.Arguments);
+    }
+
+    [Theory]
+    [InlineData("node_modules/.bin")]
+    [InlineData("tools/.bin")]
+    [InlineData("node_modules/package")]
+    public void ExplicitPackageEntryPoint_PathSkipsPackageRuntimeDirectories(string untrustedDirectory)
+    {
+        string nodeName = OperatingSystem.IsWindows() ? "node.exe" : "node";
+        string script = CreateFile(Path.Combine("node_modules", "@agentclientprotocol", "claude-agent-acp", "dist", "index.js"));
+        string plantedNode = CreateFile(Path.Combine(untrustedDirectory, nodeName));
+        string trustedNode = CreateFile(Path.Combine("runtime", nodeName));
+        string untrustedPath = Path.GetDirectoryName(plantedNode)!;
+        string searchPath = untrustedPath + Path.PathSeparator + Path.GetDirectoryName(trustedNode);
+
+        var resolved = AcpExecutableResolver.TryResolve(script, searchPath);
+
+        Assert.NotNull(resolved);
+        Assert.Equal(trustedNode, resolved.FileName);
+        Assert.Equal(new[] { script }, resolved.Arguments);
+        Assert.Null(AcpExecutableResolver.TryResolve(script, untrustedPath));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void WindowsNpmShim_PathCannotRediscoverExcludedAdjacentNode(bool useDefault)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        string shim = CreateFile(Path.Combine("node_modules", ".bin", "claude-agent-acp.cmd"));
+        string script = CreateFile(Path.Combine("node_modules", "@agentclientprotocol", "claude-agent-acp", "dist", "index.js"));
+        CreateFile(Path.Combine("node_modules", ".bin", "node.exe"));
+        string trustedNode = CreateFile(Path.Combine("runtime", "node.exe"));
+        string searchPath = Path.GetDirectoryName(shim) + Path.PathSeparator.ToString() + Path.GetDirectoryName(trustedNode);
+
+        var resolved = useDefault
+            ? AcpExecutableResolver.TryResolveDefault(searchPath)
+            : AcpExecutableResolver.TryResolve(shim, searchPath);
+
+        Assert.NotNull(resolved);
+        Assert.Equal(trustedNode, resolved.FileName);
+        Assert.Equal(new[] { script }, resolved.Arguments);
+    }
+
+    [Fact]
+    public void ExplicitExecutable_RejectsExistingRelativePath()
+    {
+        string relativeDirectory = "claude-acp-relative-" + Guid.NewGuid().ToString("N");
+        string directory = Path.Combine(Directory.GetCurrentDirectory(), relativeDirectory);
+        try
+        {
+            Directory.CreateDirectory(directory);
+            string fileName = OperatingSystem.IsWindows() ? "claude-agent-acp.exe" : "claude-agent-acp";
+            File.WriteAllText(Path.Combine(directory, fileName), string.Empty);
+            string relativePath = Path.Combine(relativeDirectory, fileName);
+            Assert.True(File.Exists(relativePath));
+            Assert.False(Path.IsPathFullyQualified(relativePath));
+
+            Assert.Null(AcpExecutableResolver.TryResolve(relativePath, _root));
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void WindowsResolution_RejectsDriveRelativeAndRootRelativePaths()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        string executable = CreateFile(Path.Combine("adapter", "claude-agent-acp.exe"));
+        string directory = Path.GetDirectoryName(executable)!;
+        string originalCwd = Directory.GetCurrentDirectory();
+        try
+        {
+            Directory.SetCurrentDirectory(_root);
+            string drive = Path.GetPathRoot(_root)!.Substring(0, 2);
+            foreach (string partialDirectory in new[] { drive + "adapter", directory.Substring(2) })
+            {
+                string partialExecutable = Path.Combine(partialDirectory, "claude-agent-acp.exe");
+                Assert.True(File.Exists(partialExecutable));
+                Assert.False(Path.IsPathFullyQualified(partialExecutable));
+
+                Assert.Null(AcpExecutableResolver.TryResolve(partialExecutable, _root));
+                Assert.Null(AcpExecutableResolver.TryResolveDefault(partialDirectory));
+            }
+        }
+        finally
+        {
+            Directory.SetCurrentDirectory(originalCwd);
+        }
+    }
+
+    [Fact]
+    public void ExplicitJsEntryPoint_PrefersPathNodeOverAdjacentPackageNode()
+    {
+        // Unlike an npm-global .cmd shim (which legitimately colocates its own node.exe), an explicit
+        // .js entry point's directory is untrusted package content (node_modules); a "node.exe" sitting
+        // next to it must never be preferred over a PATH-resolved node.
+        string nodeName = OperatingSystem.IsWindows() ? "node.exe" : "node";
+        string script = CreateFile(Path.Combine("node_modules", "@agentclientprotocol", "claude-agent-acp", "dist", "index.js"));
+        CreateFile(Path.Combine("node_modules", "@agentclientprotocol", "claude-agent-acp", "dist", nodeName));
+        string pathNode = CreateFile(Path.Combine("other", nodeName));
+
+        var resolved = AcpExecutableResolver.TryResolve(script, Path.GetDirectoryName(pathNode));
+
+        Assert.NotNull(resolved);
+        Assert.Equal(pathNode, resolved.FileName);
+        Assert.Equal(new[] { script }, resolved.Arguments);
+    }
+
+    [Fact]
+    public void GetSearchDirectories_IgnoresRelativePathEntries_ToAvoidUntrustedWorkingDirectoryResolution()
+    {
+        string originalCwd = Directory.GetCurrentDirectory();
+        try
+        {
+            Directory.CreateDirectory(_root);
+            Directory.SetCurrentDirectory(_root);
+            string adapterName = OperatingSystem.IsWindows() ? "claude-agent-acp.exe" : "claude-agent-acp";
+            CreateFile(Path.Combine("relative-dir", adapterName));
+
+            // A relative PATH entry must never be resolved against the current working directory - a
+            // malicious repository could otherwise plant an adapter executable that gets launched just
+            // because the process's CWD happens to be inside (or under) the opened workspace.
+            Assert.Null(AcpExecutableResolver.TryResolveDefault("relative-dir"));
+        }
+        finally
+        {
+            Directory.SetCurrentDirectory(originalCwd);
+        }
+    }
+
+    [Fact]
     public void WindowsNpmShim_RequiresPackageAndNodeInsteadOfReturningCmd()
     {
         if (!OperatingSystem.IsWindows())

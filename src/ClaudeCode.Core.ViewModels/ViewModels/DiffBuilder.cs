@@ -7,7 +7,9 @@ internal static class DiffBuilder
 {
     private const long _maxAlignmentCells = 2_000_000;
 
-    public static IReadOnlyList<DiffLineViewModel> Build(string oldText, string newText)
+    public static IReadOnlyList<DiffLineViewModel> Build(string oldText, string newText) => BuildCore(oldText, newText);
+
+    private static List<DiffLineViewModel> BuildCore(string oldText, string newText)
     {
         var oldLines = SplitLines(oldText);
         var newLines = SplitLines(newText);
@@ -16,7 +18,7 @@ internal static class DiffBuilder
 
         var result = new List<DiffLineViewModel>(n + m);
 
-        if ((long)n * m > _maxAlignmentCells)
+        if (n == 0 || m == 0 || (long)n * m > _maxAlignmentCells)
         {
             foreach (var line in oldLines)
             {
@@ -79,5 +81,6 @@ internal static class DiffBuilder
         return result;
     }
 
-    private static string[] SplitLines(string text) => (text ?? string.Empty).Replace("\r\n", "\n").Split('\n');
+    private static string[] SplitLines(string text) =>
+        string.IsNullOrEmpty(text) ? Array.Empty<string>() : text.Replace("\r\n", "\n").Split('\n');
 }

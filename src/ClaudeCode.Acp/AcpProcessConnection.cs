@@ -1,9 +1,10 @@
 using ClaudeCode.Contracts;
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
@@ -16,16 +17,26 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
 
     private static readonly TimeSpan _gracefulShutdownTimeout = TimeSpan.FromSeconds(3);
 
+    // The connection is already known to be broken when SetSessionConfigOptionAsync's error path
+    // disposes it - there is no well-behaved agent left to wait politely for, so use a much shorter
+    // grace period before moving on to killing the process.
+    private static readonly TimeSpan _errorPathShutdownTimeout = TimeSpan.FromMilliseconds(200);
+
     public const string CancelledPermissionOptionId = "__acp_cancelled__";
 
     private readonly JsonRpcConnection _rpc;
     private readonly Process? _process;
+    private readonly WindowsJobProcess? _windowsProcess;
+    private readonly Task? _stderrPump;
 
-    private readonly ConcurrentDictionary<string, ConcurrentDictionary<PermissionRequestEventArgs, byte>> _pendingPermissionsBySession =
-        new ConcurrentDictionary<string, ConcurrentDictionary<PermissionRequestEventArgs, byte>>();
+    private readonly object _permissionGate = new object();
+    private readonly Dictionary<string, HashSet<PermissionRequestEventArgs>> _pendingPermissionsBySession =
+        new Dictionary<string, HashSet<PermissionRequestEventArgs>>();
+    private Exception? _permissionFailure;
 
     private int _disposed;
     private int _disconnected;
+    private int _isInitialized;
 
     public AcpProcessConnection(
         string executableFileName,
@@ -66,21 +77,50 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
             }
         }
 
-        _process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
-        _process.ErrorDataReceived += (_, e) =>
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
-            if (e.Data is not null)
+            _windowsProcess = WindowsJobProcess.Start(startInfo);
+            _process = _windowsProcess.Process;
+            try
             {
-                StandardErrorReceived?.Invoke(this, e.Data);
+                _rpc = new JsonRpcConnection(_windowsProcess.StandardOutput, _windowsProcess.StandardInput);
+                WireRpcHandlers();
+                _rpc.Start();
+                _stderrPump = PumpStandardErrorAsync(_windowsProcess.StandardError);
             }
-        };
+            catch
+            {
+                _windowsProcess.Dispose();
+                throw;
+            }
+        }
+        else
+        {
+            _process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
+            _process.ErrorDataReceived += OnStandardErrorReceived;
+            try
+            {
+                _process.Start();
+                _process.BeginErrorReadLine();
+                _rpc = new JsonRpcConnection(_process.StandardOutput.BaseStream, _process.StandardInput.BaseStream);
+                WireRpcHandlers();
+                _rpc.Start();
+            }
+            catch
+            {
+                _process.ErrorDataReceived -= OnStandardErrorReceived;
+                try
+                {
+                    TerminateProcess(_process);
+                }
+                finally
+                {
+                    _process.Dispose();
+                }
 
-        _process.Start();
-        _process.BeginErrorReadLine();
-
-        _rpc = new JsonRpcConnection(_process.StandardOutput.BaseStream, _process.StandardInput.BaseStream);
-        WireRpcHandlers();
-        _rpc.Start();
+                throw;
+            }
+        }
     }
 
     internal AcpProcessConnection(Stream readFrom, Stream writeTo)
@@ -91,7 +131,24 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         _rpc.Start();
     }
 
-    public bool IsInitialized { get; private set; }
+    private void OnStandardErrorReceived(object sender, DataReceivedEventArgs args)
+    {
+        if (args.Data is not null)
+        {
+            StandardErrorReceived?.Invoke(this, args.Data);
+        }
+    }
+
+    private async Task PumpStandardErrorAsync(StreamReader reader)
+    {
+        string? line;
+        while ((line = await reader.ReadLineAsync().ConfigureAwait(false)) is not null)
+        {
+            StandardErrorReceived?.Invoke(this, line);
+        }
+    }
+
+    public bool IsInitialized => Volatile.Read(ref _isInitialized) != 0;
 
     public event EventHandler<SessionUpdateEventArgs>? SessionUpdate;
 
@@ -119,8 +176,15 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
             return;
         }
 
-        IsInitialized = false;
+        Volatile.Write(ref _isInitialized, 0);
         FailAllPendingPermissions(error ?? new IOException("The ACP agent connection was closed."));
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            // DisposeAsync() already initiated this shutdown intentionally - the consumer asked for
+            // it and does not need an unsolicited "the connection was lost" notification too.
+            return;
+        }
+
         Disconnected?.Invoke(this, error);
     }
 
@@ -146,9 +210,16 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         };
 
         await _rpc.SendRequestAsync("initialize", @params, cancellationToken).ConfigureAwait(false);
-        IsInitialized = true;
+        Volatile.Write(ref _isInitialized, 1);
     }
 
+    /// <summary>
+    /// Starts a new ACP session rooted at <paramref name="cwd"/>. <paramref name="cwd"/> is sent to
+    /// the remote agent process as-is - this class does not validate, canonicalize, or sandbox it in
+    /// any way. The caller MUST pass only a path it already trusts (e.g. one already checked against
+    /// a workspace boundary); this class has no way to distinguish an intentionally-opened workspace
+    /// from an attacker-controlled path.
+    /// </summary>
     public async Task<NewSessionResult> NewSessionAsync(string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken)
     {
         var @params = new JsonObject
@@ -192,7 +263,7 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
             }
             finally
             {
-                await DisposeAsync().ConfigureAwait(false);
+                await DisposeAsync(_errorPathShutdownTimeout).ConfigureAwait(false);
             }
 
             throw;
@@ -232,37 +303,73 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         CancelPendingPermissions(sessionId);
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync() => DisposeAsync(_gracefulShutdownTimeout);
+
+    internal async ValueTask DisposeAsync(TimeSpan gracefulShutdownTimeout)
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
             return;
         }
 
+        bool stderrTimedOut = false;
         try
         {
             _rpc.CloseOutput(); // close stdin: signals EOF so a well-behaved agent exits on its own.
 
             if (_process is not null)
             {
-                await WaitForExitAsync(_process, _gracefulShutdownTimeout).ConfigureAwait(false);
-                if (!_process.HasExited)
+                await WaitForExitAsync(_process, gracefulShutdownTimeout).ConfigureAwait(false);
+                if (_windowsProcess is null && !_process.HasExited)
                 {
-                    try
-                    {
-                        _process.Kill();
-                    }
-                    catch (InvalidOperationException)
-                    {
-                        // already exited between the check and the call.
-                    }
+                    TerminateProcess(_process);
                 }
             }
         }
         finally
         {
-            await _rpc.DisposeAsync().ConfigureAwait(false);
-            _process?.Dispose();
+            // Closing the job also terminates descendants whose direct launcher already exited.
+            _windowsProcess?.Terminate();
+            try
+            {
+                await _rpc.DisposeAsync().ConfigureAwait(false);
+                if (_stderrPump is not null)
+                {
+                    if (await Task.WhenAny(_stderrPump, Task.Delay(gracefulShutdownTimeout)).ConfigureAwait(false) != _stderrPump)
+                    {
+                        // A subscriber can block indefinitely. Cleanup must still finish; observe
+                        // any later failure after reporting that the callback could not be drained.
+                        _ = _stderrPump.ContinueWith(task => { _ = task.Exception; },
+                            CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                        stderrTimedOut = true;
+                    }
+                    else
+                    {
+                        await _stderrPump.ConfigureAwait(false);
+                    }
+                }
+            }
+            finally
+            {
+                if (_process is not null)
+                {
+                    _process.ErrorDataReceived -= OnStandardErrorReceived;
+                }
+
+                if (_windowsProcess is not null)
+                {
+                    _windowsProcess.Dispose();
+                }
+                else
+                {
+                    _process?.Dispose();
+                }
+            }
+        }
+
+        if (stderrTimedOut)
+        {
+            throw new TimeoutException("The ACP stderr subscriber did not finish during shutdown.");
         }
     }
 
@@ -291,38 +398,85 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
     }
 
+    private static void TerminateProcess(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill();
+            }
+        }
+        catch (InvalidOperationException)
+        {
+            // There is no associated live process (including a failed start).
+        }
+        catch (Win32Exception) when (process.HasExited)
+        {
+            // The process exited between the check and the kill.
+        }
+    }
+
     private void TrackPendingPermission(string sessionId, PermissionRequestEventArgs args)
     {
-        var bag = _pendingPermissionsBySession.GetOrAdd(sessionId, _ => new ConcurrentDictionary<PermissionRequestEventArgs, byte>());
-        bag[args] = 0;
+        lock (_permissionGate)
+        {
+            if (_permissionFailure is not null)
+            {
+                args.Response.TrySetException(_permissionFailure);
+                return;
+            }
+
+            if (!_pendingPermissionsBySession.TryGetValue(sessionId, out var bag))
+            {
+                bag = new HashSet<PermissionRequestEventArgs>();
+                _pendingPermissionsBySession.Add(sessionId, bag);
+            }
+
+            bag.Add(args);
+        }
     }
 
     private void UntrackPendingPermission(string sessionId, PermissionRequestEventArgs args)
     {
-        if (_pendingPermissionsBySession.TryGetValue(sessionId, out var bag))
+        lock (_permissionGate)
         {
-            bag.TryRemove(args, out _);
+            if (_pendingPermissionsBySession.TryGetValue(sessionId, out var bag))
+            {
+                bag.Remove(args);
+                if (bag.Count == 0)
+                {
+                    _pendingPermissionsBySession.Remove(sessionId);
+                }
+            }
         }
     }
 
     private void CancelPendingPermissions(string sessionId)
     {
-        if (_pendingPermissionsBySession.TryGetValue(sessionId, out var bag))
+        lock (_permissionGate)
         {
-            foreach (var args in bag.Keys)
+            if (_pendingPermissionsBySession.TryGetValue(sessionId, out var bag))
             {
-                args.Response.SetResult(CancelledPermissionOptionId);
+                foreach (var args in bag)
+                {
+                    args.Response.TrySetResult(CancelledPermissionOptionId);
+                }
             }
         }
     }
 
     private void FailAllPendingPermissions(Exception cause)
     {
-        foreach (var bag in _pendingPermissionsBySession.Values)
+        lock (_permissionGate)
         {
-            foreach (var args in bag.Keys)
+            _permissionFailure = cause;
+            foreach (var bag in _pendingPermissionsBySession.Values)
             {
-                args.Response.SetException(cause);
+                foreach (var args in bag)
+                {
+                    args.Response.TrySetException(cause);
+                }
             }
         }
     }

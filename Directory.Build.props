@@ -1,0 +1,29 @@
+<Project>
+
+  <PropertyGroup>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)'=='true'">true</ContinuousIntegrationBuild>
+
+    <!-- netstandard2.0/net47x/net48 targets do not enable .NET analyzers by default (only net5.0+
+         does), which left the code handling an unauthenticated named pipe, external process
+         spawning, and untrusted-JSON parsing with zero static analysis coverage. Force it on
+         everywhere and fail the build on any warning so regressions cannot merge silently. Enabled
+         only after the tree was brought to a clean, zero-warning baseline (see AGENTS.md). -->
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+
+    <!-- CA1707 (no underscores in identifiers) fights this repo's established, deliberate xUnit
+         naming convention: MethodUnderTest_Scenario_ExpectedBehavior, used across every existing
+         test file. That convention communicates the observable contract each test defends far
+         better than PascalCase would. CA1861 (hoist array literals passed as arguments to static
+         readonly fields) is a micro-allocation concern for hot paths; tests run once per case, and
+         hoisting a one-off expected-value array away from its assertion trades readability for a
+         performance win that does not apply here. Keep both analyzers enforcing production code;
+         suppress them only under test/. (Not IsTestProject: the test SDK that sets it imports
+         after Directory.Build.props, so it always reads empty here.) -->
+    <IsUnderTestDirectory Condition="$(MSBuildProjectDirectory.Contains('\test\')) Or $(MSBuildProjectDirectory.Contains('/test/'))">true</IsUnderTestDirectory>
+    <NoWarn Condition="'$(IsUnderTestDirectory)' == 'true'">$(NoWarn);CA1707;CA1861</NoWarn>
+  </PropertyGroup>
+
+</Project>

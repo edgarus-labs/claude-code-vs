@@ -37,7 +37,7 @@ internal sealed class VsControlInjectingConnection : IAcpAgentConnection
 
         if (_registry.IsAvailable)
         {
-            merged.Add(_registry.StartSession(out correlationId));
+            merged.Add(_registry.StartSession(cwd, out correlationId));
             _correlationIds.TryAdd(correlationId, 0);
         }
         // else: the VsControlMcp sidecar payload hasn't been built/deployed beside this assembly yet - the

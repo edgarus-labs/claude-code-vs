@@ -1,8 +1,10 @@
 using ClaudeCode.Contracts;
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Security.Cryptography;
 
 namespace ClaudeCode.Vsix.VsControl;
 
@@ -22,7 +24,7 @@ internal sealed class VsControlSessionRegistry : IDisposable
 
     public bool IsAvailable => _vsControlMcpExecutablePath is not null;
 
-    public McpServerConfig StartSession(out string correlationId)
+    public McpServerConfig StartSession(string? workspaceRoot, out string correlationId)
     {
         if (_vsControlMcpExecutablePath is null)
         {
@@ -31,19 +33,29 @@ internal sealed class VsControlSessionRegistry : IDisposable
 
         correlationId = Guid.NewGuid().ToString("N");
         var pipeName = $"ClaudeCodeVs.Control.{Process.GetCurrentProcess().Id}.{correlationId}";
+        var tokenBytes = new byte[32];
+        using (var rng = RandomNumberGenerator.Create())
+        {
+            rng.GetBytes(tokenBytes);
+        }
+        var token = Convert.ToBase64String(tokenBytes);
 
-        var server = new VsControlPipeServer(pipeName);
+        var server = new VsControlPipeServer(pipeName, workspaceRoot, token);
         _servers[correlationId] = server;
         server.Start();
 
-        return new McpServerConfig("visual-studio", _vsControlMcpExecutablePath, new[] { "--pipe", pipeName });
+        var env = new Dictionary<string, string> { ["CLAUDECODE_VSCONTROL_TOKEN"] = token };
+        return new McpServerConfig("visual-studio", _vsControlMcpExecutablePath, new[] { "--pipe", pipeName }, env);
     }
 
     public void EndSession(string correlationId)
     {
         if (_servers.TryRemove(correlationId, out var server))
         {
-            _ = server.DisposeAsync();
+            // AsTask() consumes the ValueTask exactly once immediately (satisfying CA2012's "must be
+            // used" contract) while keeping teardown fire-and-forget: EndSession is called from
+            // synchronous cleanup paths that must not block on the pipe server's shutdown grace period.
+            _ = server.DisposeAsync().AsTask();
         }
     }
 

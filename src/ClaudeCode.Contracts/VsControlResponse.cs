@@ -1,5 +1,3 @@
-using System.Collections.Generic;
-
 namespace ClaudeCode.Contracts;
 
 public sealed class VsControlResponse

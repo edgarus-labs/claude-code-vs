@@ -10,12 +10,17 @@ public sealed class AcpRemoteException : Exception
         : base(FormatMessage(message, data))
     {
         Code = code;
-        Data2 = data;
+        RemoteData = data;
     }
 
     public int Code { get; }
 
-    public JsonNode? Data2 { get; }
+    /// <summary>
+    /// The raw, UNREDACTED <c>error.data</c> payload the remote agent sent. Unlike <see cref="Exception.Message"/>
+    /// (already redacted via <see cref="FormatMessage"/>), this can contain stderr, prompts, request
+    /// bodies, or credentials. Never log or display it directly - inspect specific known-safe fields only.
+    /// </summary>
+    public JsonNode? RemoteData { get; }
 
     private static string FormatMessage(string message, JsonNode? data)
     {
@@ -63,13 +68,16 @@ public sealed class AcpRemoteException : Exception
         _ => false,
     };
 
+    private static readonly char[] _lineBreakChars = { '\r', '\n' };
+    private static readonly char[] _jsonStartChars = { '{', '[' };
+
     private static string Redact(string text, int limit)
     {
         // Bound work before applying expressions, and hide all later lines (often SDK stderr/stack).
-        int end = text.IndexOfAny(new[] { '\r', '\n' });
+        int end = text.IndexOfAny(_lineBreakChars);
         string safe = text.Substring(0, Math.Min(end < 0 ? text.Length : end, 4096));
         safe = Regex.Replace(safe, @"\p{C}", "");
-        int payload = safe.IndexOfAny(new[] { '{', '[' });
+        int payload = safe.IndexOfAny(_jsonStartChars);
         if (payload >= 0)
         {
             safe = safe.Substring(0, payload) + " (structured data omitted)";

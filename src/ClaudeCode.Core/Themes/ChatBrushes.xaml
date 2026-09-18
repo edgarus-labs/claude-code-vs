@@ -13,8 +13,8 @@
 	<Color x:Key="ChatAssistantBubbleBackgroundColor">#FF2D2D30</Color>
 	<Color x:Key="ChatInputBackgroundColor">#FF252526</Color>
 	<Color x:Key="ChatAccentColor">#FFD97757</Color>
-	<Color x:Key="ChatAccentHoverColor">#FFE58C6D</Color>
 	<Color x:Key="ChatAccentForegroundColor">#FF211A17</Color>
+	<Color x:Key="ChatLinkColor">#FFD97757</Color>
 	<Color x:Key="ChatDiffAddedBackgroundColor">#FF1B3B1B</Color>
 	<Color x:Key="ChatDiffAddedForegroundColor">#FF6A9955</Color>
 	<Color x:Key="ChatDiffRemovedBackgroundColor">#FF3B1B1B</Color>
@@ -30,8 +30,8 @@
 	<SolidColorBrush x:Key="ChatAssistantBubbleBackgroundBrush" Color="{StaticResource ChatAssistantBubbleBackgroundColor}" />
 	<SolidColorBrush x:Key="ChatInputBackgroundBrush" Color="{StaticResource ChatInputBackgroundColor}" />
 	<SolidColorBrush x:Key="ChatAccentBrush" Color="{StaticResource ChatAccentColor}" />
-	<SolidColorBrush x:Key="ChatAccentHoverBrush" Color="{StaticResource ChatAccentHoverColor}" />
 	<SolidColorBrush x:Key="ChatAccentForegroundBrush" Color="{StaticResource ChatAccentForegroundColor}" />
+	<SolidColorBrush x:Key="ChatLinkBrush" Color="{StaticResource ChatLinkColor}" />
 	<SolidColorBrush x:Key="ChatDiffAddedBackgroundBrush" Color="{StaticResource ChatDiffAddedBackgroundColor}" />
 	<SolidColorBrush x:Key="ChatDiffAddedForegroundBrush" Color="{StaticResource ChatDiffAddedForegroundColor}" />
 	<SolidColorBrush x:Key="ChatDiffRemovedBackgroundBrush" Color="{StaticResource ChatDiffRemovedBackgroundColor}" />

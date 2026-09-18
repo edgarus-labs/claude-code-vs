@@ -7,7 +7,7 @@ using Xunit;
 
 namespace ClaudeCode.Acp.Tests;
 
-public sealed class JsonRpcConnectionTests : IAsyncLifetime
+public sealed class JsonRpcConnectionTests : IAsyncLifetime, IAsyncDisposable
 {
     // "toTest" = what the connection under test WRITES (its outbound requests/notifications/responses);
     // the test reads from toTest.Reader to observe them.
@@ -27,6 +27,10 @@ public sealed class JsonRpcConnectionTests : IAsyncLifetime
     }
 
     public async Task DisposeAsync() => await _connection.DisposeAsync();
+
+    // Explicit IAsyncDisposable purely so CA1001 recognizes this type as disposable; xUnit drives
+    // teardown through IAsyncLifetime.DisposeAsync() (Task-returning) above, not through this.
+    ValueTask IAsyncDisposable.DisposeAsync() => new ValueTask(DisposeAsync());
 
     [Fact]
     public async Task SendRequestAsync_CorrelatesResponses_DespiteOutOfOrderRepliesAndAnInterleavedNotification()
@@ -93,7 +97,7 @@ public sealed class JsonRpcConnectionTests : IAsyncLifetime
         Assert.DoesNotContain("private-stderr", error.Message);
         Assert.DoesNotContain("private-prompt", error.Message);
         Assert.DoesNotContain("private-key", error.Message);
-        Assert.Equal("authentication_failed", error.Data2!["errorKind"]!.GetValue<string>());
+        Assert.Equal("authentication_failed", error.RemoteData!["errorKind"]!.GetValue<string>());
     }
 
     [Fact]
@@ -136,6 +140,106 @@ public sealed class JsonRpcConnectionTests : IAsyncLifetime
         _fromTest.Writer.Complete(); // simulate the child process exiting / closing its stdout.
 
         await Assert.ThrowsAnyAsync<Exception>(() => request.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
+    public async Task PumpAsync_LineExceedsMaximumLength_DisconnectsInsteadOfBufferingUnbounded()
+    {
+        // A misbehaving or malicious peer that never sends a newline must not be able to make the
+        // client buffer an unbounded amount of memory; the pump must give up past a hard cap.
+        var disconnected = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _connection.Disconnected += (_, ex) => disconnected.TrySetResult(ex);
+        Task<JsonNode?> request = _connection.SendRequestAsync("session/new", new JsonObject(), CancellationToken.None);
+        await ReadRequestIdAsync();
+
+        byte[] oversized = new byte[(32 * 1024 * 1024) + 1024];
+        for (int i = 0; i < oversized.Length; i++)
+        {
+            oversized[i] = (byte)'x'; // no newline anywhere in the payload.
+        }
+
+        await _fromTest.Writer.WriteAsync(oversized);
+
+        Exception? failure = await disconnected.Task.WaitAsync(TimeSpan.FromSeconds(15));
+        Assert.NotNull(failure);
+        await Assert.ThrowsAnyAsync<Exception>(() => request.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
+    public async Task DispatchLine_ManyConcurrentInboundRequests_ThrottlesConcurrentHandlerExecution()
+    {
+        // A flood of inbound requests from the peer must not fan out into unbounded concurrent
+        // handler executions (and the thread-pool pressure that comes with it) - concurrency must
+        // be capped even though every request is still eventually served.
+        const int totalRequests = 24;
+        const int expectedMaxConcurrency = 16;
+        int concurrent = 0;
+        int maxObservedConcurrent = 0;
+        int enteredCount = 0;
+        var reachedCap = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        _connection.RequestHandler = async (method, @params, ct) =>
+        {
+            int current = Interlocked.Increment(ref concurrent);
+            InterlockedMax(ref maxObservedConcurrent, current);
+            if (Interlocked.Increment(ref enteredCount) == expectedMaxConcurrency)
+            {
+                reachedCap.TrySetResult(true);
+            }
+
+            await release.Task.ConfigureAwait(false);
+            Interlocked.Decrement(ref concurrent);
+            return new JsonObject();
+        };
+
+        for (int i = 0; i < totalRequests; i++)
+        {
+            await PipeTestHelpers.WriteLineAsync(_fromTest.Writer, $"{{\"jsonrpc\":\"2.0\",\"id\":{i},\"method\":\"custom/test\",\"params\":{{}}}}");
+        }
+
+        await reachedCap.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await Task.Delay(TimeSpan.FromMilliseconds(300)); // let any wrongly-unthrottled handlers start too.
+        Assert.Equal(expectedMaxConcurrency, Volatile.Read(ref maxObservedConcurrent));
+
+        release.TrySetResult(true);
+        for (int i = 0; i < totalRequests; i++)
+        {
+            await PipeTestHelpers.ReadLineAsync(_toTest.Reader).WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
+    [Fact]
+    public async Task HandleInboundRequestAsync_LocalHandlerThrows_RespondsWithGenericMessage_NotTheLocalExceptionText()
+    {
+        // A non-AcpRemoteException thrown by our own (local) request handler must never have its raw
+        // .Message echoed back to the remote agent process - it can contain local file paths or other
+        // details the agent has no business seeing. Only AcpRemoteException (already redacted) is safe.
+        const string sensitivePath = "C:\\Users\\alice\\.ssh\\id_rsa";
+        _connection.RequestHandler = (method, @params, ct) => throw new InvalidOperationException("Failed reading " + sensitivePath);
+
+        await PipeTestHelpers.WriteLineAsync(_fromTest.Writer, "{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"custom/test\",\"params\":{}}");
+
+        string line = await PipeTestHelpers.ReadLineAsync(_toTest.Reader).WaitAsync(TimeSpan.FromSeconds(5));
+        JsonObject response = JsonNode.Parse(line)!.AsObject();
+
+        Assert.Equal(42, response["id"]!.GetValue<int>());
+        string message = response["error"]!["message"]!.GetValue<string>();
+        Assert.DoesNotContain(sensitivePath, message);
+        Assert.DoesNotContain("alice", message);
+    }
+
+    private static void InterlockedMax(ref int target, int value)
+    {
+        int initial;
+        do
+        {
+            initial = Volatile.Read(ref target);
+            if (value <= initial)
+            {
+                return;
+            }
+        } while (Interlocked.CompareExchange(ref target, value, initial) != initial);
     }
 
     private async Task<long> ReadRequestIdAsync(string? expectedTag = null)

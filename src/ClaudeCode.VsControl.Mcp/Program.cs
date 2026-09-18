@@ -21,6 +21,18 @@ public static class Program
             return 1;
         }
 
+        VsControlPipeClient pipeClient;
+        try
+        {
+            pipeClient = new VsControlPipeClient(pipeName);
+        }
+        catch (ArgumentException ex)
+        {
+            await Console.Error.WriteLineAsync($"ClaudeCode.VsControl.Mcp: {ex.Message}").ConfigureAwait(false);
+            return 1;
+        }
+        await using var ownedPipeClient = pipeClient;
+
         using var cancellationSource = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) =>
         {
@@ -28,13 +40,11 @@ public static class Program
             cancellationSource.Cancel();
         };
 
-        await using var pipeClient = new VsControlPipeClient(pipeName);
-
         var utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
         using var input = new StreamReader(Console.OpenStandardInput(), utf8NoBom);
         using var output = new StreamWriter(Console.OpenStandardOutput(), utf8NoBom) { AutoFlush = false, NewLine = "\n" };
 
-        var server = new McpServer(pipeClient, input, output);
+        using var server = new McpServer(pipeClient, input, output);
         await server.RunAsync(cancellationSource.Token).ConfigureAwait(false);
 
         return 0;

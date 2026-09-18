@@ -10,6 +10,9 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   build-and-test:
     # VSIX packaging (Microsoft.VSSDK.BuildTools' CreateVsixContainer/GeneratePkgDefFile) only runs on the
@@ -17,20 +20,26 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Test release version selection
+        shell: pwsh
+        run: ./.github/tests/ReleaseVersion.Tests.ps1
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           dotnet-version: |
             8.0.x
             10.0.x
 
       - name: Add MSBuild to PATH
-        uses: microsoft/setup-msbuild@v2
+        uses: microsoft/setup-msbuild@6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce # v2.0.0
 
       - name: Restore
-        run: dotnet restore ClaudeCodeVS.slnx
+        run: dotnet restore ClaudeCodeVS.slnx --locked-mode
 
       - name: Build (Release)
         run: msbuild ClaudeCodeVS.slnx -t:Build -p:Configuration=Release -m -restore:false
@@ -46,15 +55,14 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: test-results
           path: test/**/TestResults/*.trx
 
       - name: Upload VSIX (build artifact, not a release)
-        if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ClaudeCode.Vsix-unsigned
           path: src/ClaudeCode.Vsix/bin/Release/net48/*.vsix
-          if-no-files-found: warn
+          if-no-files-found: error

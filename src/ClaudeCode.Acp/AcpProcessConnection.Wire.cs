@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json.Nodes;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace ClaudeCode.Acp;
@@ -11,18 +12,18 @@ public sealed partial class AcpProcessConnection
 {
     // ---- outbound: agent -> client requests (fs/read_text_file, fs/write_text_file, session/request_permission) ----
 
-    private Task<JsonNode?> HandleInboundRequestAsync(string method, JsonNode? @params, System.Threading.CancellationToken cancellationToken)
+    private Task<JsonNode?> HandleInboundRequestAsync(string method, JsonNode? @params, CancellationToken cancellationToken)
     {
         return method switch
         {
-            "fs/read_text_file" => HandleReadTextFileAsync(RequireObject(@params, method)),
-            "fs/write_text_file" => HandleWriteTextFileAsync(RequireObject(@params, method)),
-            "session/request_permission" => HandleRequestPermissionAsync(RequireObject(@params, method)),
+            "fs/read_text_file" => HandleReadTextFileAsync(RequireObject(@params, method), cancellationToken),
+            "fs/write_text_file" => HandleWriteTextFileAsync(RequireObject(@params, method), cancellationToken),
+            "session/request_permission" => HandleRequestPermissionAsync(RequireObject(@params, method), cancellationToken),
             _ => throw new AcpRemoteException(-32601, $"Method not found: {method}"),
         };
     }
 
-    private async Task<JsonNode?> HandleReadTextFileAsync(JsonObject @params)
+    private async Task<JsonNode?> HandleReadTextFileAsync(JsonObject @params, CancellationToken cancellationToken)
     {
         var handler = FileReadRequested;
         if (handler is null)
@@ -33,12 +34,12 @@ public sealed partial class AcpProcessConnection
         string path = GetRequiredString(@params, "path");
         var args = new FileReadRequestEventArgs(path, GetOptionalInt(@params, "line"), GetOptionalInt(@params, "limit"));
         handler(this, args);
-        string content = await args.Response.Task.ConfigureAwait(false);
+        string content = await WaitWithCancellationAsync(args.Response.Task, cancellationToken).ConfigureAwait(false);
 
         return new JsonObject { ["content"] = content };
     }
 
-    private async Task<JsonNode?> HandleWriteTextFileAsync(JsonObject @params)
+    private async Task<JsonNode?> HandleWriteTextFileAsync(JsonObject @params, CancellationToken cancellationToken)
     {
         var handler = FileWriteRequested;
         if (handler is null)
@@ -50,7 +51,7 @@ public sealed partial class AcpProcessConnection
         string content = GetRequiredString(@params, "content");
         var args = new FileWriteRequestEventArgs(path, content);
         handler(this, args);
-        bool succeeded = await args.Response.Task.ConfigureAwait(false);
+        bool succeeded = await WaitWithCancellationAsync(args.Response.Task, cancellationToken).ConfigureAwait(false);
         if (!succeeded)
         {
             throw new AcpRemoteException(-32000, $"Failed to write file: {path}");
@@ -59,7 +60,7 @@ public sealed partial class AcpProcessConnection
         return new JsonObject(); // WriteTextFileResponse carries no fields.
     }
 
-    private async Task<JsonNode?> HandleRequestPermissionAsync(JsonObject @params)
+    private async Task<JsonNode?> HandleRequestPermissionAsync(JsonObject @params, CancellationToken cancellationToken)
     {
         var handler = PermissionRequested;
         if (handler is null)
@@ -79,7 +80,7 @@ public sealed partial class AcpProcessConnection
         try
         {
             handler(this, args);
-            string optionId = await args.Response.Task.ConfigureAwait(false);
+            string optionId = await WaitWithCancellationAsync(args.Response.Task, cancellationToken).ConfigureAwait(false);
 
             return optionId == CancelledPermissionOptionId
                 ? new JsonObject { ["outcome"] = new JsonObject { ["outcome"] = "cancelled" } }
@@ -88,6 +89,26 @@ public sealed partial class AcpProcessConnection
         finally
         {
             UntrackPendingPermission(sessionId, args);
+        }
+    }
+
+    // Awaits `task`, but also completes (with an OperationCanceledException) as soon as
+    // `cancellationToken` fires - e.g. because the underlying connection is being torn down - so a
+    // client-side event handler that never resolves its TaskCompletionSourceSlot (an unanswered
+    // permission dialog, a stuck file read/write) can never leave this wait blocked forever. The slot
+    // itself is not forced to a result: whatever eventually resolves it (if anything) still can.
+    private static async Task<T> WaitWithCancellationAsync<T>(Task<T> task, CancellationToken cancellationToken)
+    {
+        if (!cancellationToken.CanBeCanceled || task.IsCompleted)
+        {
+            return await task.ConfigureAwait(false);
+        }
+
+        var cancellationTcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using (cancellationToken.Register(() => cancellationTcs.TrySetCanceled(cancellationToken)))
+        {
+            Task<T> completed = await Task.WhenAny(task, cancellationTcs.Task).ConfigureAwait(false);
+            return await completed.ConfigureAwait(false);
         }
     }
 

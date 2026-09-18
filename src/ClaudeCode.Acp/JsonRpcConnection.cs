@@ -12,11 +12,20 @@ namespace ClaudeCode.Acp;
 
 internal sealed class JsonRpcConnection : IAsyncDisposable
 {
+    private const int _maxLineLengthBytes = 32 * 1024 * 1024;
+
+    private static readonly TimeSpan _disposeGracePeriod = TimeSpan.FromSeconds(5);
+
     private readonly Stream _input;
     private readonly Stream _output;
     private readonly SemaphoreSlim _writeLock = new SemaphoreSlim(1, 1);
+    private readonly SemaphoreSlim _inboundRequestThrottle = new SemaphoreSlim(16, 16);
     private readonly ConcurrentDictionary<long, TaskCompletionSource<JsonNode?>> _pending = new ConcurrentDictionary<long, TaskCompletionSource<JsonNode?>>();
     private readonly CancellationTokenSource _cts = new CancellationTokenSource();
+    private readonly CancellationToken _shutdownToken;
+    private readonly object _operationGate = new object();
+    // Disposal releases the connection's reference; the final operation releases its resources.
+    private int _activeOperations = 1;
     private long _nextId;
     private Task? _pumpTask;
     private int _disposed;
@@ -25,10 +34,19 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
     {
         _input = input ?? throw new ArgumentNullException(nameof(input));
         _output = output ?? throw new ArgumentNullException(nameof(output));
+        _shutdownToken = _cts.Token;
     }
 
     public JsonRpcRequestHandler? RequestHandler { get; set; }
 
+    /// <summary>
+    /// Raised synchronously on the pump's read loop for every inbound notification (unlike inbound
+    /// requests, which are dispatched off the pump via <c>Task.Run</c>). This preserves the wire's
+    /// exact arrival order for e.g. streaming <c>session/update</c> chunks, but means a subscriber
+    /// that blocks or does slow synchronous work stalls reading of every subsequent
+    /// notification/response/request on this connection. Subscribers MUST return quickly (dispatch
+    /// their own real work elsewhere) rather than block here.
+    /// </summary>
     public event EventHandler<JsonRpcNotification>? NotificationReceived;
 
     public event EventHandler<Exception?>? Disconnected;
@@ -40,6 +58,7 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
             throw new InvalidOperationException("JsonRpcConnection.Start() has already been called.");
         }
 
+        BeginOperation();
         _pumpTask = Task.Run(PumpAsync);
     }
 
@@ -101,16 +120,28 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
 
     private async Task WriteMessageAsync(JsonObject envelope, CancellationToken cancellationToken)
     {
-        byte[] bytes = Encoding.UTF8.GetBytes(envelope.ToJsonString() + "\n");
-        await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        BeginOperation();
         try
         {
-            await _output.WriteAsync(bytes, 0, bytes.Length, cancellationToken).ConfigureAwait(false);
-            await _output.FlushAsync(cancellationToken).ConfigureAwait(false);
+            byte[] bytes = Encoding.UTF8.GetBytes(envelope.ToJsonString() + "\n");
+
+            // Cancellation must unblock backpressure even when closing the stream does not.
+            using CancellationTokenSource linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdownToken);
+            CancellationToken linkedToken = linkedCts.Token;
+            await _writeLock.WaitAsync(linkedToken).ConfigureAwait(false);
+            try
+            {
+                await _output.WriteAsync(bytes, 0, bytes.Length, linkedToken).ConfigureAwait(false);
+                await _output.FlushAsync(linkedToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                _writeLock.Release();
+            }
         }
         finally
         {
-            _writeLock.Release();
+            EndOperation();
         }
     }
 
@@ -128,7 +159,7 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
             var pendingLine = new List<byte>(256);
             while (true)
             {
-                int read = await _input.ReadAsync(readBuffer, 0, readBuffer.Length, _cts.Token).ConfigureAwait(false);
+                int read = await _input.ReadAsync(readBuffer, 0, readBuffer.Length, _shutdownToken).ConfigureAwait(false);
                 if (read == 0)
                 {
                     break; // clean EOF: peer closed its stdout (process exited).
@@ -148,11 +179,18 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
                     else if (b != (byte)'\r')
                     {
                         pendingLine.Add(b);
+                        if (pendingLine.Count > _maxLineLengthBytes)
+                        {
+                            pendingLine.Clear();
+                            _cts.Cancel();
+                            throw new IOException(
+                                $"A single JSON-RPC line exceeded the {_maxLineLengthBytes}-byte limit without a newline; the connection has been closed.");
+                        }
                     }
                 }
             }
         }
-        catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+        catch (OperationCanceledException) when (_shutdownToken.IsCancellationRequested)
         {
             // Intentional shutdown via DisposeAsync(); not a connection failure.
         }
@@ -162,8 +200,15 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
         }
         finally
         {
-            FailAllPending(failure ?? new IOException("The JSON-RPC connection was closed."));
-            Disconnected?.Invoke(this, failure);
+            try
+            {
+                FailAllPending(failure ?? new IOException("The JSON-RPC connection was closed."));
+                Disconnected?.Invoke(this, failure);
+            }
+            finally
+            {
+                EndOperation();
+            }
         }
     }
 
@@ -195,14 +240,17 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
             if (hasId)
             {
                 // Dispatched off the pump so a slow (e.g. user-permission) handler never blocks reading
-                // subsequent notifications/responses that arrive while it's in flight.
+                // subsequent notifications/responses that arrive while it's in flight. Concurrency is
+                // capped by _inboundRequestThrottle so a peer flooding inbound requests cannot fan out
+                // unbounded concurrent handler executions.
                 JsonNode? idNodeCapture = idNode;
                 string methodCapture = method;
                 JsonNode? paramsCapture = paramsNode;
-                _ = Task.Run(() => HandleInboundRequestAsync(idNodeCapture, methodCapture, paramsCapture));
+                _ = Task.Run(() => HandleInboundRequestThrottledAsync(idNodeCapture, methodCapture, paramsCapture));
             }
             else
             {
+                // Invoked inline on the pump - see the XML doc on NotificationReceived for why.
                 NotificationReceived?.Invoke(this, new JsonRpcNotification(method, paramsNode));
             }
 
@@ -233,6 +281,27 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
         }
     }
 
+    internal async Task HandleInboundRequestThrottledAsync(JsonNode? idNode, string method, JsonNode? @params)
+    {
+        BeginOperation();
+        try
+        {
+            await _inboundRequestThrottle.WaitAsync(_shutdownToken).ConfigureAwait(false);
+            try
+            {
+                await HandleInboundRequestAsync(idNode, method, @params).ConfigureAwait(false);
+            }
+            finally
+            {
+                _inboundRequestThrottle.Release();
+            }
+        }
+        finally
+        {
+            EndOperation();
+        }
+    }
+
     private async Task HandleInboundRequestAsync(JsonNode? idNode, string method, JsonNode? @params)
     {
         WireId id;
@@ -255,7 +324,7 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
                 return;
             }
 
-            JsonNode? result = await handler(method, @params, _cts.Token).ConfigureAwait(false);
+            JsonNode? result = await handler(method, @params, _shutdownToken).ConfigureAwait(false);
             await WriteResultResponseAsync(id, result).ConfigureAwait(false);
         }
         catch (AcpRemoteException remoteEx)
@@ -269,11 +338,15 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
                 // Connection is gone; Disconnected has already fired (or is about to) from the pump.
             }
         }
-        catch (Exception ex)
+        catch (Exception)
         {
+            // Never echo a local (non-AcpRemoteException) exception's message back to the remote
+            // agent process - it can contain local file paths, stack/internal details, or other
+            // information the agent has no business seeing. Only AcpRemoteException (the remote
+            // peer's own, already-redacted error) is safe to round-trip.
             try
             {
-                await WriteErrorResponseAsync(id, -32603, ex.Message).ConfigureAwait(false);
+                await WriteErrorResponseAsync(id, -32603, "Internal error while handling the request.").ConfigureAwait(false);
             }
             catch (Exception)
             {
@@ -346,33 +419,93 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
             return;
         }
 
-        CloseOutput(); // best-effort: signal EOF to the remote peer's stdin.
-        _cts.Cancel(); // unblocks the pump's pending read via the CancellationToken passed to ReadAsync.
-
-        if (_pumpTask is not null)
+        try
         {
             try
             {
-                await _pumpTask.ConfigureAwait(false);
+                try
+                {
+                    CloseOutput(); // best-effort: signal EOF to the remote peer's stdin.
+                }
+                finally
+                {
+                    // Cancellation callbacks belong to handlers and may throw.
+                    _cts.Cancel();
+                }
             }
-            catch (Exception)
+            finally
             {
+                // Neither a throwing callback nor a blocked pump may strand outbound requests.
+                FailAllPending(new IOException("The JSON-RPC connection was closed."));
+
+                try
+                {
+                    if (_pumpTask is not null)
+                    {
+                        Task completed = await Task.WhenAny(_pumpTask, Task.Delay(_disposeGracePeriod)).ConfigureAwait(false);
+                        if (ReferenceEquals(completed, _pumpTask))
+                        {
+                            try
+                            {
+                                await _pumpTask.ConfigureAwait(false);
+                            }
+                            catch (Exception)
+                            {
+                            }
+                        }
+                        else
+                        {
+                            // A subscriber can block the pump. Bound this wait, but observe any
+                            // eventual fault after disposal returns.
+                            _ = _pumpTask.ContinueWith(t => _ = t.Exception, TaskScheduler.Default);
+                        }
+                    }
+                }
+                finally
+                {
+                    try
+                    {
+                        _input.Dispose();
+                    }
+                    catch (IOException)
+                    {
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                    }
+                }
             }
         }
+        finally
+        {
+            EndOperation();
+        }
+    }
 
-        try
+    private void BeginOperation()
+    {
+        lock (_operationGate)
         {
-            _input.Dispose();
-        }
-        catch (IOException)
-        {
-        }
-        catch (ObjectDisposedException)
-        {
-        }
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                throw new OperationCanceledException(_shutdownToken);
+            }
 
-        _writeLock.Dispose();
-        _cts.Dispose();
+            _activeOperations++;
+        }
+    }
+
+    private void EndOperation()
+    {
+        lock (_operationGate)
+        {
+            if (--_activeOperations == 0)
+            {
+                _writeLock.Dispose();
+                _inboundRequestThrottle.Dispose();
+                _cts.Dispose();
+            }
+        }
     }
 
     private readonly struct WireId
@@ -409,6 +542,6 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
             throw new AcpProtocolException("JSON-RPC request id must be a number or a string.");
         }
 
-        public JsonNode ToNode() => _text is not null ? JsonValue.Create(_text)! : JsonValue.Create(_numeric)!;
+        public JsonValue ToNode() => _text is not null ? JsonValue.Create(_text)! : JsonValue.Create(_numeric)!;
     }
 }

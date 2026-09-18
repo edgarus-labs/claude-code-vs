@@ -1,7 +1,7 @@
 # Enforce LF line endings for all text files in the repository, regardless of any individual
-# contributor's local core.autocrlf setting -- .editorconfig already requires LF (end_of_line = lf)
-# and CI's `dotnet format --verify-no-changes` enforces it, but without this file that enforcement
-# depended entirely on each developer's git config, which is how CRLF kept leaking in on Windows.
+# contributor's local core.autocrlf setting. .editorconfig requires LF (end_of_line = lf); this
+# file ensures that guarantee holds even when a contributor's local git config would otherwise
+# normalize line endings differently.
 * text=auto eol=lf
 
 # Binary assets: never touch line endings, never diff as text.

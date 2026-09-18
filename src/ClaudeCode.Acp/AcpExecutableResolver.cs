@@ -11,6 +11,24 @@ public static class AcpExecutableResolver
         ? new[] { "claude-agent-acp.exe", "claude-agent-acp.cmd" }
         : new[] { "claude-agent-acp" };
 
+    public static bool IsFullyQualifiedPath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        if (!_isWindows)
+        {
+            return path![0] == '/';
+        }
+
+        // Rooted paths such as C:tools and \tools still depend on the current directory or drive.
+        return (path!.Length >= 2 && IsDirectorySeparator(path[0]) && IsDirectorySeparator(path[1]))
+            || (path.Length >= 3 && ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z'))
+                && path[1] == ':' && IsDirectorySeparator(path[2]));
+    }
+
     public static AcpExecutableSpec? TryResolveDefault() => TryResolveDefault(Environment.GetEnvironmentVariable("PATH"));
 
     public static AcpExecutableSpec? TryResolveDefault(string? searchPath)
@@ -35,7 +53,7 @@ public static class AcpExecutableResolver
 
     public static AcpExecutableSpec? TryResolve(string executablePath, string? searchPath)
     {
-        if (string.IsNullOrWhiteSpace(executablePath) || !File.Exists(executablePath))
+        if (!IsFullyQualifiedPath(executablePath) || !File.Exists(executablePath))
         {
             return null;
         }
@@ -44,6 +62,7 @@ public static class AcpExecutableResolver
         string extension = Path.GetExtension(fullPath);
         string directory = Path.GetDirectoryName(fullPath)!;
         string? scriptPath = null;
+        bool preferAdjacentNode = false;
         if (_isWindows && (extension.Equals(".cmd", StringComparison.OrdinalIgnoreCase)
             || extension.Equals(".bat", StringComparison.OrdinalIgnoreCase)))
         {
@@ -63,6 +82,10 @@ public static class AcpExecutableResolver
             {
                 return null;
             }
+
+            // Only global shim directories may supply an adjacent runtime. Package directories
+            // remain untrusted regardless of which package layout supplied the script.
+            preferAdjacentNode = !IsPackageDirectory(directory);
         }
         else if (extension.Equals(".js", StringComparison.OrdinalIgnoreCase))
         {
@@ -71,6 +94,8 @@ public static class AcpExecutableResolver
                 return null;
             }
 
+            // Always PATH-first: the entry point's directory is package content (node_modules), so a
+            // "node.exe" found there is never a trusted adjacent runtime.
             scriptPath = fullPath;
         }
         else
@@ -85,8 +110,17 @@ public static class AcpExecutableResolver
         }
 
         string nodeName = _isWindows ? "node.exe" : "node";
-        string? nodePath = Path.Combine(directory, nodeName);
-        if (!File.Exists(nodePath))
+        string? nodePath = null;
+        if (preferAdjacentNode)
+        {
+            string adjacentNode = Path.Combine(directory, nodeName);
+            if (File.Exists(adjacentNode))
+            {
+                nodePath = adjacentNode;
+            }
+        }
+
+        if (nodePath is null)
         {
             nodePath = FindOnPath(nodeName, searchPath);
         }
@@ -94,10 +128,41 @@ public static class AcpExecutableResolver
         return nodePath is null ? null : new AcpExecutableSpec(nodePath, new[] { Path.GetFullPath(scriptPath) });
     }
 
+    private static bool IsDirectorySeparator(char value) =>
+        value == Path.DirectorySeparatorChar || value == Path.AltDirectorySeparatorChar;
+
+    private static bool IsPackageDirectory(string directory)
+    {
+        int segmentStart = 0;
+        for (int index = 0; index <= directory.Length; index++)
+        {
+            if (index != directory.Length && !IsDirectorySeparator(directory[index]))
+            {
+                continue;
+            }
+
+            int length = index - segmentStart;
+            if ((length == 12 && string.Compare(directory, segmentStart, "node_modules", 0, length, StringComparison.OrdinalIgnoreCase) == 0)
+                || (length == 4 && string.Compare(directory, segmentStart, ".bin", 0, length, StringComparison.OrdinalIgnoreCase) == 0))
+            {
+                return true;
+            }
+
+            segmentStart = index + 1;
+        }
+
+        return false;
+    }
+
     private static string? FindOnPath(string fileName, string? searchPath)
     {
         foreach (string directory in GetSearchDirectories(searchPath))
         {
+            if (IsPackageDirectory(directory))
+            {
+                continue;
+            }
+
             string path = Path.Combine(directory, fileName);
             if (File.Exists(path))
             {
@@ -118,8 +183,9 @@ public static class AcpExecutableResolver
         foreach (string entry in searchPath.Split(Path.PathSeparator))
         {
             string directory = entry.Trim().Trim('"');
-            if (directory.Length == 0)
+            if (!IsFullyQualifiedPath(directory))
             {
+                // Only fully qualified entries are independent of the workspace/current drive.
                 continue;
             }
 

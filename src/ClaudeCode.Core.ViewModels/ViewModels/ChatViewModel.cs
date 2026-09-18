@@ -6,6 +6,8 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -44,13 +46,18 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private string? _statusMessage;
     private PlanViewModel? _currentPlan;
     private PermissionRequestViewModel? _pendingPermission;
+    private TaskCompletionSourceSlot<string>? _pendingPermissionResponse;
+
+    private const long MaxImageAttachmentBytes = 5L * 1024 * 1024;
+    private const long MaxDocumentAttachmentBytes = 1L * 1024 * 1024;
 
     public ChatViewModel(IChatSessionServices services)
     {
         _services = services ?? throw new ArgumentNullException(nameof(services));
-        _uiContext = SynchronizationContext.Current;
+        _uiContext = SynchronizationContext.Current
+            ?? throw new InvalidOperationException("ChatViewModel must be constructed on a thread with a SynchronizationContext (e.g. the WPF UI thread).");
         SendCommand = new AsyncRelayCommand(SendAsync, CanSend);
-        CancelCommand = new AsyncRelayCommand(CancelAsync, () => IsBusy && !_disposed);
+        CancelCommand = new AsyncRelayCommand(CancelAsync, () => IsBusy && !_disposed && _connection is not null && _sessionId is not null);
         SignInCommand = new AsyncRelayCommand(SignInAsync, () => !IsSignedIn && !_disposed);
         AttachActiveDocumentCommand = new AsyncRelayCommand(AttachActiveDocumentAsync, () => CanEditDraft && !_isCapturingDocument);
         ApplySlashSuggestionCommand = new RelayCommand<AvailableCommand>(ApplySlashSuggestion,
@@ -199,13 +206,18 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         if (string.IsNullOrWhiteSpace(base64Data)) throw new ArgumentException("Image data is required.", nameof(base64Data));
         RunOnUi(() =>
         {
-            if (CanEditDraft)
+            if (!CanEditDraft) return;
+            if (EstimateBase64ByteLength(base64Data) > MaxImageAttachmentBytes)
             {
-                Attachments.Add(new ChatAttachmentViewModel(name, mimeType, base64Data));
-                AttachmentError = null;
+                AttachmentError = "Image exceeds the 5 MB attachment limit.";
+                return;
             }
+            Attachments.Add(new ChatAttachmentViewModel(name, mimeType, base64Data));
+            AttachmentError = null;
         });
     }
+
+    private static long EstimateBase64ByteLength(string base64Data) => (long)base64Data.Length * 3 / 4;
 
     private Task AttachActiveDocumentAsync(CancellationToken cancellationToken) =>
         OnUiAsync(() => AttachActiveDocumentCoreAsync(cancellationToken));
@@ -225,6 +237,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             if (document is null)
             {
                 AttachmentError = "Open a text document in the editor before attaching it.";
+                return;
+            }
+            if (Encoding.UTF8.GetByteCount(document.Text) > MaxDocumentAttachmentBytes)
+            {
+                AttachmentError = "Document exceeds the 1 MB attachment limit.";
                 return;
             }
 
@@ -506,7 +523,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         finally
         {
             IsConnecting = false;
-            _connectGate.Release();
+            try { _connectGate.Release(); } catch (ObjectDisposedException) { }
             NotifyStateChanged();
         }
     }
@@ -613,12 +630,15 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         {
             if (_disposed || !ReferenceEquals(sender, _connection) || e.SessionId != _sessionId)
             {
-                e.Response.SetException(new OperationCanceledException("The permission request no longer belongs to an active session."));
+                e.Response.TrySetException(new OperationCanceledException("The permission request no longer belongs to an active session."));
                 return;
             }
+            _pendingPermissionResponse?.TrySetException(new OperationCanceledException("Superseded by a newer permission request."));
+            _pendingPermissionResponse = e.Response;
             PendingPermission = new PermissionRequestViewModel(e.Call.Title, e.Options, option =>
             {
-                e.Response.SetResult(option.OptionId);
+                e.Response.TrySetResult(option.OptionId);
+                _pendingPermissionResponse = null;
                 PendingPermission = null;
                 UpdateActivity("Working…");
             });
@@ -626,31 +646,53 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         });
     }
 
-    private void OnFileReadRequested(object? sender, FileReadRequestEventArgs e)
+    private async void OnFileReadRequested(object? sender, FileReadRequestEventArgs e)
     {
         try
         {
-            var text = File.ReadAllText(e.Path);
+            using var pathLease = WorkspacePathGuard.AcquireFile(_services.WorkspaceRoot, e.Path);
+            string? liveText = null;
+            using (var document = pathLease.ProtectDocument())
+            {
+                if (document is not null || !RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                    liveText = await _services.TryReadOpenDocumentAsync(pathLease.FullPath, _lifetime.Token).ConfigureAwait(true);
+            }
+            var text = liveText ?? pathLease.ReadAllText();
+
             if (e.Line.HasValue || e.Limit.HasValue)
             {
-                var lines = text.Replace("\r\n", "\n").Split('\n');
+                var lines = SplitPreservingLineEndings(text);
                 var start = Math.Max(0, (e.Line ?? 1) - 1);
                 var count = e.Limit ?? Math.Max(0, lines.Length - start);
                 text = string.Join("\n", lines.Skip(start).Take(count));
             }
-            e.Response.SetResult(text);
+
+            e.Response.TrySetResult(text);
         }
-        catch (Exception ex) { e.Response.SetException(ex); }
+        catch (Exception ex) { e.Response.TrySetException(ex); }
     }
 
-    private void OnFileWriteRequested(object? sender, FileWriteRequestEventArgs e)
+    private static string[] SplitPreservingLineEndings(string text) => (text ?? string.Empty).Split('\n');
+
+    private async void OnFileWriteRequested(object? sender, FileWriteRequestEventArgs e)
     {
         try
         {
-            File.WriteAllText(e.Path, e.Content);
-            e.Response.SetResult(true);
+            using var pathLease = WorkspacePathGuard.AcquireFile(_services.WorkspaceRoot, e.Path);
+            using (var document = pathLease.ProtectDocument())
+            {
+                if ((document is not null || !RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                    && await _services.TryWriteOpenDocumentAsync(pathLease.FullPath, e.Content, _lifetime.Token).ConfigureAwait(true))
+                {
+                    e.Response.TrySetResult(true);
+                    return;
+                }
+            }
+
+            pathLease.WriteAllText(e.Content);
+            e.Response.TrySetResult(true);
         }
-        catch (Exception ex) { e.Response.SetException(ex); }
+        catch (Exception ex) { e.Response.TrySetException(ex); }
     }
 
     private void OnDisconnected(object? sender, Exception? ex)
@@ -675,6 +717,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         ActivityText = string.Empty;
         IsSignedIn = _services.AuthService.CurrentState == AuthState.SignedIn;
         PendingPermission = null;
+        _pendingPermissionResponse = null;
         CurrentPlan = null;
         ApplyConfigOptions(Array.Empty<SessionConfigOption>());
         if (connection is null) return;
@@ -743,11 +786,22 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         _disposed = true;
         _services.AuthService.StateChanged -= OnAuthStateChanged;
         _lifetime.Cancel();
-        RunOnUi(() =>
+        RunOnUi(() => _ = DisposeCoreAsync());
+    }
+
+    private async Task DisposeCoreAsync()
+    {
+        try
         {
-            _ = ReleaseConnectionAsync();
+            await ReleaseConnectionAsync().ConfigureAwait(true);
+        }
+        finally
+        {
             NotifyStateChanged();
-        });
-        // In-flight continuations still release the gate/use the token. Neither owns a wait handle.
+            // EnsureConnectedAsync's finally tolerates a disposed gate (ObjectDisposedException is
+            // swallowed there), so a late in-flight continuation racing this disposal cannot throw unhandled.
+            _connectGate.Dispose();
+            _lifetime.Dispose();
+        }
     }
 }

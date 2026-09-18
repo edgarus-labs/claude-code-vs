@@ -35,10 +35,10 @@ public sealed class FakeAcpAgentConnection : IAcpAgentConnection
         if (configId != "model" || (value != "sonnet" && value != "opus"))
             throw new ArgumentException("Unknown demo configuration value.", nameof(value));
         _model = value;
-        return Task.FromResult(GetConfigOptions());
+        return Task.FromResult<IReadOnlyList<SessionConfigOption>>(GetConfigOptions());
     }
 
-    private IReadOnlyList<SessionConfigOption> GetConfigOptions() => new[]
+    private SessionConfigOption[] GetConfigOptions() => new[]
     {
         new SessionConfigOption("model", "Model", "model", _model, new[]
         {
@@ -88,6 +88,10 @@ public sealed class FakeAcpAgentConnection : IAcpAgentConnection
 
     public event EventHandler<SessionUpdateEventArgs>? SessionUpdate;
 
+    // FakeAcpAgentConnection is a scripted demo/fallback double: it never asks the client to read or
+    // write files, never requests permission, and never disconnects unexpectedly. These four events
+    // are required by IAcpAgentConnection and legitimately unused here, not dead code.
+#pragma warning disable CS0067
     public event EventHandler<PermissionRequestEventArgs>? PermissionRequested;
 
     public event EventHandler<FileReadRequestEventArgs>? FileReadRequested;
@@ -95,6 +99,7 @@ public sealed class FakeAcpAgentConnection : IAcpAgentConnection
     public event EventHandler<FileWriteRequestEventArgs>? FileWriteRequested;
 
     public event EventHandler<Exception?>? Disconnected;
+#pragma warning restore CS0067
 
     public ValueTask DisposeAsync() => default;
 

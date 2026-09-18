@@ -1,3 +1,4 @@
+using ClaudeCode.Core.ViewModels;
 using Markdig;
 using Markdig.Renderers;
 using Markdig.Renderers.Wpf;
@@ -58,7 +59,7 @@ public sealed class MarkdownMessageView : RichTextBox
 
         _renderTimer = new DispatcherTimer(DispatcherPriority.Background, Dispatcher)
         {
-            Interval = TimeSpan.FromMilliseconds(100)
+            Interval = MarkdownSafetyLimits.ComputeRenderInterval(0)
         };
         _renderTimer.Tick += OnRenderTick;
         Loaded += OnLoaded;
@@ -116,6 +117,7 @@ public sealed class MarkdownMessageView : RichTextBox
         // A hidden assistant template also exists for user messages: never parse it.
         if (IsLoaded && IsVisible && !_renderTimer.IsEnabled)
         {
+            _renderTimer.Interval = MarkdownSafetyLimits.ComputeRenderInterval((Markdown ?? string.Empty).Length);
             _renderTimer.Start();
         }
     }
@@ -148,7 +150,8 @@ public sealed class MarkdownMessageView : RichTextBox
         }
 
         var markdown = Markdown ?? string.Empty;
-        if (string.Equals(markdown, _renderedMarkdown, StringComparison.Ordinal))
+        var renderableMarkdown = MarkdownSafetyLimits.LimitBlockquoteNesting(MarkdownSafetyLimits.LimitMarkdownLength(markdown));
+        if (string.Equals(renderableMarkdown, _renderedMarkdown, StringComparison.Ordinal))
         {
             return;
         }
@@ -156,8 +159,8 @@ public sealed class MarkdownMessageView : RichTextBox
         var preserveSelection = !Selection.IsEmpty || IsKeyboardFocusWithin;
         var selectionStart = preserveSelection ? Document.ContentStart.GetOffsetToPosition(Selection.Start) : 0;
         var selectionEnd = preserveSelection ? Document.ContentStart.GetOffsetToPosition(Selection.End) : 0;
-        Document = Markdig.Wpf.Markdown.ToFlowDocument(markdown, Pipeline, new SafeWpfRenderer(this));
-        _renderedMarkdown = markdown;
+        Document = Markdig.Wpf.Markdown.ToFlowDocument(renderableMarkdown, Pipeline, new SafeWpfRenderer(this));
+        _renderedMarkdown = renderableMarkdown;
 
         if (preserveSelection)
         {
@@ -186,9 +189,7 @@ public sealed class MarkdownMessageView : RichTextBox
         e.Handled = true;
         var hyperlink = (Hyperlink)sender;
         var target = hyperlink.Tag as string;
-        if (!Uri.TryCreate(target, UriKind.Absolute, out var uri) ||
-            (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp) ||
-            string.IsNullOrEmpty(uri.Host))
+        if (!Uri.TryCreate(target, UriKind.Absolute, out var uri) || !MarkdownSafetyLimits.IsNavigableLink(uri))
         {
             ReportLinkFailure(hyperlink, "This link cannot be opened. Only absolute HTTP and HTTPS links are allowed.");
             return;
@@ -254,7 +255,7 @@ public sealed class MarkdownMessageView : RichTextBox
             new Setter(Block.PaddingProperty, new Thickness(10)),
             new Setter(Block.MarginProperty, new Thickness(0, 4, 0, 10)));
         AddStyle(Styles.HyperlinkStyleKey, typeof(Hyperlink),
-            new Setter(TextElement.ForegroundProperty, BrushResource("ChatAccentBrush")),
+            new Setter(TextElement.ForegroundProperty, BrushResource("ChatLinkBrush")),
             new Setter(System.Windows.Documents.Inline.TextDecorationsProperty, TextDecorations.Underline));
         AddStyle(Styles.QuoteBlockStyleKey, typeof(Section),
             new Setter(TextElement.ForegroundProperty, BrushResource("ChatSubtleForegroundBrush")),
@@ -345,7 +346,15 @@ public sealed class MarkdownMessageView : RichTextBox
 
         protected override void Write(WpfRenderer renderer, AutolinkInline link)
         {
-            renderer.Push(_owner.CreateHyperlink(link.IsEmail ? "mailto:" + link.Url : link.Url));
+            // mailto: links are always rejected by OnHyperlinkClick, so render plain text instead
+            // of a Hyperlink that can never do anything when clicked.
+            if (link.IsEmail)
+            {
+                renderer.WriteText(link.Url);
+                return;
+            }
+
+            renderer.Push(_owner.CreateHyperlink(link.Url));
             renderer.WriteText(link.Url);
             renderer.Pop();
         }

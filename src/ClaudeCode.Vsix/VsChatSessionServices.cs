@@ -1,6 +1,10 @@
 using ClaudeCode.Contracts;
 using ClaudeCode.Core.ViewModels;
+using Community.VisualStudio.Toolkit;
+using Microsoft.VisualStudio.Shell;
+using Microsoft.VisualStudio.Text;
 using System;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -27,4 +31,35 @@ internal sealed class VsChatSessionServices : IChatSessionServices
 
     public Task<EditorDocumentSnapshot?> CaptureActiveDocumentAsync(CancellationToken cancellationToken) =>
         _editorDocumentTracker.CaptureActiveDocumentAsync(cancellationToken);
+
+    public async Task<string?> TryReadOpenDocumentAsync(string path, CancellationToken cancellationToken)
+    {
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
+        var view = await VS.Documents.GetDocumentViewAsync(path);
+        if (view?.TextBuffer is null)
+        {
+            return null;
+        }
+
+        return view.TextBuffer.CurrentSnapshot.GetText();
+    }
+
+    public async Task<bool> TryWriteOpenDocumentAsync(string path, string text, CancellationToken cancellationToken)
+    {
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
+        var view = await VS.Documents.GetDocumentViewAsync(path);
+        if (view?.TextBuffer is null)
+        {
+            return false;
+        }
+
+        using var edit = view.TextBuffer.CreateEdit();
+        if (!edit.Replace(new Span(0, view.TextBuffer.CurrentSnapshot.Length), text) || edit.HasFailedChanges)
+            throw new IOException("The editor rejected the document edit.");
+        edit.Apply();
+
+        if (edit.HasFailedChanges || edit.Canceled)
+            throw new IOException("The editor rejected the document edit.");
+        return true;
+    }
 }
