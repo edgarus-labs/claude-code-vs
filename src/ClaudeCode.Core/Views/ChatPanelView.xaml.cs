@@ -501,6 +501,12 @@ public partial class ChatPanelView : UserControl, IDisposable
         }
     }
 
+    // Not HistoryPopup.IsOpen = false: that property is data-bound to IsHistoryOpen
+    // (Mode=OneWay), and setting it directly here would replace the binding with a local
+    // value, permanently severing it - the popup could never be reopened afterward. Go
+    // through the view model, same as the Popup's own Closed handler below.
+    private void HistoryCloseButton_Click(object sender, RoutedEventArgs e) => _viewModel.CloseHistory();
+
     private void HistoryPopup_Closed(object sender, EventArgs e)
     {
         _viewModel.CloseHistory();
