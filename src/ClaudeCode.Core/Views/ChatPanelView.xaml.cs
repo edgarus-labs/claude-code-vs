@@ -476,6 +476,28 @@ public partial class ChatPanelView : UserControl, IDisposable
         }
     }
 
+    private void HistoryButton_Click(object sender, RoutedEventArgs e)
+    {
+        _viewModel.DismissSlashSuggestions();
+        if (HistoryPopup.IsOpen)
+        {
+            _viewModel.CloseHistory();
+        }
+        else
+        {
+            _ = _viewModel.ShowHistoryAsync();
+        }
+    }
+
+    private void HistoryPopup_Closed(object sender, EventArgs e)
+    {
+        _viewModel.CloseHistory();
+        if (!_disposed && HistoryList.IsKeyboardFocusWithin)
+        {
+            HistoryButton.Focus();
+        }
+    }
+
     private void ModelPopup_PreviewKeyDown(object sender, KeyEventArgs e)
     {
         if ((e.Key == Key.Escape || e.Key == Key.Left) && EffortPickerView.Visibility == Visibility.Visible)

@@ -24,6 +24,8 @@
       <conv:PlanStatusGlyphConverter x:Key="PlanStatusGlyphConverter" />
       <views:ChatTextFontSizeConverter x:Key="ChatTextFontSizeConverter" />
       <conv:ToolCallStatusToDisplayTextConverter x:Key="ToolCallStatusToDisplayTextConverter" />
+      <conv:RelativeTimeConverter x:Key="RelativeTimeConverter" />
+      <conv:SessionTitleConverter x:Key="SessionTitleConverter" />
 
       <Style x:Key="ButtonIconStrokeStyle" TargetType="Path">
         <Setter Property="Stroke" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
@@ -324,14 +326,37 @@
 
   <Grid>
     <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
       <RowDefinition Height="*" />
       <RowDefinition Height="Auto" />
       <RowDefinition Height="Auto" />
       <RowDefinition Height="Auto" />
     </Grid.RowDefinitions>
 
+    <!-- Session header: start a new chat, or reopen one from this workspace's history. -->
+    <Grid Grid.Row="0" Margin="8,6,8,0">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*" />
+        <ColumnDefinition Width="Auto" />
+        <ColumnDefinition Width="Auto" />
+      </Grid.ColumnDefinitions>
+      <Button Grid.Column="1" Width="28" Height="28" Command="{Binding NewSessionCommand}"
+              Style="{StaticResource LinkButtonStyle}" ToolTip="New chat"
+              AutomationProperties.Name="New chat">
+        <Path Data="M 0,6 L 12,6 M 6,0 L 6,12" StrokeThickness="1.5" Style="{StaticResource ButtonIconStrokeStyle}" />
+      </Button>
+      <Button x:Name="HistoryButton" Grid.Column="2" Width="28" Height="28" Click="HistoryButton_Click"
+              Style="{StaticResource LinkButtonStyle}" ToolTip="Chat history"
+              AutomationProperties.Name="Chat history">
+        <Grid Width="14" Height="14">
+          <Ellipse Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.3" />
+          <Path Data="M 7,7 L 7,3 M 7,7 L 10,8.5" StrokeThickness="1.3" Style="{StaticResource ButtonIconStrokeStyle}" />
+        </Grid>
+      </Button>
+    </Grid>
+
     <!-- Message history -->
-    <ScrollViewer x:Name="TranscriptScrollViewer" Grid.Row="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+    <ScrollViewer x:Name="TranscriptScrollViewer" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
                   CanContentScroll="True" Padding="12,4"
                   d:DataContext="{d:DesignInstance vm:ChatViewModel}"
                   ScrollChanged="TranscriptScrollViewer_ScrollChanged">
@@ -346,7 +371,7 @@
       </ItemsControl>
     </ScrollViewer>
 
-    <StackPanel Grid.Row="0" VerticalAlignment="Center" Margin="24,20" IsHitTestVisible="False">
+    <StackPanel Grid.Row="1" VerticalAlignment="Center" Margin="24,20" IsHitTestVisible="False">
       <StackPanel.Style>
         <Style TargetType="StackPanel">
           <Setter Property="Visibility" Value="Collapsed" />
@@ -370,7 +395,7 @@
     </StackPanel>
 
     <!-- Plan / todo strip -->
-    <Border Grid.Row="1" DataContext="{Binding CurrentPlan}"
+    <Border Grid.Row="2" DataContext="{Binding CurrentPlan}"
             Visibility="{Binding Converter={StaticResource NullToVisibilityConverter}}"
             Background="{DynamicResource ChatInputBackgroundBrush}"
             BorderBrush="{DynamicResource ChatBorderBrush}" BorderThickness="0,1,0,0"
@@ -390,7 +415,7 @@
     </Border>
 
     <!-- Permission request banner -->
-    <Border Grid.Row="2" DataContext="{Binding PendingPermission}"
+    <Border Grid.Row="3" DataContext="{Binding PendingPermission}"
             Visibility="{Binding Converter={StaticResource NullToVisibilityConverter}}"
             Background="{DynamicResource ChatWarningBackgroundBrush}"
             BorderBrush="{DynamicResource ChatBorderBrush}" BorderThickness="0,1,0,0"
@@ -416,7 +441,7 @@
     </Border>
 
     <!-- The input, attachments and controls are one integrated card. -->
-    <Grid Grid.Row="3" Margin="12,8,12,10">
+    <Grid Grid.Row="4" Margin="12,8,12,10">
       <Grid.RowDefinitions>
         <RowDefinition Height="Auto" />
         <RowDefinition Height="Auto" />
@@ -717,6 +742,75 @@
                          PreviewKeyDown="ConfigList_PreviewKeyDown" />
               </ScrollViewer>
             </Grid>
+          </Grid>
+        </Border>
+      </Popup>
+
+      <Popup x:Name="HistoryPopup" PlacementTarget="{Binding ElementName=ComposerCard}" Placement="Top"
+             VerticalOffset="-6" AllowsTransparency="True" StaysOpen="False"
+             IsOpen="{Binding IsHistoryOpen, Mode=OneWay}" Closed="HistoryPopup_Closed"
+             DataContext="{Binding DataContext, ElementName=ChatPanel}">
+        <Border Width="{Binding ActualWidth, ElementName=ComposerCard}" MaxWidth="400" MaxHeight="440"
+                Background="{DynamicResource ChatPopupBackgroundBrush}" BorderBrush="{DynamicResource ChatBorderBrush}"
+                BorderThickness="1" CornerRadius="12" Padding="7"
+                TextElement.Foreground="{DynamicResource ChatForegroundBrush}">
+          <Grid>
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <TextBlock Grid.Row="0" Text="History" FontSize="11" Margin="11,6,11,5"
+                       Foreground="{DynamicResource ChatSubtleForegroundBrush}" />
+            <TextBlock Grid.Row="1" Text="Loading…" Margin="11,6" FontSize="12"
+                       Foreground="{DynamicResource ChatSubtleForegroundBrush}"
+                       Visibility="{Binding IsHistoryLoading, Converter={StaticResource BoolToVisibilityConverter}}" />
+            <TextBlock Grid.Row="1" Text="{Binding HistoryError}" Margin="11,6" FontSize="12" TextWrapping="Wrap"
+                       Foreground="{DynamicResource ChatErrorForegroundBrush}"
+                       Visibility="{Binding HistoryError, Converter={StaticResource NullToVisibilityConverter}}" />
+            <TextBlock Grid.Row="1" Text="No previous sessions for this workspace." Margin="11,6" FontSize="12" TextWrapping="Wrap"
+                       Foreground="{DynamicResource ChatSubtleForegroundBrush}">
+              <TextBlock.Style>
+                <Style TargetType="TextBlock">
+                  <Setter Property="Visibility" Value="Collapsed" />
+                  <Style.Triggers>
+                    <MultiDataTrigger>
+                      <MultiDataTrigger.Conditions>
+                        <Condition Binding="{Binding IsHistoryLoading}" Value="False" />
+                        <Condition Binding="{Binding HistoryError}" Value="{x:Null}" />
+                        <Condition Binding="{Binding SessionHistory.Count}" Value="0" />
+                      </MultiDataTrigger.Conditions>
+                      <Setter Property="Visibility" Value="Visible" />
+                    </MultiDataTrigger>
+                  </Style.Triggers>
+                </Style>
+              </TextBlock.Style>
+            </TextBlock>
+            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                          Visibility="{Binding IsHistoryLoading, Converter={StaticResource BoolToVisibilityConverter}, ConverterParameter=Invert}">
+              <ItemsControl x:Name="HistoryList" ItemsSource="{Binding SessionHistory}"
+                            AutomationProperties.Name="Session history">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate DataType="{x:Type contracts:SessionSummary}">
+                    <Button Style="{StaticResource LinkButtonStyle}" HorizontalContentAlignment="Stretch" Padding="10,9"
+                            Foreground="{DynamicResource ChatForegroundBrush}" FontSize="12"
+                            Command="{Binding DataContext.OpenSessionCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                            CommandParameter="{Binding}"
+                            AutomationProperties.Name="{Binding Converter={StaticResource SessionTitleConverter}}">
+                      <Grid>
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="*" />
+                          <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="{Binding Converter={StaticResource SessionTitleConverter}}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="1" Margin="12,0,0,0" FontSize="11" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource ChatSubtleForegroundBrush}"
+                                   Text="{Binding UpdatedAt, Converter={StaticResource RelativeTimeConverter}}" />
+                      </Grid>
+                    </Button>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </ScrollViewer>
           </Grid>
         </Border>
       </Popup>
