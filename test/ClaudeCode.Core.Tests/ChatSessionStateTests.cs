@@ -20,6 +20,17 @@ public sealed partial class ChatSessionStateTests
             .Select(value => new SessionConfigValue(value, value, null)).ToArray()),
     ];
 
+    private static IReadOnlyList<SessionConfigOption> OptionsWithMode(string mode = "default") =>
+    [
+        .. Options(),
+        new SessionConfigOption("mode", "Mode", "mode", mode,
+        [
+            new SessionConfigValue("default", "Manual", "Always ask before making changes"),
+            new SessionConfigValue("acceptEdits", "Accept edits", "Automatically accept all file edits"),
+            new SessionConfigValue("plan", "Plan", "Create a plan before making changes"),
+        ]),
+    ];
+
     private static ChatViewModel Create(RecordingAcpAgentConnection connection) =>
         new(new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService()));
 
@@ -124,6 +135,47 @@ public sealed partial class ChatSessionStateTests
         connection.RaiseSessionUpdate(new SessionUpdate.ConfigOptionsChanged(Options("opus", "high", "high")));
         Assert.Equal("opus", vm.SelectedModel.Value);
         Assert.Equal("high", vm.SelectedEffort.Value);
+    }
+
+    [Fact]
+    public async Task Mode_PopulatesAvailableModesAndSelectedMode_FromInitialConfigOptions()
+    {
+        using var vm = Create(new RecordingAcpAgentConnection { ConfigOptions = OptionsWithMode("acceptEdits") });
+        await vm.Initialization;
+
+        Assert.True(vm.HasModes);
+        Assert.Equal(new[] { "default", "acceptEdits", "plan" }, vm.AvailableModes.Select(value => value.Value));
+        Assert.Equal("acceptEdits", vm.SelectedMode!.Value);
+        Assert.Equal("Accept edits", vm.ActiveModeName);
+    }
+
+    [Fact]
+    public async Task NoModeOption_HasModesFalse_AndAvailableModesEmpty()
+    {
+        using var vm = Create(new RecordingAcpAgentConnection { ConfigOptions = Options() });
+        await vm.Initialization;
+
+        Assert.False(vm.HasModes);
+        Assert.Empty(vm.AvailableModes);
+        Assert.Null(vm.SelectedMode);
+    }
+
+    [Fact]
+    public async Task SelectModeAsync_SendsConfigChange_AndUpdatesSelectionFromResponse()
+    {
+        var connection = new RecordingAcpAgentConnection
+        {
+            ConfigOptions = OptionsWithMode(),
+            ConfigHandler = (_, _, _) => Task.FromResult(OptionsWithMode("plan")),
+        };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        Assert.Equal("default", vm.SelectedMode!.Value);
+
+        await vm.SelectModeAsync(vm.AvailableModes[2]);
+
+        Assert.Equal(("mode", "plan"), connection.ConfigChanges.Single());
+        Assert.Equal("plan", vm.SelectedMode!.Value);
     }
 
     [Fact]

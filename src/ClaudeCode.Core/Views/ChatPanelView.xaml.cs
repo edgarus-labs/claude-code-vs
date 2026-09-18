@@ -418,14 +418,26 @@ public partial class ChatPanelView : UserControl, IDisposable
         EffortPickerView.Visibility = Visibility.Collapsed;
         ModelList.GetBindingExpression(Selector.SelectedItemProperty)?.UpdateTarget();
         EffortList.GetBindingExpression(Selector.SelectedItemProperty)?.UpdateTarget();
-        FocusConfigList(ModelList);
+        FocusConfigList(ModelList, ModelPopup);
     }
 
-    private void FocusConfigList(ListBox list)
+    private void ModeButton_Click(object sender, RoutedEventArgs e)
+    {
+        _viewModel.DismissSlashSuggestions();
+        ModePopup.IsOpen = !ModePopup.IsOpen;
+    }
+
+    private void ModePopup_Opened(object sender, EventArgs e)
+    {
+        ModeList.GetBindingExpression(Selector.SelectedItemProperty)?.UpdateTarget();
+        FocusConfigList(ModeList, ModePopup);
+    }
+
+    private void FocusConfigList(ListBox list, Popup owner)
     {
         Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(() =>
         {
-            if (!ModelPopup.IsOpen || !list.IsVisible)
+            if (!owner.IsOpen || !list.IsVisible)
             {
                 return;
             }
@@ -455,7 +467,7 @@ public partial class ChatPanelView : UserControl, IDisposable
         ModelPickerView.Visibility = Visibility.Collapsed;
         EffortPickerView.Visibility = Visibility.Visible;
         EffortList.GetBindingExpression(Selector.SelectedItemProperty)?.UpdateTarget();
-        FocusConfigList(EffortList);
+        FocusConfigList(EffortList, ModelPopup);
     }
 
     private void EffortBackButton_Click(object sender, RoutedEventArgs e) => ShowModelOptions();
@@ -542,6 +554,14 @@ public partial class ChatPanelView : UserControl, IDisposable
     {
         if (!_viewModel.CanConfigure || !(list.SelectedItem is SessionConfigValue value))
         {
+            return;
+        }
+
+        if (ReferenceEquals(list, ModeList))
+        {
+            ModePopup.IsOpen = false;
+            ModeButton.Focus();
+            _viewModel.SelectedMode = value;
             return;
         }
 

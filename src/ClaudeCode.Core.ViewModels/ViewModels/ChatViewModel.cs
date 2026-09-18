@@ -23,8 +23,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private string? _sessionId;
     private SessionConfigOption? _modelOption;
     private SessionConfigOption? _effortOption;
+    private SessionConfigOption? _modeOption;
     private SessionConfigValue? _selectedModel;
     private SessionConfigValue? _selectedEffort;
+    private SessionConfigValue? _selectedMode;
     private ChatMessageViewModel? _currentAssistantMessage;
     private ChatMessageViewModel? _currentUserMessage;
     private bool _isHistoryOpen;
@@ -91,6 +93,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     public ObservableCollection<ChatAttachmentViewModel> Attachments { get; } = new ObservableCollection<ChatAttachmentViewModel>();
     public ObservableCollection<SessionConfigValue> AvailableModels { get; } = new ObservableCollection<SessionConfigValue>();
     public ObservableCollection<SessionConfigValue> AvailableEfforts { get; } = new ObservableCollection<SessionConfigValue>();
+    public ObservableCollection<SessionConfigValue> AvailableModes { get; } = new ObservableCollection<SessionConfigValue>();
     public ObservableCollection<AvailableCommand> SlashSuggestions { get; } = new ObservableCollection<AvailableCommand>();
     public ObservableCollection<SessionSummary> SessionHistory { get; } = new ObservableCollection<SessionSummary>();
     public IAsyncRelayCommand SendCommand { get; }
@@ -151,8 +154,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private bool CanEditDraft => !_disposed && !NeedsAuthentication && !IsConnecting && !IsBusy && !IsConfigBusy;
     public bool CanConfigure => CanEditDraft && !_isCapturingDocument && _sessionId is not null;
     public bool HasEffort => AvailableEfforts.Count > 0;
+    public bool HasModes => AvailableModes.Count > 0;
     public string ActiveModelName => _selectedModel?.Name ?? "Model unavailable";
     public string ActiveEffortName => _selectedEffort?.Name ?? string.Empty;
+    public string ActiveModeName => _selectedMode?.Name ?? "Mode unavailable";
 
     public SessionConfigValue? SelectedModel
     {
@@ -164,6 +169,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         get => _selectedEffort;
         set => _ = SelectEffortAsync(value);
+    }
+
+    public SessionConfigValue? SelectedMode
+    {
+        get => _selectedMode;
+        set => _ = SelectModeAsync(value);
     }
 
     public string? StatusMessage
@@ -369,6 +380,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     public Task SelectModelAsync(SessionConfigValue? value) => OnUiAsync(() => ChangeConfigAsync(_modelOption, value));
     public Task SelectEffortAsync(SessionConfigValue? value) => OnUiAsync(() => ChangeConfigAsync(_effortOption, value));
+    public Task SelectModeAsync(SessionConfigValue? value) => OnUiAsync(() => ChangeConfigAsync(_modeOption, value));
 
     private async Task ChangeConfigAsync(SessionConfigOption? option, SessionConfigValue? value)
     {
@@ -685,12 +697,17 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             ?? options.FirstOrDefault(option => option.Id == "model");
         _effortOption = options.FirstOrDefault(option => option.Category == "thought_level")
             ?? options.FirstOrDefault(option => option.Id == "effort");
+        _modeOption = options.FirstOrDefault(option => option.Category == "mode")
+            ?? options.FirstOrDefault(option => option.Id == "mode");
         ReplaceOptions(AvailableModels, _modelOption);
         ReplaceOptions(AvailableEfforts, _effortOption);
+        ReplaceOptions(AvailableModes, _modeOption);
         _selectedModel = AvailableModels.FirstOrDefault(option => option.Value == _modelOption?.CurrentValue);
         _selectedEffort = AvailableEfforts.FirstOrDefault(option => option.Value == _effortOption?.CurrentValue);
+        _selectedMode = AvailableModes.FirstOrDefault(option => option.Value == _modeOption?.CurrentValue);
         NotifySelectionsChanged();
         OnPropertyChanged(nameof(HasEffort));
+        OnPropertyChanged(nameof(HasModes));
         NotifyStateChanged();
     }
 
@@ -705,8 +722,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         OnPropertyChanged(nameof(SelectedModel));
         OnPropertyChanged(nameof(SelectedEffort));
+        OnPropertyChanged(nameof(SelectedMode));
         OnPropertyChanged(nameof(ActiveModelName));
         OnPropertyChanged(nameof(ActiveEffortName));
+        OnPropertyChanged(nameof(ActiveModeName));
     }
 
     private void OnSessionUpdate(object? sender, SessionUpdateEventArgs e)

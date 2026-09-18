@@ -586,27 +586,46 @@
                 </Button>
               </StackPanel>
             </ContentControl>
-            <Button x:Name="ModelButton" Grid.Column="1" HorizontalAlignment="Right" Margin="4,0,7,0"
-                    MaxWidth="280" Padding="9,6" Click="ModelButton_Click" IsEnabled="{Binding CanConfigure}"
-                    Style="{StaticResource LinkButtonStyle}" BorderBrush="{DynamicResource ChatBorderBrush}"
-                    Background="{DynamicResource ChatBackgroundBrush}" Foreground="{DynamicResource ChatForegroundBrush}"
-                    ToolTip="Choose model and effort" ToolTipService.ShowOnDisabled="True"
-                    AutomationProperties.Name="Model and effort" AutomationProperties.HelpText="Choose the model and reasoning effort for this conversation.">
-              <Grid>
-                <Grid.ColumnDefinitions>
-                  <ColumnDefinition Width="*" />
-                  <ColumnDefinition Width="Auto" />
-                  <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-                <TextBlock Text="{Binding ActiveModelName}" TextTrimming="CharacterEllipsis" FontSize="11" VerticalAlignment="Center" />
-                <TextBlock Grid.Column="1" FontSize="11" VerticalAlignment="Center"
-                           Visibility="{Binding HasEffort, Converter={StaticResource BoolToVisibilityConverter}}">
-                  <Run Text=" · " /><Run Text="{Binding ActiveEffortName, Mode=OneWay}" />
-                </TextBlock>
-                <Path Grid.Column="2" Data="M 0,0 L 4,4 L 8,0" Margin="7,0,0,2" VerticalAlignment="Center"
-                      Style="{StaticResource ButtonIconStrokeStyle}" StrokeThickness="1.3" />
-              </Grid>
-            </Button>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+              <Button x:Name="ModeButton" Margin="4,0,0,0" MaxWidth="180" Padding="9,6"
+                      Click="ModeButton_Click" IsEnabled="{Binding CanConfigure}"
+                      Style="{StaticResource LinkButtonStyle}" BorderBrush="{DynamicResource ChatBorderBrush}"
+                      Background="{DynamicResource ChatBackgroundBrush}" Foreground="{DynamicResource ChatForegroundBrush}"
+                      ToolTip="Choose session mode" ToolTipService.ShowOnDisabled="True"
+                      Visibility="{Binding HasModes, Converter={StaticResource BoolToVisibilityConverter}}"
+                      AutomationProperties.Name="Session mode" AutomationProperties.HelpText="Choose how Claude asks for permission in this conversation.">
+                <Grid>
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                  </Grid.ColumnDefinitions>
+                  <TextBlock Text="{Binding ActiveModeName}" TextTrimming="CharacterEllipsis" FontSize="11" VerticalAlignment="Center" />
+                  <Path Grid.Column="1" Data="M 0,0 L 4,4 L 8,0" Margin="7,0,0,2" VerticalAlignment="Center"
+                        Style="{StaticResource ButtonIconStrokeStyle}" StrokeThickness="1.3" />
+                </Grid>
+              </Button>
+              <Button x:Name="ModelButton" Margin="4,0,7,0"
+                      MaxWidth="280" Padding="9,6" Click="ModelButton_Click" IsEnabled="{Binding CanConfigure}"
+                      Style="{StaticResource LinkButtonStyle}" BorderBrush="{DynamicResource ChatBorderBrush}"
+                      Background="{DynamicResource ChatBackgroundBrush}" Foreground="{DynamicResource ChatForegroundBrush}"
+                      ToolTip="Choose model and effort" ToolTipService.ShowOnDisabled="True"
+                      AutomationProperties.Name="Model and effort" AutomationProperties.HelpText="Choose the model and reasoning effort for this conversation.">
+                <Grid>
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                  </Grid.ColumnDefinitions>
+                  <TextBlock Text="{Binding ActiveModelName}" TextTrimming="CharacterEllipsis" FontSize="11" VerticalAlignment="Center" />
+                  <TextBlock Grid.Column="1" FontSize="11" VerticalAlignment="Center"
+                             Visibility="{Binding HasEffort, Converter={StaticResource BoolToVisibilityConverter}}">
+                    <Run Text=" · " /><Run Text="{Binding ActiveEffortName, Mode=OneWay}" />
+                  </TextBlock>
+                  <Path Grid.Column="2" Data="M 0,0 L 4,4 L 8,0" Margin="7,0,0,2" VerticalAlignment="Center"
+                        Style="{StaticResource ButtonIconStrokeStyle}" StrokeThickness="1.3" />
+                </Grid>
+              </Button>
+            </StackPanel>
             <Grid Grid.Column="2">
               <Button Width="32" Height="32" Padding="0" Command="{Binding SendCommand}" Click="SendButton_Click"
                       Style="{StaticResource ChatButtonStyle}" ToolTip="Send message (Enter)" AutomationProperties.Name="Send message"
@@ -747,6 +766,31 @@
                          PreviewKeyDown="ConfigList_PreviewKeyDown" />
               </ScrollViewer>
             </Grid>
+          </Grid>
+        </Border>
+      </Popup>
+
+      <Popup x:Name="ModePopup" PlacementTarget="{Binding ElementName=ComposerCard}" Placement="Top"
+             VerticalOffset="-6" AllowsTransparency="True" StaysOpen="False" Opened="ModePopup_Opened"
+             DataContext="{Binding DataContext, ElementName=ChatPanel}">
+        <Border Width="{Binding ActualWidth, ElementName=ComposerCard}" MaxWidth="320" MaxHeight="320"
+                Background="{DynamicResource ChatPopupBackgroundBrush}" BorderBrush="{DynamicResource ChatBorderBrush}"
+                BorderThickness="1" CornerRadius="12" Padding="7"
+                TextElement.Foreground="{DynamicResource ChatForegroundBrush}">
+          <Grid>
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <TextBlock Grid.Row="0" Text="Mode" FontSize="11" Margin="11,6,11,5"
+                       Foreground="{DynamicResource ChatSubtleForegroundBrush}" />
+            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+              <ListBox x:Name="ModeList" ItemsSource="{Binding AvailableModes}" SelectedItem="{Binding SelectedMode, Mode=OneWay}"
+                       IsEnabled="{Binding CanConfigure}" Style="{StaticResource ConfigListStyle}"
+                       ItemContainerStyle="{StaticResource ConfigItemStyle}" ItemTemplate="{StaticResource ConfigValueTemplate}"
+                       AutomationProperties.Name="Session mode" PreviewMouseLeftButtonUp="ConfigList_PreviewMouseLeftButtonUp"
+                       PreviewKeyDown="ConfigList_PreviewKeyDown" />
+            </ScrollViewer>
           </Grid>
         </Border>
       </Popup>
