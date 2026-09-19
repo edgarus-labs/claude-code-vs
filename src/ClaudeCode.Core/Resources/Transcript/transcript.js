@@ -197,11 +197,18 @@
   // One level, not two: the body is always visible (no separate "nothing shown at all" collapsed
   // state) but truncated to ~6 lines by default with a fade + "Show more" - same mechanic as long
   // markdown code fences, just without a details/summary toggle gating whether you see anything.
+  // The host re-renders the whole transcript every few hundred ms while a turn is running, so
+  // per-card UI state (expanded, "Show more" pressed) lives here, keyed by tool call id, and is
+  // re-applied on every rebuild instead of being lost with the old DOM.
+  var expandedToolCalls = {};
+  var untruncatedToolCalls = {};
+
   function buildToolCard(toolCall) {
     var card = document.createElement("div");
+    var toolId = toolCall.id || "";
     // Collapsed by default (only the one-line header shows), matching the VS Code extension: a
     // long transcript reads as a list of what happened, and any row expands on click.
-    card.className = "tool-card collapsed";
+    card.className = "tool-card" + (toolId && expandedToolCalls[toolId] ? "" : " collapsed");
 
     var header = document.createElement("div");
     header.className = "tool-header";
@@ -209,6 +216,11 @@
     header.tabIndex = 0;
     function toggle() {
       card.classList.toggle("collapsed");
+      if (toolId) {
+        if (card.classList.contains("collapsed")) delete expandedToolCalls[toolId];
+        else expandedToolCalls[toolId] = true;
+      }
+
       // Truncation needs real layout, which a collapsed (display:none) body never had at render time.
       if (!card.classList.contains("collapsed")) {
         var body = card.querySelector(":scope > .tool-body-wrapper > .body");
@@ -266,6 +278,7 @@
 
     var body = document.createElement("div");
     body.className = "body";
+    body.dataset.toolId = toolId;
     var content = toolCall.content || [];
     var language = languageForToolTitle(toolCall.title);
     for (var i = 0; i < content.length; i++) {
@@ -354,9 +367,7 @@
       return;
     }
 
-    body.classList.add("truncated");
-    body.style.maxHeight = truncateMaxHeight + "px";
-
+    var toolId = body.dataset.toolId || "";
     var gradient = document.createElement("div");
     gradient.className = "truncate-gradient";
     body.parentNode.insertBefore(gradient, body.nextSibling);
@@ -364,22 +375,28 @@
     var toggleButton = document.createElement("button");
     toggleButton.type = "button";
     toggleButton.className = "expand-button";
-    toggleButton.textContent = "Show more";
-    toggleButton.addEventListener("click", function () {
-      var expanded = !body.classList.contains("truncated");
-      if (expanded) {
+    gradient.parentNode.parentNode.insertBefore(toggleButton, gradient.parentNode.nextSibling);
+
+    function setTruncated(truncated) {
+      if (truncated) {
         body.classList.add("truncated");
         body.style.maxHeight = truncateMaxHeight + "px";
         gradient.style.display = "";
         toggleButton.textContent = "Show more";
+        if (toolId) delete untruncatedToolCalls[toolId];
       } else {
         body.classList.remove("truncated");
         body.style.maxHeight = "";
         gradient.style.display = "none";
         toggleButton.textContent = "Show less";
+        if (toolId) untruncatedToolCalls[toolId] = true;
       }
+    }
+
+    setTruncated(!(toolId && untruncatedToolCalls[toolId]));
+    toggleButton.addEventListener("click", function () {
+      setTruncated(!body.classList.contains("truncated"));
     });
-    gradient.parentNode.parentNode.insertBefore(toggleButton, gradient.parentNode.nextSibling);
   }
 
   function buildMessage(message) {
