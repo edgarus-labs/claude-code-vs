@@ -44,6 +44,10 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         "View.ErrorList",
     };
 
+    // Matches the client's 5s connect timeout: a peer that has not sent its token by then is not a
+    // legitimate client and must not keep the single retained pipe instance occupied.
+    private static readonly TimeSpan _handshakeTimeout = TimeSpan.FromSeconds(5);
+
     private readonly string _pipeName;
     private readonly string? _workspaceRoot;
     private readonly string _token;
@@ -53,9 +57,14 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
 
     public VsControlPipeServer(string pipeName, string? workspaceRoot, string token)
     {
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            throw new ArgumentException("A non-empty handshake token is required; an empty token would authenticate any local caller.", nameof(token));
+        }
+
         _pipeName = pipeName;
         _workspaceRoot = workspaceRoot;
-        _token = token ?? string.Empty;
+        _token = token;
     }
 
     public void Start()
@@ -95,7 +104,7 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
                 using var reader = new StreamReader(pipe, utf8NoBom, detectEncodingFromByteOrderMarks: false, bufferSize: 4096, leaveOpen: true);
                 using var writer = new StreamWriter(pipe, utf8NoBom, bufferSize: 4096, leaveOpen: true) { AutoFlush = true, NewLine = "\n" };
 
-                if (!await TryHandshakeAsync(reader).ConfigureAwait(false))
+                if (!await TryHandshakeAsync(reader, cancellationToken).ConfigureAwait(false))
                 {
                     // Missing/wrong token: another process on this machine (permitted by the pipe ACL
                     // because it runs as the same Windows user) guessed the pipe name. Drop the
@@ -153,12 +162,29 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         }
     }
 
-    private async Task<bool> TryHandshakeAsync(StreamReader reader)
+    private async Task<bool> TryHandshakeAsync(StreamReader reader, CancellationToken cancellationToken)
     {
+        // The sole server instance is retained across reconnects, so a peer that connects and then
+        // stays silent would hold the only listener forever. Bound the handshake read: on timeout or
+        // shutdown the caller drops the connection and goes back to accepting.
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(_handshakeTimeout);
+
         string? tokenLine;
         try
         {
-            tokenLine = await reader.ReadLineAsync().ConfigureAwait(false);
+            var readTask = reader.ReadLineAsync();
+            var timeoutTask = Task.Delay(Timeout.Infinite, timeoutCts.Token);
+            if (await Task.WhenAny(readTask, timeoutTask).ConfigureAwait(false) != readTask)
+            {
+                // Observe the abandoned read so tearing the pipe down under it cannot surface as an
+                // unobserved task exception.
+                _ = readTask.ContinueWith(task => { _ = task.Exception; },
+                    CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                return false;
+            }
+
+            tokenLine = await readTask.ConfigureAwait(false);
         }
         catch (IOException)
         {
@@ -360,19 +386,28 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
 
         var span = view.TextView.Selection.StreamSelectionSpan.SnapshotSpan;
         var edit = view.TextBuffer.CreateEdit();
-        bool canceled;
+        bool rejected;
         try
         {
-            edit.Replace(span.Span, text);
-            edit.Apply();
-            canceled = edit.Canceled;
+            // A read-only region or a conflicting edit makes Replace return false and sets
+            // HasFailedChanges without ever setting Canceled, so checking Canceled alone would
+            // report success for a replacement that never landed.
+            if (!edit.Replace(span.Span, text) || edit.HasFailedChanges)
+            {
+                rejected = true;
+            }
+            else
+            {
+                edit.Apply();
+                rejected = edit.HasFailedChanges || edit.Canceled;
+            }
         }
         finally
         {
             edit.Dispose();
         }
 
-        if (canceled)
+        if (rejected)
         {
             throw new InvalidOperationException("The edit was rejected (read-only buffer or vetoed by another extension).");
         }
@@ -526,6 +561,13 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         if (!string.Equals(extension, ".sln", StringComparison.OrdinalIgnoreCase) && !string.Equals(extension, ".slnx", StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException($"'{path}' is not a solution file (.sln/.slnx).");
+        }
+
+        // Validate before closing: Close(SaveFirst: true) would otherwise discard the user's open
+        // workspace for a path that cannot be opened afterwards.
+        if (!File.Exists(fullPath))
+        {
+            throw new InvalidOperationException($"'{path}' does not exist.");
         }
 
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
