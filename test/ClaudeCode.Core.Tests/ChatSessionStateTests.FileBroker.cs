@@ -341,7 +341,8 @@ public sealed partial class ChatSessionStateTests
     }
 
     // M11 (crlf-normalized-on-partial-read): a partial (line/limit) read of a CRLF file must keep
-    // the carriage returns, not silently normalize them to bare LF.
+    // the carriage returns, not silently normalize them to bare LF — and must not hand back a
+    // dangling "\r" that is not followed by the "\n" the document actually has there.
     [Fact]
     public async Task FileReadRequest_PartialRangeOfCrlfFile_PreservesCarriageReturns()
     {
@@ -354,6 +355,21 @@ public sealed partial class ChatSessionStateTests
         var request = connection.RaiseFileReadRequested(targetPath, line: 1, limit: 2);
 
         var text = await request.Response.Task;
-        Assert.Equal("line1\r\nline2\r", text);
+        Assert.Equal("line1\r\nline2", text);
+    }
+
+    [Fact]
+    public async Task FileReadRequest_SingleLineOfCrlfFile_HasNoDanglingCarriageReturn()
+    {
+        using var workspace = new TempWorkspace();
+        var targetPath = workspace.PathUnder("crlf.txt");
+        File.WriteAllText(targetPath, "line1\r\nline2\r\nline3", new UTF8Encoding(false));
+        var (vm, connection, _) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+
+        var request = connection.RaiseFileReadRequested(targetPath, line: 2, limit: 1);
+
+        var text = await request.Response.Task;
+        Assert.Equal("line2", text);
     }
 }

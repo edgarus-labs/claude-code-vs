@@ -995,6 +995,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         if (session is null || !CanEditDraft) return;
         IsHistoryOpen = false;
         StatusMessage = null;
+        // Kept so the failure path below can put it back: an id the agent never loaded would keep
+        // routing every later prompt and config change to a session that does not exist.
+        var sessionIdBeforeLoad = _sessionId;
         try
         {
             var (connection, _) = await EnsureConnectedAsync(_lifetime.Token).ConfigureAwait(true);
@@ -1014,6 +1017,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex)
         {
+            if (_sessionId == session.SessionId) _sessionId = sessionIdBeforeLoad;
             if (!_disposed) StatusMessage = $"Could not open session: {ex.Message}";
         }
         finally
@@ -1027,23 +1031,30 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         Messages.Clear();
         lock (_changedFilesByPath) _changedFilesByPath.Clear();
         ChangedFiles.Clear();
-        PendingPlan = null;
-        _pendingPlanReviewComments = null;
+        ClearPendingRequests("The session was replaced.");
         _explicitSessionTitle = null;
         SessionTitle = UntitledSessionTitle;
         _currentAssistantMessage = null;
         _currentUserMessage = null;
         CurrentPlan = null;
-        _pendingPermissionResponse?.TrySetException(new OperationCanceledException("The session was replaced."));
+        _availableCommands = Array.Empty<AvailableCommand>();
+        _hasCommandCatalog = false;
+        RefreshSlashSuggestions();
+        ActivityText = string.Empty;
+    }
+
+    // Resolve, never abandon: an unresolved TaskCompletionSourceSlot leaves the agent's awaiter
+    // hanging forever, and a form left on screen would answer a session that is already gone.
+    private void ClearPendingRequests(string reason)
+    {
+        PendingPlan = null;
+        _pendingPlanReviewComments = null;
+        _pendingPermissionResponse?.TrySetException(new OperationCanceledException(reason));
         _pendingPermissionResponse = null;
         PendingPermission = null;
         _pendingElicitationResponse?.TrySetResult(new ElicitationAnswer(ElicitationAction.Cancel, _emptyElicitationContent));
         _pendingElicitationResponse = null;
         PendingElicitation = null;
-        _availableCommands = Array.Empty<AvailableCommand>();
-        _hasCommandCatalog = false;
-        RefreshSlashSuggestions();
-        ActivityText = string.Empty;
     }
 
     private async Task<(IAcpAgentConnection connection, string sessionId)> EnsureConnectedAsync(CancellationToken cancellationToken)
@@ -1347,10 +1358,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
             if (e.Line.HasValue || e.Limit.HasValue)
             {
-                var lines = SplitPreservingLineEndings(text);
+                var newline = text.IndexOf("\r\n", StringComparison.Ordinal) >= 0 ? "\r\n" : "\n";
+                var lines = SplitLines(text);
                 var start = Math.Max(0, (e.Line ?? 1) - 1);
                 var count = e.Limit ?? Math.Max(0, lines.Length - start);
-                text = string.Join("\n", lines.Skip(start).Take(count));
+                text = string.Join(newline, lines.Skip(start).Take(count));
             }
 
             e.Response.TrySetResult(text);
@@ -1358,14 +1370,26 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         catch (Exception ex) { e.Response.TrySetException(ex); }
     }
 
-    private static string[] SplitPreservingLineEndings(string text) => (text ?? string.Empty).Split('\n');
+    // Split on LF and drop the CR of a CRLF pair: the requested slice is re-joined with the
+    // terminator the document itself uses, so a partial read never hands back a dangling "\r".
+    private static string[] SplitLines(string text)
+    {
+        var lines = (text ?? string.Empty).Split('\n');
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i];
+            if (line.Length > 0 && line[line.Length - 1] == '\r') lines[i] = line.Substring(0, line.Length - 1);
+        }
+
+        return lines;
+    }
 
     private async void OnFileWriteRequested(object? sender, FileWriteRequestEventArgs e)
     {
         try
         {
-            // Separate leases: ReadAllText hands its file handle to a FileStream, which disposes it,
-            // so a lease that has been read from cannot be written through afterwards.
+            // Separate leases: TrackChangeBeforeWriteAsync owns and releases its own lease for the
+            // pre-write snapshot, so the write below re-acquires (and re-validates) the path.
             var tracked = await TrackChangeBeforeWriteAsync(e.Path).ConfigureAwait(true);
             using var pathLease = WorkspacePathGuard.AcquireFile(_services.WorkspaceRoot, e.Path);
             await WriteLeasedFileAsync(pathLease, e.Content).ConfigureAwait(true);
@@ -1518,8 +1542,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         RefreshSlashSuggestions();
         ActivityText = string.Empty;
         IsSignedIn = _services.AuthService.CurrentState == AuthState.SignedIn;
-        PendingPermission = null;
-        _pendingPermissionResponse = null;
+        ClearPendingRequests("The agent connection was closed.");
         CurrentPlan = null;
         IsRemoteControlEnabled = false;
         RemoteControlUrl = null;

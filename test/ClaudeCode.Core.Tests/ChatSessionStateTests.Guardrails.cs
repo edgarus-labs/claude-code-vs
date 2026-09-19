@@ -143,4 +143,62 @@ public sealed partial class ChatSessionStateTests
 
         Assert.Null(ex);
     }
+
+    // pending-state-leaks-on-release: losing the connection must resolve every request the user was
+    // still being asked about — an abandoned TaskCompletionSourceSlot never completes its awaiter,
+    // and a form left on screen would answer a connection that no longer exists.
+    [Fact]
+    public async Task Disconnected_ResolvesPendingPermissionAndElicitation_AndClearsTheirUi()
+    {
+        var connection = new RecordingAcpAgentConnection();
+        using var vm = Create(connection);
+        await vm.Initialization;
+
+        var call = new ToolCallUpdate { ToolCallId = "tc-1", Title = "Edit a.cs", Status = ToolCallStatus.Pending };
+        var permission = connection.RaisePermissionRequested(call,
+            [new PermissionOption { OptionId = "allow", Label = "Allow", Outcome = PermissionOutcome.AllowOnce }]);
+        var elicitation = connection.RaiseElicitationRequested("Pick a color",
+            [new ElicitationField("q0", null, null, ElicitationFieldKind.Text, [])]);
+        Assert.NotNull(vm.PendingPermission);
+        Assert.NotNull(vm.PendingElicitation);
+
+        connection.RaiseDisconnected();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            () => permission.Response.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        var answer = await elicitation.Response.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(ElicitationAction.Cancel, answer.Action);
+        Assert.Null(vm.PendingPermission);
+        Assert.Null(vm.PendingElicitation);
+    }
+
+    // poisoned-session-id-after-failed-load: a session/load that fails must not leave the viewmodel
+    // believing it owns a session the agent never loaded.
+    [Fact]
+    public async Task OpenSession_LoadFails_DoesNotAdoptTheSessionTheAgentNeverLoaded()
+    {
+        var connection = new RecordingAcpAgentConnection
+        {
+            LoadSessionHandler = (_, _, _, _) =>
+                Task.FromException<NewSessionResult>(new InvalidOperationException("Session not found")),
+        };
+        using var vm = Create(connection);
+        await vm.Initialization;
+
+        await vm.OpenSessionAsync(new SessionSummary("session-never-loaded", "/workspace", "Older chat", null));
+
+        Assert.Contains("Could not open session", vm.StatusMessage!, StringComparison.Ordinal);
+
+        // Updates tagged with the session that failed to load must not be adopted as the transcript.
+        connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("ghost text"), "session-never-loaded");
+        Assert.Empty(vm.Messages);
+
+        // The session the agent really has must still drive the transcript, so the user can keep
+        // working (and send prompts) without manually starting a new session.
+        connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("live text"));
+        Assert.Equal("live text", Assert.Single(vm.Messages).Text);
+        vm.InputText = "carry on";
+        await vm.SendAsync();
+        Assert.Single(connection.Prompts);
+    }
 }
