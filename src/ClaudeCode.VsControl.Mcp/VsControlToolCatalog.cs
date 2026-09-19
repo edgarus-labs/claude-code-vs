@@ -95,7 +95,7 @@ public static class VsControlToolCatalog
             {"type":"object","properties":{
               "projectName":{"type":"string","description":"Optional project to make the startup project first."},
               "configuration":{"type":"string","description":"Optional solution configuration to activate first, e.g. Debug."},
-              "waitForBreakMs":{"type":"integer","description":"How long to wait for a breakpoint hit after start; default 3000."}
+              "waitForBreakMs":{"type":"integer","maximum":45000,"description":"How long to wait for a breakpoint hit after start; default 3000, capped at 45000."}
             },"additionalProperties":true}
             """),
 
@@ -125,8 +125,8 @@ public static class VsControlToolCatalog
             "Remove the breakpoints at a file line, or all breakpoints when no location is given.",
             """
             {"type":"object","properties":{
-              "path":{"type":"string","description":"Source file path; omit together with line to remove every breakpoint."},
-              "line":{"type":"integer","description":"1-based line."}
+              "path":{"type":"string","description":"Source file path; omit path and line together to remove every breakpoint."},
+              "line":{"type":"integer","description":"1-based line; requires path."}
             },"additionalProperties":true}
             """),
 
@@ -140,31 +140,31 @@ public static class VsControlToolCatalog
             "Resume execution from a breakpoint and wait for the next break, program end or timeout.",
             """
             {"type":"object","properties":{
-              "waitForBreakMs":{"type":"integer","description":"How long to wait for the next break; default 5000."}
+              "waitForBreakMs":{"type":"integer","maximum":45000,"description":"How long to wait for the next break; default 5000, capped at 45000."}
             },"additionalProperties":true}
             """),
 
         new(
             "stepOver",
             "Step over the current line and wait for the debugger to break again.",
-            """{"type":"object","properties":{"waitForBreakMs":{"type":"integer"}},"additionalProperties":true}"""),
+            """{"type":"object","properties":{"waitForBreakMs":{"type":"integer","maximum":45000,"description":"How long to wait for the next break; default 5000, capped at 45000."}},"additionalProperties":true}"""),
 
         new(
             "stepInto",
             "Step into the call on the current line and wait for the debugger to break again.",
-            """{"type":"object","properties":{"waitForBreakMs":{"type":"integer"}},"additionalProperties":true}"""),
+            """{"type":"object","properties":{"waitForBreakMs":{"type":"integer","maximum":45000,"description":"How long to wait for the next break; default 5000, capped at 45000."}},"additionalProperties":true}"""),
 
         new(
             "stepOut",
             "Step out of the current function and wait for the debugger to break again.",
-            """{"type":"object","properties":{"waitForBreakMs":{"type":"integer"}},"additionalProperties":true}"""),
+            """{"type":"object","properties":{"waitForBreakMs":{"type":"integer","maximum":45000,"description":"How long to wait for the next break; default 5000, capped at 45000."}},"additionalProperties":true}"""),
 
         new(
             "waitForBreak",
             "Wait until the debugger stops at a breakpoint/exception or the program ends, up to a timeout.",
             """
             {"type":"object","properties":{
-              "timeoutMs":{"type":"integer","description":"Maximum wait; default 10000."}
+              "timeoutMs":{"type":"integer","maximum":45000,"description":"Maximum wait; default 10000, capped at 45000."}
             },"additionalProperties":true}
             """),
 
@@ -184,11 +184,13 @@ public static class VsControlToolCatalog
 
         new(
             "evaluateExpression",
-            "Evaluate an expression in the current stack frame while in break mode (like the Watch window).",
+            "Evaluate an expression in the current stack frame while in break mode (like the Watch window). " +
+            "Evaluation runs code inside the debugged process: property getters and method calls in the " +
+            "expression really execute and can have side effects.",
             """
             {"type":"object","properties":{
               "expression":{"type":"string"},
-              "timeoutMs":{"type":"integer","description":"Evaluation timeout; default 3000."}
+              "timeoutMs":{"type":"integer","maximum":5000,"description":"Evaluation timeout; default 3000, capped at 5000."}
             },"required":["expression"],"additionalProperties":true}
             """),
 
@@ -220,7 +222,7 @@ public static class VsControlToolCatalog
               "automationId":{"type":"string"},
               "name":{"type":"string","description":"Element name/label, exact match."},
               "action":{"type":"string","enum":["invoke","toggle","select","expand","collapse","focus"],"description":"Default invoke."}
-            },"required":["hwnd"],"additionalProperties":true}
+            },"required":["hwnd"],"oneOf":[{"required":["runtimeId"]},{"required":["automationId"]},{"required":["name"]}],"additionalProperties":true}
             """),
 
         new(
@@ -233,12 +235,14 @@ public static class VsControlToolCatalog
               "automationId":{"type":"string"},
               "name":{"type":"string"},
               "value":{"type":"string"}
-            },"required":["hwnd","value"],"additionalProperties":true}
+            },"required":["hwnd","value"],"oneOf":[{"required":["runtimeId"]},{"required":["automationId"]},{"required":["name"]}],"additionalProperties":true}
             """),
 
         new(
             "captureWindow",
-            "Take a PNG screenshot of a debugged app window and return it as an image.",
+            "Take a PNG screenshot of a debugged app window and return it as an image. It refuses with captured:false " +
+            "and a reason when the window is hidden, minimized, off-screen or covered by another window - which is the " +
+            "normal case in break mode, since Visual Studio comes to the front. Use getWindowElements to read UI state.",
             """
             {"type":"object","properties":{
               "hwnd":{"type":"integer","description":"Window handle from listAppWindows."}

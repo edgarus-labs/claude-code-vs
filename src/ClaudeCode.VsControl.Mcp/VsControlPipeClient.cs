@@ -16,6 +16,7 @@ public sealed class VsControlPipeClient : IAsyncDisposable
     private const string _handshakeTokenEnvironmentVariable = "CLAUDECODE_VSCONTROL_TOKEN";
     private const string _buildSolutionMethod = "buildSolution";
     private const string _buildProjectMethod = "buildProject";
+    private const string _startDebuggingMethod = "startDebugging";
 
     private static readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly UTF8Encoding _utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
@@ -52,7 +53,9 @@ public sealed class VsControlPipeClient : IAsyncDisposable
         _pipeName = pipeName;
         _connectTimeout = connectTimeout ?? TimeSpan.FromSeconds(5);
         _requestTimeout = requestTimeout ?? TimeSpan.FromSeconds(60);
-        _buildTimeout = buildTimeout ?? TimeSpan.FromMinutes(5);
+        // Deliberately above the VS host's own 10-minute build bound: the agent must receive the
+        // host's actionable build error, not a transport timeout invented while MSBuild is running.
+        _buildTimeout = buildTimeout ?? TimeSpan.FromMinutes(11);
         _handshakeToken = handshakeToken ?? Environment.GetEnvironmentVariable(_handshakeTokenEnvironmentVariable) ?? string.Empty;
         if (string.IsNullOrWhiteSpace(_handshakeToken) || _handshakeToken.IndexOfAny(['\r', '\n']) >= 0)
         {
@@ -110,9 +113,12 @@ public sealed class VsControlPipeClient : IAsyncDisposable
             throw;
         }
 
-        // Both build methods run a full MSBuild compile in the VS host, so both get the build budget.
+        // buildSolution/buildProject run MSBuild directly and startDebugging builds the solution before
+        // it launches, so all three need the build budget rather than the per-request one. Every other
+        // method - the debugger waits included - is bounded server-side below _requestTimeout.
         bool isBuild = string.Equals(request.Method, _buildSolutionMethod, StringComparison.Ordinal)
-            || string.Equals(request.Method, _buildProjectMethod, StringComparison.Ordinal);
+            || string.Equals(request.Method, _buildProjectMethod, StringComparison.Ordinal)
+            || string.Equals(request.Method, _startDebuggingMethod, StringComparison.Ordinal);
         var timeout = isBuild ? _buildTimeout : _requestTimeout;
         using var timeoutCts = new CancellationTokenSource(timeout);
         await using var timeoutRegistration = timeoutCts.Token.Register(static state => ((TaskCompletionSource<VsControlResponse>)state!).TrySetCanceled(), tcs);

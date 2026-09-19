@@ -301,7 +301,8 @@ public sealed class VsControlPipeClientTests
     [Theory]
     [InlineData("buildSolution")]
     [InlineData("buildProject")]
-    public async Task SendAsync_ForABuildMethod_UsesTheLongerBuildTimeout_NotTheDefaultRequestTimeout(string method)
+    [InlineData("startDebugging")]
+    public async Task SendAsync_ForAMethodThatCompiles_UsesTheLongerBuildTimeout_NotTheDefaultRequestTimeout(string method)
     {
         string pipeName = $"vscontrol-buildtimeout-{Guid.NewGuid():N}";
         using var serverStarted = new SemaphoreSlim(0, 1);
@@ -321,7 +322,7 @@ public sealed class VsControlPipeClientTests
             var request = JsonSerializer.Deserialize<VsControlRequest>(requestLine!, _wireOptions);
 
             // Respond just after the short default request timeout would have fired, but well within
-            // the longer build timeout: proves every build method actually gets the longer budget.
+            // the longer build timeout: proves every method that compiles actually gets the longer budget.
             await Task.Delay(TimeSpan.FromMilliseconds(250));
             var response = new VsControlResponse { Id = request!.Id, ResultJson = """{"succeeded":true,"errorCount":0,"warningCount":0}""" };
             await writer.WriteLineAsync(JsonSerializer.Serialize(response, _wireOptions));

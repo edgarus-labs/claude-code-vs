@@ -40,8 +40,10 @@ Four layers protect this channel:
   connection without responding if it does not match. The token prevents a same-user process
   that only knows the pipe name from issuing commands. It is a shared bearer secret, not
   mutual process authentication; a process that obtains the token is not excluded by this check.
-- **Path containment**: `openDocument`, `replaceSelection`, and `getDiagnostics` acquire a
+- **Path containment**: `openDocument`, `replaceSelection`, `getDiagnostics`, `setBreakpoint`,
+  `removeBreakpoint`, `addFileToProject`, `addProjectToSolution` and `openSolution` acquire a
   `WorkspacePathGuard.AcquireDocument` lease against the session workspace before calling VS APIs.
+  This is every method that takes a `path`; adding another one without a lease is a defect.
   The path must resolve inside an existing workspace to an existing file; UNC and Win32
   device-namespace paths are rejected. A missing workspace fails closed rather than authorizing the
   current directory. The Windows lease pins the resolved ancestors and file with handles that deny
@@ -56,7 +58,10 @@ These checks are not a sandbox for the authenticated agent. In particular:
   targets, tasks, imported build files, and pre/post-build steps can execute code with the
   permissions of the Visual Studio user. Removing build/debug command names from `runCommand` does
   not remove this dedicated execution capability. Build only solutions and build dependencies you
-  trust.
+  trust - and note that `openSolution` and `addProjectToSolution` let the agent choose which solution
+  that is: it can write a project carrying a pre-build step into the workspace, open it, and build it.
+  The "only build what you trust" guidance therefore rests on the permission mode, not on the user
+  having opened the target solution.
 - `startDebugging` **runs the solution's own code** under the debugger, and `evaluateExpression`
   evaluates an arbitrary expression inside that process. Like every other tool call, these reach
   the pipe only after the chat's normal tool-permission flow (Manual mode prompts for each call;
@@ -74,8 +79,10 @@ These checks are not a sandbox for the authenticated agent. In particular:
   text, without a workspace-path check. `Edit.FormatDocument` and `Edit.FormatSelection` act on
   the focused document/selection without that check. Switching focus to an out-of-workspace
   document can therefore expose or modify it through these tools.
-- `listOpenDocuments`, `getBuildErrors`, and `getSolutionInfo` expose instance/solution metadata
-  rather than filtering it to the session workspace. Paths and diagnostics may be sensitive.
+- `listOpenDocuments`, `getBuildErrors`, `getSolutionInfo` and `getOutput` expose instance/solution
+  metadata rather than filtering it to the session workspace. Paths and diagnostics may be sensitive.
+  `getOutput` reads any Output pane in the Visual Studio instance - Build, Debug, Git, other
+  extensions' log panes - and answers an unknown pane name with the list of every pane that exists.
 
 None of this defends against a fully compromised Visual Studio process itself - the threat model is an
 untrusted agent/model or another local process, not the VS host.
@@ -96,39 +103,51 @@ untrusted agent/model or another local process, not the VS host.
   `errorCount`/`warningCount` are read back from the Error List window afterwards (subject to its own
   Build/IntelliSense scope filters), not a raw MSBuild diagnostic count. An unrecognized `configuration`
   name is silently ignored and the solution builds with whatever configuration was already active.
-- `buildProject` → `{ projectName, action? }` → `{ project, action, succeeded, errorCount, warningCount }`.
+  A build is bounded at 10 minutes in the VS host; a build the user cancels, a build refused because another is
+  already running, and that timeout each come back as their own actionable error.
+- `buildProject` → `{ projectName, action? }` → `{ project, action, succeeded, errorCount, warningCount }`. The
+  counts are scoped to the built project (Error List rows whose project matches), still subject to the Error
+  List's Build/IntelliSense scope filters.
 - `getBuildErrors` → `{ severity? }` → `{ errors: [{ file, line, column, message, project, severity }] }` — reads
-  the Error List; `severity` is `error` | `warning` | `message` and filters when given.
+  the Error List; `severity` is `error` | `warning` | `message` and filters when given. An unrecognized value is
+  rejected rather than silently matching nothing.
 - `getOutput` → `{ pane?, maxChars?, clear? }` → `{ pane, text, truncated, totalChars }` or `{ pane, cleared }` —
   reads the tail (default 20 000 chars, max 200 000) of one Output window pane (`Debug` default; `Build`,
   `General`, …) or clears it. Unknown pane names fail with the list of available panes.
 
 ### Debugger
 
-All waits poll `Debugger.CurrentMode` asynchronously (100 ms) and are capped at 120 s; the UI thread is never
-blocked. Every state result is `{ mode: design | run | break, processes: [{ id, name }], reason?, currentFrame?,
+Mode waits poll `Debugger.CurrentMode` asynchronously (100 ms) and are capped at 45 s, which keeps them inside the
+MCP client's 60 s per-request transport budget: a wait the transport could not deliver is not offered. Those polls
+never block the UI thread; `evaluateExpression` and `getLocals` do make synchronous UI-thread evaluator calls, each
+bounded to 5 s. Every state result is `{ mode: design | run | break, processes: [{ id, name }], reason?, currentFrame?,
 timedOut? }` where `reason` is the last break reason (`breakpoint`, `step`, `exceptionThrown`, …) and
 `currentFrame` is `{ function, module, language, file?, line? }`.
 
 - `startDebugging` → `{ projectName?, configuration?, waitForBreakMs? }` → state — optionally activates a solution
   configuration and makes `projectName` the startup project, **builds first** (a failed build returns an error
-  instead of letting VS pop its modal "build errors, continue?" prompt), then `Debugger.Go()` and waits for the
-  process to run, then up to `waitForBreakMs` (default 3 000) for a breakpoint.
+  instead of letting VS pop its modal "build errors, continue?" prompt), then `Debugger.Go()` and waits up to 60 s
+  for the process to run, then up to `waitForBreakMs` (default 3 000) for a breakpoint. `timedOut: true` means the
+  launch never happened (still design mode after 60 s); a program still running when `waitForBreakMs` expires is
+  not a timeout. Because it builds, this is one of the three methods the MCP client grants the 5-minute budget.
 - `stopDebugging` → `{}` → state.
 - `getDebuggerState` → `{}` → state.
 - `setBreakpoint` → `{ path, line, condition? }` → `{ breakpoints: [...] }`. `path` must resolve inside the workspace root.
-- `removeBreakpoint` → `{ path?, line? }` → `{ removed }` — all breakpoints when `path` is omitted, all on the file when
-  `line` is omitted.
+- `removeBreakpoint` → `{ path?, line? }` → `{ removed }` — every breakpoint when both members are omitted, every
+  breakpoint in the file when only `path` is given, that one line when both are. `line` without `path` is rejected.
 - `listBreakpoints` → `{}` → `{ breakpoints: [{ file, line, enabled, condition, hitCount, function }] }`.
 - `continueDebugging`, `stepOver`, `stepInto`, `stepOut` → `{ waitForBreakMs? }` → state — require break mode; wait
-  (default 5 000 ms) for the next break or program end, `timedOut: true` if the program is still running.
-- `waitForBreak` → `{ timeoutMs? }` → state (default 10 000 ms).
+  (default 5 000 ms, max 45 000) for the next break or program end. `timedOut: true` means the program was still
+  running when the wait expired; it is never set while the debugger is stopped.
+- `waitForBreak` → `{ timeoutMs? }` → state (default 10 000 ms, max 45 000).
 - `getCallStack` → `{}` → `{ threadId, threadName, frames: [{ index, function, module, language, file?, line? }] }` (≤ 100 frames).
 - `getLocals` → `{ frameIndex? }` → frame + `{ locals: [{ name, type, value, isValid }] }` (≤ 200 locals, values cut at 1 000 chars).
 - `evaluateExpression` → `{ expression, timeoutMs? }` → `{ expression, name, type, value, isValid }` via
   `Debugger.GetExpression` with auto-expand rules.
 
 ### Debugged application UI (UI Automation)
+
+All UI Automation work runs on a background thread; the VS UI thread is never blocked by a stalled target app.
 
 - `listAppWindows` → `{}` → `{ windows: [{ hwnd, processId, title, className, bounds, isVisible, ownerHwnd }] }` —
   visible top-level windows of the debugged processes only.
@@ -137,24 +156,31 @@ timedOut? }` where `reason` is the last break reason (`breakpoint`, `step`, `exc
   bounds, isEnabled, isOffscreen, actions[], value?, toggleState?, isSelected?, expandCollapseState?, children? }`.
   `actions` lists what `invokeElement`/`setElementValue` can do.
 - `invokeElement` → `{ hwnd, runtimeId? | automationId? | name?, action? }` → `{ action, element }` or
-  `{ action, pending: true, note }` — exactly one selector; `action` is `invoke` (default), `toggle`, `select`,
-  `expand`, `collapse` or `focus`, executed through the matching UIA pattern (an unsupported pattern fails with the
-  list of supported ones). WPF providers block `Invoke`/`SetValue` until the app's handler returns, so when the click
-  lands on a breakpoint the call reports `pending` after 5 s instead of hanging; the action has still happened.
+  `{ action, pending: true, note }` — exactly one selector (the tool schema states this as a `oneOf`); `action` is
+  `invoke` (default), `toggle`, `select`, `expand`, `collapse` or `focus`, executed through the matching UIA pattern
+  (an unsupported pattern fails with the list of supported ones). WPF providers block `Invoke`/`SetValue` until the
+  app's handler returns, so when the click lands on a breakpoint the call reports `pending` after 5 s instead of
+  hanging; the action has still happened.
 - `setElementValue` → `{ hwnd, runtimeId? | automationId? | name?, value }` → `{ element }` or `{ pending, note }`
-  via `ValuePattern`.
+  via `ValuePattern`; exactly one selector, same as `invokeElement`.
+- `captureWindow` → `{ hwnd }` → `{ hwnd, captured: true, width, height, scale, _image: { mimeType, data } }` or
+  `{ hwnd, captured: false, reason, note }` — a `PrintWindow` render of the window's own pixels, downscaled so the
+  longer side is ≤ 1 920 px and re-encoded until the PNG is within 4 MiB. It never copies the screen: a window that
+  is `hidden`, `minimized`, `offscreen` or `occluded` is refused with that `reason` instead of returning another
+  application's pixels. In break mode Visual Studio is normally in front, so `occluded` is the expected answer
+  there - read UI state with `getWindowElements` while stopped. `_image` is present only when `captured` is true
+  and is lifted out by the MCP server into an `image` content block (see below).
 
-All UI Automation work runs on a background thread; the VS UI thread is never blocked by a stalled target app.
-- `captureWindow` → `{ hwnd }` → `{ hwnd, width, height, scale, _image: { mimeType, data } }` — `PrintWindow`
-  screenshot (screen copy fallback), downscaled so the longer side is ≤ 1 920 px. The `_image` member is lifted out
-  by the MCP server into an `image` content block (see below).
+### Solution, editor and commands
+
 - `getDiagnostics` → `{ path }` → `{ diagnostics: [{ line, column, message, severity, source }] }` —
   language-service squiggles for one file. `path` must resolve inside the workspace root.
 - `runCommand` → `{ commandName, args? }` → `{ }` — invokes one DTE command from a fixed allow-list:
   `Edit.FormatDocument`, `Edit.FormatSelection`, `Debug.StopDebugging`, `File.SaveAll`, `View.ErrorList`.
-  Commands that would execute code from the open solution (`Debug.Start`,
-  `Debug.StartWithoutDebugging`, `Build.BuildSolution`, `Build.RebuildSolution`) are deliberately not
-  allow-listed here; the dedicated `buildSolution` tool still executes the solution's MSBuild logic.
+  `Debug.Start`, `Debug.StartWithoutDebugging`, `Build.BuildSolution` and `Build.RebuildSolution` are not
+  allow-listed, but withholding them withholds nothing: `buildSolution`/`buildProject` run the solution's MSBuild
+  logic and `startDebugging` launches it under the debugger. The allow-list narrows what `runCommand` itself can
+  reach; it does not deny the agent execution of the solution's code.
   Formatting commands operate on the focused editor; `File.SaveAll` is instance-wide.
 - `getSolutionInfo` → `{}` → `{ solutionPath, projects: [{ name, path }] }`
 - `addFileToProject` → `{ projectName, path }` → `{ project, path }` — includes an existing on-disk file in the
@@ -170,11 +196,20 @@ Errors (file not found, ambiguous command, path outside the workspace, command n
 already running, etc.) are returned via `VsControlResponse.error` and surfaced to the agent as an MCP tool
 error, never thrown across the pipe as an exception.
 
+The MCP client bounds every request at 60 s and drops a reply that arrives later, except `buildSolution`,
+`buildProject` and `startDebugging` - the three methods that compile - which get 11 minutes. Nothing cancels the
+VS side when a budget expires, so each budget is deliberately larger than the server-side bound it covers (45 s
+mode waits, 5 s evaluations, 60 s launch wait, 10 min builds): the agent sees the host's own actionable error
+rather than a transport timeout invented while Visual Studio is still working.
+
 Tool result text returned to the model is capped at 256 KiB and wrapped in
 `<<<UNTRUSTED_TOOL_OUTPUT>>> ... <<<END_UNTRUSTED_TOOL_OUTPUT>>>` delimiters (`McpServer.CreateToolResult`):
 it can originate from workspace files, the active editor, or other Visual Studio instance state and
 must be treated as data, not as instructions.
 
-A successful result object may carry one binary attachment under `_image: { mimeType, data }` (base64). The
-MCP server removes it from the text and appends an MCP `image` content block after the text block, so the
-model sees the picture itself and the 256 KiB text cap never truncates it.
+A successful result object may carry one binary attachment under `_image: { mimeType, data }` (base64). The MCP
+server removes it from the text and appends two content blocks after the text block: a note marking the picture as
+untrusted tool output, then the MCP `image` block itself - the text delimiters cannot enclose a sibling block, and a
+screenshot of a workspace-built application is data exactly as the text is. The attachment is dropped, leaving the
+text (which still carries `hwnd`/`width`/`height`), unless its media type is `image/png` and its base64 length is
+within the VS host's 4 MiB encoded-PNG cap - the 256 KiB text cap it bypasses is not an unbounded hole.
