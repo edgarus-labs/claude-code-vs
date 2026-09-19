@@ -95,12 +95,13 @@ public sealed partial class AcpProcessConnection
 
     private async Task<JsonNode?> HandleCreateElicitationAsync(JsonObject @params, CancellationToken cancellationToken)
     {
-        // Only form mode was advertised in `initialize`'s clientCapabilities.elicitation; decline
-        // anything else (url mode, or a future mode this client predates) rather than erroring, per
-        // the protocol's "decline what you didn't advertise" convention.
+        // Only form mode was advertised in `initialize`'s clientCapabilities.elicitation. ACP is
+        // explicit that a request using a mode the client has not advertised produces -32602;
+        // answering `decline` would instead read as "the user refused", destroying the only signal
+        // that stops a conforming agent from retrying a url-mode (secret-bearing) flow as a form.
         if (GetOptionalString(@params, "mode") != "form")
         {
-            return new JsonObject { ["action"] = "decline" };
+            throw new AcpRemoteException(-32602, "Unsupported elicitation mode; this client advertises 'form' only.");
         }
 
         var handler = ElicitationRequested;
@@ -153,20 +154,60 @@ public sealed partial class AcpProcessConnection
         string? description = GetOptionalString(property, "description");
         string? type = GetOptionalString(property, "type");
 
-        if (type == "string" && property["oneOf"] is JsonArray oneOf)
+        // ACP's StringPropertySchema declares both `oneOf` (titled options) and `enum` (bare values)
+        // as single-select, and MultiSelectItems declares both `items.anyOf` and `items.enum`. Letting
+        // the untitled forms fall through to Text would render a closed choice as a free-text box and
+        // send back a value the agent was promised could not occur.
+        if (type == "string")
         {
-            return new ElicitationField(key, title, description, ElicitationFieldKind.SingleSelect, ParseElicitationOptions(oneOf));
+            if (property["oneOf"] is JsonArray oneOf)
+            {
+                return new ElicitationField(key, title, description, ElicitationFieldKind.SingleSelect, ParseElicitationOptions(oneOf));
+            }
+
+            if (property["enum"] is JsonArray plainEnum)
+            {
+                return new ElicitationField(key, title, description, ElicitationFieldKind.SingleSelect, ParsePlainEnumOptions(plainEnum));
+            }
         }
 
-        if (type == "array" && property["items"] is JsonObject items && items["anyOf"] is JsonArray anyOf)
+        if (type == "array" && property["items"] is JsonObject items)
         {
-            return new ElicitationField(key, title, description, ElicitationFieldKind.MultiSelect, ParseElicitationOptions(anyOf));
+            if (items["anyOf"] is JsonArray anyOf)
+            {
+                return new ElicitationField(key, title, description, ElicitationFieldKind.MultiSelect, ParseElicitationOptions(anyOf));
+            }
+
+            if (items["enum"] is JsonArray itemEnum)
+            {
+                return new ElicitationField(key, title, description, ElicitationFieldKind.MultiSelect, ParsePlainEnumOptions(itemEnum));
+            }
         }
 
         // Any other JSON Schema property type (number/integer/boolean, or a plain string with no
-        // oneOf) - AskUserQuestion, the only realistic source of these requests, never emits them,
+        // enum/oneOf) - AskUserQuestion, the only realistic source of these requests, never emits them,
         // so a plain text field is a reasonable fallback rather than a dedicated renderer per type.
         return new ElicitationField(key, title, description, ElicitationFieldKind.Text, Array.Empty<ElicitationOption>());
+    }
+
+    // A JSON Schema `enum` carries bare values with no titles, so each value is also its own label.
+    private static IReadOnlyList<ElicitationOption> ParsePlainEnumOptions(JsonArray values)
+    {
+        if (values.Count == 0)
+        {
+            return Array.Empty<ElicitationOption>();
+        }
+
+        var result = new List<ElicitationOption>(values.Count);
+        foreach (JsonNode? entry in values)
+        {
+            if (entry is JsonValue value && value.TryGetValue<string>(out string? text))
+            {
+                result.Add(new ElicitationOption(text, text, null));
+            }
+        }
+
+        return result;
     }
 
     private static IReadOnlyList<ElicitationOption> ParseElicitationOptions(JsonArray options)
@@ -329,32 +370,74 @@ public sealed partial class AcpProcessConnection
                 return ParseUsageUpdate(update);
 
             default:
-                // user_message_chunk (echo of our own prompt), current_mode_update, etc. have no
-                // SessionUpdate subclass in ClaudeCode.Contracts yet; silently ignored rather than throwing.
+                // current_mode_update, etc. have no SessionUpdate subclass in ClaudeCode.Contracts
+                // yet; silently ignored rather than throwing.
                 return null;
         }
     }
 
     // { "used": 8300, "size": 200000, "cost": { "amount": 0.12, "currency": "USD" } } - size/cost optional.
+    // Every number here is agent-supplied and unbounded on the wire, and this runs inline on the
+    // JSON-RPC read pump: an OverflowException out of (decimal), or a wrapped (long) cast, would tear
+    // down the whole connection instead of degrading one notification.
     private static SessionUpdate.UsageUpdate? ParseUsageUpdate(JsonObject update)
     {
-        if (update["used"] is not JsonValue usedValue || !usedValue.TryGetValue<long>(out var used))
+        if (ClampToTokenCount(update["used"]) is not long used)
         {
-            if (update["used"] is JsonValue usedDouble && usedDouble.TryGetValue<double>(out var asDouble)) used = (long)asDouble;
-            else return null;
+            return null;
         }
 
-        long? size = update["size"] is JsonValue sizeValue && sizeValue.TryGetValue<double>(out var sizeDouble) ? (long)sizeDouble : null;
+        long? size = ClampToTokenCount(update["size"]);
         decimal? amount = null;
         string? currency = null;
         if (update["cost"] is JsonObject cost)
         {
-            if (cost["amount"] is JsonValue amountValue && amountValue.TryGetValue<double>(out var amountDouble)) amount = (decimal)amountDouble;
+            amount = ParseCostAmount(cost["amount"]);
             currency = GetOptionalString(cost, "currency");
         }
 
         return new SessionUpdate.UsageUpdate(used, size, amount, currency);
     }
+
+    // `used`/`size` are uint64 in ACP: anything above long.MaxValue arrives as a double whose plain
+    // cast wraps to a negative count, so saturate instead, and floor the (schema-invalid) negatives
+    // at zero. Absent, non-numeric or NaN yields null - unknown, not zero.
+    private static long? ClampToTokenCount(JsonNode? node)
+    {
+        if (node is not JsonValue value)
+        {
+            return null;
+        }
+
+        if (value.TryGetValue<long>(out long exact))
+        {
+            return exact < 0L ? 0L : exact;
+        }
+
+        if (!value.TryGetValue<double>(out double approximate) || double.IsNaN(approximate))
+        {
+            return null;
+        }
+
+        if (approximate <= 0d)
+        {
+            return 0L;
+        }
+
+        return approximate >= long.MaxValue ? long.MaxValue : (long)approximate;
+    }
+
+    // decimal's range is far narrower than double's - (decimal)1e29 throws OverflowException, and ACP
+    // bounds cost.amount at nothing. An unrepresentable (or NaN/infinite) cost degrades to "unknown".
+    private static decimal? ParseCostAmount(JsonNode? node) =>
+        node is JsonValue value
+        && value.TryGetValue<double>(out double amount)
+        && amount > -_maxRepresentableCostAmount
+        && amount < _maxRepresentableCostAmount
+            ? (decimal)amount
+            : null;
+
+    private static readonly double _maxRepresentableCostAmount = (double)decimal.MaxValue;
 
     private static IReadOnlyList<SessionSummary> ParseSessionSummaries(JsonObject response)
     {
@@ -371,20 +454,27 @@ public sealed partial class AcpProcessConnection
         var result = new List<SessionSummary>(sessions.Count);
         foreach (JsonNode? entry in sessions)
         {
-            var session = entry as JsonObject ?? throw new AcpProtocolException("Invalid session summary.");
-            string? updatedAtRaw = GetOptionalString(session, "updatedAt");
+            // A single malformed row degrades that row only - the rest of the session history must
+            // still reach the user, otherwise one bad entry hides every session behind "Could not
+            // load session history". ACP marks these list items x-deserialize-skip-invalid-items.
+            if (entry is not JsonObject session)
+            {
+                continue;
+            }
 
-            // A single row with a timestamp this client cannot parse degrades that row only - the
-            // rest of the session history must still reach the user.
+            string? sessionId = GetOptionalString(session, "sessionId");
+            string? cwd = GetOptionalString(session, "cwd");
+            if (sessionId is null || cwd is null)
+            {
+                continue;
+            }
+
+            string? updatedAtRaw = GetOptionalString(session, "updatedAt");
             DateTimeOffset? updatedAt = updatedAtRaw is not null
                 && DateTimeOffset.TryParse(updatedAtRaw, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out DateTimeOffset parsed)
                     ? parsed
                     : null;
-            result.Add(new SessionSummary(
-                GetRequiredString(session, "sessionId"),
-                GetRequiredString(session, "cwd"),
-                GetOptionalString(session, "title"),
-                updatedAt));
+            result.Add(new SessionSummary(sessionId, cwd, GetOptionalString(session, "title"), updatedAt));
         }
 
         return result;

@@ -258,7 +258,14 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
 
         JsonNode? result = await _rpc.SendRequestAsync("_vs/remoteControl", @params, cancellationToken).ConfigureAwait(false);
         var obj = result as JsonObject ?? throw new AcpProtocolException("_vs/remoteControl response did not contain a result object.");
-        bool resultEnabled = obj["enabled"] is JsonValue value && value.TryGetValue<bool>(out var parsed) ? parsed : enabled;
+        // The agent is authoritative about whether the toggle took effect. Falling back to the
+        // requested value would leave the UI claiming the session is (or is no longer) exposed at
+        // claude.ai/code on the word of an agent that never acknowledged it.
+        if (obj["enabled"] is not JsonValue value || !value.TryGetValue<bool>(out bool resultEnabled))
+        {
+            throw new AcpProtocolException("_vs/remoteControl response did not report the resulting 'enabled' state.");
+        }
+
         return new RemoteControlState(resultEnabled, GetOptionalString(obj, "sessionUrl"), GetOptionalString(obj, "connectUrl"));
     }
 

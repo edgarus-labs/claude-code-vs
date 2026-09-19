@@ -216,6 +216,11 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
 
         Assert.NotNull(request["params"]!["clientCapabilities"]!["elicitation"]!["form"]);
 
+        // url mode is deliberately NOT advertised: HandleCreateElicitationAsync cannot render it and
+        // answers such a request with -32602, so claiming the capability would invite exactly the
+        // secret-bearing flows this client cannot honour.
+        Assert.Null(request["params"]!["clientCapabilities"]!["elicitation"]!["url"]);
+
         await ReplyAsync(request, """{"protocolVersion":1}""");
         await pending.WaitAsync(TimeSpan.FromSeconds(5));
     }
@@ -282,13 +287,55 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
     }
 
     [Fact]
-    public async Task InboundElicitationCreateRequest_UnsupportedMode_DeclinesImmediately()
+    public async Task InboundElicitationCreateRequest_UnsupportedMode_RespondsWithInvalidParams()
     {
+        // ACP: "Requests using a mode the Client has not advertised produce JSON-RPC -32602". A
+        // `decline` here would be read as "the user refused", which would let a conforming agent
+        // retry the same sensitive flow as a form instead of giving up on url mode.
         await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer,
             """{"jsonrpc":"2.0","id":22,"method":"elicitation/create","params":{"mode":"url","sessionId":"s1","message":"Open this","url":"https://example.test"}}""");
 
         JsonObject response = await ReadResponseWithIdAsync(_toAgent.Reader, 22);
-        Assert.Equal("decline", response["result"]!["action"]!.GetValue<string>());
+        Assert.Null(response["result"]);
+        Assert.Equal(-32602, response["error"]!["code"]!.GetValue<int>());
+    }
+
+    [Fact]
+    public async Task InboundElicitationCreateRequest_UntitledEnumSchemas_ParseAsSelectFieldsNotFreeText()
+    {
+        // ACP's StringPropertySchema: "When `enum` or `oneOf` is set, this represents a single-select
+        // enum"; MultiSelectItems likewise allows `items.enum`. Rendering either as a text box would
+        // let the user answer outside the closed set the agent declared.
+        var received = new TaskCompletionSource<ElicitationRequestEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _connection.ElicitationRequested += (_, e) => received.TrySetResult(e);
+
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer, JsonNode.Parse("""
+            {"jsonrpc":"2.0","id":25,"method":"elicitation/create","params":{
+              "mode":"form","sessionId":"s1","message":"Pick one",
+              "requestedSchema":{"type":"object","properties":{
+                "risk":{"type":"string","title":"Risk","enum":["conservative","balanced","aggressive"]},
+                "areas":{"type":"array","title":"Areas","items":{"enum":["api","ui"]}}
+              }}
+            }}
+            """)!.ToJsonString());
+
+        ElicitationRequestEventArgs args = await received.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Collection(args.Fields,
+            risk =>
+            {
+                Assert.Equal(ElicitationFieldKind.SingleSelect, risk.Kind);
+                Assert.Collection(risk.Options,
+                    option => { Assert.Equal("conservative", option.Value); Assert.Equal("conservative", option.Label); },
+                    option => Assert.Equal("balanced", option.Value),
+                    option => Assert.Equal("aggressive", option.Value));
+            },
+            areas =>
+            {
+                Assert.Equal(ElicitationFieldKind.MultiSelect, areas.Kind);
+                Assert.Collection(areas.Options,
+                    option => Assert.Equal("api", option.Value),
+                    option => Assert.Equal("ui", option.Value));
+            });
     }
 
     [Fact]
@@ -873,6 +920,184 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
 
         await ReplyAsync(request, """{"stopReason":"end_turn"}""");
         await pending.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task SessionUpdate_UsageUpdateWithOutOfRangeNumbers_DegradesThoseFieldsAndKeepsThePumpAlive()
+    {
+        // `cost.amount` is an unbounded JSON double on the wire; (decimal)1e29 throws OverflowException
+        // inline on the JSON-RPC read pump, which would exit the read loop and fault every in-flight
+        // request. `used`/`size` are uint64 there, so an unchecked (long) cast wraps to a negative or
+        // garbage token count. Every one of those must degrade the field, not the connection.
+        var received = new TaskCompletionSource<List<SessionUpdateEventArgs>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var notifications = new List<SessionUpdateEventArgs>();
+        _connection.SessionUpdate += (_, update) =>
+        {
+            notifications.Add(update);
+            if (notifications.Count == 3) received.TrySetResult(notifications);
+        };
+
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer,
+            """{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"usage_update","used":1e30,"size":18446744073709551615,"cost":{"amount":1e29,"currency":"USD"}}}}""");
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer,
+            """{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"usage_update","used":-5,"size":-1,"cost":{"amount":-1e29}}}}""");
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer,
+            """{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"usage_update","used":42,"size":100,"cost":{"amount":0.5,"currency":"USD"}}}}""");
+
+        List<SessionUpdateEventArgs> updates = await received.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var saturated = Assert.IsType<SessionUpdate.UsageUpdate>(updates[0].Update);
+        Assert.Equal(long.MaxValue, saturated.UsedTokens);
+        Assert.Equal(long.MaxValue, saturated.ContextWindowSize);
+        Assert.Null(saturated.CostAmount);
+        var negative = Assert.IsType<SessionUpdate.UsageUpdate>(updates[1].Update);
+        Assert.Equal(0, negative.UsedTokens);
+        Assert.Equal(0, negative.ContextWindowSize);
+        Assert.Null(negative.CostAmount);
+
+        // The third notification only arrives if the pump survived the first two.
+        var healthy = Assert.IsType<SessionUpdate.UsageUpdate>(updates[2].Update);
+        Assert.Equal(42, healthy.UsedTokens);
+        Assert.Equal(0.5m, healthy.CostAmount);
+    }
+
+    [Fact]
+    public async Task SetRemoteControlAsync_Enabling_SendsSessionNameAndMapsTheAcknowledgedState()
+    {
+        Task<RemoteControlState> pending = _connection.SetRemoteControlAsync("s1", enabled: true, "My laptop", CancellationToken.None);
+        JsonObject request = await ReadRequestAsync("_vs/remoteControl");
+        Assert.Equal("s1", request["params"]!["sessionId"]!.GetValue<string>());
+        Assert.True(request["params"]!["enabled"]!.GetValue<bool>());
+        Assert.Equal("My laptop", request["params"]!["name"]!.GetValue<string>());
+
+        await ReplyAsync(request, """{"enabled":true,"sessionUrl":"https://claude.ai/code/s1","connectUrl":"https://claude.ai/code/connect"}""");
+
+        RemoteControlState state = await pending.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(state.Enabled);
+        Assert.Equal("https://claude.ai/code/s1", state.SessionUrl);
+        Assert.Equal("https://claude.ai/code/connect", state.ConnectUrl);
+    }
+
+    [Fact]
+    public async Task SetRemoteControlAsync_WithoutASessionName_OmitsNameAndReportsTheAgentsOwnState()
+    {
+        Task<RemoteControlState> pending = _connection.SetRemoteControlAsync("s1", enabled: true, "   ", CancellationToken.None);
+        JsonObject request = await ReadRequestAsync("_vs/remoteControl");
+        Assert.Null(request["params"]!["name"]);
+
+        // The agent is authoritative: it refused to enable, so the UI must not show Remote Control as on.
+        await ReplyAsync(request, """{"enabled":false}""");
+
+        RemoteControlState state = await pending.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(state.Enabled);
+        Assert.Null(state.SessionUrl);
+    }
+
+    [Fact]
+    public async Task SetRemoteControlAsync_ResponseOmitsEnabled_FailsInsteadOfAssumingTheToggleApplied()
+    {
+        // An unacknowledged toggle must not be reported as success: the user would believe the session
+        // is (or is no longer) exposed at claude.ai/code when the agent never said so.
+        Task<RemoteControlState> pending = _connection.SetRemoteControlAsync("s1", enabled: true, null, CancellationToken.None);
+        JsonObject request = await ReadRequestAsync("_vs/remoteControl");
+        await ReplyAsync(request, """{"sessionUrl":"https://claude.ai/code/s1"}""");
+
+        await Assert.ThrowsAsync<AcpProtocolException>(() => pending.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
+    public async Task HandleCreateElicitationAsync_CancelledWhilePending_UnblocksInsteadOfHangingForever()
+    {
+        var handlerInvoked = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _connection.ElicitationRequested += (_, _) => handlerInvoked.TrySetResult(true); // deliberately never resolves e.Response.
+
+        using var cts = new CancellationTokenSource();
+        MethodInfo method = typeof(AcpProcessConnection).GetMethod("HandleCreateElicitationAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var paramsObj = new JsonObject
+        {
+            ["mode"] = "form",
+            ["sessionId"] = "s1",
+            ["message"] = "Pick one",
+            ["requestedSchema"] = new JsonObject { ["type"] = "object", ["properties"] = new JsonObject() },
+        };
+        var resultTask = (Task<JsonNode?>)method.Invoke(_connection, new object[] { paramsObj, cts.Token })!;
+
+        await handlerInvoked.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => resultTask.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
+    public async Task InboundElicitationCreateRequest_AgentDisconnectsWhilePending_FaultsTheUnansweredForm()
+    {
+        ElicitationRequestEventArgs? captured = null;
+        var received = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _connection.ElicitationRequested += (_, e) => { captured = e; received.TrySetResult(true); };
+
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer, JsonNode.Parse("""
+            {"jsonrpc":"2.0","id":26,"method":"elicitation/create","params":{
+              "mode":"form","sessionId":"s1","message":"Pick one",
+              "requestedSchema":{"type":"object","properties":{
+                "question_0":{"type":"string","oneOf":[{"const":"red","title":"Red"}]}
+              }}
+            }}
+            """)!.ToJsonString());
+        await received.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // The agent's stdout closes - the form can never be answered, so it must not stay open forever.
+        _fromAgent.Writer.Complete();
+
+        await Assert.ThrowsAnyAsync<Exception>(() => captured!.Response.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
+    public async Task InboundElicitationCreateRequest_MissingRequestedSchema_RespondsWithAnErrorAndKeepsThePumpAlive()
+    {
+        _connection.ElicitationRequested += (_, e) =>
+            e.Response.TrySetResult(new ElicitationAnswer(ElicitationAction.Accept, new Dictionary<string, IReadOnlyList<string>>()));
+
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer,
+            """{"jsonrpc":"2.0","id":27,"method":"elicitation/create","params":{"mode":"form","sessionId":"s1","message":"Pick one"}}""");
+
+        JsonObject response = await ReadResponseWithIdAsync(_toAgent.Reader, 27);
+        Assert.Null(response["result"]);
+        Assert.NotNull(response["error"]);
+
+        // The pump must still be serving requests afterwards.
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer, JsonNode.Parse("""
+            {"jsonrpc":"2.0","id":28,"method":"elicitation/create","params":{
+              "mode":"form","sessionId":"s1","message":"Pick one",
+              "requestedSchema":{"type":"object","properties":{}}
+            }}
+            """)!.ToJsonString());
+        JsonObject accepted = await ReadResponseWithIdAsync(_toAgent.Reader, 28);
+        Assert.Equal("accept", accepted["result"]!["action"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task ListSessionsAsync_RowMissingRequiredFields_SkipsThatRowInsteadOfDiscardingTheHistory()
+    {
+        Task<IReadOnlyList<SessionSummary>> pending = _connection.ListSessionsAsync(null, CancellationToken.None);
+        JsonObject request = await ReadRequestAsync("session/list");
+        // ACP's ListSessionsRequest declares cwd as ["string","null"] and required: an unfiltered
+        // list sends an explicit null rather than omitting the key.
+        Assert.True(request["params"]!.AsObject().ContainsKey("cwd"));
+        Assert.Null(request["params"]!["cwd"]);
+
+        await ReplyAsync(request, """
+            {
+              "sessions": [
+                { "cwd": "/workspace", "title": "No session id" },
+                { "sessionId": "s2", "title": "No cwd" },
+                "not-an-object",
+                { "sessionId": "s4", "cwd": "/workspace", "title": "Fix the bug" }
+              ]
+            }
+            """);
+
+        IReadOnlyList<SessionSummary> result = await pending.WaitAsync(TimeSpan.FromSeconds(5));
+        SessionSummary only = Assert.Single(result);
+        Assert.Equal("s4", only.SessionId);
     }
 
     private async Task<JsonObject> ReadRequestAsync(string expectedMethod)
