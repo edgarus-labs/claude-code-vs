@@ -95,6 +95,8 @@
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageReference Include="EnvDTE" Version="17.13.40008" />
     <PackageReference Include="EnvDTE80" Version="17.13.40008" />
+    <!-- StackFrame2 (file/line of debugger stack frames) for the VS control debugger tools. -->
+    <PackageReference Include="EnvDTE90a" Version="17.13.40008" />
     <PackageReference Include="Microsoft.VisualStudio.Text.UI" Version="17.13.226" />
     <PackageReference Include="Microsoft.VisualStudio.Text.Logic" Version="17.13.226" />
   </ItemGroup>
@@ -102,6 +104,11 @@
   <ItemGroup>
     <Reference Include="System.Design" />
     <Reference Include="System.Windows.Forms" />
+    <!-- Debugged-app UI automation and window capture (VsControlPipeServer.AppUi). -->
+    <Reference Include="System.Drawing" />
+    <Reference Include="UIAutomationClient" />
+    <Reference Include="UIAutomationTypes" />
+    <Reference Include="WindowsBase" />
     <Reference Include="System.Security" />
   </ItemGroup>
 

@@ -20,7 +20,7 @@ using System.Threading.Tasks;
 
 namespace ClaudeCode.Vsix.VsControl;
 
-internal sealed class VsControlPipeServer : IAsyncDisposable
+internal sealed partial class VsControlPipeServer : IAsyncDisposable
 {
     private static readonly JsonSerializerSettings _envelopeSettings = new JsonSerializerSettings
     {
@@ -213,12 +213,34 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
             case "replaceSelection": return (await ReplaceSelectionAsync(args)).ToString(Formatting.None);
             case "saveAll": return (await SaveAllAsync()).ToString(Formatting.None);
             case "buildSolution": return (await BuildSolutionAsync(args)).ToString(Formatting.None);
-            case "getBuildErrors": return (await GetBuildErrorsAsync()).ToString(Formatting.None);
+            case "buildProject": return (await BuildProjectAsync(args)).ToString(Formatting.None);
+            case "getBuildErrors": return (await GetBuildErrorsAsync(args)).ToString(Formatting.None);
+            case "getOutput": return (await GetOutputAsync(args)).ToString(Formatting.None);
             case "getDiagnostics": return (await GetDiagnosticsAsync(args)).ToString(Formatting.None);
             case "runCommand": return (await RunCommandAsync(args)).ToString(Formatting.None);
             case "getSolutionInfo": return (await GetSolutionInfoAsync()).ToString(Formatting.None);
             case "addFileToProject": return (await AddFileToProjectAsync(args)).ToString(Formatting.None);
             case "addProjectToSolution": return (await AddProjectToSolutionAsync(args)).ToString(Formatting.None);
+            case "openSolution": return (await OpenSolutionAsync(args)).ToString(Formatting.None);
+            case "startDebugging": return (await StartDebuggingAsync(args, cancellationToken)).ToString(Formatting.None);
+            case "stopDebugging": return (await StopDebuggingAsync(cancellationToken)).ToString(Formatting.None);
+            case "getDebuggerState": return (await GetDebuggerStateAsync()).ToString(Formatting.None);
+            case "setBreakpoint": return (await SetBreakpointAsync(args)).ToString(Formatting.None);
+            case "removeBreakpoint": return (await RemoveBreakpointAsync(args)).ToString(Formatting.None);
+            case "listBreakpoints": return (await ListBreakpointsAsync()).ToString(Formatting.None);
+            case "continueDebugging": return (await StepAsync(args, DebuggerStep.Continue, cancellationToken)).ToString(Formatting.None);
+            case "stepOver": return (await StepAsync(args, DebuggerStep.Over, cancellationToken)).ToString(Formatting.None);
+            case "stepInto": return (await StepAsync(args, DebuggerStep.Into, cancellationToken)).ToString(Formatting.None);
+            case "stepOut": return (await StepAsync(args, DebuggerStep.Out, cancellationToken)).ToString(Formatting.None);
+            case "waitForBreak": return (await WaitForBreakAsync(args, cancellationToken)).ToString(Formatting.None);
+            case "getCallStack": return (await GetCallStackAsync()).ToString(Formatting.None);
+            case "getLocals": return (await GetLocalsAsync(args)).ToString(Formatting.None);
+            case "evaluateExpression": return (await EvaluateExpressionAsync(args)).ToString(Formatting.None);
+            case "listAppWindows": return (await ListAppWindowsAsync()).ToString(Formatting.None);
+            case "getWindowElements": return (await GetWindowElementsAsync(args)).ToString(Formatting.None);
+            case "invokeElement": return (await InvokeElementAsync(args)).ToString(Formatting.None);
+            case "setElementValue": return (await SetElementValueAsync(args)).ToString(Formatting.None);
+            case "captureWindow": return (await CaptureWindowAsync(args)).ToString(Formatting.None);
             default: throw new InvalidOperationException($"Unknown VsControl method '{method}'.");
         }
     }
@@ -367,36 +389,6 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
         return new JObject();
     }
 
-    /// <summary>
-    /// Builds the current solution and waits for completion. <c>errorCount</c>/<c>warningCount</c>
-    /// reflect the Error List window's contents right after the build - which are themselves subject
-    /// to the Error List's own Build/IntelliSense scope filters - not a raw MSBuild diagnostic count.
-    /// The VS SDK does not expose MSBuild's own diagnostic totals without driving
-    /// <c>IVsSolutionBuildManager</c> directly; the Error List is the diagnostic surface
-    /// <see cref="Community.VisualStudio.Toolkit"/> already gives us.
-    /// </summary>
-    private static async Task<JObject> BuildSolutionAsync(JObject args)
-    {
-        // The optional `configuration` param only takes effect if it matches an existing solution
-        // configuration name; VsControlProtocol.md leaves per-configuration switching unspecified, so a
-        // mismatched or omitted value simply builds whatever configuration is currently active.
-        var configurationName = args["configuration"]?.Value<string>();
-        if (!string.IsNullOrEmpty(configurationName))
-        {
-            await TrySetActiveConfigurationAsync(configurationName!);
-        }
-
-        var succeeded = await VS.Build.BuildSolutionAsync();
-        var (errorCount, warningCount) = await CountBuildDiagnosticsAsync();
-
-        return new JObject
-        {
-            ["succeeded"] = succeeded,
-            ["errorCount"] = errorCount,
-            ["warningCount"] = warningCount,
-        };
-    }
-
     private static async Task TrySetActiveConfigurationAsync(string configurationName)
     {
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
@@ -416,26 +408,6 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
                 return;
             }
         }
-    }
-
-    private static async Task<JObject> GetBuildErrorsAsync()
-    {
-        var items = await GetErrorListItemsAsync();
-        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
-        var errors = new JArray();
-        foreach (var item in items)
-        {
-            errors.Add(new JObject
-            {
-                ["file"] = item.FileName,
-                ["line"] = item.Line,
-                ["column"] = item.Column,
-                ["message"] = item.Description,
-                ["severity"] = ErrorLevelToSeverity(item.ErrorLevel),
-            });
-        }
-
-        return new JObject { ["errors"] = errors };
     }
 
     private async Task<JObject> GetDiagnosticsAsync(JObject args)
@@ -518,21 +490,7 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
             throw new InvalidOperationException($"'{path}' does not exist; write the file first.");
         }
 
-        Community.VisualStudio.Toolkit.Project? project = null;
-        foreach (var candidate in await VS.Solutions.GetAllProjectsAsync())
-        {
-            if (string.Equals(candidate.Name, projectName, StringComparison.OrdinalIgnoreCase))
-            {
-                project = candidate;
-                break;
-            }
-        }
-
-        if (project is null)
-        {
-            throw new InvalidOperationException($"No project named '{projectName}' is loaded in the solution.");
-        }
-
+        var project = await FindProjectAsync(projectName);
         await project.AddExistingFilesAsync(fullPath);
         return new JObject { ["project"] = project.Name, ["path"] = fullPath };
     }
@@ -557,6 +515,28 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
 
         var project = solution.AddFromFile(fullPath, Exclusive: false);
         return new JObject { ["name"] = project?.Name, ["path"] = fullPath };
+    }
+
+    private async Task<JObject> OpenSolutionAsync(JObject args)
+    {
+        var path = RequireString(args, "path");
+        using var pathLease = WorkspacePathGuard.AcquireDocument(_workspaceRoot, path);
+        var fullPath = pathLease.FullPath;
+        var extension = Path.GetExtension(fullPath);
+        if (!string.Equals(extension, ".sln", StringComparison.OrdinalIgnoreCase) && !string.Equals(extension, ".slnx", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException($"'{path}' is not a solution file (.sln/.slnx).");
+        }
+
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+        var dte = await VS.GetRequiredServiceAsync<DTE, DTE2>();
+        if (dte.Solution.IsOpen)
+        {
+            dte.Solution.Close(SaveFirst: true);
+        }
+
+        dte.Solution.Open(fullPath);
+        return await GetSolutionInfoAsync();
     }
 
     private static async Task<JObject> GetSolutionInfoAsync()

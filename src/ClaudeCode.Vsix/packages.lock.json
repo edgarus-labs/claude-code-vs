@@ -30,6 +30,15 @@
           "Microsoft.VisualStudio.Interop": "17.13.40008"
         }
       },
+      "envdte90a": {
+        "type": "Direct",
+        "requested": "[17.13.40008, )",
+        "resolved": "17.13.40008",
+        "contentHash": "kOxbf4FQnC7gVKwe+7GlwPvBH0K45gHK11l1G5FEAPY77PfWWIRiaBjgMZVYlK5tebN/bKqaMniU1gZtBHjWNA==",
+        "dependencies": {
+          "Microsoft.VisualStudio.Interop": "17.13.40008"
+        }
+      },
       "Microsoft.VisualStudio.SDK": {
         "type": "Direct",
         "requested": "[17.13.40008, )",
@@ -238,14 +247,6 @@
         "type": "Transitive",
         "resolved": "17.13.40008",
         "contentHash": "OfCPN4Bu7hDQhdDZul+3ryhO5yRGjcHw76SQ9+Pxf0BaYnvpHaad8ssdiRPFpjDvcoFdEz/5bR9aGHhIBZ959g==",
-        "dependencies": {
-          "Microsoft.VisualStudio.Interop": "17.13.40008"
-        }
-      },
-      "envdte90a": {
-        "type": "Transitive",
-        "resolved": "17.13.40008",
-        "contentHash": "kOxbf4FQnC7gVKwe+7GlwPvBH0K45gHK11l1G5FEAPY77PfWWIRiaBjgMZVYlK5tebN/bKqaMniU1gZtBHjWNA==",
         "dependencies": {
           "Microsoft.VisualStudio.Interop": "17.13.40008"
         }
