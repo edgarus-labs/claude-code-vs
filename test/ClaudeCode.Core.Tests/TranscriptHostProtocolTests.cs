@@ -1,6 +1,5 @@
 using ClaudeCode.Core.ViewModels;
 using System;
-using System.Collections.Generic;
 using Xunit;
 
 namespace ClaudeCode.Core.Tests;
@@ -136,61 +135,20 @@ public sealed class TranscriptHostProtocolTests
     }
 
     // A turn driven from claude.ai/code never sets IsBusy, so the host's one-second activity timer
-    // never starts and this scheduling rule is the only thing that can repaint it. Chunks arrive far
-    // closer together than the coalescing window, so a pure restart-debounce is restarted before it
-    // can ever fire and the page stays stale for the whole turn. This drives the same rule
-    // ChatPanelView.ScheduleTranscriptRender applies, over a virtual clock (no wall-clock waiting),
-    // and pins what the user actually feels: how long the transcript may stay stale mid-stream.
+    // never starts and this rule is the only thing that can repaint it: ChatPanelView's
+    // ScheduleTranscriptRender consults it on every change and paints outright when it says so
+    // instead of restarting the coalescing timer. The boundary is inclusive - a page exactly
+    // MaxRenderInterval stale paints now rather than joining another coalescing window.
     [Fact]
-    public void CoalescingPolicy_StreamFasterThanTheCoalescingWindow_KeepsPainting()
+    public void ShouldPaintImmediately_StaleForExactlyTheMaximumWait_PaintsNow()
     {
-        TimeSpan chunkInterval = TimeSpan.FromMilliseconds(10);
-        var start = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
-        DateTimeOffset lastPaint = start - TranscriptHostProtocol.MaxRenderInterval;
-        DateTimeOffset coalesceDue = default;
-        bool coalescing = false;
-        var paints = new List<DateTimeOffset>();
+        Assert.True(TranscriptHostProtocol.ShouldPaintImmediately(TranscriptHostProtocol.MaxRenderInterval));
+    }
 
-        for (DateTimeOffset now = start; now <= start + TimeSpan.FromSeconds(10); now += chunkInterval)
-        {
-            if (coalescing && coalesceDue <= now)
-            {
-                coalescing = false;
-                lastPaint = coalesceDue;
-                paints.Add(coalesceDue);
-            }
-
-            if (TranscriptHostProtocol.ShouldPaintImmediately(now - lastPaint))
-            {
-                coalescing = false;
-                lastPaint = now;
-                paints.Add(now);
-            }
-            else
-            {
-                coalesceDue = now + TranscriptHostProtocol.RenderCoalesceWindow;
-                coalescing = true;
-            }
-        }
-
-        Assert.NotEmpty(paints);
-
-        TimeSpan worstGap = TimeSpan.Zero;
-        DateTimeOffset previous = start;
-        foreach (DateTimeOffset paint in paints)
-        {
-            if (paint - previous > worstGap)
-            {
-                worstGap = paint - previous;
-            }
-
-            previous = paint;
-        }
-
-        TimeSpan bound = TranscriptHostProtocol.MaxRenderInterval + chunkInterval;
-        Assert.True(
-            worstGap <= bound,
-            $"a continuously streaming turn went {worstGap.TotalMilliseconds} ms without a repaint; "
-                + $"the bound is {bound.TotalMilliseconds} ms.");
+    [Fact]
+    public void ShouldPaintImmediately_OneTickShortOfTheMaximumWait_Coalesces()
+    {
+        Assert.False(TranscriptHostProtocol.ShouldPaintImmediately(
+            TranscriptHostProtocol.MaxRenderInterval - TimeSpan.FromTicks(1)));
     }
 }
