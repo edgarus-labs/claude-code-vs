@@ -5,6 +5,7 @@
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:vm="clr-namespace:ClaudeCode.Core.ViewModels;assembly=EdgarusLabs.ClaudeCode.Core.ViewModels"
              xmlns:conv="clr-namespace:ClaudeCode.Core.Views.Converters"
+             xmlns:views="clr-namespace:ClaudeCode.Core.Views"
              xmlns:contracts="clr-namespace:ClaudeCode.Contracts;assembly=EdgarusLabs.ClaudeCode.Contracts"
              mc:Ignorable="d"
              d:DesignWidth="360"
@@ -13,14 +14,14 @@
   <!-- Card for a pending elicitation/create form (AskUserQuestion). DataContext is an
        ElicitationRequestViewModel; the host binds it and nothing else. Chrome deliberately matches
        the permission card in ChatPanelView.xaml (same brushes, radius, margins and button styles)
-       so the two prompts read as one family - the host must NOT wrap this in another Border. -->
+       so the two prompts read as one family - the host must NOT wrap this in another Border.
+       No palette of its own either: every brush here is a DynamicResource that must resolve to
+       the host's ChatPanelView.Resources, where the VSIX writes the live VS theme. A dictionary
+       merged here would shadow those (WPF searches the element's own resources first) and pin
+       the card to the standalone dark fallback under the Light and Blue themes. -->
 
   <UserControl.Resources>
     <ResourceDictionary>
-      <ResourceDictionary.MergedDictionaries>
-        <ResourceDictionary Source="/EdgarusLabs.ClaudeCode.Core;component/Themes/ChatBrushes.xaml" />
-      </ResourceDictionary.MergedDictionaries>
-
       <conv:NullToVisibilityConverter x:Key="ElicitationNullToVisibilityConverter" />
       <conv:FractionOfConverter x:Key="ElicitationFractionOfConverter" />
 
@@ -159,13 +160,15 @@
            ScrollViewer so a long form cannot scroll them out of reach; ElicitationCardViewLayoutTests
            pins both halves of that.
 
-           The bound is a share of the tool window rather than a pixel constant. A constant small
-           enough to leave room on a short panel makes a long question scroll away the options and
-           the free-text "Other" box on a tall one - the user then sees a scrollbar and no visible
+           The bound is a share of the hosting chat panel rather than a pixel constant. A constant
+           small enough to leave room on a short panel makes a long question scroll away the options
+           and the free-text "Other" box on a tall one - the user then sees a scrollbar and no visible
            way to answer. Letting the card take up to 80% leaves the composer and the button row on
-           screen while keeping every option reachable without scrolling in the common case. -->
+           screen while keeping every option reachable without scrolling in the common case. The
+           ancestor is ChatPanelView, not Window: docked, the nearest Window is the whole IDE, so a
+           Window-relative share was taller than the tool window itself. -->
       <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
-                    MaxHeight="{Binding ActualHeight, RelativeSource={RelativeSource AncestorType=Window},
+                    MaxHeight="{Binding ActualHeight, RelativeSource={RelativeSource AncestorType={x:Type views:ChatPanelView}},
                                         Converter={StaticResource ElicitationFractionOfConverter},
                                         ConverterParameter=0.8}">
         <StackPanel>
