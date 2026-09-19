@@ -67,7 +67,7 @@ public sealed class ClaudeCodePackage : AsyncPackage
 
         ClaudeCode.Core.Views.ChatPanelView.ServicesFactory =
             () => new VsChatSessionServices(ClaudeCodeServices.ConnectionFactory!, ClaudeCodeServices.AuthService!, ClaudeCodeServices.UsageService!, ClaudeCodeServices.GetWorkspaceRoot!, editorDocumentTracker,
-                () => JoinableTaskFactory.Run(async () => { await JoinableTaskFactory.SwitchToMainThreadAsync(); return GetOptions().RemoteControlAtStartup; }));
+                ReadRemoteControlAtStartup);
 
         await this.RegisterCommandsAsync();
     }
@@ -132,6 +132,26 @@ public sealed class ClaudeCodePackage : AsyncPackage
         ThreadHelper.ThrowIfNotOnUIThread();
 
         return (ClaudeCodeOptionsPage)GetDialogPage(typeof(ClaudeCodeOptionsPage));
+    }
+
+    /// <summary>Reads the option on the UI thread. Once IVsPackage.Close has run, GetDialogPage
+    /// throws COMException (E_UNEXPECTED) instead of answering; a session that finishes connecting
+    /// during shutdown must not be torn down over a setting it can no longer read, so that reads as
+    /// "off".</summary>
+    private bool ReadRemoteControlAtStartup()
+    {
+        try
+        {
+            return JoinableTaskFactory.Run(async () =>
+            {
+                await JoinableTaskFactory.SwitchToMainThreadAsync();
+                return GetOptions().RemoteControlAtStartup;
+            });
+        }
+        catch (COMException)
+        {
+            return false;
+        }
     }
 
     private string? GetWorkspaceRoot() => _cachedWorkspaceRoot;

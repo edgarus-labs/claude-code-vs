@@ -28,7 +28,6 @@ internal static class VsChatTheme
         SetBrush(view, "ChatSelectionForegroundBrush", ThemedDialogColors.SelectedItemActiveTextColorKey);
         // Claude brand accent/focus colors are owned by Core, not the current VS accent.
         SetBrush(view, "ChatUserBubbleBackgroundBrush", ThemedDialogColors.SelectedItemInactiveColorKey);
-        SetBrush(view, "ChatAssistantBubbleBackgroundBrush", EnvironmentColors.ToolWindowBackgroundColorKey);
         // Diff colors are semantic (green = added, red = removed), not theme accents: translucent tints
         // read correctly over both dark and light backgrounds and keep syntax colors visible on top.
         SetFixedBrush(view, "ChatDiffAddedBackgroundBrush", 0x38, 0x2E, 0xA0, 0x43);
@@ -53,20 +52,45 @@ internal static class VsChatTheme
         ("ChatCodeAttributeBrush", new[] { "preprocessor keyword", "keyword" }),
     };
 
+    /// <summary>The editor's "text" classification format map - the source of the syntax colors
+    /// <see cref="Apply"/> reads - so the pane can re-apply them when it changes: Fonts and Colors
+    /// edits raise its ClassificationFormatMappingChanged but not <see cref="VSColorTheme.ThemeChanged"/>.
+    /// Null (never an exception) when the editor services are unavailable.</summary>
+    public static Microsoft.VisualStudio.Text.Classification.IClassificationFormatMap? TryGetEditorFormatMap()
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        try
+        {
+            return GetComponentModel()?
+                .GetService<Microsoft.VisualStudio.Text.Classification.IClassificationFormatMapService>()
+                .GetClassificationFormatMap("text");
+        }
+        catch (Exception exception)
+        {
+            ActivityLog.TryLogWarning("Claude Code", "Editor format map unavailable: " + exception.Message);
+            return null;
+        }
+    }
+
+    private static Microsoft.VisualStudio.ComponentModelHost.IComponentModel? GetComponentModel()
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        return ServiceProvider.GlobalProvider.GetService(typeof(Microsoft.VisualStudio.ComponentModelHost.SComponentModel))
+            as Microsoft.VisualStudio.ComponentModelHost.IComponentModel;
+    }
+
     private static void ApplyEditorSyntaxColors(FrameworkElement view)
     {
         ThreadHelper.ThrowIfNotOnUIThread();
         try
         {
-            if (ServiceProvider.GlobalProvider.GetService(typeof(Microsoft.VisualStudio.ComponentModelHost.SComponentModel))
-                is not Microsoft.VisualStudio.ComponentModelHost.IComponentModel componentModel)
+            if (GetComponentModel() is not { } componentModel)
             {
                 return;
             }
 
             var registry = componentModel.GetService<Microsoft.VisualStudio.Text.Classification.IClassificationTypeRegistryService>();
-            var maps = componentModel.GetService<Microsoft.VisualStudio.Text.Classification.IClassificationFormatMapService>();
-            var map = maps.GetClassificationFormatMap("text");
+            var map = componentModel.GetService<Microsoft.VisualStudio.Text.Classification.IClassificationFormatMapService>().GetClassificationFormatMap("text");
             foreach (var (key, classifications) in _syntaxColorMap)
             {
                 foreach (var name in classifications)

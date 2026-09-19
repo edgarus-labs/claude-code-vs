@@ -14,6 +14,9 @@ namespace ClaudeCode.Vsix;
 internal sealed class VsAttentionNotifier : IDisposable
 {
     private readonly NotifyIcon _icon;
+    /// <summary>The icon cloned from the packaged bitmap, which owns a native HICON; null when the
+    /// stock <see cref="SystemIcons.Information"/> (shared, never disposed) is in use instead.</summary>
+    private readonly Icon? _ownedIcon;
     private readonly Action _activateChatWindow;
     private bool _disposed;
 
@@ -23,7 +26,8 @@ internal sealed class VsAttentionNotifier : IDisposable
     {
         ThreadHelper.ThrowIfNotOnUIThread();
         _activateChatWindow = activateChatWindow ?? throw new ArgumentNullException(nameof(activateChatWindow));
-        _icon = new NotifyIcon { Icon = LoadIcon(), Text = "Claude Code for Visual Studio", Visible = false };
+        _ownedIcon = LoadIcon();
+        _icon = new NotifyIcon { Icon = _ownedIcon ?? SystemIcons.Information, Text = "Claude Code for Visual Studio", Visible = false };
         _icon.BalloonTipClicked += OnBalloonClicked;
         _icon.BalloonTipClosed += (_, __) => HideIcon();
     }
@@ -41,7 +45,8 @@ internal sealed class VsAttentionNotifier : IDisposable
         var foreground = GetForegroundWindow();
         if (foreground == IntPtr.Zero) return false;
         _ = GetWindowThreadProcessId(foreground, out var pid);
-        return pid == (uint)Process.GetCurrentProcess().Id;
+        using var current = Process.GetCurrentProcess();
+        return pid == (uint)current.Id;
     }
 
     private void OnBalloonClicked(object? sender, EventArgs e)
@@ -55,7 +60,8 @@ internal sealed class VsAttentionNotifier : IDisposable
             try
             {
                 await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
-                var handle = Process.GetCurrentProcess().MainWindowHandle;
+                using var current = Process.GetCurrentProcess();
+                var handle = current.MainWindowHandle;
                 if (handle != IntPtr.Zero)
                 {
                     if (IsIconic(handle)) ShowWindow(handle, SW_RESTORE);
@@ -77,7 +83,7 @@ internal sealed class VsAttentionNotifier : IDisposable
         if (!_disposed) _icon.Visible = false;
     }
 
-    private static Icon LoadIcon()
+    private static Icon? LoadIcon()
     {
         try
         {
@@ -107,7 +113,7 @@ internal sealed class VsAttentionNotifier : IDisposable
             // Fall through to the stock icon.
         }
 
-        return SystemIcons.Information;
+        return null;
     }
 
     public void Dispose()
@@ -115,7 +121,9 @@ internal sealed class VsAttentionNotifier : IDisposable
         if (_disposed) return;
         _disposed = true;
         _icon.Visible = false;
+        // NotifyIcon.Dispose does not dispose the Icon assigned to it.
         _icon.Dispose();
+        _ownedIcon?.Dispose();
     }
 
     private const int SW_RESTORE = 9;

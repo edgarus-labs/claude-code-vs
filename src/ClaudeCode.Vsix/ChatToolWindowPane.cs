@@ -17,6 +17,7 @@ public sealed class ChatToolWindowPane : ToolWindowPane
 {
     private readonly ChatPanelView _view;
     private readonly VsAttentionNotifier _notifier;
+    private readonly Microsoft.VisualStudio.Text.Classification.IClassificationFormatMap? _editorFormatMap;
     private bool _disposed;
 
     public ChatToolWindowPane() : base(null)
@@ -38,10 +39,17 @@ public sealed class ChatToolWindowPane : ToolWindowPane
         _view.PlanReviewRequested += OnPlanReviewRequested;
         _view.AttentionRequested += OnAttentionRequested;
         Content = _view;
-        // Subscribe to the process-wide static event last: anything that throws after this point
-        // aborts the constructor, so Dispose(bool) never runs and VSColorTheme would root this
-        // pane - and through it the view, its view model and its WebView2 - for the life of devenv.
+        _editorFormatMap = VsChatTheme.TryGetEditorFormatMap();
+        // Subscribe to the long-lived publishers last: anything that throws after this point
+        // aborts the constructor, so Dispose(bool) never runs and VSColorTheme (process-wide static)
+        // or the editor's format map (MEF singleton) would root this pane - and through it the view,
+        // its view model and its WebView2 - for the life of devenv.
         VSColorTheme.ThemeChanged += OnThemeChanged;
+        // Fonts and Colors edits change the syntax colors without a VS theme change.
+        if (_editorFormatMap is not null)
+        {
+            _editorFormatMap.ClassificationFormatMappingChanged += OnClassificationFormatMappingChanged;
+        }
     }
 
     /// <summary>Brings this tool window to the front; passed to the notifier as its click action.</summary>
@@ -87,7 +95,13 @@ public sealed class ChatToolWindowPane : ToolWindowPane
         _view.Resources["ChatBrandImage"] = image;
     }
 
-    private void OnThemeChanged(ThemeChangedEventArgs e)
+    private void OnThemeChanged(ThemeChangedEventArgs e) => RefreshTheme();
+
+    private void OnClassificationFormatMappingChanged(object sender, EventArgs e) => RefreshTheme();
+
+    /// <summary>Re-applies the theme from an event whose thread is not guaranteed; the hop is
+    /// blocking on purpose so the publisher sees a synchronous handler.</summary>
+    private void RefreshTheme()
     {
         if (_disposed)
         {
@@ -96,16 +110,18 @@ public sealed class ChatToolWindowPane : ToolWindowPane
 
         try
         {
-            ThreadHelper.JoinableTaskFactory.Run(async () =>
-            {
-                await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
-                ApplyTheme();
-            });
+            ThreadHelper.JoinableTaskFactory.Run(RefreshThemeAsync);
         }
         catch (Exception exception)
         {
             ActivityLog.TryLogError("Claude Code", "Could not refresh the chat theme: " + exception);
         }
+    }
+
+    private async System.Threading.Tasks.Task RefreshThemeAsync()
+    {
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+        ApplyTheme();
     }
 
     private void ApplyTheme()
@@ -137,6 +153,11 @@ public sealed class ChatToolWindowPane : ToolWindowPane
         {
             _disposed = true;
             VSColorTheme.ThemeChanged -= OnThemeChanged;
+            if (_editorFormatMap is not null)
+            {
+                _editorFormatMap.ClassificationFormatMappingChanged -= OnClassificationFormatMappingChanged;
+            }
+
             _view.PlanReviewRequested -= OnPlanReviewRequested;
             _view.AttentionRequested -= OnAttentionRequested;
             _notifier.Dispose();
