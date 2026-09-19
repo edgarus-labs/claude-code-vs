@@ -1,5 +1,7 @@
 using ClaudeCode.Acp;
 using ClaudeCode.Contracts;
+using Microsoft.VisualStudio.Shell;
+using Microsoft.VisualStudio.Threading;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System;
@@ -23,14 +25,13 @@ namespace ClaudeCode.Vsix.Usage;
 /// </summary>
 internal sealed class ClaudeUsageService : IUsageService
 {
-    private static readonly TimeSpan _cacheDuration = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan _processTimeout = TimeSpan.FromSeconds(10);
     private const int _maxOutputCharacters = 64 * 1024;
 
     private readonly string _scriptPath;
     private readonly object _cacheLock = new object();
     private UsageSnapshot? _cachedSnapshot;
-    private DateTimeOffset _cachedAt = DateTimeOffset.MinValue;
+    private JoinableTask<UsageSnapshot?>? _inFlight;
 
     public ClaudeUsageService(string scriptPath)
     {
@@ -39,14 +40,42 @@ internal sealed class ClaudeUsageService : IUsageService
 
     public async Task<UsageSnapshot?> GetUsageAsync(CancellationToken cancellationToken)
     {
+        // The snapshot is not a cache: every explicit trigger (turn end, opening the usage panel)
+        // must show post-turn numbers, so a completed fetch only answers requests that arrive within
+        // the burst window. Requests that arrive while a fetch is running join it instead of each
+        // spawning their own helper - and their own token-bearing request to the usage endpoint.
+        JoinableTask<UsageSnapshot?> fetch;
         lock (_cacheLock)
         {
-            if (_cachedSnapshot is not null && DateTimeOffset.UtcNow - _cachedAt < _cacheDuration)
+            if (_cachedSnapshot is not null && UsageServiceRules.IsWithinBurstWindow(_cachedSnapshot.FetchedAt, DateTimeOffset.UtcNow))
             {
                 return _cachedSnapshot;
             }
+
+            // A completed fetch is simply replaced here rather than cleared from a finally: clearing
+            // from inside the fetch races its own assignment when the fetch completes synchronously
+            // and would pin a stale completed task forever.
+            if (_inFlight is null || _inFlight.IsCompleted)
+            {
+                // VSSDK007 does not see across methods: the fetch is captured here and joined below by
+                // every caller. It is a tracked, shared fetch, not fire-and-forget.
+#pragma warning disable VSSDK007
+                _inFlight = ThreadHelper.JoinableTaskFactory.RunAsync(FetchAndCacheAsync);
+#pragma warning restore VSSDK007
+            }
+
+            fetch = _inFlight;
         }
 
+        // The fetch is owned by the service (bounded by _processTimeout), so one caller's
+        // cancellation only abandons that caller's wait - it must not kill the helper the other
+        // waiters share. JoinAsync does exactly that: it returns early on the token without
+        // cancelling the joined task.
+        return await fetch.JoinAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<UsageSnapshot?> FetchAndCacheAsync()
+    {
         // Everything below touches the filesystem and spawns a process: File.Exists on the script,
         // one File.Exists per fully-qualified PATH entry inside FindNodeOnPath (a single unreachable
         // UNC or mapped-drive entry blocks on an SMB timeout), then CreateProcess. Both callers reach
@@ -67,8 +96,8 @@ internal sealed class ClaudeUsageService : IUsageService
                 return null;
             }
 
-            return await RunNodeScriptAsync(nodePath, _scriptPath, cancellationToken).ConfigureAwait(false);
-        }, cancellationToken).ConfigureAwait(false);
+            return await RunNodeScriptAsync(nodePath, _scriptPath).ConfigureAwait(false);
+        }).ConfigureAwait(false);
 
         UsageSnapshot? snapshot = output is null ? null : ParseSnapshot(output);
         if (snapshot is null)
@@ -79,13 +108,12 @@ internal sealed class ClaudeUsageService : IUsageService
         lock (_cacheLock)
         {
             _cachedSnapshot = snapshot;
-            _cachedAt = DateTimeOffset.UtcNow;
         }
 
         return snapshot;
     }
 
-    private static async Task<string?> RunNodeScriptAsync(string nodePath, string scriptPath, CancellationToken cancellationToken)
+    private static async Task<string?> RunNodeScriptAsync(string nodePath, string scriptPath)
     {
         using var process = new Process
         {
@@ -100,11 +128,14 @@ internal sealed class ClaudeUsageService : IUsageService
             },
             EnableRaisingEvents = true,
         };
+        // Node's built-in https client ignores HTTPS_PROXY/HTTP_PROXY unless asked (Node 24+; older
+        // runtimes ignore the variable), and the helper inherits devenv's environment, so behind a
+        // proxy the usage request would otherwise fail where the CLI and adapter work.
+        process.StartInfo.Environment["NODE_USE_ENV_PROXY"] = "1";
 
         bool started = false;
         try
         {
-            cancellationToken.ThrowIfCancellationRequested();
             var exited = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             process.Exited += (_, __) => exited.TrySetResult(true);
             started = process.Start();
@@ -118,8 +149,7 @@ internal sealed class ClaudeUsageService : IUsageService
             Task complete = Task.WhenAll(stderrDrain, stdout, exited.Task);
             _ = complete.ContinueWith(task => { _ = task.Exception; },
                 CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
-            Task finished = await Task.WhenAny(complete, Task.Delay(_processTimeout, cancellationToken)).ConfigureAwait(false);
-            cancellationToken.ThrowIfCancellationRequested();
+            Task finished = await Task.WhenAny(complete, Task.Delay(_processTimeout)).ConfigureAwait(false);
             if (finished != complete)
             {
                 return null;
@@ -190,7 +220,7 @@ internal sealed class ClaudeUsageService : IUsageService
                 {
                     Kind = limit["kind"]?.Value<string>() ?? "",
                     Group = limit["group"]?.Value<string>() ?? "",
-                    Percent = limit["percent"]?.Value<int?>() ?? 0,
+                    Percent = UsageServiceRules.ClampPercent(limit["percent"]?.Value<int?>() ?? 0),
                     Severity = limit["severity"]?.Value<string>() ?? "normal",
                     ResetsAt = ReadResetsAt(limit["resetsAt"]),
                     ScopeLabel = limit["scopeLabel"]?.Type == JTokenType.String ? limit["scopeLabel"]!.Value<string>() : null,

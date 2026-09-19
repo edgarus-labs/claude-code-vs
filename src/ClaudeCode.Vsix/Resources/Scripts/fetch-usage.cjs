@@ -109,6 +109,10 @@ function fetchUsage(token) {
 
         emit({ limits }, 0);
       });
+      // A response cut off before "end" (server drops the socket mid-body) emits only "close" on
+      // res - no "end", and no "error" without a listener - so without this the helper exits 0
+      // having printed nothing. After a normal "end" the one-shot emit makes this a no-op.
+      res.on("close", () => fail("network_error"));
     }
   );
 
