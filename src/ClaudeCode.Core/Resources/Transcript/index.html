@@ -5,9 +5,12 @@
 <!-- Local page only: no network resources, no inline event handlers, no remote content ever
      loaded here. Message content is untrusted (model/tool output) and is always run through
      DOMPurify before touching the DOM - see transcript.js renderMarkdown(). -->
-<!-- No inline <style> element and no style= attribute exists on this page (all CSS is external
-     and covered by 'self'); the runtime theming goes through CSSOM setProperty, which style-src
-     does not govern - so 'unsafe-inline' would only widen what a sanitizer bug could reach.
+<!-- style-src is 'self' with no 'unsafe-inline'. Nothing on this page carries an inline style:
+     the runtime theming goes through CSSOM setProperty, which style-src does not govern, and the
+     one inline style markdown-it does emit - style="text-align:..." on an aligned table cell - is
+     translated into an align-* class and then stripped by DOMPurify before it reaches the DOM
+     (see the beforeSanitizeAttributes hook in transcript-common.js). Allowing 'unsafe-inline'
+     instead would only widen what a markdown-it or DOMPurify bug could reach.
      base-uri/form-action do not fall back to default-src and have to be denied explicitly. -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'none'; script-src 'self'; style-src 'self'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none';" />

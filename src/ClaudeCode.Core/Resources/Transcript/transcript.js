@@ -15,14 +15,19 @@
     return doc.scrollTop + window.innerHeight >= doc.scrollHeight - 4;
   }
 
-  function renderMarkdown(text) {
+  function scrollToBottom() {
+    var doc = document.scrollingElement || document.documentElement;
+    doc.scrollTop = doc.scrollHeight;
+  }
+
+  function renderMarkdown(text, budget) {
     var div = document.createElement("div");
     div.className = "content";
-    // DOMPurify (html profile, no data attributes) is the last thing this markup passes through
-    // before the innerHTML assignment - markdown-it already ran with html:false, so this is the
-    // second layer rather than the only one. Exactly DOMPurify's documented usage pattern.
+    // DOMPurify (html profile, no data attributes, no inline style) is the last thing this markup
+    // passes through before the assignment below - markdown-it already ran with html:false, so this
+    // is the second layer rather than the only one. Exactly DOMPurify's documented usage pattern.
     div.innerHTML = window.DOMPurify.sanitize(md.render(text || ""), common.purifyConfig);
-    common.highlightWithin(div);
+    common.highlightWithin(div, budget);
     return div;
   }
 
@@ -52,29 +57,39 @@
   // Auto-detection is resolved once per diff instead of once per line: highlightAuto() runs every
   // candidate grammar, so detecting per line costs orders of magnitude more on a large diff and
   // can even settle on a different language for each line. The sample is bounded in characters as
-  // well as lines because highlightAuto()'s cost is quadratic in the length of a *single* line
+  // well as lines because highlightAuto()'s cost is quadratic in the length of the text it is given
   // (see maxHighlightChars in transcript-common.js) and diff text is untrusted agent output - a
-  // 40-line cap alone does not stop one minified/base64 line from hanging the renderer.
+  // 40-line cap alone does not stop one minified/base64 line from hanging the renderer. One
+  // detection over a full sample measures 106 ms, so the sample is charged to the message's shared
+  // highlight budget as well: a message made of many diffs gets at most a budget's worth of
+  // detections (20 000 / 3 000, about six) rather than 106 ms per diff on every rebuild.
   var maxDetectChars = 3000;
 
-  function detectDiffLanguage(lines) {
+  function detectDiffLanguage(lines, budget) {
     var sample = [];
-    var budget = maxDetectChars;
-    for (var i = 0; i < lines.length && sample.length < 40 && budget > 0; i++) {
+    var sampleBudget = maxDetectChars;
+    for (var i = 0; i < lines.length && sample.length < 40 && sampleBudget > 0; i++) {
       if (lines[i].kind !== "Hunk" && lines[i].text) {
-        sample.push(lines[i].text.slice(0, budget));
-        budget -= lines[i].text.length;
+        sample.push(lines[i].text.slice(0, sampleBudget));
+        sampleBudget -= lines[i].text.length;
       }
     }
 
+    var text = sample.join("\n");
+    if (text.length > budget.remaining) {
+      return null;
+    }
+
     try {
-      return window.hljs.highlightAuto(sample.join("\n")).language || null;
+      var detected = window.hljs.highlightAuto(text).language || null;
+      budget.remaining -= text.length;
+      return detected;
     } catch (err) {
       return null;
     }
   }
 
-  function buildDiffBody(content) {
+  function buildDiffBody(content, budget) {
     var wrap = document.createElement("div");
     var lines = content.diffLines || [];
     if (content.path) {
@@ -84,7 +99,7 @@
       wrap.appendChild(pathEl);
     }
 
-    var language = languageForPath(content.path) || detectDiffLanguage(lines);
+    var language = languageForPath(content.path) || detectDiffLanguage(lines, budget);
     for (var i = 0; i < lines.length; i++) {
       var line = lines[i];
       var lineEl = document.createElement("div");
@@ -103,20 +118,10 @@
       lineEl.appendChild(prefixEl);
 
       var codeEl = document.createElement("span");
-      var text = line.text || "";
-      if (language) {
-        try {
-          // hljs escapes the source itself before wrapping tokens in <span class="hljs-*">, but the
-          // result still goes through DOMPurify - same trust boundary as buildPlainBody - so a
-          // grammar escaping flaw can't turn untrusted diff text into DOM injection.
-          codeEl.innerHTML = window.DOMPurify.sanitize(
-            window.hljs.highlight(text, { language: language, ignoreIllegals: true }).value, common.purifyConfig);
-        } catch (err) {
-          codeEl.textContent = text;
-        }
-      } else {
-        codeEl.textContent = text;
-      }
+      // The one highlighting sink for both pages: it decides against the message's shared
+      // character budget and falls back to plain text, so neither a single huge diff line nor a
+      // diff made of many ordinary ones can pin the renderer.
+      common.highlightInto(codeEl, line.text || "", language, budget);
 
       lineEl.appendChild(codeEl);
       wrap.appendChild(lineEl);
@@ -129,7 +134,7 @@
   // text. Only when the tool call names a source file (Read/Write/Edit <path>) is the output
   // highlighted for that file's language; the Read tool's "  12\t<code>" line-number prefix is
   // split into a gutter so the numbers don't skew the tokenizer.
-  function buildPlainBody(content, language) {
+  function buildPlainBody(content, language, budget) {
     var pre = document.createElement("pre");
     var text = content.text || "";
     if (!language) {
@@ -142,6 +147,17 @@
     var lines = text.split("\n");
     var numbered = lines.length > 0 && lines.every(function (line) { return line.length === 0 || /^\s*\d+\t/.test(line); });
     for (var i = 0; i < lines.length; i++) {
+      // Tool output is capped nowhere upstream - not in ToolCallContentViewModel and not on the
+      // wire - so once the message's budget is spent the remainder goes in as one text node: two
+      // elements per line over a multi-megabyte result would grow the DOM without bound on its
+      // own, quite apart from the highlighting cost.
+      if (budget.remaining <= 0) {
+        var rest = document.createElement("code");
+        rest.textContent = lines.slice(i).join("\n");
+        pre.appendChild(rest);
+        break;
+      }
+
       var lineEl = document.createElement("div");
       lineEl.className = "src-line";
       var source = lines[i];
@@ -155,14 +171,7 @@
       }
 
       var codeEl = document.createElement("span");
-      try {
-        // hljs escapes the source itself before wrapping tokens (see buildDiffBody); the result is
-        // still passed through DOMPurify so only its <span class="hljs-*"> markup can reach the DOM.
-        codeEl.innerHTML = window.DOMPurify.sanitize(
-          window.hljs.highlight(source, { language: language, ignoreIllegals: true }).value, common.purifyConfig);
-      } catch (err) {
-        codeEl.textContent = source;
-      }
+      common.highlightInto(codeEl, source, language, budget);
 
       lineEl.appendChild(codeEl);
       pre.appendChild(lineEl);
@@ -216,10 +225,16 @@
   // The message being streamed is rebuilt on every host tick (see render), so per-card UI state
   // (expanded, "Show more" pressed) lives here, keyed by tool call id, and is re-applied when its
   // card is rebuilt instead of being lost with the old DOM.
-  var expandedToolCalls = {};
-  var untruncatedToolCalls = {};
+  //
+  // Null-prototype maps: the key is toolCall.id, which arrives verbatim from the agent, and an id
+  // of "constructor" or "toString" would otherwise resolve through Object.prototype and read
+  // truthy - permanently expanded, permanently untruncated, and impossible to collapse because
+  // delete on an inherited key does nothing. Same reason languageForPath does an own-property
+  // lookup above.
+  var expandedToolCalls = Object.create(null);
+  var untruncatedToolCalls = Object.create(null);
 
-  function buildToolCard(toolCall) {
+  function buildToolCard(toolCall, budget) {
     var card = document.createElement("div");
     var toolId = toolCall.id || "";
     // Collapsed by default (only the one-line header shows), matching the VS Code extension: a
@@ -300,7 +315,9 @@
     var content = toolCall.content || [];
     var language = languageForToolTitle(toolCall.title);
     for (var i = 0; i < content.length; i++) {
-      body.appendChild(content[i].isDiff ? buildDiffBody(content[i]) : buildPlainBody(content[i], language));
+      body.appendChild(content[i].isDiff
+        ? buildDiffBody(content[i], budget)
+        : buildPlainBody(content[i], language, budget));
     }
 
     bodyWrapper.appendChild(body);
@@ -418,6 +435,11 @@
   }
 
   function buildMessage(message) {
+    // One highlight budget per message, not per render pass: a message is the unit the host caps
+    // at MarkdownSafetyLimits.MaxMarkdownLength and the unit it rebuilds while streaming, so a
+    // budget here bounds the cost of a rebuild without leaving later messages unhighlighted when
+    // a long transcript is loaded in one pass.
+    var budget = common.newHighlightBudget();
     var wrap = document.createElement("div");
     var isUser = message.role === "User" || message.role === "user";
     wrap.className = "msg " + (isUser ? "msg-user" : "msg-assistant");
@@ -458,7 +480,7 @@
       }
 
       if (text.length > 0) {
-        bubble.appendChild(renderUserText(text));
+        bubble.appendChild(renderUserText(text, budget));
       }
 
       wrap.appendChild(bubble);
@@ -469,7 +491,9 @@
     // all tool calls" - so a tool call that ran between two paragraphs renders between them too.
     for (var j = 0; j < parts.length; j++) {
       var part = parts[j];
-      wrap.appendChild(part.type === "tool" ? buildToolCard(part) : renderMarkdown(part.text));
+      wrap.appendChild(part.type === "tool"
+        ? buildToolCard(part, budget)
+        : renderMarkdown(part.text, budget));
     }
 
     if (typeof message.durationSeconds === "number") {
@@ -495,7 +519,7 @@
     /^\+\+\+ (?:b\/)?(.+?)\s*$/,
   ];
 
-  function renderUserText(text) {
+  function renderUserText(text, budget) {
     var container = document.createElement("div");
     container.className = "bubble-text";
     var lines = text.split("\n");
@@ -555,7 +579,7 @@
         j++;
       }
 
-      var block = buildDiffBody({ path: header, diffLines: diffLines });
+      var block = buildDiffBody({ path: header, diffLines: diffLines }, budget);
       block.className = "user-diff";
       container.appendChild(block);
       i = j;
@@ -634,6 +658,36 @@
   var rendered = []; // [{ signature, node }] parallel to payload.messages
   var activityNode = null;
 
+  // The activity indicator is the only thing that changes on most host ticks, so the host updates
+  // it through this entry point without re-posting the messages payload (which carries every
+  // attachment's base64). render() drives it through the same function, so the two paths cannot
+  // drift; a falsy activity removes the indicator.
+  function setActivity(activity) {
+    var wasAtBottom = isAtBottom();
+    if (activity) {
+      // Update in place: rebuilding the node on every host tick (100-200ms while streaming)
+      // restarts the activity-pulse animation on .activity-dots i from 0%, so the dots never
+      // visibly pulse. New messages are inserted before it, so it stays last without being moved.
+      if (activityNode) {
+        var label = activityNode.querySelector(".activity-text");
+        var next = activityLabel(activity);
+        if (label.textContent !== next) {
+          label.textContent = next;
+        }
+      } else {
+        activityNode = buildActivity(activity);
+        root.appendChild(activityNode);
+      }
+    } else if (activityNode) {
+      root.removeChild(activityNode);
+      activityNode = null;
+    }
+
+    if (wasAtBottom) {
+      scrollToBottom();
+    }
+  }
+
   function render(payload) {
     var wasAtBottom = isAtBottom();
     var messages = (payload && payload.messages) || [];
@@ -659,30 +713,12 @@
       if (stale.node.parentNode === root) root.removeChild(stale.node);
     }
 
-    if (payload && payload.activity) {
-      // Update in place: rebuilding the node on every host tick (100-200ms while streaming)
-      // restarts the activity-pulse animation on .activity-dots i from 0%, so the dots never
-      // visibly pulse. New messages are inserted before it, so it stays last without being moved.
-      if (activityNode) {
-        var label = activityNode.querySelector(".activity-text");
-        var next = activityLabel(payload.activity);
-        if (label.textContent !== next) {
-          label.textContent = next;
-        }
-      } else {
-        activityNode = buildActivity(payload.activity);
-        root.appendChild(activityNode);
-      }
-    } else if (activityNode) {
-      root.removeChild(activityNode);
-      activityNode = null;
-    }
+    setActivity(payload && payload.activity);
 
     flushTruncationChecks();
 
     if (wasAtBottom) {
-      var doc = document.scrollingElement || document.documentElement;
-      doc.scrollTop = doc.scrollHeight;
+      scrollToBottom();
     }
   }
 
@@ -708,6 +744,7 @@
 
   window.claudeTranscript = {
     render: render,
+    setActivity: setActivity,
     applyTheme: common.applyTheme,
     setFontSize: setFontSize,
   };

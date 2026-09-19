@@ -78,6 +78,24 @@
   text-align: left;
 }
 
+/* Column alignment, translated out of markdown-it's inline style= by the DOMPurify hook in
+   transcript-common.js (the page's CSP allows no inline styles). Specificity has to match the
+   rule above to win against it. */
+.plan-doc th.align-left,
+.plan-doc td.align-left {
+  text-align: left;
+}
+
+.plan-doc th.align-center,
+.plan-doc td.align-center {
+  text-align: center;
+}
+
+.plan-doc th.align-right,
+.plan-doc td.align-right {
+  text-align: right;
+}
+
 .plan-doc a {
   color: var(--chat-link);
 }

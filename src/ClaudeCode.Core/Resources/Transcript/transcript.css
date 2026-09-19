@@ -223,6 +223,24 @@ html, body {
   background: var(--chat-input-bg);
 }
 
+/* markdown-it renders a table's column alignment as style="text-align:...", which the page's CSP
+   refuses and DOMPurify now strips; the hook in transcript-common.js translates it into one of
+   these classes instead. They have to be as specific as the th/td rule above to override it. */
+.msg-assistant .content th.align-left,
+.msg-assistant .content td.align-left {
+  text-align: left;
+}
+
+.msg-assistant .content th.align-center,
+.msg-assistant .content td.align-center {
+  text-align: center;
+}
+
+.msg-assistant .content th.align-right,
+.msg-assistant .content td.align-right {
+  text-align: right;
+}
+
 /* Plain row, not a bordered "card": content is always visible (truncated by default, see
    .tool-body-wrapper below) so there is no separate all-or-nothing collapsed state to fight with. */
 /* Tool rows as in the Claude desktop app: a stack of rounded cards, "Edited File.cs +3 −1", chevron
@@ -279,6 +297,10 @@ html, body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* A flex item defaults to min-width:auto, which refuses to shrink below its content - so
+     without this the ellipsis never appears and a long tool title pushes the line-count preview,
+     the Running/Failed status and the chevron out of the card instead of being clipped. */
+  min-width: 0;
 }
 
 .tool-card .tool-header .title strong {
