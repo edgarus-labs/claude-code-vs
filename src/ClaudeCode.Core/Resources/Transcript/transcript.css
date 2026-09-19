@@ -135,19 +135,17 @@ html, body {
   margin-top: 4px;
 }
 
-.msg-assistant {
+/* Only the markdown text is indented (room for its leading dot); tool cards and the user bubble
+   share the same left and right edges. */
+.msg-assistant .content {
+  position: relative;
   padding-left: 22px;
 }
 
-.msg-assistant .content {
-  position: relative;
-}
-
-/* Only markdown text gets the leading dot; tool rows carry their own accent dot. */
 .msg-assistant .content::before {
   content: "";
   position: absolute;
-  left: -16px;
+  left: 6px;
   top: 0.55em;
   width: 7px;
   height: 7px;
