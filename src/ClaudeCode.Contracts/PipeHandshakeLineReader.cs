@@ -23,8 +23,9 @@ public static class PipeHandshakeLineReader
     /// <summary>
     /// Reads characters up to the first <c>'\n'</c> or <c>'\r'</c> terminator, which is consumed but
     /// not returned. Returns <see langword="null"/> when the peer sent nothing, or when the line
-    /// reaches <paramref name="maxChars"/> without a terminator - in the latter case no further
-    /// character is consumed, so a hostile peer can never drive more than the cap into memory.
+    /// reaches <paramref name="maxChars"/> without a terminator - in the latter case at most one
+    /// further character is consumed before the read stops, so a hostile peer can never drive
+    /// more than the cap into memory.
     /// A peer that closes the stream mid-line yields what it sent, matching
     /// <see cref="TextReader.ReadLine"/>; the value still has to pass the token comparison.
     /// A <c>'\r'</c> terminator leaves any following <c>'\n'</c> in the reader, where the request

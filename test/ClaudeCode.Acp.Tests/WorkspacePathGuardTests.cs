@@ -78,20 +78,19 @@ public sealed class WorkspacePathGuardTests
         Assert.False(result);
     }
 
-    [Fact]
-    public void TryResolveWithinWorkspace_UncPath_IsRejected()
+    [Theory]
+    [InlineData(@"\\attacker\share\x.txt")]
+    [InlineData(@"\\?\C:\repo\file.txt")]
+    [InlineData(@"\\.\C:\repo\file.txt")]
+    [InlineData("//attacker/share/x.txt")]
+    [InlineData(@"/\attacker\share\x.txt")]
+    public void TryResolveWithinWorkspace_UncOrDeviceNamespacePath_IsRejected(string candidate)
     {
-        var result = WorkspacePathGuard.TryResolveWithinWorkspace(_root, @"\\attacker\share\x.txt", out _);
-
-        Assert.False(result);
-    }
-
-    [Fact]
-    public void TryResolveWithinWorkspace_DeviceNamespacePath_IsRejected()
-    {
-        var result = WorkspacePathGuard.TryResolveWithinWorkspace(_root, @"\\?\C:\repo\file.txt", out _);
-
-        Assert.False(result);
+        // Win32 treats any two leading separators as a UNC or device-namespace root, so every
+        // spelling of one has to be refused, which is the contract docs/VsControlProtocol.md
+        // states. Under a local root containment refuses them anyway; the gate is what makes the
+        // refusal independent of the root, and independent of how the agent spelled the path.
+        Assert.False(WorkspacePathGuard.TryResolveWithinWorkspace(_root, candidate, out _));
     }
 
     [Theory]
@@ -239,6 +238,59 @@ public sealed class WorkspacePathGuardTests
         }
     }
 
+    /// <summary>
+    /// Creates a directory chain under <paramref name="root"/> deep enough that a leaf named
+    /// <paramref name="leaf"/> inside it is at least MAX_PATH (260) characters long, and returns
+    /// the deepest directory. .NET's own file APIs prefix <c>\\?\</c> internally, so the chain can
+    /// be created on a long-path-disabled host as well as a long-path-enabled one.
+    /// </summary>
+    private static string CreateDirectoryChainBeyondMaxPath(string root, string leaf)
+    {
+        string deep = root;
+        while (Path.Combine(deep, leaf).Length < 260)
+        {
+            deep = Path.Combine(deep, new string('p', 40));
+        }
+
+        Directory.CreateDirectory(deep);
+        return deep;
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void TryResolveWithinWorkspace_PathBeyondMaxPathInsideRoot_Resolves(bool leafAlreadyExists)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            // MAX_PATH normalization is a Win32 concept; Linux reports ENAMETOOLONG, never ENOENT.
+            return;
+        }
+
+        string workspace = Directory.CreateTempSubdirectory("wpg-deep-").FullName;
+        try
+        {
+            string candidate = Path.Combine(CreateDirectoryChainBeyondMaxPath(workspace, "deep.txt"), "deep.txt");
+            Assert.True(candidate.Length >= 260);
+            if (leafAlreadyExists)
+            {
+                File.WriteAllText(candidate, "deep");
+            }
+
+            // Containment is a property of the path alone. It must not depend on the host's
+            // LongPathsEnabled registry value, and it must not depend on whether the leaf exists
+            // yet - otherwise creating a file and reading it back answer differently at the same
+            // length. Both configurations agree because the guard addresses the object through the
+            // \\?\ form, where a missing component is reported as missing at any length.
+            Assert.True(WorkspacePathGuard.TryResolveWithinWorkspace(workspace, candidate, out var fullPath));
+            Assert.Equal(Path.GetFullPath(candidate), fullPath);
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
     [Fact]
     public void TryResolveWithinWorkspace_JunctionEscapingRootBeyondMaxPath_IsRejected()
     {
@@ -259,23 +311,54 @@ public sealed class WorkspacePathGuardTests
 
             // cmd.exe and mklink are Win32 callers and cannot create a junction past MAX_PATH, so
             // create it short and relocate the reparse point itself into a >MAX_PATH location.
-            string deepParent = workspace;
-            while (Path.Combine(deepParent, "link").Length < 260)
-            {
-                deepParent = Path.Combine(deepParent, new string('p', 40));
-            }
-
-            Directory.CreateDirectory(deepParent);
-            deepJunctionPath = Path.Combine(deepParent, "link");
+            deepJunctionPath = Path.Combine(CreateDirectoryChainBeyondMaxPath(workspace, "link"), "link");
             Directory.Move(junctionPath, deepJunctionPath);
 
             var candidate = Path.Combine(deepJunctionPath, "secret.txt");
 
-            // Both CreateFileW and GetFileAttributesW reject this path with ERROR_PATH_NOT_FOUND
-            // during normalization, before the object is looked up, so the walk-up cannot tell an
-            // absent component from a live junction. Unprovable absence must fail closed instead
-            // of stripping the junction and re-attaching it to a canonicalized short ancestor.
+            // The guard opens the candidate through the \\?\ form, so the open succeeds at this
+            // length on either host configuration and GetFinalPathNameByHandleW names the real
+            // target under `outside`. Containment is therefore decided by the reparse-resolved
+            // path rather than by whether MAX_PATH normalization happened to reject the string.
             Assert.False(WorkspacePathGuard.TryResolveWithinWorkspace(workspace, candidate, out _));
+        }
+        finally
+        {
+            if (Directory.Exists(deepJunctionPath)) Directory.Delete(deepJunctionPath);
+            if (Directory.Exists(junctionPath)) Directory.Delete(junctionPath);
+            Directory.Delete(workspace, recursive: true);
+            if (Directory.Exists(outside)) Directory.Delete(outside, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void TryResolveWithinWorkspace_DanglingJunctionBeyondMaxPath_IsRejected()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            // NTFS junctions are a Windows-only reparse-point mechanism; nothing to verify elsewhere.
+            return;
+        }
+
+        string workspace = Directory.CreateTempSubdirectory("wpg-long-dangling-").FullName;
+        string outside = Directory.CreateTempSubdirectory("wpg-outside-").FullName;
+        string junctionPath = Path.Combine(workspace, "link");
+        string deepJunctionPath = junctionPath;
+        try
+        {
+            CreateJunction(junctionPath, outside);
+            deepJunctionPath = Path.Combine(CreateDirectoryChainBeyondMaxPath(workspace, "link"), "link");
+            Directory.Move(junctionPath, deepJunctionPath);
+            Directory.Delete(outside);
+
+            // This is the case the length refusal was added for. Opening through a junction whose
+            // target is gone reports ERROR_PATH_NOT_FOUND exactly like a component that was never
+            // created, so the only thing stopping the ancestor walk from stripping the live
+            // reparse point and re-attaching its name to a canonicalized ancestor inside the
+            // workspace is GetFileAttributesW seeing the link's own attributes - which, at this
+            // length, it can only do through the \\?\ form. Unprovable absence must fail closed.
+            Assert.False(WorkspacePathGuard.TryResolveWithinWorkspace(workspace, Path.Combine(deepJunctionPath, "secret.txt"), out _));
+            Assert.False(WorkspacePathGuard.TryResolveWithinWorkspace(workspace, deepJunctionPath, out _));
         }
         finally
         {

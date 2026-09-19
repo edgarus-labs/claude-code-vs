@@ -28,8 +28,9 @@ public static class WorkspacePathGuard
     /// Performs a point-in-time containment check, including existing symlink targets.
     /// This does not authorize later path-based I/O: use <see cref="AcquireFile"/> or
     /// <see cref="AcquireDocument"/> to retain protection through the operation.
-    /// On Windows a path at or beyond MAX_PATH (260) is always refused: reparse resolution there
-    /// goes through raw Win32 calls that cannot tell such a path from an absent component.
+    /// On Windows the reparse resolution addresses a path at or beyond MAX_PATH (260) through the
+    /// <c>\\?\</c> device form, so the answer depends only on the filesystem — never on the host's
+    /// long-path configuration and never on whether the leaf exists yet.
     /// </summary>
     /// <returns><c>true</c> and the resolved absolute path when containment holds; otherwise <c>false</c>.</returns>
     public static bool TryResolveWithinWorkspace(string? workspaceRoot, string? candidatePath, out string fullPath)
@@ -47,7 +48,14 @@ public static class WorkspacePathGuard
 
         // Reject UNC (\\server\share\...) and device-namespace (\\?\..., \\.\...) forms outright:
         // GetFullPath would happily resolve them, but they never denote a path under a local root.
-        if (nonNullCandidatePath.StartsWith(@"\\", StringComparison.Ordinal))
+        // Win32 accepts '/' as a separator, so "//server/share" and "/\server\share" are the same
+        // UNC form as "\\server\share" and have to be refused identically. On Linux a leading "//"
+        // is an ordinary absolute path, so only the backslash spelling is refused there.
+        if (nonNullCandidatePath.StartsWith(@"\\", StringComparison.Ordinal)
+            || (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+                && nonNullCandidatePath.Length >= 2
+                && IsWindowsSeparator(nonNullCandidatePath[0])
+                && IsWindowsSeparator(nonNullCandidatePath[1])))
         {
             return false;
         }
@@ -161,17 +169,7 @@ public static class WorkspacePathGuard
             return false;
         }
 
-        // A path at or beyond MAX_PATH fails normalization with ERROR_PATH_NOT_FOUND before the
-        // object is ever looked up. These are raw Win32 entry points with no \\?\ prefix, so the
-        // System.IO long-path shim does not apply and neither call below can tell an absent
-        // component from a live junction. Absence that cannot be proven must deny: otherwise the
-        // walk-up strips an existing junction and re-attaches it to a canonicalized ancestor.
-        if (path.Length >= MaxPath)
-        {
-            return false;
-        }
-
-        if (GetFileAttributesW(path) != InvalidFileAttributes)
+        if (GetFileAttributesW(LongPathSafe(path)) != InvalidFileAttributes)
         {
             return false;
         }
@@ -179,6 +177,21 @@ public static class WorkspacePathGuard
         int attributeError = Marshal.GetLastWin32Error();
         return attributeError == 2 || attributeError == 3;
     }
+
+    /// <summary>
+    /// Renders a path for the raw Win32 entry points used here. Both bypass the System.IO
+    /// long-path shim, and without the <c>\\?\</c> prefix Win32 normalization rejects a path at or
+    /// beyond MAX_PATH with ERROR_PATH_NOT_FOUND — the very error an absent component reports —
+    /// unless the host happens to have LongPathsEnabled set. Addressing the object through the
+    /// device form removes that ambiguity on every host, so errors 2 and 3 always prove the
+    /// component really is missing and absence never has to be assumed. UNC candidates are refused
+    /// before they reach here and would need the <c>\\?\UNC\</c> spelling rather than a bare
+    /// prefix, so they are left untouched and keep failing closed.
+    /// </summary>
+    private static string LongPathSafe(string path) =>
+        path.Length < MaxPath || path.StartsWith(@"\\", StringComparison.Ordinal) ? path : @"\\?\" + path;
+
+    private static bool IsWindowsSeparator(char value) => value == '\\' || value == '/';
 
     private static bool TryGetFinalPath(string path, out string finalPath)
     {
@@ -200,7 +213,7 @@ public static class WorkspacePathGuard
         }
 
         using SafeFileHandle handle = CreateFileW(
-            path,
+            LongPathSafe(path),
             dwDesiredAccess: 0,
             dwShareMode: FileShareReadWriteDelete,
             lpSecurityAttributes: IntPtr.Zero,

@@ -184,6 +184,14 @@ public sealed class WorkspacePathLease : IDisposable
         try
         {
             _file = OpenLeaf(_document);
+            // OpenLeaf answers null rather than throwing when the entry is gone, and another
+            // process can still delete the freshly renamed child: the ancestor pins block renaming
+            // and deleting the directories, not unlinking an entry inside them. Acquire enforces
+            // "document implies pinned", so a document lease must not outlive losing that pin.
+            if (_document && _file is null)
+            {
+                throw new IOException("The replaced workspace document could not be re-pinned.");
+            }
         }
         // The replacement already committed, so a transient failure to reopen the new entry (an
         // indexer or scanner holding it, a tightened DACL) must not be reported to the caller as a
