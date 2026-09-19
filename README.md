@@ -9,8 +9,10 @@ reads/writes, and answers permission prompts natively in VS UI. Features depend 
 advertised capabilities; this is not a claim of feature parity with the official extension.
 
 Authentication reuses the Claude Code CLI's native configuration and credentials, including
-`CLAUDE_CONFIG_DIR`. The extension does not read, copy, store, or refresh tokens and does not launch its own
-login flow. If needed, run `claude auth login` in a terminal, then use **Check CLI sign-in** in the sidebar.
+`CLAUDE_CONFIG_DIR`. The extension does not launch its own login flow and never touches credentials
+inside the Visual Studio process: the one component that reads an OAuth token (the usage-limit
+lookup) does so in a short-lived subprocess, and only the trimmed JSON it prints crosses back. If
+needed, run `claude auth login` in a terminal, then use **Check CLI sign-in** in the sidebar.
 Restart Visual Studio after changing environment variables.
 
 Install Node.js 22 or newer and the current adapter with

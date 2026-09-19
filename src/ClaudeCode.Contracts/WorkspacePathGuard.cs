@@ -29,8 +29,10 @@ public static class WorkspacePathGuard
     /// This does not authorize later path-based I/O: use <see cref="AcquireFile"/> or
     /// <see cref="AcquireDocument"/> to retain protection through the operation.
     /// On Windows the reparse resolution addresses a path at or beyond MAX_PATH (260) through the
-    /// <c>\\?\</c> device form, so the answer depends only on the filesystem — never on the host's
-    /// long-path configuration and never on whether the leaf exists yet.
+    /// <c>\\?\</c> device form, so the answer never depends on whether the leaf exists yet. The
+    /// initial normalization is still host-dependent: on .NET Framework (the shipped Visual Studio
+    /// host) <see cref="Path.GetFullPath(string)"/> throws for a path at or beyond MAX_PATH, so the
+    /// check fails closed and a long workspace path is rejected there rather than resolved.
     /// </summary>
     /// <returns><c>true</c> and the resolved absolute path when containment holds; otherwise <c>false</c>.</returns>
     public static bool TryResolveWithinWorkspace(string? workspaceRoot, string? candidatePath, out string fullPath)
