@@ -12,7 +12,7 @@ public sealed class SingleLineHeightConverter : IMultiValueConverter
 {
     public object Convert(object[] values, Type targetType, object parameter, CultureInfo culture)
     {
-        if (values.Length < 2 || values[0] is not double fontSize || values[1] is not FontFamily family)
+        if (values is null || values.Length < 2 || values[0] is not double fontSize || values[1] is not FontFamily family)
         {
             return double.NaN; // let the layout fall back to auto-sizing
         }

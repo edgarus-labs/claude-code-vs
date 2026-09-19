@@ -63,9 +63,9 @@ public sealed class ChangedFileViewModel : ObservableObject
 
     public IAsyncRelayCommand RejectCommand { get; }
 
-    public void UpdateCounts(string currentText)
+    public void UpdateCounts(string? currentText)
     {
-        var (added, removed) = CountLineChanges(OriginalText, currentText);
+        var (added, removed) = CountLineChanges(OriginalText, currentText ?? string.Empty);
         AddedLines = added;
         RemovedLines = removed;
     }
@@ -93,8 +93,17 @@ public sealed class ChangedFileViewModel : ObservableObject
     }
 
     // An empty file has no lines at all; string.Split would report one empty line and inflate the badge.
-    private static IEnumerable<string> SplitLines(string text)
+    // Likewise, a file ending in a standard newline must not count the trailing empty segment as an extra line.
+    private static IEnumerable<string> SplitLines(string? text)
     {
+        if (text is null || text.Length == 0) yield break;
+        if (text.EndsWith("\n", StringComparison.Ordinal))
+        {
+            text = text.EndsWith("\r\n", StringComparison.Ordinal)
+                ? text.Substring(0, text.Length - 2)
+                : text.Substring(0, text.Length - 1);
+        }
+
         if (text.Length == 0) yield break;
 
         foreach (var line in text.Split('\n')) yield return line.TrimEnd('\r');

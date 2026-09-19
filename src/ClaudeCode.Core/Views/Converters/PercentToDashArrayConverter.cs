@@ -1,3 +1,4 @@
+using ClaudeCode.Core.ViewModels;
 using System;
 using System.Globalization;
 using System.Windows.Data;
@@ -11,24 +12,14 @@ public sealed class PercentToDashArrayConverter : IValueConverter
 {
     public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
     {
-        double radius = 6, thickness = 2;
-        if (parameter is string spec)
-        {
-            var parts = spec.Split(',');
-            // Assign only on success: TryParse writes 0 to its out argument on failure, which would
-            // silently drop the documented defaults and make the dash array Infinity/NaN.
-            if (parts.Length > 0 && double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out double parsedRadius)) radius = parsedRadius;
-            if (parts.Length > 1 && double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double parsedThickness)) thickness = parsedThickness;
-        }
+        var (radius, thickness) = CircularProgressGeometry.ParseSpec(parameter as string);
 
         // Both bindings supply an int (ChatViewModel.ContextUsagePercent, UsageLimitDisplay.Percent);
         // anything else - including the unresolved-binding sentinel - draws nothing. Kept identical
         // to the sibling PercentToStarWidthConverter so the two can never disagree.
-        double percent = value is int i ? i : 0;
-        percent = Math.Max(0, Math.Min(100, percent));
-        // Dash lengths are in multiples of the stroke thickness.
-        double circumference = 2 * Math.PI * radius / thickness;
-        return new DoubleCollection { circumference * percent / 100, circumference + 1 };
+        int percent = value is int i ? i : 0;
+        var (dash, gap) = CircularProgressGeometry.ComputeDash(percent, radius, thickness);
+        return new DoubleCollection { dash, gap };
     }
 
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) => throw new NotSupportedException();
