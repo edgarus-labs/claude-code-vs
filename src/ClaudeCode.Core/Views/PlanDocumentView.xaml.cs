@@ -19,7 +19,6 @@ namespace ClaudeCode.Core.Views;
 /// Proceed / Review actions bound to a <see cref="PlanReviewViewModel"/>.</summary>
 public partial class PlanDocumentView : UserControl, IDisposable
 {
-    private const string PlanDocumentUri = "https://claudecode.plan/plan.html";
     private const string PlanLostMessage = "The plan viewer stopped working. Close this window and open the plan again.";
 
     private readonly DispatcherTimer _noticeTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(6) };
@@ -93,7 +92,7 @@ public partial class PlanDocumentView : UserControl, IDisposable
             core.NewWindowRequested += OnNewWindowRequested;
             core.NavigationStarting += OnNavigationStarting;
             core.NavigationCompleted += OnNavigationCompleted;
-            PlanView.Source = new Uri(PlanDocumentUri);
+            PlanView.Source = new Uri(PlanDocumentProtocol.PageUrl);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -115,7 +114,10 @@ public partial class PlanDocumentView : UserControl, IDisposable
     // future CSP relaxation in plan.html cannot turn agent markdown into a top-level navigation.
     private void OnNavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)
     {
-        if (e.Uri.StartsWith(PlanDocumentUri, StringComparison.Ordinal)) return;
+        // Path-exact, not prefix: plan.html and index.html are served from the same mapped asset
+        // folder, so a prefix check would let plan.html/../index.html navigate the frame to a
+        // document this view does not drive (no window.claudePlan to render into).
+        if (PlanDocumentProtocol.IsPlanDocumentUri(e.Uri)) return;
 
         // Cancelling leaves the plan document exactly where it was. Remember the id: the cancel
         // still raises NavigationCompleted with IsSuccess=false, and treating that as "the plan
@@ -185,7 +187,7 @@ public partial class PlanDocumentView : UserControl, IDisposable
         _reloadAttempted = true;
         try
         {
-            core.Navigate(PlanDocumentUri);
+            core.Navigate(PlanDocumentProtocol.PageUrl);
         }
         catch (Exception exception) when (exception is COMException || exception is InvalidOperationException ||
                                           exception is ObjectDisposedException)
@@ -251,7 +253,7 @@ public partial class PlanDocumentView : UserControl, IDisposable
     {
         // The page renders untrusted agent-authored markdown, so the envelope is untrusted too - and
         // only the plan document itself, never some future subframe, may drive the host.
-        if (_disposed || !e.Source.StartsWith(PlanDocumentUri, StringComparison.Ordinal)) return;
+        if (_disposed || !PlanDocumentProtocol.IsPlanDocumentUri(e.Source)) return;
 
         string? url;
         try
