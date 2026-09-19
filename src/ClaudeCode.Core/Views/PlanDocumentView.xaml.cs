@@ -5,9 +5,12 @@ using System;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Security;
 using System.Windows;
+using System.Windows.Automation.Peers;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Threading;
 
 namespace ClaudeCode.Core.Views;
 
@@ -15,6 +18,9 @@ namespace ClaudeCode.Core.Views;
 /// Proceed / Review actions bound to a <see cref="PlanReviewViewModel"/>.</summary>
 public partial class PlanDocumentView : UserControl, IDisposable
 {
+    private const string PlanDocumentUri = "https://claudecode.plan/plan.html";
+
+    private readonly DispatcherTimer _noticeTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(6) };
     private PlanReviewViewModel? _plan;
     private bool _ready;
     private bool _disposed;
@@ -22,6 +28,7 @@ public partial class PlanDocumentView : UserControl, IDisposable
     public PlanDocumentView()
     {
         InitializeComponent();
+        _noticeTimer.Tick += OnNoticeTimerTick;
         _ = InitializeWebViewAsync();
     }
 
@@ -36,6 +43,7 @@ public partial class PlanDocumentView : UserControl, IDisposable
             if (_plan is not null) _plan.PropertyChanged += OnPlanPropertyChanged;
             ReviewPanel.Visibility = Visibility.Collapsed;
             ReviewBox.Text = string.Empty;
+            HideNotice();
             Render();
         }
     }
@@ -71,6 +79,10 @@ public partial class PlanDocumentView : UserControl, IDisposable
         core.SetVirtualHostNameToFolderMapping("claudecode.plan", GetAssetsPath(), CoreWebView2HostResourceAccessKind.Deny);
         core.WebMessageReceived += OnWebMessageReceived;
         core.NewWindowRequested += (_, args) => args.Handled = true;
+        // Host-side backstop: the plan document may only ever sit on its own virtual host, so a
+        // future CSP relaxation in plan.html cannot turn agent markdown into a top-level navigation.
+        core.NavigationStarting += (_, args) =>
+            args.Cancel = !args.Uri.StartsWith(PlanDocumentUri, StringComparison.Ordinal);
         core.NavigationCompleted += (_, args) =>
         {
             if (_disposed || !args.IsSuccess) return;
@@ -78,7 +90,7 @@ public partial class PlanDocumentView : UserControl, IDisposable
             PushTheme();
             Render();
         };
-        PlanView.Source = new Uri("https://claudecode.plan/plan.html");
+        PlanView.Source = new Uri(PlanDocumentUri);
     }
 
     private static string GetAssetsPath() => Path.Combine(
@@ -132,18 +144,40 @@ public partial class PlanDocumentView : UserControl, IDisposable
 
     private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
+        string? url;
         try
         {
             var message = JsonConvert.DeserializeAnonymousType(e.WebMessageAsJson, new { type = "", url = "" });
-            if (message?.type == "openLink" && Uri.TryCreate(message.url, UriKind.Absolute, out Uri? uri)
-                && MarkdownSafetyLimits.IsNavigableLink(uri))
-            {
-                Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
-            }
+            if (message?.type != "openLink") return;
+            url = message.url;
         }
         catch (Exception)
         {
-            // Malformed page message: ignore.
+            return; // Malformed page message: ignore.
+        }
+
+        OpenPlanLink(url);
+    }
+
+    // Mirrors ChatPanelView.OpenTranscriptLink: the same JS-side code path must give the same answer.
+    private void OpenPlanLink(string? target)
+    {
+        if (!Uri.TryCreate(target, UriKind.Absolute, out Uri? uri) || !MarkdownSafetyLimits.IsNavigableLink(uri))
+        {
+            ShowNotice("This link cannot be opened. Only absolute HTTP and HTTPS links are allowed.");
+            return;
+        }
+
+        try
+        {
+            using (Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true }))
+            {
+            }
+        }
+        catch (Exception exception) when (exception is Win32Exception || exception is InvalidOperationException ||
+                                          exception is SecurityException || exception is ArgumentException)
+        {
+            ShowNotice("Could not open the link in your browser: " + exception.Message);
         }
     }
 
@@ -159,16 +193,48 @@ public partial class PlanDocumentView : UserControl, IDisposable
     {
         var comments = ReviewBox.Text;
         if (_plan is null || string.IsNullOrWhiteSpace(comments)) return;
+        // The agent controls the option list, so a plan can arrive with no reject option at all, and a
+        // session reset resolves the plan underneath this window. Never swallow the typed comments.
+        if (!_plan.ReviewCommand.CanExecute(comments))
+        {
+            ShowNotice(_plan.IsResolved
+                ? "This plan is no longer active, so the comments were not sent."
+                : "Claude did not offer a way to send this plan back for revision.");
+            return;
+        }
+
         _plan.ReviewCommand.Execute(comments);
         ReviewBox.Text = string.Empty;
         ReviewPanel.Visibility = Visibility.Collapsed;
     }
 
+    private void ShowNotice(string message)
+    {
+        if (_disposed) return; // never restart the timer after its Tick handler is gone
+        PlanNotice.Text = message;
+        PlanNotice.Visibility = Visibility.Visible;
+        var peer = UIElementAutomationPeer.FromElement(PlanNotice) ?? UIElementAutomationPeer.CreatePeerForElement(PlanNotice);
+        peer?.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
+        _noticeTimer.Stop();
+        _noticeTimer.Start();
+    }
+
+    private void HideNotice()
+    {
+        _noticeTimer.Stop();
+        PlanNotice.Visibility = Visibility.Collapsed;
+    }
+
+    private void OnNoticeTimerTick(object? sender, EventArgs e) => HideNotice();
+
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
+        _noticeTimer.Stop();
+        _noticeTimer.Tick -= OnNoticeTimerTick;
         if (_plan is not null) _plan.PropertyChanged -= OnPlanPropertyChanged;
+        if (PlanView.CoreWebView2 is not null) PlanView.CoreWebView2.WebMessageReceived -= OnWebMessageReceived;
         PlanView.Dispose();
         GC.SuppressFinalize(this);
     }

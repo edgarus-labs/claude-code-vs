@@ -13,7 +13,6 @@
         <ResourceDictionary Source="/EdgarusLabs.ClaudeCode.Core;component/Themes/ChatBrushes.xaml" />
       </ResourceDictionary.MergedDictionaries>
       <conv:BoolToVisibilityConverter x:Key="BoolToVisibilityConverter" />
-      <conv:NullToVisibilityConverter x:Key="NullToVisibilityConverter" />
 
       <Style x:Key="PlanButtonStyle" TargetType="Button">
         <Setter Property="Background" Value="{DynamicResource ChatAccentBrush}" />
@@ -75,6 +74,9 @@
           <TextBlock Text="{Binding Status}" FontSize="12" Margin="14,0,0,0" VerticalAlignment="Center"
                      Foreground="{DynamicResource ChatSubtleForegroundBrush}"
                      Visibility="{Binding IsResolved, Converter={StaticResource BoolToVisibilityConverter}}" />
+          <TextBlock x:Name="PlanNotice" FontSize="12" Margin="14,0,0,0" VerticalAlignment="Center"
+                     MaxWidth="420" TextTrimming="CharacterEllipsis" Visibility="Collapsed"
+                     Foreground="{DynamicResource ChatSubtleForegroundBrush}" AutomationProperties.LiveSetting="Polite" />
         </StackPanel>
         <Button x:Name="ReviewButton" Grid.Column="1" Content="Review" Margin="0,0,8,0" Click="ReviewButton_Click"
                 AutomationProperties.Name="Review the plan"
@@ -83,6 +85,9 @@
             <Style TargetType="Button" BasedOn="{StaticResource PlanSecondaryButtonStyle}">
               <Style.Triggers>
                 <DataTrigger Binding="{Binding IsResolved}" Value="True">
+                  <Setter Property="IsEnabled" Value="False" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding RejectOption}" Value="{x:Null}">
                   <Setter Property="IsEnabled" Value="False" />
                 </DataTrigger>
                 <DataTrigger Binding="{Binding}" Value="{x:Null}">

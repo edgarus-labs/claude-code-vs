@@ -15,8 +15,10 @@ public sealed class PercentToDashArrayConverter : IValueConverter
         if (parameter is string spec)
         {
             var parts = spec.Split(',');
-            if (parts.Length > 0) double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out radius);
-            if (parts.Length > 1) double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out thickness);
+            // Assign only on success: TryParse writes 0 to its out argument on failure, which would
+            // silently drop the documented defaults and make the dash array Infinity/NaN.
+            if (parts.Length > 0 && double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out double parsedRadius)) radius = parsedRadius;
+            if (parts.Length > 1 && double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double parsedThickness)) thickness = parsedThickness;
         }
 
         double percent = value switch

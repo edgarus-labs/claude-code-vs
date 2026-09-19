@@ -12,7 +12,16 @@ public sealed class PercentToStarWidthConverter : IValueConverter
 {
     public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
     {
-        double percent = value is int intPercent ? intPercent : 0;
+        // Same numeric acceptance as the sibling PercentToDashArrayConverter: a percent that arrives
+        // as double/long must not silently render an empty bar.
+        double percent = value switch
+        {
+            int i => i,
+            // GridLength rejects NaN/Infinity outright, so a non-finite double becomes "empty bar".
+            double d when !double.IsNaN(d) && !double.IsInfinity(d) => d,
+            long l => l,
+            _ => 0,
+        };
         percent = Math.Max(0, Math.Min(100, percent));
         if (string.Equals(parameter as string, "Invert", StringComparison.OrdinalIgnoreCase))
         {
