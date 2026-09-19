@@ -73,7 +73,9 @@ public sealed class ElicitationRequestViewModel
 
     private static string[] TextValue(ElicitationFieldViewModel field)
     {
-        string trimmed = field.TextValue.Trim();
+        // WPF two-way binding can push null into the bound property; Submit runs inside a command
+        // handler on the UI thread, where an unhandled exception tears down devenv.
+        string trimmed = field.TextValue?.Trim() ?? string.Empty;
         return trimmed.Length == 0 ? Array.Empty<string>() : new[] { trimmed };
     }
 }

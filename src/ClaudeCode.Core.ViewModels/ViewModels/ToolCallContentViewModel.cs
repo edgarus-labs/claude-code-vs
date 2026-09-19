@@ -63,13 +63,17 @@ public sealed class ToolCallContentViewModel
         }
 
         var closingFenceStart = trimmed.Length - 3;
-        if (closingFenceStart <= firstNewline + 1)
+        if (closingFenceStart < firstNewline + 1)
         {
             return text;
         }
 
         var inner = trimmed.Substring(firstNewline + 1, closingFenceStart - (firstNewline + 1));
-        if (inner.EndsWith("\n", StringComparison.Ordinal))
+        if (inner.EndsWith("\r\n", StringComparison.Ordinal))
+        {
+            inner = inner.Substring(0, inner.Length - 2);
+        }
+        else if (inner.EndsWith("\n", StringComparison.Ordinal))
         {
             inner = inner.Substring(0, inner.Length - 1);
         }

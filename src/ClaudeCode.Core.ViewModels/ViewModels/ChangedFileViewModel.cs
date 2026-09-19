@@ -80,8 +80,11 @@ public sealed class ChangedFileViewModel : ObservableObject
         return (added, removed);
     }
 
-    private static IEnumerable<string> SplitLines(string text)
+    // An empty file has no lines at all; string.Split would report one empty line and inflate the badge.
+    private static IEnumerable<string> SplitLines(string? text)
     {
+        if (text is null || text.Length == 0) yield break;
+
         foreach (var line in text.Split('\n')) yield return line.TrimEnd('\r');
     }
 }

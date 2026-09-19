@@ -23,6 +23,24 @@ public sealed class ToolCallContentViewModelTests
     }
 
     [Fact]
+    public void StripFenceWrapper_CrlfTerminatedContent_LeavesNoTrailingCarriageReturn()
+    {
+        // Tool output on Windows is CRLF-terminated, so the newline before the closing fence is
+        // "\r\n" - both characters belong to the wrapper, not to the content.
+        var result = ToolCallContentViewModel.StripFenceWrapper("```console\r\nline one\r\nline two\r\n```");
+
+        Assert.Equal("line one\r\nline two", result);
+    }
+
+    [Fact]
+    public void StripFenceWrapper_EmptyFencedBlock_ReturnsEmptyString()
+    {
+        var result = ToolCallContentViewModel.StripFenceWrapper("```console\n```");
+
+        Assert.Equal(string.Empty, result);
+    }
+
+    [Fact]
     public void StripFenceWrapper_NoFenceWrapper_ReturnsUnchanged()
     {
         const string text = "plain tool output, no fence";

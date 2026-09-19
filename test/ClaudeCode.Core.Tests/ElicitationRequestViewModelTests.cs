@@ -69,6 +69,22 @@ public sealed class ElicitationRequestViewModelTests
     }
 
     [Fact]
+    public void Submit_TextValueSetToNull_DoesNotThrowAndOmitsField()
+    {
+        // WPF two-way binding on an empty TextBox can push null into the bound property; Submit runs
+        // on the UI thread inside a command handler, where an unhandled exception kills devenv.
+        ElicitationAnswer? captured = null;
+        var vm = new ElicitationRequestViewModel("Anything else?", [TextField("q0")], answer => captured = answer);
+
+        vm.Fields[0].TextValue = null!;
+
+        vm.SubmitCommand.Execute(null);
+
+        Assert.Equal(ElicitationAction.Accept, captured!.Action);
+        Assert.Empty(captured.Content);
+    }
+
+    [Fact]
     public void Submit_EverythingLeftBlank_StillAcceptsWithEmptyContent()
     {
         ElicitationAnswer? captured = null;
