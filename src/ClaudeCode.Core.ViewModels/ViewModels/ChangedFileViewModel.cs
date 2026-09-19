@@ -13,6 +13,7 @@ public sealed class ChangedFileViewModel : ObservableObject
 {
     private int _addedLines;
     private int _removedLines;
+    private bool _canRevert = true;
 
     public ChangedFileViewModel(string fullPath, string? originalText, Func<ChangedFileViewModel, Task> accept, Func<ChangedFileViewModel, Task> reject)
     {
@@ -20,7 +21,7 @@ public sealed class ChangedFileViewModel : ObservableObject
         OriginalText = originalText;
         Name = Path.GetFileName(fullPath);
         AcceptCommand = new AsyncRelayCommand(() => accept(this));
-        RejectCommand = new AsyncRelayCommand(() => reject(this));
+        RejectCommand = new AsyncRelayCommand(() => reject(this), () => CanRevert);
     }
 
     public string FullPath { get; }
@@ -31,6 +32,20 @@ public sealed class ChangedFileViewModel : ObservableObject
     public string? OriginalText { get; }
 
     public bool IsNew => OriginalText is null;
+
+    /// <summary>False once <see cref="OriginalText"/> is known not to be the pre-edit content (the
+    /// snapshot raced the agent's own write): a revert would only write the edit back over itself
+    /// and report success. Never returns to true.</summary>
+    public bool CanRevert
+    {
+        get => _canRevert;
+        private set
+        {
+            if (SetProperty(ref _canRevert, value)) RejectCommand.NotifyCanExecuteChanged();
+        }
+    }
+
+    internal void MarkNotRevertable() => CanRevert = false;
 
     public int AddedLines
     {

@@ -179,10 +179,51 @@ public sealed partial class ChatSessionStateTests
 
     // The agent process writes its own Edit/Write results and does not synchronize with the
     // notification that carries them, so the first diff-bearing update can arrive after the file
-    // already changed. Snapshotting the file at that moment makes Reject write the edit back over
+    // already changed. The one shape whose diff carries the whole file is claude-agent-acp's Write
+    // update when the structured patch is empty (src/diff.ts: oldText = originalFile, newText =
+    // content); its oldText is then the authoritative pre-write content, and snapshotting the
+    // file at that moment would make Reject write the edit back over itself and report success.
+    [Fact]
+    public async Task ToolCallDiff_WriteUpdateFirstSeenAfterTheWriteLanded_RestoresTheReportedOriginalFile()
+    {
+        using var workspace = new TempWorkspace();
+        var targetPath = workspace.PathUnder("Edited.cs");
+        File.WriteAllText(targetPath, "before\n");
+        var (vm, connection, _) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+        var turn = new TaskCompletionSource<bool>();
+        connection.PromptHandler = _ => turn.Task;
+        vm.InputText = "rewrite it";
+        var sending = vm.SendAsync();
+
+        File.WriteAllText(targetPath, "after\nmore\n"); // the write lands before the notification
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
+        {
+            ToolCallId = "write-1", Title = "Write Edited.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
+            Content = [new ClaudeCode.Contracts.ToolCallContent { Path = targetPath, OldText = "before\n", NewText = "after\nmore\n" }],
+        }));
+        await WaitUntilAsync(() => vm.ChangedFiles.Count == 1);
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.TurnEnded("end_turn"));
+        turn.SetResult(true);
+        await sending;
+
+        var file = Assert.Single(vm.ChangedFiles);
+        Assert.False(file.IsNew);
+        Assert.True(file.CanRevert);
+        await file.RejectCommand.ExecuteAsync(null);
+
+        Assert.Equal("before\n", File.ReadAllText(targetPath));
+        Assert.Empty(vm.ChangedFiles);
+    }
+
+    // claude-agent-acp never sends whole-file text for an Edit: the pending tool_call carries the
+    // model's old_string/new_string (src/tools.ts, case "Edit") and the completed update carries
+    // per-hunk context and +/- lines (src/diff.ts), so a snapshot taken after the edit landed can
+    // never be recognised by content equality. It is recognised by what it lacks - the text the edit
+    // replaced - and such a row must not offer a revert that would only write the edit back over
     // itself and report success.
     [Fact]
-    public async Task ToolCallDiff_FirstSeenAfterTheAgentWroteTheFile_StillRestoresThePreEditContent()
+    public async Task ToolCallDiff_EditSnippetsFirstSeenAfterTheEditLanded_CannotOfferARevert()
     {
         using var workspace = new TempWorkspace();
         var targetPath = workspace.PathUnder("Edited.cs");
@@ -194,11 +235,11 @@ public sealed partial class ChatSessionStateTests
         vm.InputText = "edit it";
         var sending = vm.SendAsync();
 
-        File.WriteAllText(targetPath, "after\nmore\n"); // the write lands before the notification
+        File.WriteAllText(targetPath, "after\nmore\n"); // the edit lands before the notification
         connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
         {
             ToolCallId = "edit-1", Title = "Edit Edited.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
-            Content = [new ClaudeCode.Contracts.ToolCallContent { Path = targetPath, OldText = "before\n", NewText = "after\nmore\n" }],
+            Content = [new ClaudeCode.Contracts.ToolCallContent { Path = targetPath, OldText = "before", NewText = "after\nmore" }],
         }));
         await WaitUntilAsync(() => vm.ChangedFiles.Count == 1);
         connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.TurnEnded("end_turn"));
@@ -207,19 +248,173 @@ public sealed partial class ChatSessionStateTests
 
         var file = Assert.Single(vm.ChangedFiles);
         Assert.False(file.IsNew);
+        Assert.False(file.CanRevert);
+        Assert.False(file.RejectCommand.CanExecute(null));
+        await file.RejectCommand.ExecuteAsync(null);
+        await vm.RejectAllChangesCommand.ExecuteAsync(null);
+
+        Assert.Equal("after\nmore\n", File.ReadAllText(targetPath));
+        Assert.Single(vm.ChangedFiles); // the agent did change it; the row stays, without a revert
+        Assert.Contains("1 of 1", vm.StatusMessage!, StringComparison.Ordinal);
+    }
+
+    // An edit that keeps its old text (appending after it) leaves the snapshot looking pre-edit,
+    // so the race is only visible once the call completes: the file the tool reports as changed
+    // still equals the snapshot, which means the snapshot was the post-edit content.
+    [Fact]
+    public async Task ToolCallDiff_PendingSnapshotTakenAfterAnAppendingEditLanded_CannotOfferARevert()
+    {
+        using var workspace = new TempWorkspace();
+        var targetPath = workspace.PathUnder("Edited.cs");
+        File.WriteAllText(targetPath, "before\n");
+        var (vm, connection, _) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+        var turn = new TaskCompletionSource<bool>();
+        connection.PromptHandler = _ => turn.Task;
+        vm.InputText = "append to it";
+        var sending = vm.SendAsync();
+
+        File.WriteAllText(targetPath, "before\nmore\n"); // accept-edits mode: the CLI edits as soon as the message completes
+        var pending = new ClaudeCode.Contracts.ToolCallUpdate
+        {
+            ToolCallId = "edit-1", Title = "Edit Edited.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
+            Content = [new ClaudeCode.Contracts.ToolCallContent { Path = targetPath, OldText = "before", NewText = "before\nmore" }],
+        };
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(pending));
+        await WaitUntilAsync(() => vm.ChangedFiles.Count == 1);
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
+        {
+            ToolCallId = "edit-1", Title = "Edit Edited.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
+            // src/diff.ts joins the hunk's context and +/- lines: [" before", "+more"] → old "before", new "before\nmore".
+            Content = [new ClaudeCode.Contracts.ToolCallContent { Path = targetPath, OldText = "before", NewText = "before\nmore" }],
+        }));
+        await WaitUntilAsync(() => !vm.ChangedFiles[0].CanRevert);
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.TurnEnded("end_turn"));
+        turn.SetResult(true);
+        await sending;
+
+        var file = Assert.Single(vm.ChangedFiles);
         await file.RejectCommand.ExecuteAsync(null);
 
-        Assert.Equal("before\n", File.ReadAllText(targetPath));
+        Assert.Equal("before\nmore\n", File.ReadAllText(targetPath));
+        Assert.Single(vm.ChangedFiles);
+    }
+
+    // The diff on a pending tool_call is the model's own input (src/tools.ts, case "Edit"), and
+    // claude-agent-acp emits it before permission is asked. Its oldText is evidence of nothing
+    // until the call actually ran: a denied Edit whose newText echoes the file must not leave a
+    // row whose Reject writes the model's oldText over a file the agent was never allowed to touch.
+    [Fact]
+    public async Task ToolCallDiff_OnAPendingCallWhoseNewTextEchoesTheFile_NeverAdoptsItsOldTextAsTheRestoreContent()
+    {
+        using var workspace = new TempWorkspace();
+        var targetPath = workspace.PathUnder("Guarded.cs");
+        File.WriteAllText(targetPath, "the user's work\n");
+        var (vm, connection, _) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+        var turn = new TaskCompletionSource<bool>();
+        connection.PromptHandler = _ => turn.Task;
+        vm.InputText = "touch it";
+        var sending = vm.SendAsync();
+
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
+        {
+            ToolCallId = "edit-1", Title = "Edit Guarded.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
+            Content = [new ClaudeCode.Contracts.ToolCallContent { Path = targetPath, OldText = "x", NewText = "the user's work\n" }],
+        }));
+        await WaitUntilAsync(() => vm.ChangedFiles.Count == 1);
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.TurnEnded("end_turn"));
+        turn.SetResult(true);
+        await sending;
+
+        await vm.RejectAllChangesCommand.ExecuteAsync(null);
+
+        Assert.Equal("the user's work\n", File.ReadAllText(targetPath));
+    }
+
+    // A denied or failed call changed nothing (claude-agent-acp reports both as status "failed"),
+    // so its row must go: left behind, "Reject all" would rewrite the file with its own content and
+    // the panel would count a file the agent never touched. A file the agent did change earlier in
+    // the session keeps its row.
+    [Fact]
+    public async Task ToolCallDiff_WhoseCallEndsFailed_RemovesTheRowWhenTheFileIsUnchanged()
+    {
+        using var workspace = new TempWorkspace();
+        var edited = workspace.PathUnder("Edited.cs");
+        var created = workspace.PathUnder("New.cs");
+        var earlier = workspace.PathUnder("Earlier.cs");
+        File.WriteAllText(edited, "before\n");
+        File.WriteAllText(earlier, "before\n");
+        var (vm, connection, _) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+        Assert.True(await connection.RaiseFileWriteRequested(earlier, "changed\n").Response.Task);
+        var turn = new TaskCompletionSource<bool>();
+        connection.PromptHandler = _ => turn.Task;
+        vm.InputText = "edit them";
+        var sending = vm.SendAsync();
+
+        ClaudeCode.Contracts.ToolCallUpdate Update(string id, string path, string? oldText, string newText, ClaudeCode.Contracts.ToolCallStatus status) => new()
+        {
+            ToolCallId = id, Title = "Edit " + Path.GetFileName(path), Kind = "edit", Status = status,
+            Content = [new ClaudeCode.Contracts.ToolCallContent { Path = path, OldText = oldText, NewText = newText }],
+        };
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(Update("edit-1", edited, "before", "after", ClaudeCode.Contracts.ToolCallStatus.Pending)));
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(Update("write-1", created, null, "brand new\n", ClaudeCode.Contracts.ToolCallStatus.Pending)));
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(Update("edit-2", earlier, "changed", "changed again", ClaudeCode.Contracts.ToolCallStatus.Pending)));
+        await WaitUntilAsync(() => vm.ChangedFiles.Count == 3);
+
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(Update("edit-1", edited, "before", "after", ClaudeCode.Contracts.ToolCallStatus.Failed)));
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(Update("write-1", created, null, "brand new\n", ClaudeCode.Contracts.ToolCallStatus.Failed)));
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(Update("edit-2", earlier, "changed", "changed again", ClaudeCode.Contracts.ToolCallStatus.Failed)));
+        await WaitUntilAsync(() => vm.ChangedFiles.Count == 1);
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.TurnEnded("end_turn"));
+        turn.SetResult(true);
+        await sending;
+
+        Assert.Equal("Earlier.cs", Assert.Single(vm.ChangedFiles).Name);
+        Assert.Equal("before\n", File.ReadAllText(edited));
+        Assert.False(File.Exists(created));
+    }
+
+    // The ledger insert and the panel row are two steps, the second posted to the dispatcher. A
+    // New Chat landing between them (the write arrives on the JSON-RPC read loop, and a remote turn
+    // needs no local prompt) used to leave the new session a row with nothing behind it.
+    [Fact]
+    public async Task AgentWrite_RacingANewChat_DoesNotLeaveAPhantomRowInTheNewSession()
+    {
+        using var workspace = new TempWorkspace();
+        var targetPath = workspace.PathUnder("racy.txt");
+        File.WriteAllText(targetPath, "before");
+        var ui = new QueuedSynchronizationContext();
+        var connection = new RecordingAcpAgentConnection();
+        var services = new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService(), workspace.Root);
+        var previous = SynchronizationContext.Current;
+        SynchronizationContext.SetSynchronizationContext(ui);
+        ClaudeCode.Core.ViewModels.ChatViewModel vm;
+        try { vm = new ClaudeCode.Core.ViewModels.ChatViewModel(services); }
+        finally { SynchronizationContext.SetSynchronizationContext(previous); }
+        while (!vm.Initialization.IsCompleted) { ui.Drain(); await Task.Yield(); }
+        await vm.Initialization;
+
+        var write = await Task.Run(() => connection.RaiseFileWriteRequested(targetPath, "after"));
+        Assert.True(await write.Response.Task);
+        // The row insert is still queued behind the dispatcher when New Chat runs on it.
+        connection.NewSessionHandler = _ => Task.FromResult(new ClaudeCode.Contracts.NewSessionResult("session-2", []));
+        await WithDispatcherInstalled(ui, () => vm.NewSessionAsync());
+        ui.Drain();
+
         Assert.Empty(vm.ChangedFiles);
+        vm.Dispose();
+        ui.Drain();
     }
 
     // The client cannot tell "the agent created this file" from "the agent rewrote an existing file
     // and omitted oldText": both arrive as an absent oldText over content that already matches the
     // disk. Creation is therefore decided by the client's own read, and a write that landed before
-    // its notification is restored rather than deleted - a file left behind is recoverable, the
-    // user's file is not.
+    // its notification is left in place rather than deleted - and, its pre-write content being
+    // unknown, offered without a revert - a file left behind is recoverable, the user's file is not.
     [Fact]
-    public async Task ToolCallDiff_ForAFileWhoseWriteLandedFirst_RejectRestoresItRatherThanGuessingItWasCreated()
+    public async Task ToolCallDiff_ForAFileWhoseWriteLandedFirst_RejectLeavesItRatherThanGuessingItWasCreated()
     {
         using var workspace = new TempWorkspace();
         var created = workspace.PathUnder("Created.cs");
@@ -243,6 +438,7 @@ public sealed partial class ChatSessionStateTests
 
         var file = Assert.Single(vm.ChangedFiles);
         Assert.False(file.IsNew);
+        Assert.False(file.CanRevert);
         await file.RejectCommand.ExecuteAsync(null);
 
         Assert.True(File.Exists(created));
@@ -418,5 +614,50 @@ public sealed partial class ChatSessionStateTests
         await vm.OpenChangedFileCommand.ExecuteAsync(vm.ChangedFiles[0]);
 
         Assert.Contains("gone.cs", vm.StatusMessage!, StringComparison.Ordinal);
+    }
+
+    // Only a document lease makes FullPath safe for a path-based host API (WorkspacePathLease):
+    // the leaf has to stay pinned while VS opens it, exactly as the read and write paths pin it.
+    // A file gone since it was tracked therefore never reaches the host as a bare path.
+    [Fact]
+    public async Task OpenChangedFileCommand_ForAFileGoneSinceItWasTracked_DoesNotHandTheHostAnUnpinnedPath()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        using var workspace = new TempWorkspace();
+        var targetPath = workspace.PathUnder("gone.cs");
+        var (vm, connection, services) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+        Assert.True(await connection.RaiseFileWriteRequested(targetPath, "x").Response.Task);
+        File.Delete(targetPath);
+
+        await vm.OpenChangedFileCommand.ExecuteAsync(vm.ChangedFiles[0]);
+
+        Assert.Empty(services.OpenedDocumentPaths);
+        Assert.Contains("gone.cs", vm.StatusMessage!, StringComparison.Ordinal);
+    }
+
+    // The row goes in before the write so the pre-write snapshot is taken first; a write that
+    // then never lands (the editor rejects the edit, a disk error) leaves nothing to list, while a
+    // row created by an earlier write that did land keeps offering to revert it.
+    [Fact]
+    public async Task FileWriteRequest_ThatFails_KeepsOnlyRowsForWritesThatLanded()
+    {
+        using var workspace = new TempWorkspace();
+        var landed = workspace.PathUnder("landed.cs");
+        var rejected = workspace.PathUnder("rejected.cs");
+        File.WriteAllText(landed, "original");
+        File.WriteAllText(rejected, "original");
+        var (vm, connection, services) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+        services.OpenDocuments[Path.GetFullPath(landed)] = "original";
+        services.OpenDocuments[Path.GetFullPath(rejected)] = "original";
+        Assert.True(await connection.RaiseFileWriteRequested(landed, "changed").Response.Task);
+        services.WriteOpenDocumentHandler = (_, _, _) => Task.FromException<bool>(new IOException("The editor rejected the edit."));
+
+        await Assert.ThrowsAsync<IOException>(() => connection.RaiseFileWriteRequested(landed, "changed again").Response.Task);
+        await Assert.ThrowsAsync<IOException>(() => connection.RaiseFileWriteRequested(rejected, "changed").Response.Task);
+
+        Assert.Equal("landed.cs", Assert.Single(vm.ChangedFiles).Name);
     }
 }

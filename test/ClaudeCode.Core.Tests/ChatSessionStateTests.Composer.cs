@@ -646,6 +646,83 @@ public sealed partial class ChatSessionStateTests
         Assert.Empty(vm.CommandCatalogStatus);
     }
 
+    private static (ToolCallUpdate Call, List<PermissionOption> Options) PlanApprovalRequest() =>
+        (new ToolCallUpdate { ToolCallId = "plan-1", Title = "Approve Plan", Kind = "switch_mode", Status = ToolCallStatus.Pending, Content = [new ToolCallContent { Text = "# Plan" }] },
+        [
+            new PermissionOption { OptionId = "allow-once", Label = "Yes, proceed", Outcome = PermissionOutcome.AllowOnce },
+            new PermissionOption { OptionId = "reject-once", Label = "No, keep planning", Outcome = PermissionOutcome.RejectOnce },
+        ]);
+
+    // Review comments go out when the composer frees up, whichever blocker was holding it. A
+    // model/mode change (allowed mid-turn) still in flight when the rejected plan's turn returns
+    // must not strand them until the user's next unrelated Send.
+    [Fact]
+    public async Task PlanReview_HeldBackByAConfigChangeInFlight_GoesOutOnceTheChangeCompletes()
+    {
+        var turn = new TaskCompletionSource<bool>();
+        var config = new TaskCompletionSource<IReadOnlyList<SessionConfigOption>>();
+        var connection = new RecordingAcpAgentConnection
+        {
+            ConfigOptions = Options(),
+            PromptHandler = _ => turn.Task,
+            ConfigHandler = (_, _, _) => config.Task,
+        };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "plan the feature";
+        var sending = vm.SendAsync();
+        var (call, options) = PlanApprovalRequest();
+        connection.RaisePermissionRequested(call, options);
+        vm.PendingPlan!.ReviewCommand.Execute("Add a rollback step.");
+        var changing = vm.SelectModelAsync(vm.AvailableModels[1]);
+        Assert.True(vm.IsConfigBusy);
+
+        turn.SetResult(true);
+        await sending;
+        Assert.Single(connection.Prompts); // the composer is still blocked by the config change
+
+        config.SetResult(Options("opus"));
+        await changing;
+
+        await WaitUntilAsync(() => connection.Prompts.Count == 2);
+        Assert.Contains("Add a rollback step", Assert.IsType<ContentBlock.Text>(connection.Prompts[^1][0]).Value, StringComparison.Ordinal);
+        Assert.Equal("opus", vm.SelectedModel!.Value);
+    }
+
+    // With a document capture in flight the composer cannot send, so the review has to wait for
+    // the capture rather than be typed over the user's draft and left there unsent.
+    [Fact]
+    public async Task PlanReview_WhileADocumentCaptureIsInFlight_WaitsForItAndKeepsTheDraft()
+    {
+        var capture = new TaskCompletionSource<EditorDocumentSnapshot?>();
+        var connection = new RecordingAcpAgentConnection();
+        var services = new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService())
+        {
+            CaptureHandler = _ => capture.Task,
+        };
+        using var vm = new ChatViewModel(services);
+        await vm.Initialization;
+        vm.InputText = "meanwhile, what about the CI job?";
+        var attaching = vm.AttachActiveDocumentCommand.ExecuteAsync(null);
+        // No local turn owns IsBusy (a plan can arrive from a remote-driven turn), so the review is
+        // due as soon as the composer can take it.
+        var (call, options) = PlanApprovalRequest();
+        connection.RaisePermissionRequested(call, options);
+
+        vm.PendingPlan!.ReviewCommand.Execute("Add a rollback step.");
+
+        Assert.Equal("meanwhile, what about the CI job?", vm.InputText);
+        Assert.Empty(connection.Prompts);
+
+        capture.SetResult(null);
+        await attaching;
+
+        await WaitUntilAsync(() => connection.Prompts.Count == 1);
+        Assert.Contains("Add a rollback step", Assert.IsType<ContentBlock.Text>(connection.Prompts[0][0]).Value, StringComparison.Ordinal);
+        await WaitUntilAsync(() => vm.InputText.Length > 0);
+        Assert.Equal("meanwhile, what about the CI job?", vm.InputText);
+    }
+
     private static ChatViewModel CreateOnUiContext(RecordingAcpAgentConnection connection, SynchronizationContext ui)
     {
         var previous = SynchronizationContext.Current;

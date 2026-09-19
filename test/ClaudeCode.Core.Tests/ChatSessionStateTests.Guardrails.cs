@@ -294,6 +294,32 @@ public sealed partial class ChatSessionStateTests
         Assert.Single(vm.Messages);
     }
 
+    // The previous session's pickers stay populated through a session/load, and _sessionId is
+    // already the incoming id so replayed updates are accepted. Without this gate a model change
+    // or Remote Control toggle mid-replay addresses a session the agent has not finished loading -
+    // and may roll back.
+    [Fact]
+    public async Task SessionLoadInFlight_DisablesSettingsAndRemoteControl()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        var pending = new TaskCompletionSource<NewSessionResult>();
+        connection.LoadSessionHandler = (_, _, _, _) => pending.Task;
+
+        var opening = vm.OpenSessionAsync(new SessionSummary("session-2", "/workspace", "Older chat", null));
+        Assert.False(vm.CanConfigure);
+        Assert.False(vm.ToggleRemoteControlCommand.CanExecute(null));
+        await vm.SelectModelAsync(vm.AvailableModels[1]);
+        Assert.Empty(connection.ConfigChanges);
+
+        pending.SetResult(new NewSessionResult("session-2", Options()));
+        await opening;
+
+        Assert.True(vm.CanConfigure);
+        Assert.True(vm.ToggleRemoteControlCommand.CanExecute(null));
+    }
+
     // C-D3 for the other session path: session/new is issued on every connect and every New Chat,
     // and both must carry the client's own workspace root, never anything that came off the wire.
     [Fact]

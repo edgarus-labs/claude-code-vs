@@ -188,7 +188,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         try
         {
             var state = await connection.SetRemoteControlAsync(sessionId, enabled, RemoteControlSessionName, _lifetime.Token).ConfigureAwait(true);
-            if (_disposed || !ReferenceEquals(connection, _connection) || sessionId != _sessionId) return;
+            if (_disposed || !ReferenceEquals(connection, _connection)) return;
+            if (sessionId != _sessionId)
+            {
+                // Stale for the UI, but on the agent that session is now published: nothing else
+                // will ever address it again, so take it back down.
+                if (state.Enabled) _ = TryDisableRemoteControlAsync(connection, sessionId);
+                return;
+            }
             IsRemoteControlEnabled = state.Enabled;
             RemoteControlUrl = state.Enabled ? state.SessionUrl : null;
             StatusMessage = null;
@@ -196,11 +203,47 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex)
         {
-            if (!_disposed) StatusMessage = $"Remote Control: {ex.Message}";
+            if (!_disposed && ReferenceEquals(connection, _connection) && sessionId == _sessionId) StatusMessage = $"Remote Control: {ex.Message}";
         }
         finally
         {
             IsRemoteControlBusy = false;
+            // The session changed while this call was in flight, so its OnSessionStarted found the
+            // toggle busy and skipped the startup enable. Issue it now for whichever session is current.
+            if (!_disposed && _services.RemoteControlAtStartup && _sessionId is not null
+                && (sessionId != _sessionId || !ReferenceEquals(connection, _connection)))
+            {
+                _ = SetRemoteControlAsync(true);
+            }
+        }
+    }
+
+    // The agent keeps every session it created, so one left published to claude.ai/code stays
+    // there: enabled, invisible, and unreachable from a toggle that only addresses the current
+    // session. Best effort - the session is being left either way.
+    private async Task<bool> TryDisableRemoteControlAsync(IAcpAgentConnection connection, string sessionId)
+    {
+        try
+        {
+            var state = await connection.SetRemoteControlAsync(sessionId, false, null, _lifetime.Token).ConfigureAwait(true);
+            return !state.Enabled;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    // Before session/new or session/load replaces _sessionId. Only an acknowledged disable clears
+    // the UI state: a switch that then fails leaves the user on this session, and the toggle must
+    // still tell the truth about it.
+    private async Task LeaveRemoteControlAsync(IAcpAgentConnection connection, string sessionId)
+    {
+        if (!IsRemoteControlEnabled) return;
+        if (await TryDisableRemoteControlAsync(connection, sessionId).ConfigureAwait(true) && !_disposed && sessionId == _sessionId)
+        {
+            IsRemoteControlEnabled = false;
+            RemoteControlUrl = null;
         }
     }
 
@@ -279,8 +322,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // over the same JSON-RPC connection as an in-flight prompt, which already supports concurrent
     // in-flight requests (matched by request id) - there's no protocol reason model/mode/effort
     // can't change mid-turn, and other clients (the reference VS Code extension, the CLI) let you.
+    // It does require the switch to be over: session/load publishes _sessionId up front while the
+    // previous session's pickers are still populated, and the load can still fail and roll back.
     public bool CanConfigure => !_disposed && !NeedsAuthentication && !IsConnecting && !IsConfigBusy &&
-        !_isCapturingDocument && _sessionId is not null;
+        !_isCapturingDocument && !_isSwitchingSession && _sessionId is not null;
     public bool HasEffort => AvailableEfforts.Count > 0;
     public bool HasModes => AvailableModes.Count > 0;
     public string ActiveModelName => _selectedModel?.Name ?? "Model unavailable";
@@ -511,13 +556,15 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         return $"resets in {Math.Max(1, (int)remaining.TotalMinutes)}m";
     }
 
+    // "t" is the culture's own short time. A literal "h:mm tt" is a 12-hour clock whose meridiem
+    // is empty under net472's NLS data for de-DE, fr-FR, it-IT and others, showing 15:00 as "3:00 ".
     private static string FormatResetsAtLabel(DateTimeOffset resetsAt)
     {
         DateTimeOffset local = resetsAt.ToLocalTime();
         TimeSpan remaining = resetsAt - DateTimeOffset.UtcNow;
         return remaining < TimeSpan.FromHours(20)
-            ? $"Resets {local:h:mm tt}"
-            : $"Resets {local:dddd h:mm tt}";
+            ? $"Resets {local:t}"
+            : $"Resets {local:dddd} {local:t}";
     }
 
     public string ActivityText
@@ -696,6 +743,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         {
             _isCapturingDocument = false;
             NotifyStateChanged();
+            SendPendingPlanReview();
         }
     }
 
@@ -787,6 +835,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             // Never publish an optimistic selection: failures retain the last acknowledged state.
             IsConfigBusy = false;
             NotifySelectionsChanged();
+            SendPendingPlanReview();
         }
     }
 
@@ -918,15 +967,16 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private void RaiseAttention(ChatAttentionKind kind, string title, string message) =>
         AttentionRequested?.Invoke(this, new ChatAttentionEventArgs(kind, title, SessionTitleFormat.SingleLine(message, 160)));
 
-    // Review comments are delivered as the next prompt once the rejected plan turn has finished.
+    // Review comments are delivered as the next prompt as soon as the composer can send one. Every
+    // transient blocker - the rejected plan's own turn, a config change, a document capture - calls
+    // this again when it lifts, so comments held back here are never stranded.
     private void SendPendingPlanReview()
     {
         var comments = _pendingPlanReviewComments;
-        if (comments is null || _disposed || !CanEditDraft) return;
+        if (comments is null || _disposed || !CanEditDraft || _isCapturingDocument) return;
         _pendingPlanReviewComments = null;
         var draft = InputText;
         InputText = "Review comments on the plan:\n" + comments;
-        if (!CanSend()) return;
         _ = SendReviewThenRestoreDraftAsync(draft);
     }
 
@@ -986,6 +1036,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 return;
             }
 
+            await LeaveRemoteControlAsync(connection, sessionId).ConfigureAwait(true);
+            if (_disposed || !ReferenceEquals(connection, _connection)) return;
             var session = await RequestNewSessionAsync(connection, _lifetime.Token).ConfigureAwait(true);
             if (_disposed || !ReferenceEquals(connection, _connection)) return;
             ResetTranscriptState();
@@ -1063,7 +1115,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         NotifyStateChanged();
         try
         {
-            var (connection, _) = await EnsureConnectedAsync(_lifetime.Token).ConfigureAwait(true);
+            var (connection, sessionId) = await EnsureConnectedAsync(_lifetime.Token).ConfigureAwait(true);
+            if (_disposed || !ReferenceEquals(connection, _connection)) return;
+            await LeaveRemoteControlAsync(connection, sessionId).ConfigureAwait(true);
             if (_disposed || !ReferenceEquals(connection, _connection)) return;
             ResetTranscriptState();
             _explicitSessionTitle = NormalizeSessionTitle(session.Title);
@@ -1411,12 +1465,24 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 return;
             }
             _pendingPermissionResponse?.TrySetException(new OperationCanceledException("Superseded by a newer permission request."));
+            // The plan awaiting that request can no longer be answered: its document goes dead with it.
+            if (_pendingPlan is { IsResolved: false }) _pendingPlan.MarkResolved("Superseded by a newer request");
             _pendingPermissionResponse = e.Response;
+            PlanReviewViewModel? plan = null;
             void Choose(PermissionOption option)
             {
-                e.Response.TrySetResult(option.OptionId);
+                // A surface outliving its request - a card answered twice, a plan document kept
+                // open past a newer request - must not clear the state of whatever is pending now.
+                if (!e.Response.TrySetResult(option.OptionId)) return;
                 _pendingPermissionResponse = null;
                 PendingPermission = null;
+                // Answered from the card, the plan document has to go dead with it. The plan's own
+                // callbacks mark it first, with their more specific status.
+                if (plan is { IsResolved: false })
+                {
+                    plan.MarkResolved(option.Outcome is PermissionOutcome.AllowOnce or PermissionOutcome.AllowAlways
+                        ? "Plan accepted — implementing…" : "Plan rejected");
+                }
                 UpdateActivity("Working…");
             }
 
@@ -1429,13 +1495,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 : string.Empty;
             if (planText.Length > 0)
             {
-                PlanReviewViewModel? plan = null;
-                plan = new PlanReviewViewModel(planText, e.Options,
-                    option =>
-                    {
-                        Choose(option);
-                        plan!.MarkResolved("Plan accepted — implementing…");
-                    },
+                plan = new PlanReviewViewModel(planText, e.Options, Choose,
                     comments =>
                     {
                         // Unreachable, and only here to satisfy nullability: PlanReviewViewModel's
@@ -1444,8 +1504,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                         // Execute that bypasses CanExecute - can get here with nothing to answer.
                         if (plan!.RejectOption is not PermissionOption reject) return;
                         _pendingPlanReviewComments = comments;
-                        Choose(reject);
                         plan.MarkResolved("Sent back for revision");
+                        Choose(reject);
                         // A locally driven turn owns IsBusy, so SendCoreAsync's tail delivers the
                         // review once the prompt RPC returns. A turn driven from claude.ai/code
                         // never sets it, and there is nothing to wait for: SessionUpdate.TurnEnded
@@ -1557,17 +1617,25 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async void OnFileWriteRequested(object? sender, FileWriteRequestEventArgs e)
     {
+        ChangedFileViewModel? created = null;
         try
         {
             // Separate leases: TrackChangeBeforeWriteAsync owns and releases its own lease for the
             // pre-write snapshot, so the write below re-acquires (and re-validates) the path.
-            var tracked = await TrackChangeBeforeWriteAsync(e.Path).ConfigureAwait(true);
+            var (tracked, isNewRow) = await TrackChangeBeforeWriteAsync(e.Path).ConfigureAwait(true);
+            if (isNewRow) created = tracked;
             using var pathLease = WorkspacePathGuard.AcquireFile(_services.WorkspaceRoot, e.Path);
             await WriteLeasedFileAsync(pathLease, e.Content).ConfigureAwait(true);
             RunOnUi(() => tracked.UpdateCounts(e.Content));
             e.Response.TrySetResult(true);
         }
-        catch (Exception ex) { e.Response.TrySetException(ex); }
+        catch (Exception ex)
+        {
+            // The row went in before the write so the snapshot came first; a write that never
+            // landed leaves nothing to list. A row an earlier, landed write created stays.
+            if (created is not null) RunOnUi(() => UntrackChange(created));
+            e.Response.TrySetException(ex);
+        }
     }
 
     private readonly Dictionary<string, ChangedFileViewModel> _changedFilesByPath = new Dictionary<string, ChangedFileViewModel>(StringComparer.OrdinalIgnoreCase);
@@ -1583,16 +1651,30 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             {
                 if (!content.IsDiff || string.IsNullOrWhiteSpace(content.Path)) continue;
                 ChangedFileViewModel tracked;
-                try { tracked = await TrackChangeBeforeWriteAsync(content.Path!, content).ConfigureAwait(true); }
+                try { (tracked, _) = await TrackChangeBeforeWriteAsync(content.Path!, content, call.Status).ConfigureAwait(true); }
                 catch (Exception) { continue; } // outside the workspace or unreadable: not ours to revert.
 
-                if (call.Status == ToolCallStatus.Completed)
+                if (call.Status is not (ToolCallStatus.Completed or ToolCallStatus.Failed)) continue;
+                string? current;
+                using (var pathLease = WorkspacePathGuard.AcquireFile(_services.WorkspaceRoot, tracked.FullPath))
+                    current = await ReadLeasedFileAsync(pathLease).ConfigureAwait(true);
+                var unchanged = string.Equals(current, tracked.OriginalText, StringComparison.Ordinal);
+                RunOnUi(() =>
                 {
-                    string? current;
-                    using (var pathLease = WorkspacePathGuard.AcquireFile(_services.WorkspaceRoot, tracked.FullPath))
-                        current = await ReadLeasedFileAsync(pathLease).ConfigureAwait(true);
-                    RunOnUi(() => tracked.UpdateCounts(current ?? string.Empty));
-                }
+                    if (call.Status == ToolCallStatus.Failed)
+                    {
+                        // Denied, or old_string not found (claude-agent-acp reports both as failed):
+                        // the agent changed nothing, so there is nothing to count, revert, or list.
+                        // A file it did change earlier in the session keeps its row.
+                        if (unchanged) UntrackChange(tracked);
+                        return;
+                    }
+                    tracked.UpdateCounts(current ?? string.Empty);
+                    // The call reports a change yet the file still equals the snapshot: the snapshot
+                    // was taken after the edit landed (or nothing changed). Either way a revert would
+                    // only write the file over itself and report success.
+                    if (unchanged) tracked.MarkNotRevertable();
+                });
             }
         }
         catch (Exception)
@@ -1602,12 +1684,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     }
 
     // Snapshot the pre-edit content on the agent's first write to a path, so Reject can restore it.
-    private async Task<ChangedFileViewModel> TrackChangeBeforeWriteAsync(string requestedPath, ToolCallContent? diff = null)
+    // Also reports whether this call created the row, so a write that then fails can take it back.
+    private async Task<(ChangedFileViewModel Entry, bool Created)> TrackChangeBeforeWriteAsync(
+        string requestedPath, ToolCallContent? diff = null, ToolCallStatus status = ToolCallStatus.Completed)
     {
         using var pathLease = WorkspacePathGuard.AcquireFile(_services.WorkspaceRoot, requestedPath);
         lock (_changedFilesByPath)
         {
-            if (_changedFilesByPath.TryGetValue(pathLease.FullPath, out var existing)) return existing;
+            if (_changedFilesByPath.TryGetValue(pathLease.FullPath, out var existing)) return (existing, false);
         }
 
         // Whether the agent created this file is decided here and only here, by the client's own
@@ -1617,10 +1701,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         // whose content already matched the reported newText.
         var original = await ReadLeasedFileAsync(pathLease).ConfigureAwait(true);
         // The notification carrying a diff is not synchronized with the agent's own write, so the
-        // read above may already be the post-edit content. When it is, the diff's OldText is the
-        // authoritative pre-edit content to restore; without it Reject would write the edit back
-        // over itself and report success. It only ever corrects the content, never the existence.
-        if (original is not null && diff?.OldText is { } preEditText
+        // read above may already be the post-edit content. When a completed call's diff carries the
+        // whole file (claude-agent-acp's Write update with an empty structured patch, src/diff.ts:
+        // oldText = originalFile), its OldText is the authoritative pre-write content to restore.
+        // Only a completed call: on a pending or failed one the diff is the model's own input, and
+        // adopting it would let a denied Edit choose what Reject writes into the file. It only ever
+        // corrects the content, never the existence.
+        if (status == ToolCallStatus.Completed && original is not null && diff?.OldText is { } preEditText
             && string.Equals(original, diff.NewText, StringComparison.Ordinal))
         {
             original = preEditText;
@@ -1629,14 +1716,36 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         var entry = new ChangedFileViewModel(pathLease.FullPath, original,
             file => OnUiAsync(() => AcceptChangeAsync(file)),
             file => OnUiAsync(() => RejectChangeAsync(file)));
+        // An Edit's diff is the model's old_string/new_string (src/tools.ts) and never the whole
+        // file, so a post-edit snapshot cannot be recognised by equality - it is recognised by what
+        // it lacks, the text the edit replaced. Such a row offers no revert: writing the snapshot
+        // back would only rewrite the edit over itself and report success.
+        if (diff is not null && !IsPreEditSnapshot(original, diff)) entry.MarkNotRevertable();
         lock (_changedFilesByPath)
         {
-            if (_changedFilesByPath.TryGetValue(pathLease.FullPath, out var raced)) return raced;
+            if (_changedFilesByPath.TryGetValue(pathLease.FullPath, out var raced)) return (raced, false);
             _changedFilesByPath[pathLease.FullPath] = entry;
         }
 
-        RunOnUi(() => ChangedFiles.Add(entry));
-        return entry;
+        RunOnUi(() =>
+        {
+            // Posted, so a session switch can have cleared the ledger in between; a row it no
+            // longer knows would sit in the new session's panel with nothing behind it.
+            bool live;
+            lock (_changedFilesByPath) live = _changedFilesByPath.TryGetValue(entry.FullPath, out var current) && ReferenceEquals(current, entry);
+            if (live) ChangedFiles.Add(entry);
+        });
+        return (entry, true);
+    }
+
+    // The file's line endings are its own and the diff's are the model's: compare with both folded.
+    private static bool IsPreEditSnapshot(string? snapshot, ToolCallContent diff)
+    {
+        if (snapshot is null) return diff.OldText is null;
+        var text = snapshot.Replace("\r\n", "\n");
+        return diff.OldText is { } oldText
+            ? text.IndexOf(oldText.Replace("\r\n", "\n"), StringComparison.Ordinal) >= 0
+            : !string.Equals(text, diff.NewText!.Replace("\r\n", "\n"), StringComparison.Ordinal);
     }
 
     private async Task<string?> ReadLeasedFileAsync(WorkspacePathLease pathLease)
@@ -1688,6 +1797,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             await Task.Run(async () =>
             {
                 using var pathLease = WorkspacePathGuard.AcquireFile(workspaceRoot, file.FullPath);
+                // Only a document lease makes FullPath safe for a path-based host API: the same pin
+                // the read and write paths hold, held here across the open.
+                using var document = pathLease.ProtectDocument();
+                if (document is null && RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                    throw new FileNotFoundException("The workspace file does not exist.", pathLease.FullPath);
                 await _services.OpenDocumentAsync(pathLease.FullPath, _lifetime.Token).ConfigureAwait(true);
             }).ConfigureAwait(true);
         }
@@ -1727,6 +1841,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task RevertChangeAsync(ChangedFileViewModel file)
     {
+        if (!file.CanRevert) throw new InvalidOperationException("The content from before the edit is not known.");
         // Same rule as UpsertToolCall: lease acquisition (path canonicalization plus a chain of
         // directory-handle opens), File.Delete and WriteAllText are all synchronous, and Reject
         // all runs them once per file in a row straight off a click. Only UntrackChange, which

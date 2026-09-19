@@ -456,13 +456,18 @@ public sealed class ChatViewModelTests
     {
         private int _calls;
         public int Percent { get; set; } = 10;
+        public DateTimeOffset? ResetsAt { get; set; }
+        /// <summary>Thrown synchronously from the next fetches while set - the harsher of the two
+        /// ways an <see cref="IUsageService"/> can fail on a caller.</summary>
+        public Exception? Failure { get; set; }
 
         public Task<UsageSnapshot?> GetUsageAsync(CancellationToken cancellationToken)
         {
             Interlocked.Increment(ref _calls);
+            if (Failure is not null) throw Failure;
             return Task.FromResult<UsageSnapshot?>(new UsageSnapshot
             {
-                Limits = [new UsageLimit { Kind = "session", Group = "session", Percent = Percent }],
+                Limits = [new UsageLimit { Kind = "session", Group = "session", Percent = Percent, ResetsAt = ResetsAt }],
                 FetchedAt = DateTimeOffset.UtcNow,
             });
         }
@@ -720,5 +725,277 @@ public sealed class ChatViewModelTests
         Assert.True(abandoned.IsResolved);
         Assert.False(abandoned.ProceedCommand.CanExecute(null));
         Assert.False(abandoned.ReviewCommand.CanExecute("late comments"));
+    }
+
+    // A switch_mode request has two surfaces, the permission card and the plan document. Answering
+    // from the card must settle the document too: a still-live Proceed there would answer a request
+    // that is already resolved.
+    [Fact]
+    public async Task PlanApproval_AnsweredFromThePermissionCard_ResolvesThePlanDocument()
+    {
+        var connection = new RecordingAcpAgentConnection();
+        using var vm = new ChatViewModel(new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService()));
+        await vm.InitializeAsync();
+        vm.InputText = "plan the feature";
+        await vm.SendAsync();
+        var (call, options) = PlanApprovalRequest("# Plan");
+        var request = connection.RaisePermissionRequested(call, options);
+        var plan = vm.PendingPlan!;
+
+        vm.PendingPermission!.ChooseCommand.Execute(vm.PendingPermission.Options[1]); // "No, keep planning"
+
+        Assert.Equal("reject-once", await request.Response.Task);
+        Assert.Null(vm.PendingPermission);
+        Assert.True(plan.IsResolved);
+        Assert.False(plan.ProceedCommand.CanExecute(null));
+        Assert.False(plan.ReviewCommand.CanExecute("late comments"));
+    }
+
+    // Both surfaces can outlive their request. Answering a stale one must not disturb the request
+    // that replaced it: clearing the newer card would leave its slot unanswered until the
+    // connection is torn down, and the plan document must go dead rather than stay clickable.
+    [Fact]
+    public async Task StalePlanSurfaces_AnsweredAfterANewerPermissionArrived_LeaveTheNewerRequestIntact()
+    {
+        var connection = new RecordingAcpAgentConnection();
+        using var vm = new ChatViewModel(new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService()));
+        await vm.InitializeAsync();
+        vm.InputText = "plan the feature";
+        await vm.SendAsync();
+        var (planCall, planOptions) = PlanApprovalRequest("# Plan");
+        var planRequest = connection.RaisePermissionRequested(planCall, planOptions);
+        var stalePlan = vm.PendingPlan!;
+        var staleCard = vm.PendingPermission!;
+        var newer = connection.RaisePermissionRequested(
+            new ToolCallUpdate { ToolCallId = "tc-2", Title = "Edit b.cs", Status = ToolCallStatus.Pending },
+            [new PermissionOption { OptionId = "allow-b", Label = "Allow", Outcome = PermissionOutcome.AllowOnce }]);
+        await Assert.ThrowsAsync<OperationCanceledException>(() => planRequest.Response.Task);
+        var current = vm.PendingPermission!;
+
+        stalePlan.ProceedCommand.Execute(null);
+        staleCard.ChooseCommand.Execute(staleCard.Options[0]);
+
+        Assert.Same(current, vm.PendingPermission);
+        Assert.False(newer.Response.Task.IsCompleted);
+        Assert.True(stalePlan.IsResolved);
+        current.ChooseCommand.Execute(current.Options[0]);
+        Assert.Equal("allow-b", await newer.Response.Task);
+        Assert.Null(vm.PendingPermission);
+    }
+
+    // The launcher can refuse a toggle (no claude.ai session, network). The UI must then keep the
+    // last acknowledged state, say why, and hand the toggle back rather than leave it stuck busy.
+    [Fact]
+    public async Task RemoteControl_WhenTheToggleFails_KeepsTheAcknowledgedStateReportsItAndStaysUsable()
+    {
+        var connection = new RecordingAcpAgentConnection();
+        using var vm = new ChatViewModel(new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService()));
+        await vm.InitializeAsync();
+        vm.InputText = "hi";
+        await vm.SendAsync();
+        await vm.ToggleRemoteControlCommand.ExecuteAsync(null);
+        Assert.True(vm.IsRemoteControlEnabled);
+        connection.RemoteControlHandler = _ => Task.FromException<RemoteControlState>(new InvalidOperationException("the launcher refused"));
+
+        await vm.ToggleRemoteControlCommand.ExecuteAsync(null);
+
+        Assert.True(vm.IsRemoteControlEnabled);
+        Assert.Equal("https://claude.ai/code/session/test", vm.RemoteControlUrl);
+        Assert.Equal("Remote Control: the launcher refused", vm.StatusMessage);
+        Assert.False(vm.IsRemoteControlBusy);
+        Assert.True(vm.ToggleRemoteControlCommand.CanExecute(null));
+
+        connection.RemoteControlHandler = null;
+        await vm.ToggleRemoteControlCommand.ExecuteAsync(null);
+        Assert.False(vm.IsRemoteControlEnabled);
+        Assert.Null(vm.RemoteControlUrl);
+        Assert.Null(vm.StatusMessage);
+    }
+
+    // Usage is best-effort presentation: a fetch that throws - on open, after a turn - must neither
+    // surface to the caller nor disturb the last good snapshot, and the next fetch must still run.
+    [Fact]
+    public async Task UsageService_ThatThrows_LeavesTheLastSnapshotAndRecoversOnTheNextFetch()
+    {
+        var usageService = new CountingUsageService();
+        var connection = new RecordingAcpAgentConnection();
+        using var vm = new ChatViewModel(new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService(), usageService: usageService));
+        await vm.InitializeAsync();
+        await usageService.WaitForCallsAsync(1);
+        await WaitUntilAsync(() => vm.Usage is not null);
+        usageService.Failure = new InvalidOperationException("node is missing");
+
+        vm.IsUsagePanelOpen = true;
+        await usageService.WaitForCallsAsync(2);
+        vm.InputText = "hello";
+        await vm.SendAsync();
+        connection.RaiseSessionUpdate(new SessionUpdate.TurnEnded("end_turn"));
+        await usageService.WaitForCallsAsync(3);
+
+        Assert.Equal(10, vm.Usage!.Limits[0].Percent);
+        Assert.Null(vm.StatusMessage);
+
+        usageService.Failure = null;
+        usageService.Percent = 42;
+        vm.IsUsagePanelOpen = false;
+        vm.IsUsagePanelOpen = true;
+        await WaitUntilAsync(() => vm.Usage!.Limits[0].Percent == 42);
+    }
+
+    // The reset label is the culture's own short time: devenv hosts this assembly on net472, where
+    // NLS gives de-DE, fr-FR, it-IT an empty AM/PM designator, and "h:mm tt" would show a 15:00
+    // reset as "3:00 " - twelve hours off for those users.
+    [Theory]
+    [InlineData(2)]
+    [InlineData(72)]
+    public async Task UsageResetLabel_UsesTheCulturesShortTimePattern_UnderACultureWithoutAMeridiem(int hoursAhead)
+    {
+        var resetsAt = new DateTimeOffset(DateTimeOffset.UtcNow.AddHours(hoursAhead).AddMinutes(30).Ticks / TimeSpan.TicksPerMinute * TimeSpan.TicksPerMinute, TimeSpan.Zero);
+        var usageService = new CountingUsageService { ResetsAt = resetsAt };
+        var connection = new RecordingAcpAgentConnection();
+        using var vm = new ChatViewModel(new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService(), usageService: usageService));
+        await vm.InitializeAsync();
+        await WaitUntilAsync(() => vm.Usage is not null);
+        var culture = (System.Globalization.CultureInfo)System.Globalization.CultureInfo.InvariantCulture.Clone();
+        culture.DateTimeFormat.AMDesignator = string.Empty;
+        culture.DateTimeFormat.PMDesignator = string.Empty;
+        culture.DateTimeFormat.ShortTimePattern = "HH:mm";
+        var local = resetsAt.ToLocalTime();
+        var expected = hoursAhead < 20
+            ? "Resets " + local.ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture)
+            : "Resets " + local.ToString("dddd", culture) + " " + local.ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture);
+
+        var previous = System.Globalization.CultureInfo.CurrentCulture;
+        System.Globalization.CultureInfo.CurrentCulture = culture;
+        try
+        {
+            Assert.Equal(expected, vm.SessionUsage!.ResetText);
+        }
+        finally
+        {
+            System.Globalization.CultureInfo.CurrentCulture = previous;
+        }
+    }
+
+    // The agent keeps every session it created, so a session left published to claude.ai/code
+    // stays there - enabled, invisible, and unreachable from a toggle that only addresses the
+    // current session. Leaving a session turns its Remote Control off first, on both switch paths.
+    [Fact]
+    public async Task LeavingASession_WithRemoteControlOn_TurnsItOffBeforeAdoptingTheNextOne()
+    {
+        var connection = new RecordingAcpAgentConnection();
+        using var vm = new ChatViewModel(new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService(), "/workspace"));
+        await vm.InitializeAsync();
+        vm.InputText = "hi";
+        await vm.SendAsync();
+        await vm.ToggleRemoteControlCommand.ExecuteAsync(null);
+        Assert.True(vm.IsRemoteControlEnabled);
+        var disabledBeforeNewSession = false;
+        connection.NewSessionHandler = _ =>
+        {
+            disabledBeforeNewSession = connection.RemoteControlCalls.Any(c => c.SessionId == RecordingAcpAgentConnection.SessionId && !c.Enabled);
+            return Task.FromResult(new NewSessionResult("session-2", []));
+        };
+
+        await vm.NewSessionCommand.ExecuteAsync(null);
+
+        Assert.True(disabledBeforeNewSession);
+        Assert.False(vm.IsRemoteControlEnabled);
+        Assert.Null(vm.RemoteControlUrl);
+
+        await vm.ToggleRemoteControlCommand.ExecuteAsync(null);
+        Assert.True(vm.IsRemoteControlEnabled);
+        var disabledBeforeLoad = false;
+        connection.LoadSessionHandler = (_, _, _, _) =>
+        {
+            disabledBeforeLoad = connection.RemoteControlCalls.Any(c => c.SessionId == "session-2" && !c.Enabled);
+            return Task.FromResult(new NewSessionResult("session-old", []));
+        };
+
+        await vm.OpenSessionCommand.ExecuteAsync(new SessionSummary("session-old", "/workspace", "Older chat", null));
+
+        Assert.True(disabledBeforeLoad);
+        Assert.False(vm.IsRemoteControlEnabled);
+    }
+
+    // A toggle still in flight when the session changes must not cost the incoming session its
+    // startup enable: the stale result is discarded, and the enable is issued for whichever
+    // session is current once the toggle returns.
+    [Fact]
+    public async Task RemoteControlAtStartup_WithAToggleInFlightDuringNewChat_StillEnablesTheNewSession()
+    {
+        var connection = new RecordingAcpAgentConnection();
+        var services = new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService()) { RemoteControlAtStartup = true };
+        using var vm = new ChatViewModel(services);
+        await vm.InitializeAsync();
+        await WaitUntilAsync(() => vm.IsRemoteControlEnabled);
+        var inFlight = new TaskCompletionSource<RemoteControlState>();
+        connection.RemoteControlHandler = _ => inFlight.Task;
+        var toggling = vm.ToggleRemoteControlCommand.ExecuteAsync(null);
+        connection.RemoteControlHandler = null; // only that one call stays in flight
+        Assert.True(vm.IsRemoteControlBusy);
+        connection.NewSessionHandler = _ => Task.FromResult(new NewSessionResult("session-2", []));
+        await vm.NewSessionCommand.ExecuteAsync(null);
+        Assert.False(vm.IsRemoteControlEnabled);
+
+        inFlight.SetException(new InvalidOperationException("late"));
+        await toggling;
+
+        await WaitUntilAsync(() => vm.IsRemoteControlEnabled);
+        Assert.Contains(connection.RemoteControlCalls, c => c.SessionId == "session-2" && c.Enabled);
+    }
+
+    // The other half of the same orphan: an enable that was in flight for the session being left
+    // lands after the switch. Its result is stale for the UI, but on the agent that session is now
+    // published - so it is turned back off.
+    [Fact]
+    public async Task RemoteControlEnable_LandingAfterTheSessionWasLeft_TurnsThatSessionOffAgain()
+    {
+        var connection = new RecordingAcpAgentConnection();
+        using var vm = new ChatViewModel(new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService()));
+        await vm.InitializeAsync();
+        vm.InputText = "hi";
+        await vm.SendAsync();
+        var inFlight = new TaskCompletionSource<RemoteControlState>();
+        connection.RemoteControlHandler = _ => inFlight.Task;
+        var enabling = vm.ToggleRemoteControlCommand.ExecuteAsync(null);
+        connection.RemoteControlHandler = null; // only that one call stays in flight
+        connection.NewSessionHandler = _ => Task.FromResult(new NewSessionResult("session-2", []));
+        await vm.NewSessionCommand.ExecuteAsync(null);
+
+        inFlight.SetResult(RemoteControl(enabled: true));
+        await enabling;
+
+        await WaitUntilAsync(() => connection.RemoteControlCalls.Any(c => c.SessionId == RecordingAcpAgentConnection.SessionId && !c.Enabled));
+        Assert.False(vm.IsRemoteControlEnabled);
+        Assert.Null(vm.RemoteControlUrl);
+        Assert.DoesNotContain(connection.RemoteControlCalls, c => c.SessionId == "session-2");
+    }
+
+    private static RemoteControlState RemoteControl(bool enabled) =>
+        new(enabled, enabled ? "https://claude.ai/code/session/test" : null);
+
+    // A Bash/PowerShell title is the command itself, and this client (no terminal capability)
+    // gets nothing else to show, so the whole command - every line - has to reach the card the
+    // user answers from. Height is bounded by the card's ScrollViewer, not by cutting text.
+    [Fact]
+    public async Task PermissionRequested_ForAMultiLineShellCommand_ShowsEveryLineOfTheCommand()
+    {
+        var connection = new RecordingAcpAgentConnection();
+        using var vm = new ChatViewModel(new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService()));
+        await vm.InitializeAsync();
+
+        vm.InputText = "commit it";
+        await vm.SendAsync();
+
+        const string command = "git add -A\ngit commit -m \"wip\" && rm -rf build/";
+        var call = new ToolCallUpdate { ToolCallId = "tc-bash", Title = command, Status = ToolCallStatus.Pending };
+        connection.RaiseSessionUpdate(new SessionUpdate.ToolCall(call));
+        connection.RaisePermissionRequested(call,
+            [new PermissionOption { OptionId = "allow-once", Label = "Allow", Outcome = PermissionOutcome.AllowOnce }]);
+
+        Assert.Equal(command, vm.PendingPermission!.Title);
+        var card = Assert.Single(vm.Messages.SelectMany(message => message.ToolCalls), tool => tool.ToolCallId == "tc-bash");
+        Assert.Equal(command, card.Title);
     }
 }
