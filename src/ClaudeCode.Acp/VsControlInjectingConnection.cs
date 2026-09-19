@@ -1,17 +1,16 @@
 using ClaudeCode.Contracts;
-using ClaudeCode.Vsix.VsControl;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace ClaudeCode.Vsix.Connections;
+namespace ClaudeCode.Acp;
 
 /// <summary>
 /// Adds the Visual Studio control MCP server to every session started through the inner connection.
 /// <para>
-/// Security invariant: the workspace root handed to <see cref="VsControlSessionRegistry.StartSession"/>
+/// Security invariant: the workspace root handed to <see cref="IVsControlSessionHost.StartSession"/>
 /// - which becomes the <c>WorkspacePathGuard</c> sandbox root for every VS-control tool call - is
 /// always taken from <c>trustedWorkspaceRootProvider</c>, the host's own solution directory. The
 /// <c>cwd</c> arguments of <see cref="NewSessionAsync"/> and <see cref="LoadSessionAsync"/> are never
@@ -21,15 +20,15 @@ namespace ClaudeCode.Vsix.Connections;
 /// agent-supplied path.
 /// </para>
 /// </summary>
-internal sealed class VsControlInjectingConnection : IAcpAgentConnection
+public sealed class VsControlInjectingConnection : IAcpAgentConnection
 {
     private readonly IAcpAgentConnection _inner;
-    private readonly VsControlSessionRegistry _registry;
+    private readonly IVsControlSessionHost _registry;
     private readonly Func<string?> _trustedWorkspaceRootProvider;
     private readonly ConcurrentDictionary<string, byte> _correlationIds = new ConcurrentDictionary<string, byte>();
     private int _disposed;
 
-    public VsControlInjectingConnection(IAcpAgentConnection inner, VsControlSessionRegistry registry, Func<string?> trustedWorkspaceRootProvider)
+    public VsControlInjectingConnection(IAcpAgentConnection inner, IVsControlSessionHost registry, Func<string?> trustedWorkspaceRootProvider)
     {
         _inner = inner ?? throw new ArgumentNullException(nameof(inner));
         _registry = registry ?? throw new ArgumentNullException(nameof(registry));
@@ -49,28 +48,18 @@ internal sealed class VsControlInjectingConnection : IAcpAgentConnection
     public async Task<NewSessionResult> NewSessionAsync(string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken)
     {
         var merged = new List<McpServerConfig>(mcpServers ?? Array.Empty<McpServerConfig>());
-        string? correlationId = null;
-
-        if (_registry.IsAvailable)
-        {
-            // Never `cwd`: the sandbox root must be the host's, not one supplied over the wire.
-            merged.Add(_registry.StartSession(_trustedWorkspaceRootProvider(), out correlationId));
-            _correlationIds.TryAdd(correlationId, 0);
-        }
-        // else: the VsControlMcp sidecar payload hasn't been built/deployed beside this assembly yet - the
-        // session still starts, just without editor/solution tool support, rather than failing outright.
+        // Never `cwd`: the sandbox root must be the host's, not one supplied over the wire.
+        string? correlationId = StartVsControlSession(merged);
 
         try
         {
-            return await _inner.NewSessionAsync(cwd, merged, cancellationToken).ConfigureAwait(false);
+            var result = await _inner.NewSessionAsync(cwd, merged, cancellationToken).ConfigureAwait(false);
+            EndSupersededSessions(correlationId);
+            return result;
         }
         catch
         {
-            if (correlationId is not null && _correlationIds.TryRemove(correlationId, out _))
-            {
-                _registry.EndSession(correlationId);
-            }
-
+            EndSession(correlationId);
             throw;
         }
     }
@@ -81,26 +70,20 @@ internal sealed class VsControlInjectingConnection : IAcpAgentConnection
     public async Task<NewSessionResult> LoadSessionAsync(string sessionId, string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken)
     {
         var merged = new List<McpServerConfig>(mcpServers ?? Array.Empty<McpServerConfig>());
-        string? correlationId = null;
-
-        if (_registry.IsAvailable)
-        {
-            // `cwd` here is agent-reported (SessionSummary.Cwd); it must never become the sandbox root.
-            merged.Add(_registry.StartSession(_trustedWorkspaceRootProvider(), out correlationId));
-            _correlationIds.TryAdd(correlationId, 0);
-        }
+        // `cwd` here is agent-reported (SessionSummary.Cwd); it must never become the sandbox root.
+        string? correlationId = StartVsControlSession(merged);
 
         try
         {
-            return await _inner.LoadSessionAsync(sessionId, cwd, merged, cancellationToken).ConfigureAwait(false);
+            var result = await _inner.LoadSessionAsync(sessionId, cwd, merged, cancellationToken).ConfigureAwait(false);
+            EndSupersededSessions(correlationId);
+            return result;
         }
         catch
         {
-            if (correlationId is not null && _correlationIds.TryRemove(correlationId, out _))
-            {
-                _registry.EndSession(correlationId);
-            }
-
+            // Only the session that failed to start dies here: the one the user is still in keeps
+            // its control server, so a rejected resume cannot disarm the live session.
+            EndSession(correlationId);
             throw;
         }
     }
@@ -128,6 +111,52 @@ internal sealed class VsControlInjectingConnection : IAcpAgentConnection
     public event EventHandler<FileWriteRequestEventArgs>? FileWriteRequested;
 
     public event EventHandler<Exception?>? Disconnected;
+
+    private string? StartVsControlSession(List<McpServerConfig> merged)
+    {
+        // The VsControlMcp sidecar payload may not have been built/deployed beside this assembly - the
+        // session still starts, just without editor/solution tool support, rather than failing outright.
+        if (!_registry.IsAvailable || Volatile.Read(ref _disposed) != 0) return null;
+
+        merged.Add(_registry.StartSession(_trustedWorkspaceRootProvider(), out string correlationId));
+        _correlationIds.TryAdd(correlationId, 0);
+
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            // DisposeAsync drained the map between the start and the add; without this the server
+            // would outlive the connection with nothing left holding its correlation id.
+            EndSession(correlationId);
+            merged.RemoveAt(merged.Count - 1);
+            return null;
+        }
+
+        return correlationId;
+    }
+
+    /// <summary>
+    /// Ends every control server this connection started before <paramref name="currentCorrelationId"/>.
+    /// A connection drives one session at a time ("New chat" and opening history both replace the
+    /// active session), and an abandoned server still serves the full VS-control surface to whoever
+    /// holds its token - including an MCP child the agent kept alive for the abandoned session.
+    /// </summary>
+    private void EndSupersededSessions(string? currentCorrelationId)
+    {
+        foreach (string correlationId in _correlationIds.Keys)
+        {
+            if (!string.Equals(correlationId, currentCorrelationId, StringComparison.Ordinal))
+            {
+                EndSession(correlationId);
+            }
+        }
+    }
+
+    private void EndSession(string? correlationId)
+    {
+        if (correlationId is not null && _correlationIds.TryRemove(correlationId, out _))
+        {
+            _registry.EndSession(correlationId);
+        }
+    }
 
     private void OnSessionUpdate(object? sender, SessionUpdateEventArgs e)
     {
@@ -172,10 +201,7 @@ internal sealed class VsControlInjectingConnection : IAcpAgentConnection
 
         foreach (string correlationId in _correlationIds.Keys)
         {
-            if (_correlationIds.TryRemove(correlationId, out _))
-            {
-                _registry.EndSession(correlationId);
-            }
+            EndSession(correlationId);
         }
 
         await _inner.DisposeAsync().ConfigureAwait(false);

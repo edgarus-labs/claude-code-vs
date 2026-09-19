@@ -8,7 +8,7 @@ using System.Security.Cryptography;
 
 namespace ClaudeCode.Vsix.VsControl;
 
-internal sealed class VsControlSessionRegistry : IDisposable
+internal sealed class VsControlSessionRegistry : IVsControlSessionHost, IDisposable
 {
     private readonly ConcurrentDictionary<string, VsControlPipeServer> _servers = new ConcurrentDictionary<string, VsControlPipeServer>();
     private readonly string? _vsControlMcpExecutablePath;

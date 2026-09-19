@@ -10,8 +10,9 @@ internal static class PackageGuids
     public const string ClaudeCodeImagesString = "6a1e4f2b-9c3d-47a8-b5e1-2d8f6c4a9e70";
     public const string PlanToolWindowPersistanceString = "9c4b2e7d-1f5a-4c8e-a3b6-7e2d9f1c5a48";
 
-    public static readonly Guid ClaudeCodePackage = new Guid(ClaudeCodePackageString);
-    public static readonly Guid ClaudeCodeCommandSet = new Guid(ClaudeCodeCommandSetString);
-    public static readonly Guid ChatToolWindowPersistance = new Guid(ChatToolWindowPersistanceString);
+    // Parsed form only where code actually needs a Guid - attributes take the string constants
+    // above, so a companion field per string would be dead weight (ClaudeCodePackage,
+    // ClaudeCodeCommandSet, ChatToolWindowPersistance and PlanToolWindowPersistance all had, or
+    // would have had, no consumer).
     public static readonly Guid ClaudeCodeImages = new Guid(ClaudeCodeImagesString);
 }

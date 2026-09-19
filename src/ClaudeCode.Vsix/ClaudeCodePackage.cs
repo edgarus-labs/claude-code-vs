@@ -85,6 +85,12 @@ public sealed class ClaudeCodePackage : AsyncPackage
                 ErrorHandler.ThrowOnFailure(frame.Show());
             }
         }
+        else
+        {
+            // FindToolWindowAsync returns null rather than throwing when creation fails, so without
+            // this the plan silently never appears and the caller's try/catch logs nothing.
+            ActivityLog.TryLogError("Claude Code", "The implementation plan window could not be created.");
+        }
     }
 
     protected override void Dispose(bool disposing)
