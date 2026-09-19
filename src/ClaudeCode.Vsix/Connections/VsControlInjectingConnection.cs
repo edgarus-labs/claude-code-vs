@@ -8,17 +8,32 @@ using System.Threading.Tasks;
 
 namespace ClaudeCode.Vsix.Connections;
 
+/// <summary>
+/// Adds the Visual Studio control MCP server to every session started through the inner connection.
+/// <para>
+/// Security invariant: the workspace root handed to <see cref="VsControlSessionRegistry.StartSession"/>
+/// - which becomes the <c>WorkspacePathGuard</c> sandbox root for every VS-control tool call - is
+/// always taken from <c>trustedWorkspaceRootProvider</c>, the host's own solution directory. The
+/// <c>cwd</c> arguments of <see cref="NewSessionAsync"/> and <see cref="LoadSessionAsync"/> are never
+/// used for it: <c>LoadSessionAsync</c>'s <c>cwd</c> originates from the agent's <c>session/list</c>
+/// response (see <see cref="SessionSummary.Cwd"/>), so honouring it would let the agent choose the
+/// directory it is then sandboxed to. The guard therefore holds even if a caller passes an
+/// agent-supplied path.
+/// </para>
+/// </summary>
 internal sealed class VsControlInjectingConnection : IAcpAgentConnection
 {
     private readonly IAcpAgentConnection _inner;
     private readonly VsControlSessionRegistry _registry;
+    private readonly Func<string?> _trustedWorkspaceRootProvider;
     private readonly ConcurrentDictionary<string, byte> _correlationIds = new ConcurrentDictionary<string, byte>();
     private int _disposed;
 
-    public VsControlInjectingConnection(IAcpAgentConnection inner, VsControlSessionRegistry registry)
+    public VsControlInjectingConnection(IAcpAgentConnection inner, VsControlSessionRegistry registry, Func<string?> trustedWorkspaceRootProvider)
     {
         _inner = inner ?? throw new ArgumentNullException(nameof(inner));
         _registry = registry ?? throw new ArgumentNullException(nameof(registry));
+        _trustedWorkspaceRootProvider = trustedWorkspaceRootProvider ?? throw new ArgumentNullException(nameof(trustedWorkspaceRootProvider));
         _inner.SessionUpdate += OnSessionUpdate;
         _inner.PermissionRequested += OnPermissionRequested;
         _inner.ElicitationRequested += OnElicitationRequested;
@@ -38,7 +53,8 @@ internal sealed class VsControlInjectingConnection : IAcpAgentConnection
 
         if (_registry.IsAvailable)
         {
-            merged.Add(_registry.StartSession(cwd, out correlationId));
+            // Never `cwd`: the sandbox root must be the host's, not one supplied over the wire.
+            merged.Add(_registry.StartSession(_trustedWorkspaceRootProvider(), out correlationId));
             _correlationIds.TryAdd(correlationId, 0);
         }
         // else: the VsControlMcp sidecar payload hasn't been built/deployed beside this assembly yet - the
@@ -69,7 +85,8 @@ internal sealed class VsControlInjectingConnection : IAcpAgentConnection
 
         if (_registry.IsAvailable)
         {
-            merged.Add(_registry.StartSession(cwd, out correlationId));
+            // `cwd` here is agent-reported (SessionSummary.Cwd); it must never become the sandbox root.
+            merged.Add(_registry.StartSession(_trustedWorkspaceRootProvider(), out correlationId));
             _correlationIds.TryAdd(correlationId, 0);
         }
 

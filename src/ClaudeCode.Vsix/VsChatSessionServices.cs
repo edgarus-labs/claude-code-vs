@@ -14,15 +14,16 @@ internal sealed class VsChatSessionServices : IChatSessionServices
 {
     private readonly Func<string?> _getWorkspaceRoot;
     private readonly ActiveEditorDocumentTracker _editorDocumentTracker;
+    private readonly Func<bool> _remoteControlAtStartup;
 
-    public VsChatSessionServices(IAcpAgentConnectionFactory connectionFactory, IAcpAuthService authService, IUsageService usageService, Func<string?> getWorkspaceRoot, ActiveEditorDocumentTracker editorDocumentTracker, Func<bool>? remoteControlAtStartup = null)
+    public VsChatSessionServices(IAcpAgentConnectionFactory connectionFactory, IAcpAuthService authService, IUsageService usageService, Func<string?> getWorkspaceRoot, ActiveEditorDocumentTracker editorDocumentTracker, Func<bool> remoteControlAtStartup)
     {
-        _remoteControlAtStartup = remoteControlAtStartup ?? (() => false);
         ConnectionFactory = connectionFactory ?? throw new ArgumentNullException(nameof(connectionFactory));
         AuthService = authService ?? throw new ArgumentNullException(nameof(authService));
         UsageService = usageService ?? throw new ArgumentNullException(nameof(usageService));
         _getWorkspaceRoot = getWorkspaceRoot ?? throw new ArgumentNullException(nameof(getWorkspaceRoot));
         _editorDocumentTracker = editorDocumentTracker ?? throw new ArgumentNullException(nameof(editorDocumentTracker));
+        _remoteControlAtStartup = remoteControlAtStartup ?? throw new ArgumentNullException(nameof(remoteControlAtStartup));
     }
 
     public IAcpAgentConnectionFactory ConnectionFactory { get; }
@@ -36,8 +37,6 @@ internal sealed class VsChatSessionServices : IChatSessionServices
     public bool HasActiveDocument => _editorDocumentTracker.HasActiveDocument;
 
     public bool RemoteControlAtStartup => _remoteControlAtStartup();
-
-    private readonly Func<bool> _remoteControlAtStartup;
 
     public event EventHandler? ActiveDocumentChanged
     {

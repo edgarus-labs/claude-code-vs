@@ -1,4 +1,3 @@
-using Community.VisualStudio.Toolkit;
 using Microsoft.VisualStudio.Shell;
 using System;
 using System.Diagnostics;
@@ -15,11 +14,15 @@ namespace ClaudeCode.Vsix;
 internal sealed class VsAttentionNotifier : IDisposable
 {
     private readonly NotifyIcon _icon;
+    private readonly Action _activateChatWindow;
     private bool _disposed;
 
-    public VsAttentionNotifier()
+    /// <param name="activateChatWindow">Brings the Claude Code window to the front. Invoked on the
+    /// UI thread when the user clicks the notification.</param>
+    public VsAttentionNotifier(Action activateChatWindow)
     {
         ThreadHelper.ThrowIfNotOnUIThread();
+        _activateChatWindow = activateChatWindow ?? throw new ArgumentNullException(nameof(activateChatWindow));
         _icon = new NotifyIcon { Icon = LoadIcon(), Text = "Claude Code for Visual Studio", Visible = false };
         _icon.BalloonTipClicked += OnBalloonClicked;
         _icon.BalloonTipClosed += (_, __) => HideIcon();
@@ -59,7 +62,7 @@ internal sealed class VsAttentionNotifier : IDisposable
                     SetForegroundWindow(handle);
                 }
 
-                await VS.Commands.ExecuteAsync("View.ClaudeCode");
+                _activateChatWindow();
             }
             catch (Exception exception)
             {

@@ -21,8 +21,10 @@ public sealed class PlanToolWindowPane : ToolWindowPane
         _view = new PlanDocumentView();
         VsChatTheme.Apply(_view);
         _view.RefreshTheme();
-        VSColorTheme.ThemeChanged += OnThemeChanged;
         Content = _view;
+        // Subscribe to the process-wide static event last, so a throw above cannot leave
+        // VSColorTheme holding a pane whose Dispose(bool) will never run.
+        VSColorTheme.ThemeChanged += OnThemeChanged;
     }
 
     public void ShowPlan(PlanReviewViewModel plan)

@@ -1,12 +1,13 @@
 using ClaudeCode.Core.ViewModels;
 using ClaudeCode.Core.Views;
+using Microsoft.VisualStudio;
 using Microsoft.VisualStudio.Imaging.Interop;
 using Microsoft.VisualStudio.PlatformUI;
 using Microsoft.VisualStudio.Shell;
+using Microsoft.VisualStudio.Shell.Interop;
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
-using System.Windows.Media;
 using System.Windows.Media.Imaging;
 
 namespace ClaudeCode.Vsix;
@@ -15,6 +16,7 @@ namespace ClaudeCode.Vsix;
 public sealed class ChatToolWindowPane : ToolWindowPane
 {
     private readonly ChatPanelView _view;
+    private readonly VsAttentionNotifier _notifier;
     private bool _disposed;
 
     public ChatToolWindowPane() : base(null)
@@ -32,21 +34,33 @@ public sealed class ChatToolWindowPane : ToolWindowPane
         _view = new ChatPanelView();
         ApplyTheme();
         LoadBrandImage();
-        VSColorTheme.ThemeChanged += OnThemeChanged;
+        _notifier = new VsAttentionNotifier(ActivateChatWindow);
         _view.PlanReviewRequested += OnPlanReviewRequested;
-        _notifier = new VsAttentionNotifier();
         _view.AttentionRequested += OnAttentionRequested;
         Content = _view;
+        // Subscribe to the process-wide static event last: anything that throws after this point
+        // aborts the constructor, so Dispose(bool) never runs and VSColorTheme would root this
+        // pane - and through it the view, its view model and its WebView2 - for the life of devenv.
+        VSColorTheme.ThemeChanged += OnThemeChanged;
     }
 
-    private readonly VsAttentionNotifier _notifier;
+    /// <summary>Brings this tool window to the front; passed to the notifier as its click action.</summary>
+    private void ActivateChatWindow()
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        if (_disposed || Frame is not IVsWindowFrame frame) return;
+        ErrorHandler.ThrowOnFailure(frame.Show());
+    }
 
     private void OnAttentionRequested(object? sender, ChatAttentionEventArgs e)
     {
         ThreadHelper.ThrowIfNotOnUIThread(); // the view model raises this on its UI SynchronizationContext
-        if (_disposed || Package is not ClaudeCodePackage package || !package.GetOptions().NotifyWhenInBackground) return;
+        if (_disposed) return;
         try
         {
+            // GetOptions() goes through GetDialogPage, which can throw once the package is being
+            // torn down; this handler runs in a dispatcher callback, so an escape kills devenv.
+            if (Package is not ClaudeCodePackage package || !package.GetOptions().NotifyWhenInBackground) return;
             _notifier.Notify(e.Title, e.Message);
         }
         catch (Exception exception)

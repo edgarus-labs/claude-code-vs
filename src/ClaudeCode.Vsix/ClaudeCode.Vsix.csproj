@@ -199,7 +199,7 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <!-- Launcher around the ACP adapter that adds the Remote Control extension request
-         (see Connections\ClaudeCodeConnectionFactory.WrapWithVisualStudioLauncher). -->
+         (see ClaudeCode.Acp.AcpLauncherWrap.Wrap, invoked from Connections\ClaudeCodeConnectionFactory). -->
     <Content Include="Resources\Scripts\claude-acp-vs.mjs">
       <IncludeInVSIX>true</IncludeInVSIX>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>

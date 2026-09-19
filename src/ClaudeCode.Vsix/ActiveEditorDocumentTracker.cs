@@ -123,7 +123,12 @@ internal sealed class ActiveEditorDocumentTracker : IDisposable
             current.Closed += OnTextViewClosed;
         }
 
-        ActiveDocumentChanged?.Invoke(this, EventArgs.Empty);
+        // Dispose() calls this with null after setting _disposed; a teardown notification has no
+        // subscriber that needs it (HasActiveDocument already reports false) and is a latent trap.
+        if (!_disposed)
+        {
+            ActiveDocumentChanged?.Invoke(this, EventArgs.Empty);
+        }
     }
 
     private void OnTextViewClosed(object? sender, EventArgs args)
