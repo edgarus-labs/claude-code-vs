@@ -19,6 +19,7 @@ public sealed class ChatToolWindowPane : ToolWindowPane
 
     public ChatToolWindowPane() : base(null)
     {
+        ThreadHelper.ThrowIfNotOnUIThread();
         Caption = "Claude Code";
         // TODO(imagemanifest-missing, Low/cosmetic): this GUID/ID moniker is only auto-registered with
         // the VS image service when used from the VSCT-compiled command table (see the OpenChatWindow
@@ -95,6 +96,7 @@ public sealed class ChatToolWindowPane : ToolWindowPane
 
     private void ApplyTheme()
     {
+        ThreadHelper.ThrowIfNotOnUIThread();
         if (_disposed)
         {
             return;

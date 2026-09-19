@@ -324,6 +324,14 @@ public partial class ChatPanelView : UserControl, IDisposable
             ["--chat-diff-removed-fg"] = ResourceBrushToCss("ChatDiffRemovedForegroundBrush"),
             ["--chat-error-fg"] = ResourceBrushToCss("ChatErrorForegroundBrush"),
         };
+        // Editor syntax colors are optional (host-provided); the page keeps its own palette otherwise.
+        AddBrushIfPresent(vars, "--hljs-keyword", "ChatCodeKeywordBrush");
+        AddBrushIfPresent(vars, "--hljs-string", "ChatCodeStringBrush");
+        AddBrushIfPresent(vars, "--hljs-comment", "ChatCodeCommentBrush");
+        AddBrushIfPresent(vars, "--hljs-number", "ChatCodeNumberBrush");
+        AddBrushIfPresent(vars, "--hljs-type", "ChatCodeTypeBrush");
+        AddBrushIfPresent(vars, "--hljs-identifier", "ChatCodeIdentifierBrush");
+        AddBrushIfPresent(vars, "--hljs-attribute", "ChatCodeAttributeBrush");
 
         string json = JsonConvert.SerializeObject(vars);
         _ = TranscriptView.CoreWebView2.ExecuteScriptAsync($"window.claudeTranscript.applyTheme({json});");
@@ -332,6 +340,14 @@ public partial class ChatPanelView : UserControl, IDisposable
     /// <summary>Called by the host (ChatToolWindowPane) after it applies new VS theme colors onto
     /// this control's Resources, since WPF's DynamicResource updates don't reach JS on their own.</summary>
     public void RefreshTranscriptTheme() => PushTheme();
+
+    private void AddBrushIfPresent(System.Collections.Generic.Dictionary<string, string> vars, string cssVariable, string resourceKey)
+    {
+        if (TryFindResource(resourceKey) is SolidColorBrush)
+        {
+            vars[cssVariable] = ResourceBrushToCss(resourceKey);
+        }
+    }
 
     private string ResourceBrushToCss(string resourceKey)
     {

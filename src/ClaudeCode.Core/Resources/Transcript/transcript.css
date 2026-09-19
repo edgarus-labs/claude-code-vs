@@ -68,9 +68,71 @@ html, body {
   display: block;
 }
 
-.msg-user .bubble-text {
+.msg-user .bubble-plain {
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* A pasted diff inside a prompt: same rows as tool diffs, in its own scrollable box. */
+.msg-user .user-diff {
+  margin: 8px 0;
+  border: 1px solid var(--chat-border);
+  border-radius: 8px;
+  background: var(--chat-input-bg);
+  overflow-x: auto;
+  padding: 4px 0;
+}
+
+.msg-user .user-diff .diff-line,
+.tool-card .diff-line {
+  font-family: var(--chat-code-font);
+  font-size: 0.92em;
+  white-space: pre;
+  padding: 0 8px;
+}
+
+.msg-user .user-diff .diff-added,
+.tool-card .diff-added {
+  background: var(--chat-diff-added-bg);
+}
+
+.msg-user .user-diff .diff-removed,
+.tool-card .diff-removed {
+  background: var(--chat-diff-removed-bg);
+}
+
+.msg-user .user-diff .diff-added .diff-prefix,
+.tool-card .diff-added .diff-prefix {
+  color: var(--chat-diff-added-fg);
+  opacity: 1;
+}
+
+.msg-user .user-diff .diff-removed .diff-prefix,
+.tool-card .diff-removed .diff-prefix {
+  color: var(--chat-diff-removed-fg);
+  opacity: 1;
+}
+
+.msg-user .user-diff .diff-path,
+.tool-card .diff-path {
+  font-weight: 600;
+  color: var(--chat-subtle-fg);
+  padding: 4px 8px 2px 8px;
+}
+
+.msg-user .user-diff .diff-prefix,
+.tool-card .diff-prefix {
+  display: inline-block;
+  width: 1em;
+  opacity: 0.7;
+  user-select: none;
+}
+
+.msg-user .user-diff .diff-hunk,
+.tool-card .diff-hunk {
+  color: var(--chat-subtle-fg);
+  opacity: 0.8;
+  margin-top: 4px;
 }
 
 .msg-assistant {
@@ -331,14 +393,23 @@ html, body {
   padding: 0 6px;
 }
 
+/* Background tint only - the code keeps its syntax colors; the +/- gutter carries the diff color. */
 .tool-card .diff-added {
-  color: var(--chat-diff-added-fg);
   background: var(--chat-diff-added-bg);
 }
 
 .tool-card .diff-removed {
-  color: var(--chat-diff-removed-fg);
   background: var(--chat-diff-removed-bg);
+}
+
+.tool-card .diff-added .diff-prefix {
+  color: var(--chat-diff-added-fg);
+  opacity: 1;
+}
+
+.tool-card .diff-removed .diff-prefix {
+  color: var(--chat-diff-removed-fg);
+  opacity: 1;
 }
 
 .tool-card .diff-path {
@@ -356,12 +427,14 @@ html, body {
 
 /* Token colors for highlight.js output inside diff lines and plain tool-output code blocks -
    VS Code's default dark+ syntax palette, a well-known public color scheme (not vendor CSS). */
+/* The host passes the editor's own classification colors as --hljs-* when it can (see
+   VsChatTheme.ApplyEditorSyntaxColors); the fallbacks are VS Code's default dark+ palette. */
 .hljs-keyword,
 .hljs-selector-tag,
 .hljs-literal,
 .hljs-section,
 .hljs-link {
-  color: #569cd6;
+  color: var(--hljs-keyword, #569cd6);
 }
 
 .hljs-string,
@@ -369,33 +442,34 @@ html, body {
 .hljs-symbol,
 .hljs-bullet,
 .hljs-addition {
-  color: #ce9178;
+  color: var(--hljs-string, #ce9178);
 }
 
 .hljs-number {
-  color: #b5cea8;
+  color: var(--hljs-number, #b5cea8);
 }
 
 .hljs-comment,
 .hljs-quote,
 .hljs-deletion {
-  color: var(--chat-subtle-fg);
+  color: var(--hljs-comment, var(--chat-subtle-fg));
 }
 
 .hljs-title,
 .hljs-name,
 .hljs-type {
-  color: #4ec9b0;
+  color: var(--hljs-type, #4ec9b0);
 }
 
 .hljs-variable,
 .hljs-template-variable,
 .hljs-attribute {
-  color: #9cdcfe;
+  color: var(--hljs-identifier, #9cdcfe);
 }
 
-.hljs-built_in {
-  color: #dcdcaa;
+.hljs-built_in,
+.hljs-meta {
+  color: var(--hljs-attribute, #dcdcaa);
 }
 
 .activity {

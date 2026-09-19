@@ -74,6 +74,13 @@
     for (var i = 0; i < lines.length; i++) {
       var line = lines[i];
       var lineEl = document.createElement("div");
+      if (line.kind === "Hunk") {
+        lineEl.className = "diff-line diff-hunk";
+        lineEl.textContent = line.text || "";
+        wrap.appendChild(lineEl);
+        continue;
+      }
+
       lineEl.className = "diff-line" + (line.kind === "Added" ? " diff-added" : line.kind === "Removed" ? " diff-removed" : "");
 
       var prefixEl = document.createElement("span");
@@ -410,10 +417,7 @@
       }
 
       if (text.length > 0) {
-        var textEl = document.createElement("div");
-        textEl.className = "bubble-text";
-        textEl.textContent = text;
-        bubble.appendChild(textEl);
+        bubble.appendChild(renderUserText(text));
       }
 
       wrap.appendChild(bubble);
@@ -439,6 +443,94 @@
     }
 
     return wrap;
+  }
+
+  // User prompts often carry pasted unified diffs ("=== DIFF: path ===" / "diff --git" headers,
+  // "@@" hunks, +/- lines). Those runs are rendered like tool diffs - green/red rows with syntax
+  // colors for the file's language - and everything else stays plain text.
+  var diffHeaderPatterns = [
+    /^=== DIFF: (.+?) ===\s*$/,
+    /^diff --git a\/(.+?) b\/.+$/,
+    /^\+\+\+ (?:b\/)?(.+?)\s*$/,
+  ];
+
+  function renderUserText(text) {
+    var container = document.createElement("div");
+    container.className = "bubble-text";
+    var lines = text.split("\n");
+    var plain = [];
+    var i = 0;
+
+    function flushPlain() {
+      if (plain.length === 0) return;
+      var block = document.createElement("div");
+      block.className = "bubble-plain";
+      block.textContent = plain.join("\n");
+      container.appendChild(block);
+      plain = [];
+    }
+
+    while (i < lines.length) {
+      var header = matchDiffHeader(lines[i]);
+      if (!header) {
+        plain.push(lines[i]);
+        i++;
+        continue;
+      }
+
+      // Skip the rest of a git-style header (index/---/+++ lines) up to the first hunk.
+      var j = i + 1;
+      while (j < lines.length && /^(index |--- |\+\+\+ |new file|deleted file|similarity|rename )/.test(lines[j])) j++;
+      if (j >= lines.length || !/^@@/.test(lines[j])) {
+        plain.push(lines[i]);
+        i++;
+        continue;
+      }
+
+      flushPlain();
+      var diffLines = [];
+      while (j < lines.length) {
+        var line = lines[j];
+        if (/^@@/.test(line)) {
+          diffLines.push({ kind: "Hunk", prefix: "", text: line });
+        } else if (line.length === 0 || line === "\r") {
+          // A blank line inside a hunk is context; two in a row end the diff block.
+          if (j + 1 < lines.length && /^[@+\- ]/.test(lines[j + 1])) diffLines.push({ kind: "Context", prefix: " ", text: "" });
+          else break;
+        } else if (line[0] === "+") {
+          diffLines.push({ kind: "Added", prefix: "+", text: line.substring(1) });
+        } else if (line[0] === "-") {
+          diffLines.push({ kind: "Removed", prefix: "-", text: line.substring(1) });
+        } else if (line[0] === " ") {
+          diffLines.push({ kind: "Context", prefix: " ", text: line.substring(1) });
+        } else if (/^\\ No newline/.test(line)) {
+          j++;
+          continue;
+        } else if (matchDiffHeader(line)) {
+          break; // next file: handled by the outer loop
+        } else {
+          break;
+        }
+        j++;
+      }
+
+      var block = buildDiffBody({ path: header, diffLines: diffLines });
+      block.className = "user-diff";
+      container.appendChild(block);
+      i = j;
+    }
+
+    flushPlain();
+    return container;
+  }
+
+  function matchDiffHeader(line) {
+    for (var k = 0; k < diffHeaderPatterns.length; k++) {
+      var match = diffHeaderPatterns[k].exec(line);
+      if (match) return match[1];
+    }
+
+    return null;
   }
 
   function formatElapsed(seconds) {

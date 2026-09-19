@@ -16,6 +16,7 @@ public sealed class PlanToolWindowPane : ToolWindowPane
 
     public PlanToolWindowPane() : base(null)
     {
+        ThreadHelper.ThrowIfNotOnUIThread();
         Caption = "Implementation Plan";
         _view = new PlanDocumentView();
         VsChatTheme.Apply(_view);
