@@ -12,13 +12,46 @@ namespace ClaudeCode.Acp.Tests;
 /// </summary>
 public sealed class VsDebuggerChannelRulesTests
 {
+    private static readonly string[] _noArguments = Array.Empty<string>();
+
     [Fact]
     public void RequireRemovalArguments_LineWithoutPath_IsRejected()
     {
         var error = Assert.Throws<InvalidOperationException>(
-            () => VsDebuggerChannelRules.RequireRemovalArguments(null, 42));
+            () => VsDebuggerChannelRules.RequireRemovalArguments(new[] { "line" }, null, 42));
 
         Assert.Contains("'line' requires 'path'", error.Message);
+    }
+
+    [Fact]
+    public void RequireRemovalArguments_BlankPath_IsRejectedInsteadOfRemovingEveryBreakpoint()
+    {
+        var empty = Assert.Throws<InvalidOperationException>(
+            () => VsDebuggerChannelRules.RequireRemovalArguments(new[] { "path" }, string.Empty, null));
+        var whitespace = Assert.Throws<InvalidOperationException>(
+            () => VsDebuggerChannelRules.RequireRemovalArguments(new[] { "path" }, "   ", null));
+
+        Assert.Contains("omit it entirely", empty.Message);
+        Assert.Contains("omit it entirely", whitespace.Message);
+    }
+
+    [Fact]
+    public void RequireRemovalArguments_UnrecognisedMember_IsRejectedInsteadOfRemovingEveryBreakpoint()
+    {
+        var error = Assert.Throws<InvalidOperationException>(
+            () => VsDebuggerChannelRules.RequireRemovalArguments(new[] { "filePath" }, null, null));
+
+        Assert.Contains("filePath", error.Message);
+    }
+
+    [Fact]
+    public void RequireRemovalArguments_TheDocumentedForms_AreAccepted()
+    {
+        // Omitting both members is the documented "remove every breakpoint" request and must keep
+        // working: rejecting it would break the only way to clear the solution's breakpoints.
+        VsDebuggerChannelRules.RequireRemovalArguments(_noArguments, null, null);
+        VsDebuggerChannelRules.RequireRemovalArguments(new[] { "path" }, @"C:\repo\A.cs", null);
+        VsDebuggerChannelRules.RequireRemovalArguments(new[] { "path", "line" }, @"C:\repo\A.cs", 42);
     }
 
     [Fact]
@@ -119,5 +152,33 @@ public sealed class VsDebuggerChannelRulesTests
         // Newtonsoft serializes as a bare \udXXX escape that strict JSON readers reject.
         Assert.Equal("ab…", VsDebuggerChannelRules.TruncateDebuggeeValue("ab\uD83D\uDE00cd", 3));
         Assert.Equal("ab\uD83D\uDE00…", VsDebuggerChannelRules.TruncateDebuggeeValue("ab\uD83D\uDE00cd", 4));
+    }
+
+    [Fact]
+    public void ModeWireName_UsesTheThreeNamesTheProtocolDocuments()
+    {
+        Assert.Equal("design", VsDebuggerChannelRules.ModeWireName(VsDebuggerChannelRules.Mode.Design));
+        Assert.Equal("run", VsDebuggerChannelRules.ModeWireName(VsDebuggerChannelRules.Mode.Run));
+        Assert.Equal("break", VsDebuggerChannelRules.ModeWireName(VsDebuggerChannelRules.Mode.Break));
+    }
+
+    [Fact]
+    public void BreakWaitTimedOut_OnlyAStillRunningProgramIsATimeout()
+    {
+        Assert.True(VsDebuggerChannelRules.BreakWaitTimedOut(VsDebuggerChannelRules.Mode.Run));
+        // The step landed - this is the inversion that shipped once, reporting a completed step as
+        // timed out because a loop re-hit the breakpoint it started on.
+        Assert.False(VsDebuggerChannelRules.BreakWaitTimedOut(VsDebuggerChannelRules.Mode.Break));
+        // The debuggee exited during the step; the program ending is not the wait expiring.
+        Assert.False(VsDebuggerChannelRules.BreakWaitTimedOut(VsDebuggerChannelRules.Mode.Design));
+    }
+
+    [Fact]
+    public void LaunchTimedOut_OnlyNeverLeavingDesignModeIsATimeout()
+    {
+        Assert.True(VsDebuggerChannelRules.LaunchTimedOut(VsDebuggerChannelRules.Mode.Design));
+        // A program that keeps running launched successfully; it simply never hit a breakpoint.
+        Assert.False(VsDebuggerChannelRules.LaunchTimedOut(VsDebuggerChannelRules.Mode.Run));
+        Assert.False(VsDebuggerChannelRules.LaunchTimedOut(VsDebuggerChannelRules.Mode.Break));
     }
 }

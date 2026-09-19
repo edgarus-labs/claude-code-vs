@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace ClaudeCode.Contracts;
 
@@ -6,30 +7,58 @@ namespace ClaudeCode.Contracts;
 /// Dependency-free decision logic of the VS control channel's debugger methods
 /// (<c>VsControlPipeServer.Debugger.cs</c>). Everything here is reachable from an untrusted ACP
 /// agent request, so it is kept out of the EnvDTE glue where it can be unit-tested: a mistake in
-/// the breakpoint match predicate silently destroys user state, and a mistake in the frame
-/// arithmetic silently reports the wrong frame's locals.
+/// the breakpoint removal rules silently destroys user state nothing restores, a mistake in the
+/// frame arithmetic silently reports the wrong frame's locals, and a mistake in the
+/// <c>timedOut</c> derivation - which has inverted once - silently lies about whether an
+/// operation finished.
 /// </summary>
 public static class VsDebuggerChannelRules
 {
     /// <summary>
-    /// Validates a <c>removeBreakpoint</c> request before anything is deleted. A <c>line</c>
-    /// without a <c>path</c> is ambiguous: the wire schema allows it, but there is no sane
-    /// interpretation of "line 42 in every file", and the only non-throwing reading - delete
-    /// everything - destroys breakpoints the user set by hand and cannot undo.
+    /// Validates a <c>removeBreakpoint</c> request's raw wire arguments before anything is deleted.
+    /// Visual Studio has no undo for a deleted breakpoint and the user's own breakpoints sit in the
+    /// same collection, so all three ways this request can silently widen into "delete everything"
+    /// are rejected: a <c>line</c> without a <c>path</c> ("line 42 in every file" has no sane
+    /// reading), a present-but-blank <c>path</c> (a mis-serialised file name is not an omission),
+    /// and a member the method does not define (<c>file</c>, <c>filePath</c>), which leaves zero
+    /// recognised arguments. Every other method on this channel degrades an unknown member to a
+    /// missing optional; this is the one where dropping the arguments escalates instead.
+    /// Omitting both members remains the documented "remove every breakpoint" form.
     /// </summary>
-    public static void RequireRemovalArguments(string? resolvedPath, int? line)
+    /// <param name="suppliedArgumentNames">Every member name present in the request object.</param>
+    /// <param name="requestedPath">The raw <c>path</c> value, or null when the member is absent.</param>
+    /// <param name="line">The raw <c>line</c> value, or null when the member is absent.</param>
+    public static void RequireRemovalArguments(IEnumerable<string> suppliedArgumentNames, string? requestedPath, int? line)
     {
-        if (line.HasValue && resolvedPath is null)
+        if (suppliedArgumentNames is null)
         {
-            throw new InvalidOperationException("'line' requires 'path'; omit both to remove every breakpoint.");
+            throw new ArgumentNullException(nameof(suppliedArgumentNames));
         }
+
+        foreach (var name in suppliedArgumentNames)
+        {
+            if (!string.Equals(name, "path", StringComparison.Ordinal)
+                && !string.Equals(name, "line", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"'{name}' is not a removeBreakpoint parameter; the parameters are 'path' and 'line'. Omitting both removes every breakpoint, so an unrecognised member is rejected instead of becoming that request.");
+            }
+        }
+
+        if (requestedPath is not null && string.IsNullOrWhiteSpace(requestedPath))
+        {
+            throw new InvalidOperationException("'path' must name a file; omit it entirely to remove every breakpoint.");
+        }
+
+        RequireLineHasPath(requestedPath, line);
     }
 
-    /// <summary>Whether one breakpoint matches a <c>removeBreakpoint</c> request. A request with
-    /// neither path nor line is the documented "remove every breakpoint" form.</summary>
+    /// <summary>Whether one breakpoint matches a <c>removeBreakpoint</c> request, against the
+    /// already-resolved path. A request with neither path nor line is the documented "remove every
+    /// breakpoint" form.</summary>
     public static bool MatchesBreakpointRemoval(string? resolvedPath, int? line, string? breakpointFile, int breakpointLine)
     {
-        RequireRemovalArguments(resolvedPath, line);
+        RequireLineHasPath(resolvedPath, line);
         if (resolvedPath is null)
         {
             return true;
@@ -39,12 +68,56 @@ public static class VsDebuggerChannelRules
             && (!line.HasValue || breakpointLine == line.Value);
     }
 
+    /// <summary>The invariant both the up-front validation and the match predicate rest on, so an
+    /// empty breakpoint list can never answer "removed 0" to a request that should have been
+    /// rejected.</summary>
+    private static void RequireLineHasPath(string? path, int? line)
+    {
+        if (line.HasValue && path is null)
+        {
+            throw new InvalidOperationException("'line' requires 'path'; omit both to remove every breakpoint.");
+        }
+    }
+
+    /// <summary>The three debugger modes this channel reports. EnvDTE's <c>dbgDebugMode</c> is
+    /// mapped onto it at the host boundary so the <c>mode</c> a response carries and the
+    /// <c>timedOut</c> flag beside it are derived from one value and cannot disagree.</summary>
+    public enum Mode
+    {
+        Design,
+        Run,
+        Break,
+    }
+
+    /// <summary>The wire name of a mode, as docs/VsControlProtocol.md documents it.</summary>
+    public static string ModeWireName(Mode mode) => mode switch
+    {
+        Mode.Break => "break",
+        Mode.Run => "run",
+        _ => "design",
+    };
+
+    /// <summary>Whether a wait for the debuggee to stop - <c>continueDebugging</c>, the three steps
+    /// and <c>waitForBreak</c> - expired. <c>timedOut</c> means exactly what the protocol documents:
+    /// the program is still running. Break mode is the step having landed, including a loop
+    /// re-hitting the breakpoint it started on - which is why the break-position token must never
+    /// decide this flag - and design mode is the debuggee having exited. Neither is a timeout.</summary>
+    public static bool BreakWaitTimedOut(Mode observedMode) => observedMode == Mode.Run;
+
+    /// <summary>Whether a <c>startDebugging</c> launch expired. Only never leaving design mode is a
+    /// failed launch: a program that keeps running launched successfully and simply never hit a
+    /// breakpoint.</summary>
+    public static bool LaunchTimedOut(Mode observedMode) => observedMode == Mode.Design;
+
     /// <summary>
     /// Maps a wire <c>frameIndex</c> (0 = innermost frame, exactly how <c>getCallStack</c> numbers
-    /// its frames) to the 1-based index EnvDTE's <c>StackFrames.Item</c> takes. Index 0 must not be
-    /// answered from <c>Debugger.CurrentStackFrame</c>: that is the frame *selected* in the Call
-    /// Stack window, which Just My Code moves off the innermost frame, so the two numberings would
-    /// disagree about which frame the locals belong to.
+    /// its frames) to the 1-based index EnvDTE's <c>StackFrames.Item</c> takes. The index must be
+    /// resolved against the raw call stack and never read back from
+    /// <c>Debugger.CurrentStackFrame</c>: that is the frame *selected* in the Call Stack window,
+    /// which Just My Code moves off the innermost frame, so the two numberings would disagree about
+    /// which frame the locals belong to. The host then makes the resolved frame the selected one,
+    /// which is what keeps <c>evaluateExpression</c> and the state's <c>currentFrame</c> agreeing
+    /// with it.
     /// </summary>
     public static int ResolveStackFrameItemIndex(int frameIndex, int frameCount)
     {
