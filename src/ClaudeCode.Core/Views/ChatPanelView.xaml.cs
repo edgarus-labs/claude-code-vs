@@ -38,6 +38,11 @@ public partial class ChatPanelView : UserControl, IDisposable
     private const string TranscriptLostMessage =
         "The transcript display stopped updating after a Microsoft Edge WebView2 process failure " +
         "and could not be restored.";
+    // The page itself answered with an HTTP error: no process failed, the transcript assets are not
+    // where the extension expects them (a broken install), and reloading cannot change that.
+    private const string TranscriptUnavailableMessage =
+        "The transcript could not be displayed: the transcript page is missing from this " +
+        "installation of the extension. Repair or reinstall the extension.";
 
     public static readonly DependencyProperty ChatTextFontSizeProperty = DependencyProperty.Register(
         nameof(ChatTextFontSize), typeof(double), typeof(ChatPanelView),
@@ -51,6 +56,11 @@ public partial class ChatPanelView : UserControl, IDisposable
     private readonly DispatcherTimer _transcriptRenderDebounceTimer;
     private readonly List<ChatMessageViewModel> _trackedMessages = new List<ChatMessageViewModel>();
     private readonly List<ToolCallCardViewModel> _trackedCards = new List<ToolCallCardViewModel>();
+    // Per-message JSON of its attachments. Images are fixed at send time and can run to 5 x 5 MB
+    // of base64 per message, and every streamed chunk re-serializes the whole conversation, so
+    // without this each 250 ms tick of a turn re-escaped every past attachment on the UI thread.
+    private readonly Dictionary<ChatMessageViewModel, string> _imagesJsonByMessage =
+        new Dictionary<ChatMessageViewModel, string>();
     private bool _disposed;
     private bool _transcriptReady;
     private DateTimeOffset? _busyStartedAt;
@@ -64,6 +74,8 @@ public partial class ChatPanelView : UserControl, IDisposable
     // One reload per successful load: if the reload we issued is itself what just failed, stop
     // rather than spinning navigate -> fail -> navigate on the UI thread.
     private bool _transcriptReloadAttempted;
+    // The notice that must stay on screen for the rest of the panel's life (see ShowCopyFeedback).
+    private string? _persistentFeedback;
 
     public ChatPanelView()
     {
@@ -164,10 +176,7 @@ public partial class ChatPanelView : UserControl, IDisposable
     {
         try
         {
-            // A dedicated profile directory: WebView2 refuses to share one with another running
-            // instance, and this extension has no reason to touch the user's own Edge profile/history.
-            string userDataFolder = Path.Combine(Path.GetTempPath(), "ClaudeCodeVsWebView2");
-            var environment = await CoreWebView2Environment.CreateAsync(null, userDataFolder).ConfigureAwait(true);
+            var environment = await CoreWebView2Environment.CreateAsync(null, WebView2Profile.UserDataFolder).ConfigureAwait(true);
             if (_disposed)
             {
                 return;
@@ -193,6 +202,12 @@ public partial class ChatPanelView : UserControl, IDisposable
             core.Settings.AreBrowserAcceleratorKeysEnabled = false;
             // Nothing is ever exposed via AddHostObjectToScript; don't leave the door that permits it open.
             core.Settings.AreHostObjectsAllowed = false;
+            // The WPF ChatTextFontSize is the single source of truth for the transcript's scale (the
+            // page forwards Ctrl+wheel as a "zoom" message so transcript and composer scale together).
+            // Chromium's own zoom - Ctrl+plus/minus, touchpad and touch pinch - would scale the page
+            // alone and desynchronise the two until VS is restarted.
+            core.Settings.IsZoomControlEnabled = false;
+            core.Settings.IsPinchZoomEnabled = false;
             // Deny: nothing outside this page's own origin may load resources through this mapping.
             core.SetVirtualHostNameToFolderMapping(
                 TranscriptHostProtocol.VirtualHostName, GetTranscriptAssetsPath(),
@@ -215,7 +230,7 @@ public partial class ChatPanelView : UserControl, IDisposable
             {
                 ShowCopyFeedback(
                     "The transcript could not be displayed. The Microsoft Edge WebView2 Runtime is " +
-                    "required: " + ex.Message);
+                    "required: " + ex.Message, persistent: true);
             }
         }
     }
@@ -229,7 +244,13 @@ public partial class ChatPanelView : UserControl, IDisposable
 
     private void OnTranscriptNavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)
     {
-        if (TranscriptHostProtocol.IsTranscriptOrigin(e.Uri))
+        // Path-exact, not origin-level: plan.html is served from this same origin (both views map
+        // the same asset folder), and a drop of an agent-authored link to it from inside the page
+        // is not an external drop, so AllowExternalDrop does not cover it. Loading it would leave
+        // a "successful" navigation with no window.claudeTranscript for the host to render into.
+        if (TranscriptHostProtocol.IsTranscriptOrigin(e.Uri) &&
+            Uri.TryCreate(e.Uri, UriKind.Absolute, out Uri? uri) &&
+            string.Equals(uri.GetLeftPart(UriPartial.Path), TranscriptHostProtocol.PageUrl, StringComparison.Ordinal))
         {
             return;
         }
@@ -258,14 +279,14 @@ public partial class ChatPanelView : UserControl, IDisposable
         switch (e.ProcessFailedKind)
         {
             case CoreWebView2ProcessFailedKind.RenderProcessExited:
-                ReloadTranscriptPage();
+                ReloadTranscriptPage(TranscriptLostMessage);
                 break;
             case CoreWebView2ProcessFailedKind.BrowserProcessExited:
                 // The whole CoreWebView2 is gone: Navigate would throw and there is no document to
                 // reload into. Fail closed so nothing pushes into a dead COM object, and say so
                 // rather than letting the user type into a page that will never update again.
                 InvalidateTranscriptPage();
-                ShowCopyFeedback(TranscriptLostMessage);
+                ShowCopyFeedback(TranscriptLostMessage, persistent: true);
                 break;
         }
     }
@@ -287,8 +308,9 @@ public partial class ChatPanelView : UserControl, IDisposable
             }
 
             // Never leave a stale "ready" latch behind a failed load - and never leave the panel
-            // dead either: this is the only place _transcriptReady is ever re-latched.
-            ReloadTranscriptPage();
+            // dead either: this is the only place _transcriptReady is ever re-latched. An HTTP
+            // error is the page answering, not a process failing: say what is actually wrong.
+            ReloadTranscriptPage(e.HttpStatusCode >= 400 ? TranscriptUnavailableMessage : TranscriptLostMessage);
             return;
         }
 
@@ -302,6 +324,12 @@ public partial class ChatPanelView : UserControl, IDisposable
 
     private void OnMessagesCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
+        if (e.Action != NotifyCollectionChangedAction.Add)
+        {
+            // Reset (New Chat) and removals drop messages; an Add leaves every cached one valid.
+            _imagesJsonByMessage.Clear();
+        }
+
         TrackTranscriptItems();
         ScheduleTranscriptRender();
     }
@@ -360,6 +388,11 @@ public partial class ChatPanelView : UserControl, IDisposable
 
     private void OnTranscriptItemPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        if (e.PropertyName == nameof(ChatMessageViewModel.Images) && sender is ChatMessageViewModel message)
+        {
+            _imagesJsonByMessage.Remove(message);
+        }
+
         if (TranscriptHostProtocol.AffectsTranscript(e.PropertyName))
         {
             ScheduleTranscriptRender();
@@ -457,7 +490,7 @@ public partial class ChatPanelView : UserControl, IDisposable
                 parts = message.Parts.Select(BuildPartPayload),
                 durationSeconds = message.DurationSeconds,
                 tokensUsed = message.TokensUsed,
-                images = message.Images.Select(image => new { name = image.Name, mimeType = image.MimeType, data = image.Base64Data }),
+                images = new JRaw(ImagesJson(message)),
             }));
             _messagesJsonStale = false;
         }
@@ -534,13 +567,15 @@ public partial class ChatPanelView : UserControl, IDisposable
 
     // Recovery for the one failure that actually loses the document: navigate back to the page.
     // NavigationCompleted then re-latches _transcriptReady and re-pushes everything, because
-    // InvalidateTranscriptPage has already dropped the payload caches.
-    private void ReloadTranscriptPage()
+    // InvalidateTranscriptPage has already dropped the payload caches. lostMessage is what the
+    // user is told if this reload is not attempted or cannot be issued; it stays on screen, since
+    // the panel is dead for the rest of the session and the composer still accepts prompts.
+    private void ReloadTranscriptPage(string lostMessage)
     {
         InvalidateTranscriptPage();
         if (_transcriptReloadAttempted || TranscriptView.CoreWebView2 is not CoreWebView2 core)
         {
-            ShowCopyFeedback(TranscriptLostMessage);
+            ShowCopyFeedback(lostMessage, persistent: true);
             return;
         }
 
@@ -552,8 +587,20 @@ public partial class ChatPanelView : UserControl, IDisposable
         catch (Exception exception) when (exception is COMException || exception is InvalidOperationException ||
                                           exception is ObjectDisposedException)
         {
-            ShowCopyFeedback(TranscriptLostMessage);
+            ShowCopyFeedback(lostMessage, persistent: true);
         }
+    }
+
+    private string ImagesJson(ChatMessageViewModel message)
+    {
+        if (!_imagesJsonByMessage.TryGetValue(message, out string? json))
+        {
+            json = JsonConvert.SerializeObject(message.Images.Select(image =>
+                new { name = image.Name, mimeType = image.MimeType, data = image.Base64Data }));
+            _imagesJsonByMessage[message] = json;
+        }
+
+        return json;
     }
 
     private static object BuildPartPayload(ChatMessagePart part)
@@ -951,20 +998,38 @@ public partial class ChatPanelView : UserControl, IDisposable
 
     private void ClearAttachmentError() => _viewModel.AttachmentError = null;
 
-    private void ShowCopyFeedback(string message)
+    // A persistent notice outlives the timer: a later transient notice may replace it on screen,
+    // but when that one times out the persistent text comes back instead of the line collapsing.
+    // Used for the transcript-lost states, which last for the rest of the panel's life while the
+    // composer keeps accepting prompts whose replies would never appear.
+    private void ShowCopyFeedback(string message, bool persistent = false)
     {
+        if (persistent)
+        {
+            _persistentFeedback = message;
+        }
+
         CopyFeedback.Text = message;
         CopyFeedback.Visibility = Visibility.Visible;
         var peer = UIElementAutomationPeer.FromElement(CopyFeedback) ??
             UIElementAutomationPeer.CreatePeerForElement(CopyFeedback);
         peer?.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
         _copyFeedbackTimer.Stop();
-        _copyFeedbackTimer.Start();
+        if (!persistent)
+        {
+            _copyFeedbackTimer.Start();
+        }
     }
 
     private void OnCopyFeedbackTimerTick(object? sender, EventArgs e)
     {
         _copyFeedbackTimer.Stop();
+        if (_persistentFeedback is string persistent)
+        {
+            CopyFeedback.Text = persistent;
+            return;
+        }
+
         CopyFeedback.Visibility = Visibility.Collapsed;
     }
 

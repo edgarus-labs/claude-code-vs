@@ -10,7 +10,6 @@
 	<Color x:Key="ChatSubtleForegroundColor">#FF9D9D9D</Color>
 	<Color x:Key="ChatBorderColor">#FF3F3F46</Color>
 	<Color x:Key="ChatUserBubbleBackgroundColor">#FF264F78</Color>
-	<Color x:Key="ChatAssistantBubbleBackgroundColor">#FF2D2D30</Color>
 	<Color x:Key="ChatInputBackgroundColor">#FF252526</Color>
 	<Color x:Key="ChatAccentColor">#FFD97757</Color>
 	<Color x:Key="ChatAccentForegroundColor">#FF211A17</Color>
@@ -30,7 +29,6 @@
 	<SolidColorBrush x:Key="ChatSubtleForegroundBrush" Color="{StaticResource ChatSubtleForegroundColor}" />
 	<SolidColorBrush x:Key="ChatBorderBrush" Color="{StaticResource ChatBorderColor}" />
 	<SolidColorBrush x:Key="ChatUserBubbleBackgroundBrush" Color="{StaticResource ChatUserBubbleBackgroundColor}" />
-	<SolidColorBrush x:Key="ChatAssistantBubbleBackgroundBrush" Color="{StaticResource ChatAssistantBubbleBackgroundColor}" />
 	<SolidColorBrush x:Key="ChatInputBackgroundBrush" Color="{StaticResource ChatInputBackgroundColor}" />
 	<SolidColorBrush x:Key="ChatAccentBrush" Color="{StaticResource ChatAccentColor}" />
 	<SolidColorBrush x:Key="ChatAccentForegroundBrush" Color="{StaticResource ChatAccentForegroundColor}" />

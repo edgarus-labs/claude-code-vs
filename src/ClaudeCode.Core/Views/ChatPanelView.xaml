@@ -145,8 +145,10 @@
         <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled" />
         <!-- Hidden, not Disabled: a ListBox always owns an internal ScrollViewer. Disabled truly
              blocks scrolling (not just the bar) and swallows the mouse wheel event before it can
-             bubble up to the ScrollViewer these lists are wrapped in, which owns the visible
-             scrollbar - Hidden keeps the inner one bar-less but lets the wheel event pass through. -->
+             bubble up to the ScrollViewer these lists are wrapped in - Hidden keeps the inner one
+             bar-less but lets the wheel event pass through. The Model/Effort/Mode wrappers below are
+             bar-less too, on purpose: those popups scroll by wheel and keyboard only, with no
+             scrollbar drawn against their rounded frame. -->
         <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Hidden" />
         <Setter Property="HorizontalContentAlignment" Value="Stretch" />
         <Setter Property="KeyboardNavigation.DirectionalNavigation" Value="Contained" />
