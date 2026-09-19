@@ -17,17 +17,21 @@ public static class VsDebuggerChannelRules
     /// <summary>
     /// Validates a <c>removeBreakpoint</c> request's raw wire arguments before anything is deleted.
     /// Visual Studio has no undo for a deleted breakpoint and the user's own breakpoints sit in the
-    /// same collection, so all three ways this request can silently widen into "delete everything"
-    /// are rejected: a <c>line</c> without a <c>path</c> ("line 42 in every file" has no sane
-    /// reading), a present-but-blank <c>path</c> (a mis-serialised file name is not an omission),
-    /// and a member the method does not define (<c>file</c>, <c>filePath</c>), which leaves zero
-    /// recognised arguments. Every other method on this channel degrades an unknown member to a
-    /// missing optional; this is the one where dropping the arguments escalates instead.
-    /// Omitting both members remains the documented "remove every breakpoint" form.
+    /// same collection, so every way this request can silently widen into "delete everything"
+    /// is rejected: a <c>line</c> without a <c>path</c> ("line 42 in every file" has no sane
+    /// reading), a present-but-blank or present-but-null <c>path</c> (a mis-serialised file name
+    /// is not an omission, and an explicit JSON null - how tool calls routinely spell an omitted
+    /// optional - reads back from the wire exactly like one), a present-but-null <c>line</c> (which
+    /// would widen one line to the whole file), and a member the method does not define
+    /// (<c>file</c>, <c>filePath</c>), which leaves zero recognised arguments. Every other method on
+    /// this channel degrades an unknown member to a missing optional; this is the one where
+    /// dropping the arguments escalates instead. Omitting both members remains the documented
+    /// "remove every breakpoint" form.
     /// </summary>
-    /// <param name="suppliedArgumentNames">Every member name present in the request object.</param>
-    /// <param name="requestedPath">The raw <c>path</c> value, or null when the member is absent.</param>
-    /// <param name="line">The raw <c>line</c> value, or null when the member is absent.</param>
+    /// <param name="suppliedArgumentNames">Every member name present in the request object, a
+    /// JSON-null member included.</param>
+    /// <param name="requestedPath">The raw <c>path</c> value, or null when the member is absent or null.</param>
+    /// <param name="line">The raw <c>line</c> value, or null when the member is absent or null.</param>
     public static void RequireRemovalArguments(IEnumerable<string> suppliedArgumentNames, string? requestedPath, int? line)
     {
         if (suppliedArgumentNames is null)
@@ -35,19 +39,33 @@ public static class VsDebuggerChannelRules
             throw new ArgumentNullException(nameof(suppliedArgumentNames));
         }
 
+        var pathSupplied = false;
+        var lineSupplied = false;
         foreach (var name in suppliedArgumentNames)
         {
-            if (!string.Equals(name, "path", StringComparison.Ordinal)
-                && !string.Equals(name, "line", StringComparison.Ordinal))
+            if (string.Equals(name, "path", StringComparison.Ordinal))
+            {
+                pathSupplied = true;
+            }
+            else if (string.Equals(name, "line", StringComparison.Ordinal))
+            {
+                lineSupplied = true;
+            }
+            else
             {
                 throw new InvalidOperationException(
                     $"'{name}' is not a removeBreakpoint parameter; the parameters are 'path' and 'line'. Omitting both removes every breakpoint, so an unrecognised member is rejected instead of becoming that request.");
             }
         }
 
-        if (requestedPath is not null && string.IsNullOrWhiteSpace(requestedPath))
+        if (pathSupplied && string.IsNullOrWhiteSpace(requestedPath))
         {
             throw new InvalidOperationException("'path' must name a file; omit it entirely to remove every breakpoint.");
+        }
+
+        if (lineSupplied && !line.HasValue)
+        {
+            throw new InvalidOperationException("'line' must be a line number; omit it entirely to remove every breakpoint in the file.");
         }
 
         RequireLineHasPath(requestedPath, line);
@@ -148,6 +166,28 @@ public static class VsDebuggerChannelRules
     public static int ClampEvaluationTimeoutMs(int requestedMs, int maxMs)
     {
         return Math.Max(1, Math.Min(maxMs, requestedMs));
+    }
+
+    /// <summary>Bounds an agent-supplied poll wait (<c>waitForBreakMs</c>, <c>timeoutMs</c>). The
+    /// ceiling is the one number the client transport budget, the tool schema and the host all have
+    /// to agree on. The floor is 0 for a plain wait; the step methods pass one poll interval, because
+    /// a step whose first poll runs before the engine has left the pre-step break would otherwise
+    /// report the old frame as the landed step.</summary>
+    public static int ClampWaitMs(int? requestedMs, int defaultMs, int minMs, int maxMs)
+    {
+        return Math.Max(minMs, Math.Min(maxMs, requestedMs ?? defaultMs));
+    }
+
+    /// <summary>Breakpoint lines are 1-based; <c>Breakpoints.Add</c> answers anything below that with
+    /// a raw HRESULT the agent cannot act on.</summary>
+    public static int RequireBreakpointLine(int line)
+    {
+        if (line < 1)
+        {
+            throw new InvalidOperationException($"'line' must be 1 or greater; got {line}.");
+        }
+
+        return line;
     }
 
     /// <summary>Caps a debuggee-rendered value for the wire without splitting a surrogate pair: a

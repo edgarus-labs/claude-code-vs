@@ -69,10 +69,11 @@ internal sealed partial class VsControlPipeServer
             throw new InvalidOperationException("A debugging session is already active; use stopDebugging first.");
         }
 
-        // Validate before mutating: resolving projectName is the only step that can reject the
-        // request, and it must not run after the user's active solution configuration has already
-        // been switched to one they never selected (VsControlPipeServer.Build.cs honours the same
-        // rule for buildSolution).
+        // Validate before mutating: resolving projectName and parsing waitForBreakMs are the only
+        // steps that can reject the request, and neither must run after the user's active solution
+        // configuration has already been switched to one they never selected - or a ten-minute build
+        // has run (VsControlPipeServer.Build.cs honours the same rule for buildSolution).
+        var waitForBreakMs = ReadWaitMs(args, "waitForBreakMs", 3_000);
         var projectName = args["projectName"]?.Value<string>();
         var startupProject = string.IsNullOrEmpty(projectName)
             ? null
@@ -102,7 +103,6 @@ internal sealed partial class VsControlPipeServer
                 $"Build failed ({errorCount} error(s), {warningCount} warning(s)); debugging was not started. Use getBuildErrors.");
         }
 
-        var waitForBreakMs = ReadWaitMs(args, "waitForBreakMs", 3_000);
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
         try
         {
@@ -114,14 +114,15 @@ internal sealed partial class VsControlPipeServer
         }
 
         var launchMode = await WaitForModeAsync(debugger, m => m != dbgDebugMode.dbgDesignMode, _startDebuggingTimeoutMs, cancellationToken);
+        var mode = launchMode;
         if (launchMode == dbgDebugMode.dbgRunMode && waitForBreakMs > 0)
         {
             // A program that keeps running is not a failed launch, so this wait expiring is not a
             // timeout - only never leaving design mode is.
-            await WaitForModeAsync(debugger, m => m != dbgDebugMode.dbgRunMode, waitForBreakMs, cancellationToken);
+            mode = await WaitForModeAsync(debugger, m => m != dbgDebugMode.dbgRunMode, waitForBreakMs, cancellationToken);
         }
 
-        return DescribeDebugger(debugger, timedOut: VsDebuggerChannelRules.LaunchTimedOut(ToMode(launchMode)));
+        return DescribeDebugger(debugger, mode, timedOut: VsDebuggerChannelRules.LaunchTimedOut(ToMode(launchMode)));
     }
 
     /// <summary>Resolves a startup-project name against the loaded solution. Split from
@@ -203,8 +204,8 @@ internal sealed partial class VsControlPipeServer
             // The debugger RCW itself was released as the session ended.
         }
 
-        await WaitForModeAsync(debugger, m => m == dbgDebugMode.dbgDesignMode, 15_000, cancellationToken);
-        return DescribeDebugger(debugger);
+        var mode = await WaitForModeAsync(debugger, m => m == dbgDebugMode.dbgDesignMode, 15_000, cancellationToken);
+        return DescribeDebugger(debugger, mode, timedOut: null);
     }
 
     private static async Task<JObject> GetDebuggerStateAsync()
@@ -217,7 +218,7 @@ internal sealed partial class VsControlPipeServer
     private async Task<JObject> SetBreakpointAsync(JObject args)
     {
         var path = RequireString(args, "path");
-        var line = RequireInt(args, "line");
+        var line = VsDebuggerChannelRules.RequireBreakpointLine(RequireInt(args, "line"));
         using var pathLease = WorkspacePathGuard.AcquireDocument(_workspaceRoot, path);
         var condition = args["condition"]?.Value<string>() ?? string.Empty;
 
@@ -318,7 +319,9 @@ internal sealed partial class VsControlPipeServer
             throw new InvalidOperationException("The debugger is not in break mode.");
         }
 
-        var waitForBreakMs = ReadWaitMs(args, "waitForBreakMs", _defaultWaitForBreakMs);
+        // Floored at one poll interval: with a zero wait the first poll would observe the pre-step
+        // break - the engine has not left it yet - and report the old frame as the landed step.
+        var waitForBreakMs = ReadWaitMs(args, "waitForBreakMs", _defaultWaitForBreakMs, minMs: _debuggerPollMs);
         var deadline = DateTime.UtcNow.AddMilliseconds(waitForBreakMs);
         var startedAt = BreakPositionToken(debugger);
         switch (step)
@@ -353,7 +356,7 @@ internal sealed partial class VsControlPipeServer
         // break position only ends the first wait early - it must never decide the flag, because it
         // repeats when a loop re-hits the same breakpoint and is empty on both sides in native
         // code, which reported a timeout for a step that had in fact already completed.
-        return DescribeDebugger(debugger, timedOut: VsDebuggerChannelRules.BreakWaitTimedOut(ToMode(mode)));
+        return DescribeDebugger(debugger, mode, timedOut: VsDebuggerChannelRules.BreakWaitTimedOut(ToMode(mode)));
     }
 
     private static async Task<JObject> WaitForBreakAsync(JObject args, CancellationToken cancellationToken)
@@ -362,7 +365,7 @@ internal sealed partial class VsControlPipeServer
         var debugger = await GetDebuggerAsync();
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
         var mode = await WaitForModeAsync(debugger, m => m != dbgDebugMode.dbgRunMode, timeoutMs, cancellationToken);
-        return DescribeDebugger(debugger, timedOut: VsDebuggerChannelRules.BreakWaitTimedOut(ToMode(mode)));
+        return DescribeDebugger(debugger, mode, timedOut: VsDebuggerChannelRules.BreakWaitTimedOut(ToMode(mode)));
     }
 
     private static async Task<JObject> GetCallStackAsync()
@@ -602,7 +605,8 @@ internal sealed partial class VsControlPipeServer
         }
     }
 
-    private static JObject DescribeDebugger(Debugger debugger, bool? timedOut = null)
+    /// <summary>The state for a caller that did not wait for anything: the mode is read here.</summary>
+    private static JObject DescribeDebugger(Debugger debugger)
     {
         ThreadHelper.ThrowIfNotOnUIThread();
         dbgDebugMode mode;
@@ -621,13 +625,24 @@ internal sealed partial class VsControlPipeServer
             mode = dbgDebugMode.dbgDesignMode;
         }
 
+        return DescribeDebugger(debugger, mode, timedOut: null);
+    }
+
+    /// <summary>The state after a wait. <paramref name="observedMode"/> is the mode the wait
+    /// returned, not a fresh read: <c>timedOut</c> was derived from that same value, and a second
+    /// <c>CurrentMode</c> read - DTE property access pumps COM messages - could see a break that landed
+    /// in between and report <c>{ mode: "break", timedOut: true }</c>, which the protocol says never
+    /// happens.</summary>
+    private static JObject DescribeDebugger(Debugger debugger, dbgDebugMode observedMode, bool? timedOut)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
         var result = new JObject
         {
-            ["mode"] = VsDebuggerChannelRules.ModeWireName(ToMode(mode)),
+            ["mode"] = VsDebuggerChannelRules.ModeWireName(ToMode(observedMode)),
             ["processes"] = DebuggedProcessesToJson(debugger),
         };
 
-        if (mode == dbgDebugMode.dbgBreakMode)
+        if (observedMode == dbgDebugMode.dbgBreakMode)
         {
             try
             {
@@ -681,12 +696,18 @@ internal sealed partial class VsControlPipeServer
     private static JObject FrameToJson(StackFrame frame)
     {
         ThreadHelper.ThrowIfNotOnUIThread();
-        var json = new JObject
+        var json = new JObject();
+        try
         {
-            ["function"] = frame.FunctionName,
-            ["module"] = frame.Module,
-            ["language"] = frame.Language,
-        };
+            json["function"] = frame.FunctionName;
+            json["module"] = frame.Module;
+            json["language"] = frame.Language;
+        }
+        catch (COMException)
+        {
+            // An external/native frame the engine cannot describe; the frame keeps its index so the
+            // numbering getLocals and evaluateExpression resolve against stays aligned with the stack.
+        }
 
         // File/line live on the EnvDTE90a extension of the frame; external/native frames have none.
         if (frame is EnvDTE90a.StackFrame2 frame2)
@@ -735,10 +756,9 @@ internal sealed partial class VsControlPipeServer
         _ => "none",
     };
 
-    private static int ReadWaitMs(JObject args, string propertyName, int defaultMs)
+    private static int ReadWaitMs(JObject args, string propertyName, int defaultMs, int minMs = 0)
     {
-        var value = args[propertyName]?.Value<int?>() ?? defaultMs;
-        return Math.Max(0, Math.Min(_maxWaitMs, value));
+        return VsDebuggerChannelRules.ClampWaitMs(args[propertyName]?.Value<int?>(), defaultMs, minMs, _maxWaitMs);
     }
 
     private static int RequireInt(JObject args, string propertyName)

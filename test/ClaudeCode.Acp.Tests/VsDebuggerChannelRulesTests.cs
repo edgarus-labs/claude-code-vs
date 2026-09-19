@@ -36,6 +36,28 @@ public sealed class VsDebuggerChannelRulesTests
     }
 
     [Fact]
+    public void RequireRemovalArguments_NullPathThatWasSupplied_IsRejectedInsteadOfRemovingEveryBreakpoint()
+    {
+        // {"path": null} on the wire: the member is present, so it passes the unknown-member loop,
+        // but Newtonsoft reads the null JValue as a C# null - exactly how an omitted member reads.
+        // LLM tool calls routinely spell an omitted optional as an explicit null, and this one
+        // would otherwise delete the user's hand-set breakpoints.
+        var error = Assert.Throws<InvalidOperationException>(
+            () => VsDebuggerChannelRules.RequireRemovalArguments(new[] { "path" }, null, null));
+
+        Assert.Contains("omit it entirely", error.Message);
+    }
+
+    [Fact]
+    public void RequireRemovalArguments_NullLineThatWasSupplied_IsRejectedInsteadOfWideningToTheWholeFile()
+    {
+        var error = Assert.Throws<InvalidOperationException>(
+            () => VsDebuggerChannelRules.RequireRemovalArguments(new[] { "path", "line" }, @"C:\repo\A.cs", null));
+
+        Assert.Contains("'line'", error.Message);
+    }
+
+    [Fact]
     public void RequireRemovalArguments_UnrecognisedMember_IsRejectedInsteadOfRemovingEveryBreakpoint()
     {
         var error = Assert.Throws<InvalidOperationException>(
@@ -129,6 +151,41 @@ public sealed class VsDebuggerChannelRulesTests
     {
         Assert.Equal(5_000, VsDebuggerChannelRules.ClampEvaluationTimeoutMs(120_000, 5_000));
         Assert.Equal(2_000, VsDebuggerChannelRules.ClampEvaluationTimeoutMs(2_000, 5_000));
+    }
+
+    [Fact]
+    public void ClampWaitMs_OmittedRequest_UsesTheDefault()
+    {
+        Assert.Equal(5_000, VsDebuggerChannelRules.ClampWaitMs(null, 5_000, 0, 45_000));
+    }
+
+    [Fact]
+    public void ClampWaitMs_HonoursTheFloorAndTheCeiling()
+    {
+        Assert.Equal(0, VsDebuggerChannelRules.ClampWaitMs(0, 5_000, 0, 45_000));
+        Assert.Equal(0, VsDebuggerChannelRules.ClampWaitMs(-1, 5_000, 0, 45_000));
+        Assert.Equal(45_000, VsDebuggerChannelRules.ClampWaitMs(45_000, 5_000, 0, 45_000));
+        Assert.Equal(45_000, VsDebuggerChannelRules.ClampWaitMs(45_001, 5_000, 0, 45_000));
+        Assert.Equal(2_000, VsDebuggerChannelRules.ClampWaitMs(2_000, 5_000, 0, 45_000));
+    }
+
+    [Fact]
+    public void ClampWaitMs_StepFloor_NeverYieldsAWaitShorterThanOnePoll()
+    {
+        // A step issued with a zero wait would have its first poll observe the pre-step break and
+        // report the old frame as the landed step; the step methods floor the wait at one poll.
+        Assert.Equal(100, VsDebuggerChannelRules.ClampWaitMs(0, 5_000, 100, 45_000));
+        Assert.Equal(100, VsDebuggerChannelRules.ClampWaitMs(-5, 5_000, 100, 45_000));
+        Assert.Equal(150, VsDebuggerChannelRules.ClampWaitMs(150, 5_000, 100, 45_000));
+    }
+
+    [Fact]
+    public void RequireBreakpointLine_LinesAreOneBased()
+    {
+        Assert.Equal(1, VsDebuggerChannelRules.RequireBreakpointLine(1));
+        Assert.Equal(42, VsDebuggerChannelRules.RequireBreakpointLine(42));
+        Assert.Throws<InvalidOperationException>(() => VsDebuggerChannelRules.RequireBreakpointLine(0));
+        Assert.Throws<InvalidOperationException>(() => VsDebuggerChannelRules.RequireBreakpointLine(-1));
     }
 
     [Fact]
