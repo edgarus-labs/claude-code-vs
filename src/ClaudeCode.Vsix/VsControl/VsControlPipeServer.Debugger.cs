@@ -22,12 +22,27 @@ internal sealed partial class VsControlPipeServer
     private enum DebuggerStep { Continue, Over, Into, Out }
 
     private const int _debuggerPollMs = 100;
-    private const int _maxWaitMs = 120_000;
+    // Every poll wait must finish inside the MCP client's 60 s per-request timeout
+    // (VsControlPipeClient._requestTimeout): a wait the transport abandons also keeps the pipe's
+    // serial read loop busy, so the agent's next request - stopDebugging included - is not even
+    // read until it expires. Agreed with the client owner as one number; the tool schema advertises
+    // the same 45 s ceiling.
+    private const int _maxWaitMs = 45_000;
+    // startDebugging builds before it launches, so the client grants it the 5-minute build budget
+    // instead of the 60 s default; that is what lets this one wait exceed _maxWaitMs.
     private const int _startDebuggingTimeoutMs = 60_000;
     private const int _defaultWaitForBreakMs = 5_000;
     private const int _maxStackFrames = 100;
     private const int _maxLocals = 200;
     private const int _maxValueChars = 1_000;
+    // Expression evaluation is a synchronous UI-thread COM call - EnvDTE's debugger automation is
+    // UI-thread-affinitized and offers no off-thread entry point - so devenv is frozen for its
+    // whole duration. It gets a far smaller ceiling than a poll wait, which blocks nothing.
+    private const int _defaultEvaluationMs = 3_000;
+    private const int _maxEvaluationMs = 5_000;
+    // getLocals renders up to _maxLocals values through that same synchronous evaluator, and no
+    // individual Expression.Value read takes a timeout, so the walk is bounded by wall clock too.
+    private const int _maxLocalsWalkMs = 5_000;
 
     private static async Task<Debugger> GetDebuggerAsync()
     {
@@ -78,13 +93,15 @@ internal sealed partial class VsControlPipeServer
             throw new InvalidOperationException("Debugging could not be started; check that the solution has a runnable startup project.");
         }
 
-        var mode = await WaitForModeAsync(debugger, m => m != dbgDebugMode.dbgDesignMode, _startDebuggingTimeoutMs, cancellationToken);
-        if (mode == dbgDebugMode.dbgRunMode && waitForBreakMs > 0)
+        var launchMode = await WaitForModeAsync(debugger, m => m != dbgDebugMode.dbgDesignMode, _startDebuggingTimeoutMs, cancellationToken);
+        if (launchMode == dbgDebugMode.dbgRunMode && waitForBreakMs > 0)
         {
+            // A program that keeps running is not a failed launch, so this wait expiring is not a
+            // timeout - only never leaving design mode is.
             await WaitForModeAsync(debugger, m => m != dbgDebugMode.dbgRunMode, waitForBreakMs, cancellationToken);
         }
 
-        return DescribeDebugger(debugger);
+        return DescribeDebugger(debugger, timedOut: launchMode == dbgDebugMode.dbgDesignMode);
     }
 
     private static async Task SetStartupProjectAsync(string projectName)
@@ -195,12 +212,15 @@ internal sealed partial class VsControlPipeServer
             fullPath = pathLease.FullPath;
         }
 
+        // 'line' without 'path' has no sane reading and the permissive one - delete every
+        // breakpoint in the solution, including the user's own - is unrecoverable, so reject it
+        // here rather than at the first match: an empty breakpoint list must not answer "removed 0".
+        VsDebuggerChannelRules.RequireRemovalArguments(fullPath, line);
+
         var doomed = new List<Breakpoint>();
         foreach (Breakpoint breakpoint in debugger.Breakpoints)
         {
-            if (fullPath is null
-                || (string.Equals(breakpoint.File, fullPath, StringComparison.OrdinalIgnoreCase)
-                    && (!line.HasValue || breakpoint.FileLine == line.Value)))
+            if (VsDebuggerChannelRules.MatchesBreakpointRemoval(fullPath, line, breakpoint.File, breakpoint.FileLine))
             {
                 doomed.Add(breakpoint);
             }
@@ -272,15 +292,20 @@ internal sealed partial class VsControlPipeServer
         }
 
         var mode = await WaitForModeAsync(debugger, LeftTheBreak, waitForBreakMs, cancellationToken);
-        var timedOut = !LeftTheBreak(mode);
-        if (!timedOut)
+        if (mode == dbgDebugMode.dbgRunMode)
         {
-            var remainingMs = (int)Math.Max(0, (deadline - DateTime.UtcNow).TotalMilliseconds);
-            mode = await WaitForModeAsync(debugger, m => m != dbgDebugMode.dbgRunMode, remainingMs, cancellationToken);
-            timedOut = mode == dbgDebugMode.dbgRunMode;
+            mode = await WaitForModeAsync(
+                debugger,
+                m => m != dbgDebugMode.dbgRunMode,
+                VsDebuggerChannelRules.RemainingMs(deadline, DateTime.UtcNow),
+                cancellationToken);
         }
 
-        return DescribeDebugger(debugger, timedOut);
+        // timedOut means exactly what the protocol documents: the program is still running. The
+        // break position only ends the first wait early - it must never decide the flag, because it
+        // repeats when a loop re-hits the same breakpoint and is empty on both sides in native
+        // code, which reported a timeout for a step that had in fact already completed.
+        return DescribeDebugger(debugger, timedOut: mode == dbgDebugMode.dbgRunMode);
     }
 
     private static async Task<JObject> WaitForBreakAsync(JObject args, CancellationToken cancellationToken)
@@ -297,12 +322,19 @@ internal sealed partial class VsControlPipeServer
         var debugger = await GetDebuggerAsync();
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(); // the analyzer needs the switch visible in this method
         RequireBreakMode(debugger);
+        var thread = RequireCurrentThread(debugger);
 
         var frames = new JArray();
         var index = 0;
-        foreach (StackFrame frame in debugger.CurrentThread.StackFrames)
+        var truncated = false;
+        foreach (StackFrame frame in thread.StackFrames)
         {
-            if (index >= _maxStackFrames) break;
+            if (index >= _maxStackFrames)
+            {
+                truncated = true;
+                break;
+            }
+
             var json = FrameToJson(frame);
             json["index"] = index++;
             frames.Add(json);
@@ -310,49 +342,59 @@ internal sealed partial class VsControlPipeServer
 
         return new JObject
         {
-            ["threadId"] = debugger.CurrentThread.ID,
-            ["threadName"] = debugger.CurrentThread.Name,
+            ["threadId"] = thread.ID,
+            ["threadName"] = thread.Name,
             ["frames"] = frames,
+            ["truncated"] = truncated,
         };
     }
 
     private static async Task<JObject> GetLocalsAsync(JObject args)
     {
-        var frameIndex = Math.Max(0, args["frameIndex"]?.Value<int?>() ?? 0);
+        var frameIndex = args["frameIndex"]?.Value<int?>() ?? 0;
         var debugger = await GetDebuggerAsync();
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(); // the analyzer needs the switch visible in this method
         RequireBreakMode(debugger);
+        var thread = RequireCurrentThread(debugger);
 
-        StackFrame? frame = frameIndex == 0 ? debugger.CurrentStackFrame : null;
-        if (frame is null)
-        {
-            var frames = debugger.CurrentThread.StackFrames;
-            if (frameIndex >= frames.Count)
-            {
-                throw new InvalidOperationException($"frameIndex {frameIndex} is out of range (stack has {frames.Count} frames).");
-            }
-
-            frame = frames.Item(frameIndex + 1);
-        }
+        // Always index the call stack, never Debugger.CurrentStackFrame: that is the frame selected
+        // in the Call Stack window, which Just My Code moves off the innermost frame, so index 0
+        // would name a different frame than getCallStack's frames[0].
+        var stackFrames = thread.StackFrames;
+        StackFrame frame = stackFrames.Item(VsDebuggerChannelRules.ResolveStackFrameItemIndex(frameIndex, stackFrames.Count));
 
         var locals = new JArray();
         var count = 0;
+        var truncated = false;
+        var walkDeadline = DateTime.UtcNow.AddMilliseconds(_maxLocalsWalkMs);
         foreach (Expression local in frame.Locals)
         {
-            if (count++ >= _maxLocals) break;
+            if (count >= _maxLocals || DateTime.UtcNow >= walkDeadline)
+            {
+                truncated = true;
+                break;
+            }
+
+            count++;
             locals.Add(ExpressionToJson(local));
         }
 
         var result = FrameToJson(frame);
         result["index"] = frameIndex;
         result["locals"] = locals;
+        result["truncated"] = truncated;
         return result;
     }
 
+    /// <summary>Evaluation runs on the UI thread because EnvDTE's debugger automation has no
+    /// off-thread entry point; the defence is <see cref="_maxEvaluationMs"/>, a far smaller ceiling
+    /// than the poll waits get, so an agent cannot freeze devenv for the full wait cap.</summary>
     private static async Task<JObject> EvaluateExpressionAsync(JObject args)
     {
         var expression = RequireString(args, "expression");
-        var timeoutMs = ReadWaitMs(args, "timeoutMs", 3_000);
+        var timeoutMs = VsDebuggerChannelRules.ClampEvaluationTimeoutMs(
+            args["timeoutMs"]?.Value<int?>() ?? _defaultEvaluationMs,
+            _maxEvaluationMs);
         var debugger = await GetDebuggerAsync();
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(); // the analyzer needs the switch visible in this method
         RequireBreakMode(debugger);
@@ -366,17 +408,11 @@ internal sealed partial class VsControlPipeServer
     private static JObject ExpressionToJson(Expression expression)
     {
         ThreadHelper.ThrowIfNotOnUIThread();
-        var value = expression.Value ?? string.Empty;
-        if (value.Length > _maxValueChars)
-        {
-            value = value.Substring(0, _maxValueChars) + "…";
-        }
-
         return new JObject
         {
             ["name"] = expression.Name,
             ["type"] = expression.Type,
-            ["value"] = value,
+            ["value"] = VsDebuggerChannelRules.TruncateDebuggeeValue(expression.Value, _maxValueChars),
             ["isValid"] = expression.IsValidValue,
         };
     }
@@ -390,9 +426,21 @@ internal sealed partial class VsControlPipeServer
         }
     }
 
+    /// <summary>The debuggee can exit, or the user can hit F5, between the break-mode check and the
+    /// enumeration - DTE property access pumps COM messages - and CurrentThread is null outside
+    /// break mode. Say so instead of letting a NullReferenceException reach the agent.</summary>
+    private static EnvDTE.Thread RequireCurrentThread(Debugger debugger)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        return debugger.CurrentThread
+            ?? throw new InvalidOperationException("The debugger has no current thread; the session may have ended.");
+    }
+
     /// <summary>Identifies the break the debugger is stopped at (reason, frame and line). A step that
     /// completes between two polls is never observed as run mode, so <see cref="StepAsync"/> compares
-    /// this token to tell a finished step from one that has not started yet.</summary>
+    /// this token to end its wait as soon as the step lands. It is a best-effort early exit only: it
+    /// repeats when a loop re-hits the same breakpoint and is empty on both sides in native code, so
+    /// it must never decide whether the operation timed out.</summary>
     private static string BreakPositionToken(Debugger debugger)
     {
         ThreadHelper.ThrowIfNotOnUIThread();
@@ -447,7 +495,22 @@ internal sealed partial class VsControlPipeServer
     private static JObject DescribeDebugger(Debugger debugger, bool? timedOut = null)
     {
         ThreadHelper.ThrowIfNotOnUIThread();
-        var mode = debugger.CurrentMode;
+        dbgDebugMode mode;
+        try
+        {
+            mode = debugger.CurrentMode;
+        }
+        catch (COMException)
+        {
+            // The session finished tearing down while it was being described - stopDebugging races
+            // exactly this window - and a successful stop must not be reported as an error.
+            mode = dbgDebugMode.dbgDesignMode;
+        }
+        catch (InvalidComObjectException)
+        {
+            mode = dbgDebugMode.dbgDesignMode;
+        }
+
         var result = new JObject
         {
             ["mode"] = ModeName(mode),
@@ -456,9 +519,9 @@ internal sealed partial class VsControlPipeServer
 
         if (mode == dbgDebugMode.dbgBreakMode)
         {
-            result["reason"] = BreakReasonName(debugger.LastBreakReason);
             try
             {
+                result["reason"] = BreakReasonName(debugger.LastBreakReason);
                 if (debugger.CurrentStackFrame is StackFrame frame)
                 {
                     result["currentFrame"] = FrameToJson(frame);
@@ -467,6 +530,10 @@ internal sealed partial class VsControlPipeServer
             catch (COMException)
             {
                 // No managed frame available (e.g. stopped in native/external code).
+            }
+            catch (InvalidComObjectException)
+            {
+                // The session ended between the mode read and the frame read.
             }
         }
 
@@ -482,9 +549,20 @@ internal sealed partial class VsControlPipeServer
     {
         ThreadHelper.ThrowIfNotOnUIThread();
         var processes = new JArray();
-        foreach (Process process in debugger.DebuggedProcesses)
+        try
         {
-            processes.Add(new JObject { ["id"] = process.ProcessID, ["name"] = process.Name });
+            foreach (Process process in debugger.DebuggedProcesses)
+            {
+                processes.Add(new JObject { ["id"] = process.ProcessID, ["name"] = process.Name });
+            }
+        }
+        catch (COMException)
+        {
+            // A debugged process finished exiting mid-enumeration; report the ones already seen.
+        }
+        catch (InvalidComObjectException)
+        {
+            // The debugger RCW itself has already been released.
         }
 
         return processes;
