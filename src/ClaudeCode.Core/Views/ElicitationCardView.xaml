@@ -22,6 +22,7 @@
       </ResourceDictionary.MergedDictionaries>
 
       <conv:NullToVisibilityConverter x:Key="ElicitationNullToVisibilityConverter" />
+      <conv:FractionOfConverter x:Key="ElicitationFractionOfConverter" />
 
       <Style x:Key="ElicitationButtonStyle" TargetType="Button">
         <Setter Property="Background" Value="{DynamicResource ChatAccentBrush}" />
@@ -156,8 +157,17 @@
            below it - and the composer - past the bottom edge of the tool window, where they are
            clipped and the form becomes unanswerable. The answer buttons deliberately stay outside the
            ScrollViewer so a long form cannot scroll them out of reach; ElicitationCardViewLayoutTests
-           pins both halves of that. -->
-      <ScrollViewer MaxHeight="260" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+           pins both halves of that.
+
+           The bound is a share of the tool window rather than a pixel constant. A constant small
+           enough to leave room on a short panel makes a long question scroll away the options and
+           the free-text "Other" box on a tall one - the user then sees a scrollbar and no visible
+           way to answer. Letting the card take up to 80% leaves the composer and the button row on
+           screen while keeping every option reachable without scrolling in the common case. -->
+      <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                    MaxHeight="{Binding ActualHeight, RelativeSource={RelativeSource AncestorType=Window},
+                                        Converter={StaticResource ElicitationFractionOfConverter},
+                                        ConverterParameter=0.8}">
         <StackPanel>
           <TextBlock x:Name="MessageText" Text="{Binding Message}" TextWrapping="Wrap" FontWeight="SemiBold"
                      Foreground="{DynamicResource ChatForegroundBrush}" Margin="0,0,0,8"
