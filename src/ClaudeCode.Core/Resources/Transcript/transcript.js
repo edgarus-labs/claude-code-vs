@@ -197,9 +197,9 @@
   // One level, not two: the body is always visible (no separate "nothing shown at all" collapsed
   // state) but truncated to ~6 lines by default with a fade + "Show more" - same mechanic as long
   // markdown code fences, just without a details/summary toggle gating whether you see anything.
-  // The host re-renders the whole transcript every few hundred ms while a turn is running, so
-  // per-card UI state (expanded, "Show more" pressed) lives here, keyed by tool call id, and is
-  // re-applied on every rebuild instead of being lost with the old DOM.
+  // The message being streamed is rebuilt on every host tick (see render), so per-card UI state
+  // (expanded, "Show more" pressed) lives here, keyed by tool call id, and is re-applied when its
+  // card is rebuilt instead of being lost with the old DOM.
   var expandedToolCalls = {};
   var untruncatedToolCalls = {};
 
@@ -600,20 +600,46 @@
     return (count / 1000000).toFixed(1) + "M";
   }
 
+  // Incremental: the host sends the whole transcript every few hundred ms during a turn, but only
+  // the message being streamed actually changes. Each rendered message keeps a signature of its
+  // payload; unchanged ones keep their DOM (and thus selection, expansion, scroll of inner code).
+  var rendered = []; // [{ signature, node }] parallel to payload.messages
+  var activityNode = null;
+
   function render(payload) {
     var wasAtBottom = isAtBottom();
-    var fragment = document.createDocumentFragment();
     var messages = (payload && payload.messages) || [];
+
     for (var i = 0; i < messages.length; i++) {
-      fragment.appendChild(buildMessage(messages[i]));
+      var signature = JSON.stringify(messages[i]);
+      var existing = rendered[i];
+      if (existing && existing.signature === signature) {
+        continue;
+      }
+
+      var node = buildMessage(messages[i]);
+      if (existing) {
+        root.replaceChild(node, existing.node);
+      } else {
+        root.insertBefore(node, activityNode);
+      }
+      rendered[i] = { signature: signature, node: node };
     }
 
+    while (rendered.length > messages.length) {
+      var stale = rendered.pop();
+      if (stale.node.parentNode === root) root.removeChild(stale.node);
+    }
+
+    if (activityNode) {
+      root.removeChild(activityNode);
+      activityNode = null;
+    }
     if (payload && payload.activity) {
-      fragment.appendChild(buildActivity(payload.activity));
+      activityNode = buildActivity(payload.activity);
+      root.appendChild(activityNode);
     }
 
-    root.textContent = "";
-    root.appendChild(fragment);
     flushTruncationChecks();
 
     if (wasAtBottom) {
