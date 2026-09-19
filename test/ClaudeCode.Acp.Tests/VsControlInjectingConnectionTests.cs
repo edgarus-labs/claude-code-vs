@@ -59,6 +59,22 @@ public sealed class VsControlInjectingConnectionTests
     }
 
     [Fact]
+    public async Task NewSessionAsync_WhenTheAgentRejectsTheNewSession_EndsOnlyTheServerItJustStarted()
+    {
+        var host = new RecordingSessionHost();
+        var inner = new StubConnection();
+        await using var connection = new VsControlInjectingConnection(inner, host, () => @"C:\host\solution");
+        await connection.NewSessionAsync(@"C:\agent\cwd", null, CancellationToken.None);
+        inner.NewFailure = new InvalidOperationException("agent refused");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => connection.NewSessionAsync(@"C:\agent\cwd", null, CancellationToken.None));
+
+        Assert.Equal(new[] { host.Started[1] }, host.Ended);
+        Assert.Equal(new[] { host.Started[0] }, host.Live);
+    }
+
+    [Fact]
     public async Task DisposeAsync_EndsTheSurvivingControlServerAndDetachesFromTheInnerConnection()
     {
         var host = new RecordingSessionHost();
@@ -103,8 +119,8 @@ public sealed class VsControlInjectingConnectionTests
         var host = new RecordingSessionHost();
         await using var connection = new VsControlInjectingConnection(new StubConnection(), host, () => @"C:\host\solution");
 
-        // `cwd` on this path is SessionSummary.Cwd - agent-reported, so honouring it would let the
-        // agent pick the directory it is then confined to.
+        // A caller could take `cwd` on this path from SessionSummary.Cwd - agent-reported, so honouring
+        // it would let the agent pick the directory it is then confined to.
         await connection.LoadSessionAsync("resumed", @"C:\agent\chosen", null, CancellationToken.None);
 
         Assert.Equal(new[] { @"C:\host\solution" }, host.WorkspaceRoots);
@@ -176,6 +192,8 @@ public sealed class VsControlInjectingConnectionTests
     {
         public Exception? LoadFailure { get; set; }
 
+        public Exception? NewFailure { get; set; }
+
         public IReadOnlyList<McpServerConfig>? LastMcpServers { get; private set; }
 
         public bool IsInitialized => true;
@@ -185,6 +203,7 @@ public sealed class VsControlInjectingConnectionTests
         public Task<NewSessionResult> NewSessionAsync(string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken)
         {
             LastMcpServers = mcpServers;
+            if (NewFailure is not null) throw NewFailure;
             return Task.FromResult(new NewSessionResult("new", Array.Empty<SessionConfigOption>()));
         }
 
@@ -206,7 +225,7 @@ public sealed class VsControlInjectingConnectionTests
         public Task CancelAsync(string sessionId, CancellationToken cancellationToken) => Task.CompletedTask;
 
         public Task<RemoteControlState> SetRemoteControlAsync(string sessionId, bool enabled, string? name, CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
+            Task.FromException<RemoteControlState>(new NotSupportedException());
 
         /// <summary>Net handlers currently attached across all six events; zero means the decorator detached.</summary>
         public int HandlerCount { get; private set; }

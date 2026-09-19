@@ -14,10 +14,10 @@ namespace ClaudeCode.Acp;
 /// - which becomes the <c>WorkspacePathGuard</c> sandbox root for every VS-control tool call - is
 /// always taken from <c>trustedWorkspaceRootProvider</c>, the host's own solution directory. The
 /// <c>cwd</c> arguments of <see cref="NewSessionAsync"/> and <see cref="LoadSessionAsync"/> are never
-/// used for it: <c>LoadSessionAsync</c>'s <c>cwd</c> originates from the agent's <c>session/list</c>
-/// response (see <see cref="SessionSummary.Cwd"/>), so honouring it would let the agent choose the
-/// directory it is then sandboxed to. The guard therefore holds even if a caller passes an
-/// agent-supplied path.
+/// used for it: a caller could take <c>LoadSessionAsync</c>'s <c>cwd</c> from the agent's
+/// <c>session/list</c> response (see <see cref="SessionSummary.Cwd"/>), and honouring it would let the
+/// agent choose the directory it is then sandboxed to. The guard therefore holds even if a caller
+/// passes an agent-supplied path.
 /// </para>
 /// </summary>
 public sealed class VsControlInjectingConnection : IAcpAgentConnection
@@ -70,7 +70,7 @@ public sealed class VsControlInjectingConnection : IAcpAgentConnection
     public async Task<NewSessionResult> LoadSessionAsync(string sessionId, string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken)
     {
         var merged = new List<McpServerConfig>(mcpServers ?? Array.Empty<McpServerConfig>());
-        // `cwd` here is agent-reported (SessionSummary.Cwd); it must never become the sandbox root.
+        // Even if a caller passed an agent-reported cwd (SessionSummary.Cwd), it must never become the sandbox root.
         string? correlationId = StartVsControlSession(merged);
 
         try

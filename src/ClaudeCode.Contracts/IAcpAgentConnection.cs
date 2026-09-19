@@ -27,9 +27,9 @@ public interface IAcpAgentConnection : IAsyncDisposable
     /// <see cref="SessionUpdate"/> notifications through <see cref="SessionUpdate"/> before this call
     /// returns.
     /// <para><paramref name="cwd"/> is sent to the remote agent process as-is - implementations do not
-    /// validate, canonicalize, or sandbox it in any way, and a host may adopt it as the root of its own
-    /// workspace sandbox. The caller MUST pass only a path it already trusts (its own workspace root,
-    /// or one already checked against a workspace boundary). In particular it MUST NOT pass
+    /// validate, canonicalize, or sandbox it in any way, and a host MUST NOT adopt it as the root of its
+    /// own workspace sandbox. The caller MUST pass only a path it already trusts (its own workspace
+    /// root, or one already checked against a workspace boundary). In particular it MUST NOT pass
     /// <see cref="SessionSummary.Cwd"/> straight back: that value is agent-supplied, so doing so lets
     /// the agent choose the directory the client confines itself to.</para>
     /// </summary>

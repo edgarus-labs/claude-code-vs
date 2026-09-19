@@ -15,7 +15,7 @@ public static class BoundedProcessOutput
     /// An oversize payload is discarded but the reader is still drained to EOF. Stopping the read at
     /// the bound instead would leave the child blocked writing into a full stdout pipe, so it would
     /// never exit and the caller would wait out its whole process timeout before killing it. The
-    /// retained text therefore never exceeds <paramref name="maxCharacters"/> plus one read buffer.
+    /// retained text therefore never exceeds <paramref name="maxCharacters"/>.
     /// </para>
     /// </summary>
     public static async Task<string> ReadBoundedAsync(TextReader reader, int maxCharacters)
