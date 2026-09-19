@@ -12,7 +12,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Pipes;
-using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -434,24 +433,47 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         return new JObject();
     }
 
-    private static async Task TrySetActiveConfigurationAsync(string configurationName)
+    /// <summary>
+    /// Activates the solution configuration named <paramref name="configurationName"/> if one
+    /// exists, and returns the configuration that is active afterwards. Visual Studio matches on
+    /// <c>SolutionConfiguration.Name</c>, which is the bare name (<c>Release</c>), so a
+    /// platform-qualified request (<c>Release|Any CPU</c>) matches nothing and the existing active
+    /// configuration is kept. The caller reports the returned name so that substitution is visible
+    /// to the agent instead of being reported as a successful build of what it asked for.
+    /// Pass <see langword="null"/> to read the active configuration without changing it.
+    /// </summary>
+    private static async Task<string?> TrySetActiveConfigurationAsync(string? configurationName)
     {
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
         var dte = await VS.GetRequiredServiceAsync<DTE, DTE>();
         var solutionBuild = dte.Solution?.SolutionBuild;
         if (solutionBuild is null)
         {
-            return;
+            return null;
         }
 
-        foreach (SolutionConfiguration configuration in solutionBuild.SolutionConfigurations)
+        if (!string.IsNullOrEmpty(configurationName))
         {
-            if (string.Equals(configuration.Name, configurationName, StringComparison.OrdinalIgnoreCase))
+            foreach (SolutionConfiguration configuration in solutionBuild.SolutionConfigurations)
             {
-                configuration.Activate();
+                if (string.Equals(configuration.Name, configurationName, StringComparison.OrdinalIgnoreCase))
+                {
+                    configuration.Activate();
 
-                return;
+                    break;
+                }
             }
+        }
+
+        try
+        {
+            return solutionBuild.ActiveConfiguration?.Name;
+        }
+        catch (COMException)
+        {
+            // This read only reports what happened; a solution still loading can refuse it, and
+            // that must not turn the build the caller actually asked for into an error reply.
+            return null;
         }
     }
 
@@ -535,6 +557,16 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         return new JObject { ["project"] = project.Name, ["path"] = fullPath };
     }
 
+    /// <summary>
+    /// Adds an existing project file to the open solution. <c>Solution.AddFromFile</c> is a
+    /// synchronous, uncancellable COM call that loads the project and can trigger a NuGet restore,
+    /// so - unlike every method whose wait this server owns - it cannot be bounded here: there is
+    /// no completion signal to race a <see cref="CancellationToken"/> against, and abandoning the
+    /// wait would only leave Visual Studio still loading. The budget therefore has to live on the
+    /// client, which puts this method in the same long bucket as the build methods
+    /// (<c>VsControlPipeClient._buildTimeout</c>); a 60 s budget here would time out mid-load and
+    /// invite a retry that adds the project a second time.
+    /// </summary>
     private async Task<JObject> AddProjectToSolutionAsync(JObject args)
     {
         var path = RequireString(args, "path");
@@ -552,6 +584,16 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         return new JObject { ["name"] = project?.Name, ["path"] = fullPath };
     }
 
+    /// <summary>
+    /// Closes the current solution (saving first) and opens another one from inside the workspace.
+    /// <c>Solution.Close</c> and <c>Solution.Open</c> are synchronous, uncancellable COM calls, so
+    /// this method carries no server-side bound for the same reason
+    /// <see cref="AddProjectToSolutionAsync"/> does not, and is on the client's long budget
+    /// (<c>VsControlPipeClient._buildTimeout</c>). That budget is load-bearing rather than
+    /// cosmetic: under the 60 s request budget the agent is told the call timed out while Visual
+    /// Studio is still loading, and the natural retry closes and reopens the user's solution a
+    /// second time.
+    /// </summary>
     private async Task<JObject> OpenSolutionAsync(JObject args)
     {
         var path = RequireString(args, "path");
@@ -624,7 +666,7 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         var warningCount = 0;
         foreach (var item in items)
         {
-            if (projectName is not null && !MatchesProject(item.Project, projectName))
+            if (projectName is not null && !VsBuildChannelRules.MatchesProject(item.Project, projectName))
             {
                 continue;
             }
@@ -640,20 +682,6 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         }
 
         return (errorCount, warningCount);
-    }
-
-    /// <summary>Matches an Error List item against a project name. <c>ErrorItem.Project</c> is the
-    /// project's unique name, which is the plain name for some project systems and a
-    /// solution-relative project file path for others; both forms must match.</summary>
-    private static bool MatchesProject(string? itemProject, string projectName)
-    {
-        if (string.IsNullOrEmpty(itemProject))
-        {
-            return false;
-        }
-
-        return string.Equals(itemProject, projectName, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(Path.GetFileNameWithoutExtension(itemProject), projectName, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string ErrorLevelToSeverity(vsBuildErrorLevel level) => level switch

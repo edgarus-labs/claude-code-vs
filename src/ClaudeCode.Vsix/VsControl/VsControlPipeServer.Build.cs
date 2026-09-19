@@ -1,3 +1,4 @@
+using ClaudeCode.Contracts;
 using Community.VisualStudio.Toolkit;
 using EnvDTE;
 using EnvDTE80;
@@ -18,9 +19,11 @@ internal sealed partial class VsControlPipeServer
     private const int _defaultOutputChars = 20_000;
     private const int _maxOutputChars = 200_000;
 
-    // The MCP client's own build budget is 5 minutes (VsControlPipeClient._buildTimeout). This is the
-    // server-side backstop that keeps a build Visual Studio never reports completion for from wedging
-    // the single sequential request loop for the rest of the session, so it sits above that budget.
+    // The server-side backstop that keeps a build Visual Studio never reports completion for from
+    // wedging the single sequential request loop for the rest of the session. It sits deliberately
+    // BELOW the MCP client's own 12-minute build budget (VsControlPipeClient._buildTimeout), so the
+    // actionable "did not report completion" error below reaches the agent instead of the client
+    // inventing a transport timeout. Raising it above that budget reinstates exactly that failure.
     private static readonly TimeSpan _buildTimeout = TimeSpan.FromMinutes(10);
 
     private static readonly HashSet<string> _errorSeverities = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -36,7 +39,8 @@ internal sealed partial class VsControlPipeServer
     /// build - which are themselves subject to the Error List's own Build/IntelliSense scope filters -
     /// not a raw MSBuild diagnostic count. The VS SDK does not expose MSBuild's own diagnostic totals
     /// without driving <c>IVsSolutionBuildManager</c> directly; the Error List is the diagnostic surface
-    /// <see cref="Community.VisualStudio.Toolkit"/> already gives us.
+    /// <see cref="Community.VisualStudio.Toolkit"/> already gives us. <c>configuration</c> reports the
+    /// solution configuration the build actually ran in, which is not necessarily the requested one.
     /// </summary>
     private static async Task<JObject> BuildSolutionAsync(JObject args, CancellationToken cancellationToken)
     {
@@ -45,15 +49,15 @@ internal sealed partial class VsControlPipeServer
         var action = ParseBuildAction(args);
 
         // The optional `configuration` param only takes effect if it matches an existing solution
-        // configuration name; a mismatched or omitted value simply builds whatever is active.
-        var configurationName = args["configuration"]?.Value<string>();
-        if (!string.IsNullOrEmpty(configurationName))
-        {
-            await TrySetActiveConfigurationAsync(configurationName!);
-        }
+        // configuration name; a mismatched or omitted value simply builds whatever is active. The
+        // configuration actually used goes into the result either way, so a substitution is visible
+        // to the agent instead of reading as a successful build of what it asked for.
+        var activeConfiguration = await TrySetActiveConfigurationAsync(args["configuration"]?.Value<string>());
 
         var succeeded = await RunBuildAsync(() => VS.Build.BuildSolutionAsync(action), cancellationToken);
-        return await DescribeBuildResultAsync(succeeded, action);
+        var result = await DescribeBuildResultAsync(succeeded, action);
+        result["configuration"] = activeConfiguration;
+        return result;
     }
 
     /// <summary>Builds, rebuilds or cleans one loaded project. <c>errorCount</c>/<c>warningCount</c>
@@ -191,7 +195,7 @@ internal sealed partial class VsControlPipeServer
         var paneName = args["pane"]?.Value<string>();
         if (string.IsNullOrEmpty(paneName)) paneName = "Debug";
         var clear = args["clear"]?.Value<bool?>() ?? false;
-        var maxChars = Math.Min(_maxOutputChars, Math.Max(1, args["maxChars"]?.Value<int?>() ?? _defaultOutputChars));
+        var maxChars = VsBuildChannelRules.ClampOutputChars(args["maxChars"]?.Value<int?>(), _defaultOutputChars, _maxOutputChars);
 
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
         var dte = await VS.GetRequiredServiceAsync<DTE, DTE2>();
@@ -231,13 +235,11 @@ internal sealed partial class VsControlPipeServer
             cursor.CharLeft(maxChars);
         }
 
-        var text = cursor.GetText(end) ?? string.Empty;
-        if (text.Length > maxChars)
-        {
-            // A line break counts as one character for CharLeft but two in the text it returns.
-            text = text.Substring(text.Length - maxChars);
-            truncated = true;
-        }
+        var raw = cursor.GetText(end) ?? string.Empty;
+        // A line break counts as one character for CharLeft but two in the text it returns, so the
+        // slice can still overshoot the cap.
+        var text = VsBuildChannelRules.TakeOutputTail(raw, maxChars);
+        truncated |= text.Length < raw.Length;
 
         return new JObject
         {
