@@ -226,6 +226,45 @@ public sealed class McpServerTests
         Assert.Contains("forged instructions", body);
     }
 
+    [Fact]
+    public async Task ToolsCall_ResultWithImage_EmitsTextAndImageContentBlocks()
+    {
+        string pipeName = $"vscontrol-image-{Guid.NewGuid():N}";
+        const string png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+        string resultJson = """{"hwnd":1234,"width":1,"height":1,"_image":{"mimeType":"image/png","data":"PNG"}}""".Replace("PNG", png);
+        using var pipe = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+        Task serve = Task.Run(async () =>
+        {
+            await pipe.WaitForConnectionAsync();
+            using var reader = new StreamReader(pipe, new UTF8Encoding(false), false, 1024, leaveOpen: true);
+            using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 1024, leaveOpen: true) { AutoFlush = true };
+            _ = await reader.ReadLineAsync();
+            var request = JsonSerializer.Deserialize<VsControlRequest>((await reader.ReadLineAsync())!, _wireOptions)!;
+            await writer.WriteLineAsync(JsonSerializer.Serialize(new VsControlResponse { Id = request.Id, ResultJson = resultJson }, _wireOptions));
+        });
+        await using var client = new VsControlPipeClient(pipeName, handshakeToken: "token");
+
+        JsonObject response = await RunSingleRequestAsync(client,
+            """{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"captureWindow","arguments":{"hwnd":1234}}}""");
+        await serve;
+
+        var result = Assert.IsType<JsonObject>(response["result"]);
+        Assert.False(result["isError"]!.GetValue<bool>());
+        var content = Assert.IsType<JsonArray>(result["content"]);
+        Assert.Equal(2, content.Count);
+
+        var text = Assert.IsType<JsonObject>(content[0]);
+        Assert.Equal("text", text["type"]!.GetValue<string>());
+        string body = text["text"]!.GetValue<string>();
+        Assert.Contains("\"hwnd\":1234", body);
+        Assert.DoesNotContain(png, body); // the base64 payload goes in the image block, not into the model's text
+
+        var image = Assert.IsType<JsonObject>(content[1]);
+        Assert.Equal("image", image["type"]!.GetValue<string>());
+        Assert.Equal("image/png", image["mimeType"]!.GetValue<string>());
+        Assert.Equal(png, image["data"]!.GetValue<string>());
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

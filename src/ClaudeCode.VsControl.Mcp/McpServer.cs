@@ -219,7 +219,58 @@ public sealed class McpServer : IDisposable
         return JsonRpcMessages.CreateSuccessResponse(id, CreateToolResult(isError: false, vsResponse.ResultJson ?? "{}"));
     }
 
+    // A VS result may carry one binary attachment under this key: { mimeType, data (base64) }. It is
+    // lifted out into an MCP image content block so the model sees the picture rather than a wall of
+    // base64 in its text (and so the text cap above never truncates the image).
+    private const string _imagePropertyName = "_image";
+
     private static JsonObject CreateToolResult(bool isError, string text)
+    {
+        JsonObject? image = null;
+        if (!isError && text.Length > 0 && text[0] == '{')
+        {
+            image = ExtractImage(ref text);
+        }
+
+        var result = CreateTextToolResult(isError, text);
+        if (image is not null)
+        {
+            ((JsonArray)result["content"]!).Add(image);
+        }
+
+        return result;
+    }
+
+    private static JsonObject? ExtractImage(ref string text)
+    {
+        JsonObject? root;
+        try
+        {
+            root = JsonNode.Parse(text) as JsonObject;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null;
+        }
+
+        if (root is null || !root.TryGetPropertyValue(_imagePropertyName, out var imageNode) || imageNode is not JsonObject imageObject)
+        {
+            return null;
+        }
+
+        string? mimeType = imageObject["mimeType"]?.GetValue<string>();
+        string? data = imageObject["data"]?.GetValue<string>();
+        root.Remove(_imagePropertyName);
+        text = root.ToJsonString();
+        if (string.IsNullOrEmpty(mimeType) || string.IsNullOrEmpty(data))
+        {
+            return null;
+        }
+
+        return new JsonObject { ["type"] = "image", ["mimeType"] = mimeType, ["data"] = data };
+    }
+
+    private static JsonObject CreateTextToolResult(bool isError, string text)
     {
         // Escape marker characters before adding the outer boundary; workspace content must not
         // manufacture an in-band closing marker. This labels data, not a model-enforced sandbox.

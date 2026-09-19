@@ -48,17 +48,202 @@ public static class VsControlToolCatalog
 
         new(
             "buildSolution",
-            "Build the current solution and wait for completion, returning success and error/warning counts.",
+            "Build, rebuild or clean the current solution and wait for completion, returning success and error/warning counts.",
             """
             {"type":"object","properties":{
+              "action":{"type":"string","enum":["build","rebuild","clean"],"description":"What to do; default build."},
               "configuration":{"type":"string","description":"Optional build configuration name, e.g. Debug or Release."}
             },"additionalProperties":true}
             """),
 
         new(
+            "buildProject",
+            "Build, rebuild or clean one project of the open solution and wait for completion.",
+            """
+            {"type":"object","properties":{
+              "projectName":{"type":"string","description":"Name of the project as listed by getSolutionInfo."},
+              "action":{"type":"string","enum":["build","rebuild","clean"],"description":"What to do; default build."}
+            },"required":["projectName"],"additionalProperties":true}
+            """),
+
+        new(
             "getBuildErrors",
-            "Read the current contents of the Visual Studio Error List.",
+            "Read the Visual Studio Error List: errors, warnings and messages, optionally filtered by severity.",
+            """
+            {"type":"object","properties":{
+              "severity":{"type":"string","enum":["error","warning","message"],"description":"Return only rows of this severity; default all."}
+            },"additionalProperties":true}
+            """),
+
+        new(
+            "getOutput",
+            "Read the text of a Visual Studio Output window pane (Build, Debug, General, ...). Use clear=true before a run to " +
+            "capture only fresh log lines, and read the Debug pane while debugging to see the app's Debug.WriteLine/Console output.",
+            """
+            {"type":"object","properties":{
+              "pane":{"type":"string","description":"Pane name; default Debug."},
+              "maxChars":{"type":"integer","description":"Return at most this many trailing characters; default 20000."},
+              "clear":{"type":"boolean","description":"Clear the pane instead of reading it."}
+            },"additionalProperties":true}
+            """),
+
+        new(
+            "startDebugging",
+            "Start the startup project (or the named project) under the Visual Studio debugger and wait until it is running " +
+            "or stopped at a breakpoint. This executes the solution's code.",
+            """
+            {"type":"object","properties":{
+              "projectName":{"type":"string","description":"Optional project to make the startup project first."},
+              "configuration":{"type":"string","description":"Optional solution configuration to activate first, e.g. Debug."},
+              "waitForBreakMs":{"type":"integer","description":"How long to wait for a breakpoint hit after start; default 3000."}
+            },"additionalProperties":true}
+            """),
+
+        new(
+            "stopDebugging",
+            "Stop the current debugging session and terminate the debugged processes.",
             """{"type":"object","properties":{},"additionalProperties":true}"""),
+
+        new(
+            "getDebuggerState",
+            "Get the debugger mode (design/run/break), the last break reason, the current stack frame location and the debugged processes.",
+            """{"type":"object","properties":{},"additionalProperties":true}"""),
+
+        new(
+            "setBreakpoint",
+            "Set a breakpoint at a file line, optionally with a condition.",
+            """
+            {"type":"object","properties":{
+              "path":{"type":"string","description":"Absolute or solution-relative source file path."},
+              "line":{"type":"integer","description":"1-based line."},
+              "condition":{"type":"string","description":"Optional break-when-true expression."}
+            },"required":["path","line"],"additionalProperties":true}
+            """),
+
+        new(
+            "removeBreakpoint",
+            "Remove the breakpoints at a file line, or all breakpoints when no location is given.",
+            """
+            {"type":"object","properties":{
+              "path":{"type":"string","description":"Source file path; omit together with line to remove every breakpoint."},
+              "line":{"type":"integer","description":"1-based line."}
+            },"additionalProperties":true}
+            """),
+
+        new(
+            "listBreakpoints",
+            "List the breakpoints of the current solution.",
+            """{"type":"object","properties":{},"additionalProperties":true}"""),
+
+        new(
+            "continueDebugging",
+            "Resume execution from a breakpoint and wait for the next break, program end or timeout.",
+            """
+            {"type":"object","properties":{
+              "waitForBreakMs":{"type":"integer","description":"How long to wait for the next break; default 5000."}
+            },"additionalProperties":true}
+            """),
+
+        new(
+            "stepOver",
+            "Step over the current line and wait for the debugger to break again.",
+            """{"type":"object","properties":{"waitForBreakMs":{"type":"integer"}},"additionalProperties":true}"""),
+
+        new(
+            "stepInto",
+            "Step into the call on the current line and wait for the debugger to break again.",
+            """{"type":"object","properties":{"waitForBreakMs":{"type":"integer"}},"additionalProperties":true}"""),
+
+        new(
+            "stepOut",
+            "Step out of the current function and wait for the debugger to break again.",
+            """{"type":"object","properties":{"waitForBreakMs":{"type":"integer"}},"additionalProperties":true}"""),
+
+        new(
+            "waitForBreak",
+            "Wait until the debugger stops at a breakpoint/exception or the program ends, up to a timeout.",
+            """
+            {"type":"object","properties":{
+              "timeoutMs":{"type":"integer","description":"Maximum wait; default 10000."}
+            },"additionalProperties":true}
+            """),
+
+        new(
+            "getCallStack",
+            "Get the call stack of the current thread while the debugger is in break mode.",
+            """{"type":"object","properties":{},"additionalProperties":true}"""),
+
+        new(
+            "getLocals",
+            "Get the local variables (name, type, value) of a stack frame while in break mode.",
+            """
+            {"type":"object","properties":{
+              "frameIndex":{"type":"integer","description":"0 = current frame (default), 1 = caller, ..."}
+            },"additionalProperties":true}
+            """),
+
+        new(
+            "evaluateExpression",
+            "Evaluate an expression in the current stack frame while in break mode (like the Watch window).",
+            """
+            {"type":"object","properties":{
+              "expression":{"type":"string"},
+              "timeoutMs":{"type":"integer","description":"Evaluation timeout; default 3000."}
+            },"required":["expression"],"additionalProperties":true}
+            """),
+
+        new(
+            "listAppWindows",
+            "List the top-level windows of the processes currently under the debugger (title, class, bounds, handle).",
+            """{"type":"object","properties":{},"additionalProperties":true}"""),
+
+        new(
+            "getWindowElements",
+            "Get the UI Automation element tree of a debugged app window: control types, names, automation ids, values, " +
+            "bounds and supported actions. Use it to find what to click or type into.",
+            """
+            {"type":"object","properties":{
+              "hwnd":{"type":"integer","description":"Window handle from listAppWindows."},
+              "maxDepth":{"type":"integer","description":"Tree depth limit; default 12."},
+              "maxNodes":{"type":"integer","description":"Node count limit; default 500."}
+            },"required":["hwnd"],"additionalProperties":true}
+            """),
+
+        new(
+            "invokeElement",
+            "Act on a UI element of a debugged app window: invoke (click) a button, toggle a checkbox, select an item, " +
+            "expand/collapse, or focus it.",
+            """
+            {"type":"object","properties":{
+              "hwnd":{"type":"integer"},
+              "runtimeId":{"type":"string","description":"runtimeId from getWindowElements (most precise)."},
+              "automationId":{"type":"string"},
+              "name":{"type":"string","description":"Element name/label, exact match."},
+              "action":{"type":"string","enum":["invoke","toggle","select","expand","collapse","focus"],"description":"Default invoke."}
+            },"required":["hwnd"],"additionalProperties":true}
+            """),
+
+        new(
+            "setElementValue",
+            "Set the text/value of an editable UI element (text box, combo box) in a debugged app window.",
+            """
+            {"type":"object","properties":{
+              "hwnd":{"type":"integer"},
+              "runtimeId":{"type":"string"},
+              "automationId":{"type":"string"},
+              "name":{"type":"string"},
+              "value":{"type":"string"}
+            },"required":["hwnd","value"],"additionalProperties":true}
+            """),
+
+        new(
+            "captureWindow",
+            "Take a PNG screenshot of a debugged app window and return it as an image.",
+            """
+            {"type":"object","properties":{
+              "hwnd":{"type":"integer","description":"Window handle from listAppWindows."}
+            },"required":["hwnd"],"additionalProperties":true}
+            """),
 
         new(
             "getDiagnostics",
@@ -94,6 +279,16 @@ public static class VsControlToolCatalog
               "projectName":{"type":"string","description":"Name of the target project as listed by getSolutionInfo."},
               "path":{"type":"string","description":"Absolute or solution-relative path of the file to include."}
             },"required":["projectName","path"],"additionalProperties":true}
+            """),
+
+        new(
+            "openSolution",
+            "Open a solution file (.sln/.slnx) from inside the workspace in Visual Studio, closing the current one if any. " +
+            "Use after creating a new solution on disk (e.g. with dotnet new) so the build and debugger tools can work on it.",
+            """
+            {"type":"object","properties":{
+              "path":{"type":"string","description":"Absolute or workspace-relative path of the solution file."}
+            },"required":["path"],"additionalProperties":true}
             """),
 
         new(
