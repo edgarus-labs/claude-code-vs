@@ -18,13 +18,15 @@ public sealed class WorkspacePathLease : IDisposable
     private readonly List<SafeFileHandle> _directories = new List<SafeFileHandle>();
     private readonly bool _windows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
     private readonly string _leaf;
+    private readonly bool _document;
     private SafeFileHandle? _file;
     private bool _disposed;
 
-    private WorkspacePathLease(string fullPath)
+    private WorkspacePathLease(string fullPath, bool document)
     {
         FullPath = fullPath;
         _leaf = Path.GetFileName(fullPath);
+        _document = document;
     }
 
     public string FullPath { get; }
@@ -33,7 +35,7 @@ public sealed class WorkspacePathLease : IDisposable
     {
         if (!WorkspacePathGuard.TryResolveWithinWorkspace(root, path, out string fullPath))
             throw new UnauthorizedAccessException("The path is outside the workspace or cannot be resolved safely.");
-        var lease = new WorkspacePathLease(fullPath);
+        var lease = new WorkspacePathLease(fullPath, document);
         try
         {
             if (!lease._windows && (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux) || document))
@@ -68,6 +70,7 @@ public sealed class WorkspacePathLease : IDisposable
     {
         ThrowIfDisposed();
         if (_file is null) throw new FileNotFoundException("The workspace file does not exist.", FullPath);
+        using var retained = new HandleReference(_file);
         using var stream = OpenRetainedRead();
         using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
         return reader.ReadToEnd();
@@ -76,7 +79,9 @@ public sealed class WorkspacePathLease : IDisposable
     /// <summary>
     /// Reads through the retained handle without surrendering it: a <see cref="FileStream"/> built
     /// directly over <c>_file</c> closes that handle on dispose, which both breaks every later
-    /// operation on the lease and drops the sharing pin the lease exists to hold.
+    /// operation on the lease and drops the sharing pin the lease exists to hold. Callers must
+    /// hold a <see cref="HandleReference"/> for the returned stream's lifetime, because the raw
+    /// handle value borrowed here outlives <see cref="SafeHandle"/>'s own reference counting.
     /// </summary>
     private FileStream OpenRetainedRead()
     {
@@ -94,6 +99,30 @@ public sealed class WorkspacePathLease : IDisposable
             stream?.Dispose();
             borrowed.Dispose();
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Keeps the retained handle's reference count raised for the duration of a read, so a
+    /// concurrent <see cref="Dispose"/> cannot close the kernel handle — and let the OS recycle
+    /// its value under a different object — while a borrowed wrapper is still reading through it.
+    /// </summary>
+    private readonly struct HandleReference : IDisposable
+    {
+        private readonly SafeFileHandle _handle;
+        private readonly bool _added;
+
+        public HandleReference(SafeFileHandle handle)
+        {
+            bool added = false;
+            handle.DangerousAddRef(ref added);
+            _handle = handle;
+            _added = added;
+        }
+
+        public void Dispose()
+        {
+            if (_added) _handle.DangerousRelease();
         }
     }
 
@@ -150,14 +179,25 @@ public sealed class WorkspacePathLease : IDisposable
         }
 
         // The lease outlives the replacement: reopen the new leaf through the still-pinned parent
-        // so later reads, DACL capture and BOM detection keep working against the current entry.
-        _file = OpenLeaf(document: false);
+        // so later reads, DACL capture and BOM detection keep working against the current entry,
+        // and a document lease regains the no-delete pin its contract promises.
+        try
+        {
+            _file = OpenLeaf(_document);
+        }
+        // The replacement already committed, so a transient failure to reopen the new entry (an
+        // indexer or scanner holding it, a tightened DACL) must not be reported to the caller as a
+        // failed write. A null leaf handle is a supported state for a file lease; a document lease
+        // whose whole contract is the pin still fails loudly rather than living on unpinned.
+        catch (IOException) when (!_document) { _file = null; }
+        catch (UnauthorizedAccessException) when (!_document) { _file = null; }
     }
 
     private Encoding DetectEncoding()
     {
         if (_file is null) return new UTF8Encoding(false);
         var buffer = new byte[4];
+        using var retained = new HandleReference(_file);
         using var stream = OpenRetainedRead();
         int count = stream.Read(buffer, 0, buffer.Length);
         if (count >= 3 && buffer[0] == 0xEF && buffer[1] == 0xBB && buffer[2] == 0xBF) return new UTF8Encoding(true);

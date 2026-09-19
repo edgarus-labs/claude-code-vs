@@ -233,7 +233,54 @@ public sealed class WorkspacePathGuardTests
         }
         finally
         {
-            Directory.Delete(junctionPath);
+            if (Directory.Exists(junctionPath)) Directory.Delete(junctionPath);
+            Directory.Delete(workspace, recursive: true);
+            if (Directory.Exists(outside)) Directory.Delete(outside, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void TryResolveWithinWorkspace_JunctionEscapingRootBeyondMaxPath_IsRejected()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            // NTFS junctions are a Windows-only reparse-point mechanism; nothing to verify elsewhere.
+            return;
+        }
+
+        string workspace = Directory.CreateTempSubdirectory("wpg-long-").FullName;
+        string outside = Directory.CreateTempSubdirectory("wpg-outside-").FullName;
+        string junctionPath = Path.Combine(workspace, "link");
+        string deepJunctionPath = junctionPath;
+        try
+        {
+            File.WriteAllText(Path.Combine(outside, "secret.txt"), "top secret");
+            CreateJunction(junctionPath, outside);
+
+            // cmd.exe and mklink are Win32 callers and cannot create a junction past MAX_PATH, so
+            // create it short and relocate the reparse point itself into a >MAX_PATH location.
+            string deepParent = workspace;
+            while (Path.Combine(deepParent, "link").Length < 260)
+            {
+                deepParent = Path.Combine(deepParent, new string('p', 40));
+            }
+
+            Directory.CreateDirectory(deepParent);
+            deepJunctionPath = Path.Combine(deepParent, "link");
+            Directory.Move(junctionPath, deepJunctionPath);
+
+            var candidate = Path.Combine(deepJunctionPath, "secret.txt");
+
+            // Both CreateFileW and GetFileAttributesW reject this path with ERROR_PATH_NOT_FOUND
+            // during normalization, before the object is looked up, so the walk-up cannot tell an
+            // absent component from a live junction. Unprovable absence must fail closed instead
+            // of stripping the junction and re-attaching it to a canonicalized short ancestor.
+            Assert.False(WorkspacePathGuard.TryResolveWithinWorkspace(workspace, candidate, out _));
+        }
+        finally
+        {
+            if (Directory.Exists(deepJunctionPath)) Directory.Delete(deepJunctionPath);
+            if (Directory.Exists(junctionPath)) Directory.Delete(junctionPath);
             Directory.Delete(workspace, recursive: true);
             if (Directory.Exists(outside)) Directory.Delete(outside, recursive: true);
         }
@@ -407,5 +454,73 @@ public sealed class WorkspacePathGuardTests
         {
             Directory.Delete(workspace, recursive: true);
         }
+    }
+
+    [Fact]
+    public void AcquireFile_CommittedWrite_IsNotReportedAsAFailure_WhenTheNewLeafCannotBeReopened()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        string workspace = Directory.CreateTempSubdirectory("wpg-reopen-").FullName;
+        string path = Path.Combine(workspace, "notes.txt");
+        File.WriteAllText(path, "original");
+        try
+        {
+            using (var lease = WorkspacePathGuard.AcquireFile(workspace, path))
+            {
+                // Withhold only FILE_READ_DATA from the owner: the atomic replacement still
+                // commits (the temporary inherits this DACL and the rename needs delete, not
+                // read), but reopening the new leaf with GENERIC_READ afterwards fails with
+                // ERROR_ACCESS_DENIED - the deterministic stand-in for the sharing violation an
+                // indexer or virus scanner causes on the freshly renamed destination.
+                SetOwnerOnlyRights(path, FileSystemRights.FullControl & ~FileSystemRights.ReadData);
+
+                lease.WriteAllText("replacement");
+            }
+
+            SetOwnerOnlyRights(path, FileSystemRights.FullControl);
+            Assert.Equal("replacement", File.ReadAllText(path));
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void AcquireDocument_KeepsPinningTheLeafAgainstDeletion_AfterAWrite()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        string workspace = Directory.CreateTempSubdirectory("wpg-doc-write-").FullName;
+        string file = Path.Combine(workspace, "doc.txt");
+        File.WriteAllText(file, "original");
+        try
+        {
+            using (var lease = WorkspacePathGuard.AcquireDocument(workspace, file))
+            {
+                lease.WriteAllText("replacement");
+
+                // A document lease withholds FILE_SHARE_DELETE for its whole life. Replacing the
+                // entry is not a reason to surrender the pin the lease exists to hold.
+                Assert.Throws<IOException>(() => File.Delete(file));
+            }
+
+            Assert.Equal("replacement", File.ReadAllText(file));
+            File.Delete(file);
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private static void SetOwnerOnlyRights(string path, FileSystemRights rights)
+    {
+        var security = new FileSecurity();
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+        security.AddAccessRule(new FileSystemAccessRule(WindowsIdentity.GetCurrent().User!, rights, AccessControlType.Allow));
+        new FileInfo(path).SetAccessControl(security);
     }
 }

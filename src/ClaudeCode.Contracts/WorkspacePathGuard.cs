@@ -28,6 +28,8 @@ public static class WorkspacePathGuard
     /// Performs a point-in-time containment check, including existing symlink targets.
     /// This does not authorize later path-based I/O: use <see cref="AcquireFile"/> or
     /// <see cref="AcquireDocument"/> to retain protection through the operation.
+    /// On Windows a path at or beyond MAX_PATH (260) is always refused: reparse resolution there
+    /// goes through raw Win32 calls that cannot tell such a path from an absent component.
     /// </summary>
     /// <returns><c>true</c> and the resolved absolute path when containment holds; otherwise <c>false</c>.</returns>
     public static bool TryResolveWithinWorkspace(string? workspaceRoot, string? candidatePath, out string fullPath)
@@ -159,6 +161,16 @@ public static class WorkspacePathGuard
             return false;
         }
 
+        // A path at or beyond MAX_PATH fails normalization with ERROR_PATH_NOT_FOUND before the
+        // object is ever looked up. These are raw Win32 entry points with no \\?\ prefix, so the
+        // System.IO long-path shim does not apply and neither call below can tell an absent
+        // component from a live junction. Absence that cannot be proven must deny: otherwise the
+        // walk-up strips an existing junction and re-attaches it to a canonicalized ancestor.
+        if (path.Length >= MaxPath)
+        {
+            return false;
+        }
+
         if (GetFileAttributesW(path) != InvalidFileAttributes)
         {
             return false;
@@ -215,6 +227,7 @@ public static class WorkspacePathGuard
     private const uint FileShareReadWriteDelete = 0x00000001 | 0x00000002 | 0x00000004;
     private const uint OpenExisting = 3;
     private const uint FileFlagBackupSemantics = 0x02000000;
+    private const int MaxPath = 260;
     private const uint InvalidFileAttributes = 0xFFFFFFFF;
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, ExactSpelling = true)]
