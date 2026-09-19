@@ -1,5 +1,6 @@
 using ClaudeCode.Contracts;
 using System;
+using System.Buffers.Text;
 using System.IO;
 using System.IO.Pipes;
 using System.Linq;
@@ -55,6 +56,27 @@ public sealed class McpServerTests
             Assert.Equal("object", schema["type"]!.GetValue<string>());
             Assert.IsType<JsonObject>(schema["properties"]);
         }
+    }
+
+    [Fact]
+    public async Task ToolsList_AdvertisesRemoveBreakpoint_AsTheOneToolThatRejectsUnknownParameters()
+    {
+        // Sending removeBreakpoint with neither path nor line is the documented "delete every
+        // breakpoint in the solution" form, and breakpoints the user set by hand cannot be restored.
+        // So a model that spells the parameter `file` or `filePath` must be rejected, not silently
+        // promoted to the destructive form - which is what an open schema would do.
+        await using var pipeClient = new VsControlPipeClient($"unused-{Guid.NewGuid():N}", handshakeToken: "token");
+
+        JsonObject response = await RunSingleRequestAsync(pipeClient, """{"jsonrpc":"2.0","id":1,"method":"tools/list"}""");
+
+        var tools = Assert.IsType<JsonArray>(response["result"]!["tools"]);
+        var strict = tools
+            .Select(t => Assert.IsType<JsonObject>(t))
+            .Where(t => t["inputSchema"]!["additionalProperties"]!.GetValue<bool>() == false)
+            .Select(t => t["name"]!.GetValue<string>())
+            .ToList();
+
+        Assert.Equal(["removeBreakpoint"], strict);
     }
 
     [Fact]
@@ -279,12 +301,12 @@ public sealed class McpServerTests
     }
 
     [Theory]
-    [InlineData("""{"hwnd":1234,"_image":{"mimeType":"image/png","data":1234}}""")] // a JSON value of the wrong primitive type
-    [InlineData("""{"hwnd":1234,"_image":{"mimeType":["image/png"],"data":["abc"]}}""")] // not a JSON value at all
-    [InlineData("""{"hwnd":1234,"_image":{}}""")] // neither member present
-    [InlineData("""{"hwnd":1234,"_image":"not-an-object"}""")] // _image is not an object
-    [InlineData("""{"hwnd":1234,"_image":{"mimeType":"image/svg+xml","data":"PHN2Zz48L3N2Zz4="}}""")] // media type off the allow-list
-    public async Task ToolsCall_ResultWithUnusableImagePayload_ReturnsATextOnlyResult(string resultJson)
+    [InlineData("""{"hwnd":1234,"captured":true,"_image":{"mimeType":"image/png","data":1234}}""")] // a JSON value of the wrong primitive type
+    [InlineData("""{"hwnd":1234,"captured":true,"_image":{"mimeType":["image/png"],"data":["abc"]}}""")] // not a JSON value at all
+    [InlineData("""{"hwnd":1234,"captured":true,"_image":{}}""")] // neither member present
+    [InlineData("""{"hwnd":1234,"captured":true,"_image":"not-an-object"}""")] // _image is not an object
+    [InlineData("""{"hwnd":1234,"captured":true,"_image":{"mimeType":"image/svg+xml","data":"PHN2Zz48L3N2Zz4="}}""")] // media type off the allow-list
+    public async Task ToolsCall_ResultWithUnusableImagePayload_ReturnsTextThatSaysTheCaptureDidNotArrive(string resultJson)
     {
         JsonObject result = await RunCaptureWindowAsync(resultJson);
 
@@ -292,24 +314,72 @@ public sealed class McpServerTests
         var content = Assert.IsType<JsonArray>(result["content"]);
         var text = Assert.IsType<JsonObject>(Assert.Single(content));
         Assert.Equal("text", text["type"]!.GetValue<string>());
-        Assert.Contains("\"hwnd\":1234", text["text"]!.GetValue<string>());
-    }
-
-    [Fact]
-    public async Task ToolsCall_WithAnOversizedImagePayload_DropsTheImageAndKeepsTheText()
-    {
-        // The attachment is the one payload exempt from the 256 KiB text cap, so it carries its own
-        // ceiling - the base64 length of the VS host's 4 MiB encoded-PNG cap. A payload past it
-        // degrades to text instead of being forwarded to a model API that would reject the result.
-        string oversized = new('A', (8 * 1024 * 1024) + 4);
-        JsonObject result = await RunCaptureWindowAsync(
-            "{\"hwnd\":1234,\"_image\":{\"mimeType\":\"image/png\",\"data\":\"" + oversized + "\"}}");
-
-        var content = Assert.IsType<JsonArray>(result["content"]);
-        var text = Assert.IsType<JsonObject>(Assert.Single(content));
         string body = text["text"]!.GetValue<string>();
         Assert.Contains("\"hwnd\":1234", body);
-        Assert.DoesNotContain("AAAA", body);
+
+        // The host said captured:true. Forwarding that with no picture and no marker leaves the model
+        // retrying captureWindow forever, so the sidecar adds its own key. It must NOT rewrite
+        // `captured`: that flag plus one of the host's eight reasons means "the host declined to read
+        // those pixels", a different failure with a different remedy.
+        Assert.Contains("\"attachmentDropped\":true", body);
+        Assert.Contains("\"captured\":true", body);
+        Assert.DoesNotContain("\"captured\":false", body);
+    }
+
+    // Two failures must stay distinguishable on the wire: a host refusal (captured:false with one of
+    // the eight host reasons, carrying no width/height/scale) and a dropped attachment (the capture
+    // worked, this process could not forward it). Their remedies are opposite — change the window's
+    // state versus ask for a smaller window — and the dimensions are precisely what tells the agent
+    // the window was too large to encode, so they must survive.
+    [Fact]
+    public async Task ToolsCall_WhenTheAttachmentIsDropped_KeepsTheCaptureResultAndSaysWhyNoPictureArrived()
+    {
+        JsonObject result = await RunCaptureWindowAsync(
+            """{"hwnd":1234,"captured":true,"width":3840,"height":2160,"scale":1,"_image":{"mimeType":"image/gif","data":"R0lGODlhAQABAAAAACw="}}""");
+
+        var content = Assert.IsType<JsonArray>(result["content"]);
+        string body = Assert.IsType<JsonObject>(content[0])["text"]!.GetValue<string>();
+
+        Assert.Contains("\"attachmentDropped\":true", body);
+        Assert.Contains("\"attachmentDropReason\":\"unsupportedMediaType\"", body);
+        Assert.Contains("\"captured\":true", body);
+        Assert.Contains("\"width\":3840", body);
+        Assert.Contains("\"height\":2160", body);
+    }
+
+    [Theory]
+    [InlineData(0, true)]
+    [InlineData(1, false)]
+    public async Task ToolsCall_ImagePayload_IsForwardedUpToTheEncodedPngCapAndNotOneCharacterPast(int overCap, bool expectImage)
+    {
+        // The attachment is the one payload exempt from the 256 KiB text cap, so it carries its own
+        // ceiling: the base64 length the VS host's 4 MiB encoded-PNG cap inflates to. Derive that
+        // length from the BCL rather than restating the production expression, so an off-by-one in the
+        // ceiling arithmetic shows up here instead of silently moving the boundary.
+        int cap = Base64.GetMaxEncodedToUtf8Length(4 * 1024 * 1024);
+        string data = new('A', cap + overCap);
+
+        JsonObject result = await RunCaptureWindowAsync(
+            "{\"hwnd\":1234,\"captured\":true,\"_image\":{\"mimeType\":\"image/png\",\"data\":\"" + data + "\"}}");
+
+        var content = Assert.IsType<JsonArray>(result["content"]);
+        string body = Assert.IsType<JsonObject>(content[0])["text"]!.GetValue<string>();
+        Assert.Contains("\"hwnd\":1234", body);
+        Assert.DoesNotContain("AAAA", body); // never in the model's text, whichever side of the cap
+
+        if (expectImage)
+        {
+            Assert.Equal(3, content.Count);
+            Assert.Equal(data, Assert.IsType<JsonObject>(content[2])["data"]!.GetValue<string>());
+            Assert.Contains("\"captured\":true", body);
+        }
+        else
+        {
+            _ = Assert.Single(content);
+            Assert.Contains("\"attachmentDropped\":true", body);
+            Assert.Contains("\"attachmentDropReason\":\"tooLarge\"", body);
+            Assert.Contains("\"captured\":true", body);
+        }
     }
 
     [Fact]

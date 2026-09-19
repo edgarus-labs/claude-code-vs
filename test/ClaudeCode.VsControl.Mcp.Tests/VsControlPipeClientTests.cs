@@ -302,7 +302,9 @@ public sealed class VsControlPipeClientTests
     [InlineData("buildSolution")]
     [InlineData("buildProject")]
     [InlineData("startDebugging")]
-    public async Task SendAsync_ForAMethodThatCompiles_UsesTheLongerBuildTimeout_NotTheDefaultRequestTimeout(string method)
+    [InlineData("openSolution")]
+    [InlineData("addProjectToSolution")]
+    public async Task SendAsync_ForAMethodWithoutAUsableServerSideBound_UsesTheLongerBudget_NotTheDefaultRequestTimeout(string method)
     {
         string pipeName = $"vscontrol-buildtimeout-{Guid.NewGuid():N}";
         using var serverStarted = new SemaphoreSlim(0, 1);
@@ -346,6 +348,20 @@ public sealed class VsControlPipeClientTests
 
         Assert.Null(result.Error);
         Assert.Contains("succeeded", result.ResultJson);
+    }
+
+    [Fact]
+    public void DefaultLongOperationTimeout_ExceedsTheWorstCaseTheVsHostCanReachUnderIt()
+    {
+        // Nothing cancels the VS side when a client budget expires, so a budget below the host's own
+        // worst case makes the agent answer "timed out" while VS is still working; its retry then
+        // queues behind the still-running first request and is refused as already in progress. That
+        // is the loop this budget exists to prevent, so the two numbers have to stay ordered.
+        Assert.True(
+            VsControlPipeClient.DefaultLongOperationTimeout > VsControlPipeClient.LongOperationServerWorstCase,
+            $"The long-operation budget ({VsControlPipeClient.DefaultLongOperationTimeout.TotalSeconds:0.#}s) must stay "
+            + $"above the VS host's worst case ({VsControlPipeClient.LongOperationServerWorstCase.TotalSeconds:0.#}s): "
+            + "10 min build backstop + 60 s debug launch wait + 45 s max waitForBreakMs.");
     }
 
     [Fact]

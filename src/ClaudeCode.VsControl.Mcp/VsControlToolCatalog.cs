@@ -52,7 +52,7 @@ public static class VsControlToolCatalog
             """
             {"type":"object","properties":{
               "action":{"type":"string","enum":["build","rebuild","clean"],"description":"What to do; default build."},
-              "configuration":{"type":"string","description":"Optional build configuration name, e.g. Debug or Release."}
+              "configuration":{"type":"string","description":"Optional build configuration name. Use the bare name as listed in the solution - Release, not Release|Any CPU. An unrecognized name is ignored and the solution builds in whatever configuration was already active, so compare the result's configuration field against what you asked for."}
             },"additionalProperties":true}
             """),
 
@@ -111,23 +111,26 @@ public static class VsControlToolCatalog
 
         new(
             "setBreakpoint",
-            "Set a breakpoint at a file line, optionally with a condition.",
+            "Set a breakpoint at a file line, optionally with a break-when-true condition.",
             """
             {"type":"object","properties":{
               "path":{"type":"string","description":"Absolute or solution-relative source file path."},
               "line":{"type":"integer","description":"1-based line."},
-              "condition":{"type":"string","description":"Optional break-when-true expression."}
+              "condition":{"type":"string","description":"Optional break-when-true expression. It is evaluated inside the debugged process every time the line is reached, so property getters and method calls in it really execute - same caveat as evaluateExpression, but on every hit and without a timeout."}
             },"required":["path","line"],"additionalProperties":true}
             """),
 
         new(
             "removeBreakpoint",
-            "Remove the breakpoints at a file line, or all breakpoints when no location is given.",
+            "Remove the breakpoints at a file line, all breakpoints in a file, or - when neither path nor line is given - " +
+            "every breakpoint in the solution, including ones the user set by hand and cannot restore. Because omitting " +
+            "both parameters is the destructive form, this is the one tool that rejects unrecognized parameter names " +
+            "instead of ignoring them: send path, not file or filePath.",
             """
             {"type":"object","properties":{
               "path":{"type":"string","description":"Source file path; omit path and line together to remove every breakpoint."},
               "line":{"type":"integer","description":"1-based line; requires path."}
-            },"additionalProperties":true}
+            },"additionalProperties":false}
             """),
 
         new(
@@ -240,9 +243,13 @@ public static class VsControlToolCatalog
 
         new(
             "captureWindow",
-            "Take a PNG screenshot of a debugged app window and return it as an image. It refuses with captured:false " +
-            "and a reason when the window is hidden, minimized, off-screen or covered by another window - which is the " +
-            "normal case in break mode, since Visual Studio comes to the front. Use getWindowElements to read UI state.",
+            "Take a PNG screenshot of a debugged app window and return it as an image. While the app is running the " +
+            "window is asked to render itself, so one sitting behind other windows still captures fine. When it cannot " +
+            "render - at a breakpoint, or if the render is declined - the desktop is read at the window's rectangle " +
+            "instead, and only that path can refuse: it answers {hwnd, captured:false, reason, note} with a reason of " +
+            "moved, child, offscreen, hidden, minimized, cloaked, translucent or occluded rather than return pixels it " +
+            "cannot prove are the window's own. In break mode Visual Studio is normally in front, so occluded is the " +
+            "usual answer there: use getWindowElements to read UI state while stopped.",
             """
             {"type":"object","properties":{
               "hwnd":{"type":"integer","description":"Window handle from listAppWindows."}
