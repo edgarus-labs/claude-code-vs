@@ -50,7 +50,8 @@ public sealed class ToolCallCardViewModel : ObservableObject
     {
         if (!string.IsNullOrEmpty(call.Title))
         {
-            Title = call.Title;
+            // MCP tools arrive as a routing identifier (mcp__visual-studio__listAppWindows).
+            Title = ToolDisplayName.Describe(call.Title);
         }
 
         if (call.Status != ToolCallStatus.Pending || Status == ToolCallStatus.Pending)
