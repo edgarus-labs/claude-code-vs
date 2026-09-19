@@ -31,6 +31,7 @@
       <conv:PercentToDashArrayConverter x:Key="PercentToDashArrayConverter" />
       <conv:SessionModeGlyphConverter x:Key="SessionModeGlyphConverter" />
       <conv:Base64ToImageSourceConverter x:Key="Base64ToImageSourceConverter" />
+      <conv:SingleLineHeightConverter x:Key="SingleLineHeightConverter" />
 
       <Style x:Key="ButtonIconStrokeStyle" TargetType="Path">
         <Setter Property="Stroke" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
@@ -609,14 +610,22 @@
               <ColumnDefinition Width="*" />
               <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
-            <Grid Grid.Column="1" Margin="8,0,0,0" VerticalAlignment="Bottom">
-              <Button Width="28" Height="28" Padding="0" Command="{Binding SendCommand}" Click="SendButton_Click"
+            <!-- Docked to the bottom so it stays by the last line while the text grows, but sized to exactly one
+                 text line (at the current font size) so it is centered on a single-line composer. -->
+            <Grid Grid.Column="1" Margin="8,0,0,0" VerticalAlignment="Bottom" MinHeight="28">
+              <Grid.Height>
+                <MultiBinding Converter="{StaticResource SingleLineHeightConverter}" ConverterParameter="6">
+                  <Binding ElementName="ComposerBox" Path="FontSize" />
+                  <Binding ElementName="ComposerBox" Path="FontFamily" />
+                </MultiBinding>
+              </Grid.Height>
+              <Button Width="28" Height="28" Padding="0" VerticalAlignment="Center" Command="{Binding SendCommand}" Click="SendButton_Click"
                       Style="{StaticResource ChatButtonStyle}" ToolTip="Send message (Enter)" AutomationProperties.Name="Send message"
                       Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibilityConverter}, ConverterParameter=Invert}">
                 <Path Data="M 6,12 L 6,0 M 1,5 L 6,0 L 11,5" StrokeThickness="1.8"
                       Style="{StaticResource ButtonIconStrokeStyle}" />
               </Button>
-              <Button Width="28" Height="28" Padding="0" Command="{Binding CancelCommand}"
+              <Button Width="28" Height="28" Padding="0" VerticalAlignment="Center" Command="{Binding CancelCommand}"
                       Style="{StaticResource ChatButtonStyle}" ToolTip="Stop response" AutomationProperties.Name="Stop response"
                       Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibilityConverter}}">
                 <Rectangle Width="10" Height="10" RadiusX="1.5" RadiusY="1.5"
