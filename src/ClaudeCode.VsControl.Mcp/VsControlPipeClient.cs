@@ -21,24 +21,19 @@ public sealed class VsControlPipeClient : IAsyncDisposable
     private const string _addProjectToSolutionMethod = "addProjectToSolution";
 
     /// <summary>
-    /// Worst case the Visual Studio host can reach for the longest long-budget method that is bounded
-    /// at all, <c>startDebugging</c>: a build bounded at 10 minutes by the host's own <c>RunBuildAsync</c>
+    /// Default budget for the methods that compile or load a solution. Nothing cancels the Visual
+    /// Studio side when a budget expires, so it must exceed the worst case the host can reach under it
+    /// and let the agent receive the host's own actionable error rather than a transport timeout
+    /// invented while MSBuild or a solution load is still running. The longest bounded case is
+    /// <c>startDebugging</c>: a build bounded at 10 minutes by the host's own <c>RunBuildAsync</c>
     /// backstop, then up to 60 s for the launch to leave design mode
     /// (<c>VsControlPipeServer.Debugger.cs</c> <c>_startDebuggingTimeoutMs</c>), then up to 45 s for a
-    /// breakpoint (<c>_maxWaitMs</c>, mirrored as the <c>waitForBreakMs</c> schema maximum).
-    /// 600 + 60 + 45 = 705 s. Raising any of those host bounds requires raising
-    /// <see cref="DefaultLongOperationTimeout"/> to stay above this.
+    /// breakpoint (<c>_maxWaitMs</c>, mirrored as the <c>waitForBreakMs</c> schema maximum):
+    /// 600 + 60 + 45 = 705 s. Raising any of those host bounds requires raising this budget to stay
+    /// above the sum; the Vsix has no test project, so nothing on this side can detect that drift.
     /// <c>openSolution</c>/<c>addProjectToSolution</c> share the budget without being bounded at all -
     /// their COM calls offer no completion signal to cancel against - so for those it is a ceiling
     /// rather than a proof.
-    /// </summary>
-    public static readonly TimeSpan LongOperationServerWorstCase = TimeSpan.FromSeconds(600 + 60 + 45);
-
-    /// <summary>
-    /// Default budget for the methods that compile or load a solution. Deliberately above
-    /// <see cref="LongOperationServerWorstCase"/>: nothing cancels the Visual Studio side when a budget
-    /// expires, so the agent must receive the host's own actionable error rather than a transport
-    /// timeout invented while MSBuild or a solution load is still running.
     /// </summary>
     public static readonly TimeSpan DefaultLongOperationTimeout = TimeSpan.FromMinutes(12);
 

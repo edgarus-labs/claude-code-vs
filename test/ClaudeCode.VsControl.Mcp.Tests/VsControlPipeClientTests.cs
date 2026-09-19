@@ -351,20 +351,6 @@ public sealed class VsControlPipeClientTests
     }
 
     [Fact]
-    public void DefaultLongOperationTimeout_ExceedsTheWorstCaseTheVsHostCanReachUnderIt()
-    {
-        // Nothing cancels the VS side when a client budget expires, so a budget below the host's own
-        // worst case makes the agent answer "timed out" while VS is still working; its retry then
-        // queues behind the still-running first request and is refused as already in progress. That
-        // is the loop this budget exists to prevent, so the two numbers have to stay ordered.
-        Assert.True(
-            VsControlPipeClient.DefaultLongOperationTimeout > VsControlPipeClient.LongOperationServerWorstCase,
-            $"The long-operation budget ({VsControlPipeClient.DefaultLongOperationTimeout.TotalSeconds:0.#}s) must stay "
-            + $"above the VS host's worst case ({VsControlPipeClient.LongOperationServerWorstCase.TotalSeconds:0.#}s): "
-            + "10 min build backstop + 60 s debug launch wait + 45 s max waitForBreakMs.");
-    }
-
-    [Fact]
     public async Task ReadLoopTeardown_WhileARequestWriteIsStillInFlight_DoesNotFaultDisposal()
     {
         string pipeName = $"vscontrol-teardown-race-{Guid.NewGuid():N}";

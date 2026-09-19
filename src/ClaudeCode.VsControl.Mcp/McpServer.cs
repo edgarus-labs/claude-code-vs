@@ -75,10 +75,23 @@ public sealed class McpServer : IDisposable
 
     private async Task HandleLineAsync(string line, CancellationToken cancellationToken)
     {
-        JsonObject request;
+        JsonNode? id;
+        string? method = null;
+        JsonNode? @params;
         try
         {
-            request = JsonNode.Parse(line) as JsonObject ?? throw new FormatException("Expected a JSON object.");
+            JsonObject request = JsonNode.Parse(line) as JsonObject ?? throw new FormatException("Expected a JSON object.");
+
+            // The lookups sit inside the guard with the parse: JsonObject materializes its dictionary
+            // lazily, so a line with duplicate property names throws ArgumentException from the first
+            // lookup, not from JsonNode.Parse.
+            id = request.TryGetPropertyValue("id", out var idNode) ? idNode : null;
+            if (request.TryGetPropertyValue("method", out var methodNode) && methodNode is JsonValue methodValue)
+            {
+                methodValue.TryGetValue(out method);
+            }
+
+            @params = request.TryGetPropertyValue("params", out var paramsNode) ? paramsNode : null;
         }
         catch (Exception ex)
         {
@@ -91,16 +104,6 @@ public sealed class McpServer : IDisposable
 
             return;
         }
-
-        JsonNode? id = request.TryGetPropertyValue("id", out var idNode) ? idNode : null;
-
-        string? method = null;
-        if (request.TryGetPropertyValue("method", out var methodNode) && methodNode is JsonValue methodValue)
-        {
-            methodValue.TryGetValue(out method);
-        }
-
-        JsonNode? @params = request.TryGetPropertyValue("params", out var paramsNode) ? paramsNode : null;
 
         if (id is null)
         {
@@ -115,14 +118,24 @@ public sealed class McpServer : IDisposable
             return;
         }
 
-        JsonObject response = method switch
+        JsonObject response;
+        try
         {
-            "initialize" => HandleInitialize(id, @params),
-            "ping" => JsonRpcMessages.CreateSuccessResponse(id, new JsonObject()),
-            "tools/list" => HandleToolsList(id),
-            "tools/call" => await HandleToolsCallAsync(id, @params, cancellationToken).ConfigureAwait(false),
-            _ => JsonRpcMessages.CreateErrorResponse(id, -32601, $"Method not found: {method}"),
-        };
+            response = method switch
+            {
+                "initialize" => HandleInitialize(id, @params),
+                "ping" => JsonRpcMessages.CreateSuccessResponse(id, new JsonObject()),
+                "tools/list" => HandleToolsList(id),
+                "tools/call" => await HandleToolsCallAsync(id, @params, cancellationToken).ConfigureAwait(false),
+                _ => JsonRpcMessages.CreateErrorResponse(id, -32601, $"Method not found: {method}"),
+            };
+        }
+        catch (ArgumentException ex)
+        {
+            // Duplicate property names inside `params`: the root object was unambiguous, so the id is
+            // known and the caller can be told instead of the sidecar dying on the lookup.
+            response = JsonRpcMessages.CreateErrorResponse(id, -32700, $"Parse error: {ex.Message}");
+        }
 
         await WriteResponseAsync(response, cancellationToken).ConfigureAwait(false);
     }
@@ -224,6 +237,7 @@ public sealed class McpServer : IDisposable
     // lifted out into an MCP image content block so the model sees the picture rather than a wall of
     // base64 in its text (and so the text cap above never truncates the image).
     private const string _imagePropertyName = "_image";
+    private const string _imagePropertyMarker = "\"" + _imagePropertyName + "\"";
 
     // The attachment is the only payload exempt from _maxToolResultTextLength, so it carries its own
     // bounds: the single media type captureWindow produces, and a byte ceiling equal to the one the VS
@@ -246,8 +260,12 @@ public sealed class McpServer : IDisposable
 
     private static JsonObject CreateToolResult(bool isError, string text)
     {
+        // Only captureWindow ever attaches an image, so the substring gate keeps the full parse (a
+        // second copy of a payload that can be hundreds of KB) off every other tool's result. The
+        // parse would even throw for the getWindowElements trees deeper than JsonNode's 64-level
+        // default; that is not an error path worth taking on every call.
         JsonObject? image = null;
-        if (!isError && text.Length > 0 && text[0] == '{')
+        if (!isError && text.Length > 0 && text[0] == '{' && text.Contains(_imagePropertyMarker, StringComparison.Ordinal))
         {
             image = ExtractImage(ref text);
         }
@@ -291,6 +309,12 @@ public sealed class McpServer : IDisposable
                 else if (data!.Length > _maxImageDataLength)
                 {
                     dropReason = _tooLargeDrop;
+                }
+                else if (!System.Buffers.Text.Base64.IsValid(data.AsSpan()))
+                {
+                    // Not decodable by any MCP client; better reported here as a dropped attachment
+                    // than rejected downstream where the model never learns why no picture arrived.
+                    dropReason = _unsupportedMediaTypeDrop;
                 }
                 else
                 {
