@@ -56,13 +56,37 @@
       return null;
     }
 
-    var language = languageByExtension[match[1].toLowerCase()];
-    return language && window.hljs.getLanguage(language) ? language : null;
+    var key = match[1].toLowerCase();
+    // Own-property lookup only: ".constructor" (and friends) would otherwise resolve to the
+    // inherited Object.prototype member, and hljs.getLanguage() throws TypeError on a non-string
+    // - blanking the whole transcript. Tool-output paths are untrusted agent input.
+    var language = Object.prototype.hasOwnProperty.call(languageByExtension, key)
+      ? languageByExtension[key]
+      : null;
+    return typeof language === "string" && window.hljs.getLanguage(language) ? language : null;
+  }
+
+  // Auto-detection is resolved once per diff instead of once per line: highlightAuto() runs every
+  // candidate grammar, so detecting per line costs orders of magnitude more on a large diff and
+  // can even settle on a different language for each line.
+  function detectDiffLanguage(lines) {
+    var sample = [];
+    for (var i = 0; i < lines.length && sample.length < 40; i++) {
+      if (lines[i].kind !== "Hunk" && lines[i].text) {
+        sample.push(lines[i].text);
+      }
+    }
+
+    try {
+      return window.hljs.highlightAuto(sample.join("\n")).language || null;
+    } catch (err) {
+      return null;
+    }
   }
 
   function buildDiffBody(content) {
     var wrap = document.createElement("div");
-    var language = languageForPath(content.path);
+    var lines = content.diffLines || [];
     if (content.path) {
       var pathEl = document.createElement("div");
       pathEl.className = "diff-path";
@@ -70,7 +94,7 @@
       wrap.appendChild(pathEl);
     }
 
-    var lines = content.diffLines || [];
+    var language = languageForPath(content.path) || detectDiffLanguage(lines);
     for (var i = 0; i < lines.length; i++) {
       var line = lines[i];
       var lineEl = document.createElement("div");
@@ -90,15 +114,17 @@
 
       var codeEl = document.createElement("span");
       var text = line.text || "";
-      try {
-        var highlighted = language
-          ? window.hljs.highlight(text, { language: language, ignoreIllegals: true })
-          : window.hljs.highlightAuto(text);
-        // hljs.highlight()/.highlightAuto() HTML-escape the source text themselves before wrapping
-        // tokens in <span class="hljs-...">, so .value is safe to assign directly - this is the
-        // library's own documented output contract, not raw/unescaped diff content.
-        codeEl.innerHTML = highlighted.value;
-      } catch (err) {
+      if (language) {
+        try {
+          // hljs escapes the source itself before wrapping tokens in <span class="hljs-*">, but the
+          // result still goes through DOMPurify - same trust boundary as buildPlainBody - so a
+          // grammar escaping flaw can't turn untrusted diff text into DOM injection.
+          codeEl.innerHTML = window.DOMPurify.sanitize(
+            window.hljs.highlight(text, { language: language, ignoreIllegals: true }).value, { ADD_ATTR: [] });
+        } catch (err) {
+          codeEl.textContent = text;
+        }
+      } else {
         codeEl.textContent = text;
       }
 
@@ -560,6 +586,19 @@
     return minutes + "m " + remainder + "s";
   }
 
+  // Same shape as the VS Code extension's status line: "4m 36s · 8.3k tokens · Running tools…".
+  function activityLabel(activity) {
+    var parts = [];
+    if (typeof activity.elapsedSeconds === "number") {
+      parts.push(formatElapsed(activity.elapsedSeconds));
+    }
+    if (typeof activity.tokens === "number" && activity.tokens > 0) {
+      parts.push(formatTokens(activity.tokens) + " tokens");
+    }
+    parts.push(activity.text || "Working…");
+    return parts.join(" · ");
+  }
+
   function buildActivity(activity) {
     var wrap = document.createElement("div");
     wrap.className = "activity";
@@ -573,16 +612,7 @@
 
     var text = document.createElement("span");
     text.className = "activity-text";
-    // Same shape as the VS Code extension's status line: "4m 36s · 8.3k tokens · Running tools…".
-    var parts = [];
-    if (typeof activity.elapsedSeconds === "number") {
-      parts.push(formatElapsed(activity.elapsedSeconds));
-    }
-    if (typeof activity.tokens === "number" && activity.tokens > 0) {
-      parts.push(formatTokens(activity.tokens) + " tokens");
-    }
-    parts.push(activity.text || "Working…");
-    text.textContent = parts.join(" · ");
+    text.textContent = activityLabel(activity);
     wrap.appendChild(text);
 
     return wrap;
@@ -631,13 +661,23 @@
       if (stale.node.parentNode === root) root.removeChild(stale.node);
     }
 
-    if (activityNode) {
+    if (payload && payload.activity) {
+      // Update in place: rebuilding the node on every host tick (100-200ms while streaming)
+      // restarts the activity-pulse animation on .activity-dots i from 0%, so the dots never
+      // visibly pulse. New messages are inserted before it, so it stays last without being moved.
+      if (activityNode) {
+        var label = activityNode.querySelector(".activity-text");
+        var next = activityLabel(payload.activity);
+        if (label.textContent !== next) {
+          label.textContent = next;
+        }
+      } else {
+        activityNode = buildActivity(payload.activity);
+        root.appendChild(activityNode);
+      }
+    } else if (activityNode) {
       root.removeChild(activityNode);
       activityNode = null;
-    }
-    if (payload && payload.activity) {
-      activityNode = buildActivity(payload.activity);
-      root.appendChild(activityNode);
     }
 
     flushTruncationChecks();
@@ -675,6 +715,48 @@
     { passive: false }
   );
 
+  // An in-document fragment ("[Jump](#architecture)") has to be handled here: preventDefault()
+  // already suppressed native anchor navigation, and the host rejects a non-absolute URI, so
+  // forwarding it would silently drop the click. markdown-it emits no heading ids, hence the
+  // slug fallback over the rendered headings.
+  function scrollToFragment(href) {
+    var raw = href.slice(1);
+    if (!raw) {
+      window.scrollTo(0, 0);
+      return;
+    }
+
+    var id = raw;
+    try {
+      id = decodeURIComponent(raw);
+    } catch (err) {
+      // Malformed escape - match against the literal fragment instead.
+    }
+
+    var target = document.getElementById(id) || headingForSlug(id);
+    if (target) {
+      target.scrollIntoView({ block: "start" });
+    }
+  }
+
+  // GitHub-style heading slug: lowercase, drop punctuation, one hyphen per whitespace character
+  // (so "Design & Rollout" is "#design--rollout", the anchor an agent will have written).
+  function slugify(text) {
+    return text.toLowerCase().trim().replace(/[^\w\- ]+/g, "").replace(/\s/g, "-");
+  }
+
+  function headingForSlug(slug) {
+    var wanted = slugify(slug);
+    var headings = root.querySelectorAll("h1, h2, h3, h4, h5, h6");
+    for (var i = 0; i < headings.length; i++) {
+      if (slugify(headings[i].textContent || "") === wanted) {
+        return headings[i];
+      }
+    }
+
+    return null;
+  }
+
   document.addEventListener("click", function (e) {
     var anchor = e.target && e.target.closest ? e.target.closest("a") : null;
     if (!anchor) {
@@ -683,9 +765,16 @@
 
     e.preventDefault();
     var href = anchor.getAttribute("href");
-    if (href) {
-      notifyHost("openLink", { url: href });
+    if (!href) {
+      return;
     }
+
+    if (href.charAt(0) === "#") {
+      scrollToFragment(href);
+      return;
+    }
+
+    notifyHost("openLink", { url: href });
   });
 
   window.claudeTranscript = {

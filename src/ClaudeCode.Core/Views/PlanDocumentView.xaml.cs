@@ -135,8 +135,8 @@ public partial class PlanDocumentView : UserControl, IDisposable
         try
         {
             var message = JsonConvert.DeserializeAnonymousType(e.WebMessageAsJson, new { type = "", url = "" });
-            if (message?.type == "openLink" && Uri.TryCreate(message.url, UriKind.Absolute, out var uri)
-                && (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp))
+            if (message?.type == "openLink" && Uri.TryCreate(message.url, UriKind.Absolute, out Uri? uri)
+                && MarkdownSafetyLimits.IsNavigableLink(uri))
             {
                 Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
             }

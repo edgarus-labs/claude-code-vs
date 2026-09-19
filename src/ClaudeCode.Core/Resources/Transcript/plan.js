@@ -45,6 +45,48 @@
     }
   }
 
+  // An in-document fragment ("[Jump](#architecture)") has to be handled here: preventDefault()
+  // already suppressed native anchor navigation, and the host rejects a non-absolute URI, so
+  // forwarding it would silently drop the click. markdown-it emits no heading ids, hence the
+  // slug fallback over the rendered headings.
+  function scrollToFragment(href) {
+    var raw = href.slice(1);
+    if (!raw) {
+      window.scrollTo(0, 0);
+      return;
+    }
+
+    var id = raw;
+    try {
+      id = decodeURIComponent(raw);
+    } catch (err) {
+      // Malformed escape - match against the literal fragment instead.
+    }
+
+    var target = document.getElementById(id) || headingForSlug(id);
+    if (target) {
+      target.scrollIntoView({ block: "start" });
+    }
+  }
+
+  // GitHub-style heading slug: lowercase, drop punctuation, one hyphen per whitespace character
+  // (so "Design & Rollout" is "#design--rollout", the anchor an agent will have written).
+  function slugify(text) {
+    return text.toLowerCase().trim().replace(/[^\w\- ]+/g, "").replace(/\s/g, "-");
+  }
+
+  function headingForSlug(slug) {
+    var wanted = slugify(slug);
+    var headings = root.querySelectorAll("h1, h2, h3, h4, h5, h6");
+    for (var i = 0; i < headings.length; i++) {
+      if (slugify(headings[i].textContent || "") === wanted) {
+        return headings[i];
+      }
+    }
+
+    return null;
+  }
+
   document.addEventListener("click", function (e) {
     var anchor = e.target && e.target.closest ? e.target.closest("a") : null;
     if (!anchor) {
@@ -53,9 +95,16 @@
 
     e.preventDefault();
     var href = anchor.getAttribute("href");
-    if (href) {
-      notifyHost("openLink", { url: href });
+    if (!href) {
+      return;
     }
+
+    if (href.charAt(0) === "#") {
+      scrollToFragment(href);
+      return;
+    }
+
+    notifyHost("openLink", { url: href });
   });
 
   window.claudePlan = { render: render, applyTheme: applyTheme };

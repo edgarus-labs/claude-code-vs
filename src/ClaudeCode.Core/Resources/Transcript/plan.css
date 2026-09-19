@@ -3,6 +3,7 @@
   margin: 0 auto;
   padding: 28px 40px 60px 40px;
   line-height: 1.6;
+  overflow-wrap: break-word;
 }
 
 .plan-doc h1 {
