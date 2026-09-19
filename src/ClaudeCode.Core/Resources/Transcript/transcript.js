@@ -102,15 +102,56 @@
     return wrap;
   }
 
-  function buildPlainBody(content) {
-    // No highlighting here on purpose: this is raw tool stdout/logs (build output, git output,
-    // test runner summaries), not source code, and hljs.highlightAuto() on that kind of text
-    // tends to guess a language and mis-color plain words/numbers rather than leave them alone.
+  // Raw tool output (build/git/test logs) stays unhighlighted - highlightAuto() mis-colors plain
+  // text. Only when the tool call names a source file (Read/Write/Edit <path>) is the output
+  // highlighted for that file's language; the Read tool's "  12\t<code>" line-number prefix is
+  // split into a gutter so the numbers don't skew the tokenizer.
+  function buildPlainBody(content, language) {
     var pre = document.createElement("pre");
-    var code = document.createElement("code");
-    code.textContent = content.text || "";
-    pre.appendChild(code);
+    var text = content.text || "";
+    if (!language) {
+      var code = document.createElement("code");
+      code.textContent = text;
+      pre.appendChild(code);
+      return pre;
+    }
+
+    var lines = text.split("\n");
+    var numbered = lines.length > 0 && lines.every(function (line) { return line.length === 0 || /^\s*\d+\t/.test(line); });
+    for (var i = 0; i < lines.length; i++) {
+      var lineEl = document.createElement("div");
+      lineEl.className = "src-line";
+      var source = lines[i];
+      if (numbered) {
+        var match = /^(\s*\d+)\t(.*)$/.exec(source);
+        var gutter = document.createElement("span");
+        gutter.className = "src-gutter";
+        gutter.textContent = match ? match[1].trim() : "";
+        lineEl.appendChild(gutter);
+        source = match ? match[2] : source;
+      }
+
+      var codeEl = document.createElement("span");
+      try {
+        // hljs escapes the source itself before wrapping tokens (see buildDiffBody); the result is
+        // still passed through DOMPurify so only its <span class="hljs-*"> markup can reach the DOM.
+        codeEl.innerHTML = window.DOMPurify.sanitize(
+          window.hljs.highlight(source, { language: language, ignoreIllegals: true }).value, { ADD_ATTR: [] });
+      } catch (err) {
+        codeEl.textContent = source;
+      }
+
+      lineEl.appendChild(codeEl);
+      pre.appendChild(lineEl);
+    }
+
     return pre;
+  }
+
+  // "Read src\a\File.cs (1 - 80)" -> "csharp"; commands and non-file tools -> null.
+  function languageForToolTitle(title) {
+    var match = /^(Edit|Write|Read|MultiEdit)\s+(.+?)(\s+\(\d+\s*-\s*\d+\))?$/.exec(title || "");
+    return match ? languageForPath(match[2].replace(/[`'"]/g, "")) : null;
   }
 
   // A tiny always-visible hint of how much is behind a collapsed card - otherwise a collapsed
@@ -212,8 +253,9 @@
     var body = document.createElement("div");
     body.className = "body";
     var content = toolCall.content || [];
+    var language = languageForToolTitle(toolCall.title);
     for (var i = 0; i < content.length; i++) {
-      body.appendChild(content[i].isDiff ? buildDiffBody(content[i]) : buildPlainBody(content[i]));
+      body.appendChild(content[i].isDiff ? buildDiffBody(content[i]) : buildPlainBody(content[i], language));
     }
 
     bodyWrapper.appendChild(body);
