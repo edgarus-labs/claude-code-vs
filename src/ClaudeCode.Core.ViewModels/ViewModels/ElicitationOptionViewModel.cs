@@ -1,19 +1,25 @@
 using ClaudeCode.Contracts;
 using CommunityToolkit.Mvvm.ComponentModel;
+using System;
 
 namespace ClaudeCode.Core.ViewModels;
 
 /// <summary>One selectable option within an <see cref="ElicitationFieldViewModel"/>; bindable from
-/// either a RadioButton (single-select) or a CheckBox (multi-select).</summary>
+/// either a RadioButton (single-select) or a CheckBox (multi-select). Constructed only by its
+/// owning field, which enforces the single-select invariant when this option is selected.</summary>
 public sealed class ElicitationOptionViewModel : ObservableObject
 {
-    public ElicitationOptionViewModel(ElicitationOption option)
+    private readonly ElicitationFieldViewModel _owner;
+
+    internal ElicitationOptionViewModel(ElicitationOption option, ElicitationFieldViewModel owner)
     {
+        _owner = owner ?? throw new ArgumentNullException(nameof(owner));
         Value = option.Value;
-        Label = option.Label;
-        Description = option.Description;
+        Label = ElicitationRequestViewModel.TruncateForDisplay(option.Label) ?? string.Empty;
+        Description = ElicitationRequestViewModel.TruncateForDisplay(option.Description);
     }
 
+    /// <summary>The identifier sent back to the agent - never truncated for display.</summary>
     public string Value { get; }
 
     public string Label { get; }
@@ -25,6 +31,12 @@ public sealed class ElicitationOptionViewModel : ObservableObject
     public bool IsSelected
     {
         get => _isSelected;
-        set => SetProperty(ref _isSelected, value);
+        set
+        {
+            if (SetProperty(ref _isSelected, value) && value)
+            {
+                _owner.OnOptionSelected(this);
+            }
+        }
     }
 }

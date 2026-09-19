@@ -27,7 +27,12 @@ public interface IChatSessionServices
 
     Task<EditorDocumentSnapshot?> CaptureActiveDocumentAsync(CancellationToken cancellationToken);
 
-    /// <summary>Opens (or activates) <paramref name="path"/> in the host editor.</summary>
+    /// <summary>
+    /// Opens (or activates) <paramref name="path"/> in the host editor. Faults when the host cannot
+    /// open it (deleted, locked, or not a document the host can display); the returned task carries
+    /// that failure, so a caller that surfaces the command to the user must observe it rather than
+    /// let an <c>AsyncRelayCommand</c> rethrow it onto the UI thread.
+    /// </summary>
     Task OpenDocumentAsync(string path, CancellationToken cancellationToken);
 
     /// <summary>
