@@ -21,6 +21,7 @@ internal sealed class RecordingAcpAgentConnection : IAcpAgentConnection
     public Func<IReadOnlyList<ContentBlock>, Task>? PromptHandler { get; set; }
     public Func<string?, CancellationToken, Task<IReadOnlyList<SessionSummary>>>? ListSessionsHandler { get; set; }
     public Func<string, string, IReadOnlyList<McpServerConfig>?, CancellationToken, Task<NewSessionResult>>? LoadSessionHandler { get; set; }
+    public List<string> NewSessionCwds { get; } = [];
     public List<string?> ListSessionsCwds { get; } = [];
     public List<(string SessionId, string Cwd)> LoadedSessions { get; } = [];
 
@@ -30,8 +31,11 @@ internal sealed class RecordingAcpAgentConnection : IAcpAgentConnection
         return InitializeHandler?.Invoke(cancellationToken) ?? Task.CompletedTask;
     }
 
-    public Task<NewSessionResult> NewSessionAsync(string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken) =>
-        NewSessionHandler?.Invoke(cancellationToken) ?? Task.FromResult(new NewSessionResult(SessionId, ConfigOptions));
+    public Task<NewSessionResult> NewSessionAsync(string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken)
+    {
+        NewSessionCwds.Add(cwd);
+        return NewSessionHandler?.Invoke(cancellationToken) ?? Task.FromResult(new NewSessionResult(SessionId, ConfigOptions));
+    }
 
     public Task<IReadOnlyList<SessionSummary>> ListSessionsAsync(string? cwd, CancellationToken cancellationToken)
     {

@@ -913,14 +913,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     /// review pending); hosts may show a system notification if the IDE is in the background.</summary>
     public event EventHandler<ChatAttentionEventArgs>? AttentionRequested;
 
+    // The toast is one line of agent-authored text: the same normalization the session title gets,
+    // at the notification's own bound, rather than a second half-rule that only knows about '\n'.
     private void RaiseAttention(ChatAttentionKind kind, string title, string message) =>
-        AttentionRequested?.Invoke(this, new ChatAttentionEventArgs(kind, title, Truncate(message, 160)));
-
-    private static string Truncate(string text, int max)
-    {
-        var firstLine = (text ?? string.Empty).Split('\n').Select(line => line.Trim()).FirstOrDefault(line => line.Length > 0) ?? string.Empty;
-        return firstLine.Length <= max ? firstLine : firstLine.Substring(0, max - 1) + "…";
-    }
+        AttentionRequested?.Invoke(this, new ChatAttentionEventArgs(kind, title, SessionTitleFormat.SingleLine(message, 160)));
 
     // Review comments are delivered as the next prompt once the rejected plan turn has finished.
     private void SendPendingPlanReview()
@@ -928,8 +924,23 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         var comments = _pendingPlanReviewComments;
         if (comments is null || _disposed || !CanEditDraft) return;
         _pendingPlanReviewComments = null;
+        var draft = InputText;
         InputText = "Review comments on the plan:\n" + comments;
-        if (CanSend()) _ = SendAsync();
+        if (!CanSend()) return;
+        _ = SendReviewThenRestoreDraftAsync(draft);
+    }
+
+    // The composer stays live while the rejected plan's turn finishes, so the user can be mid-
+    // sentence when the review goes out. The review is its own prompt, not a use of their draft:
+    // put the draft back once the send has consumed the composer. Nothing here can throw -
+    // SendCoreAsync swallows its own failures - so the fire-and-forget call site is safe.
+    private async Task SendReviewThenRestoreDraftAsync(string draft)
+    {
+        await SendAsync().ConfigureAwait(true);
+        // Still occupied means either the send never got as far as reading it (the review text is
+        // still in there and is the more valuable of the two) or the user has typed again since.
+        if (_disposed || draft.Length == 0 || InputText.Length > 0) return;
+        InputText = draft;
     }
 
     public Task CancelAsync() => OnUiAsync(CancelCoreAsync);
@@ -957,8 +968,24 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         NotifyStateChanged();
         try
         {
-            var (connection, _) = await EnsureConnectedAsync(_lifetime.Token).ConfigureAwait(true);
+            var sessionBeforeConnect = _sessionId;
+            var (connection, sessionId) = await EnsureConnectedAsync(_lifetime.Token).ConfigureAwait(true);
             if (_disposed || !ReferenceEquals(connection, _connection)) return;
+            if (!string.Equals(sessionId, sessionBeforeConnect, StringComparison.Ordinal))
+            {
+                // EnsureConnectedAsync had to connect and has already created and adopted a fresh
+                // session. A second session/new would orphan that one on the agent - and with
+                // RemoteControlAtStartup the orphan can be the session published to claude.ai/code,
+                // which the toggle then never reaches. Only the dead session's transcript is stale;
+                // the catalog the adopt just applied belongs to the session we are keeping.
+                var adoptedCommands = _availableCommands;
+                var adoptedCatalog = _hasCommandCatalog;
+                ResetTranscriptState();
+                if (adoptedCatalog) ApplyCommandCatalog(adoptedCommands);
+                StatusMessage = null;
+                return;
+            }
+
             var session = await RequestNewSessionAsync(connection, _lifetime.Token).ConfigureAwait(true);
             if (_disposed || !ReferenceEquals(connection, _connection)) return;
             ResetTranscriptState();
@@ -1017,11 +1044,21 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         StatusMessage = null;
         // Kept so the failure path below can put it all back: an id the agent never loaded would
         // keep routing every later prompt and config change to a session that does not exist, and
-        // a transient session/load failure must not destroy the conversation the user was in.
+        // a transient session/load failure must not destroy the conversation the user was in. That
+        // means everything ResetTranscriptState is about to wipe, not just the transcript - a
+        // half-restored session lies twice over, with the messages intact beside an empty
+        // changed-file panel and a context ring reading zero.
         var sessionIdBeforeLoad = _sessionId;
         var messagesBeforeLoad = Messages.ToList();
+        var changedFilesBeforeLoad = ChangedFiles.ToList();
         var explicitTitleBeforeLoad = _explicitSessionTitle;
         var titleBeforeLoad = SessionTitle;
+        var commandsBeforeLoad = _availableCommands;
+        var hadCatalogBeforeLoad = _hasCommandCatalog;
+        var usedTokensBeforeLoad = _sessionUsedTokens;
+        var contextWindowBeforeLoad = _contextWindowSize;
+        var turnStartTokensBeforeLoad = _turnStartUsedTokens;
+        var turnTokensBeforeLoad = TurnTokens;
         _isSwitchingSession = true;
         NotifyStateChanged();
         try
@@ -1050,8 +1087,25 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 _sessionId = sessionIdBeforeLoad;
                 ResetTranscriptState();
                 foreach (var message in messagesBeforeLoad) Messages.Add(message);
+                // The agent's edits from this session are still on disk, so the rows that offer to
+                // revert them have to come back with the transcript they belong to.
+                lock (_changedFilesByPath)
+                {
+                    foreach (var file in changedFilesBeforeLoad) _changedFilesByPath[file.FullPath] = file;
+                }
+
+                foreach (var file in changedFilesBeforeLoad) ChangedFiles.Add(file);
                 _explicitSessionTitle = explicitTitleBeforeLoad;
                 SessionTitle = titleBeforeLoad;
+                if (hadCatalogBeforeLoad) ApplyCommandCatalog(commandsBeforeLoad);
+                _sessionUsedTokens = usedTokensBeforeLoad;
+                _contextWindowSize = contextWindowBeforeLoad;
+                _turnStartUsedTokens = turnStartTokensBeforeLoad;
+                TurnTokens = turnTokensBeforeLoad;
+                OnPropertyChanged(nameof(SessionUsedTokens));
+                OnPropertyChanged(nameof(ContextWindowSize));
+                OnPropertyChanged(nameof(ContextUsagePercent));
+                OnPropertyChanged(nameof(ContextUsageLabel));
             }
 
             if (!_disposed) StatusMessage = $"Could not open session: {ex.Message}";
@@ -1392,6 +1446,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                         _pendingPlanReviewComments = comments;
                         Choose(reject);
                         plan.MarkResolved("Sent back for revision");
+                        // A locally driven turn owns IsBusy, so SendCoreAsync's tail delivers the
+                        // review once the prompt RPC returns. A turn driven from claude.ai/code
+                        // never sets it, and there is nothing to wait for: SessionUpdate.TurnEnded
+                        // is raised from our own session/prompt response, so a remote turn produces
+                        // none. Deferring on it would strand the user's typed review indefinitely,
+                        // so it goes out now and the agent arbitrates the ordering.
                         if (!IsBusy) SendPendingPlanReview();
                     });
                 PendingPlan = plan;
@@ -1550,13 +1610,22 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             if (_changedFilesByPath.TryGetValue(pathLease.FullPath, out var existing)) return existing;
         }
 
+        // Whether the agent created this file is decided here and only here, by the client's own
+        // guarded read: a row is "new" (and so Reject deletes it) exactly when the read found no
+        // file. An absent oldText is not evidence of creation - it is agent-controlled and adapters
+        // omit it routinely - and inferring creation from it made Reject delete pre-existing files
+        // whose content already matched the reported newText.
         var original = await ReadLeasedFileAsync(pathLease).ConfigureAwait(true);
         // The notification carrying a diff is not synchronized with the agent's own write, so the
         // read above may already be the post-edit content. When it is, the diff's OldText is the
-        // authoritative original - null exactly when the agent created the file. Without this,
-        // Reject would write the edit back over itself, or refuse to delete a file the agent just
-        // created, and report success either way.
-        if (diff is not null && string.Equals(original, diff.NewText, StringComparison.Ordinal)) original = diff.OldText;
+        // authoritative pre-edit content to restore; without it Reject would write the edit back
+        // over itself and report success. It only ever corrects the content, never the existence.
+        if (original is not null && diff?.OldText is { } preEditText
+            && string.Equals(original, diff.NewText, StringComparison.Ordinal))
+        {
+            original = preEditText;
+        }
+
         var entry = new ChangedFileViewModel(pathLease.FullPath, original,
             file => OnUiAsync(() => AcceptChangeAsync(file)),
             file => OnUiAsync(() => RejectChangeAsync(file)));
@@ -1610,9 +1679,17 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private async Task OpenChangedFileAsync(ChangedFileViewModel? file)
     {
         if (file is null) return;
+        var workspaceRoot = _services.WorkspaceRoot;
         try
         {
-            await _services.OpenDocumentAsync(file.FullPath, _lifetime.Token).ConfigureAwait(true);
+            // Re-validate rather than trust a path captured when the row was created: this is the
+            // one consumer of a tracked path that did not, and the lease also pins the ancestor
+            // chain for the duration of the open. Off the dispatcher, as everywhere else here.
+            await Task.Run(async () =>
+            {
+                using var pathLease = WorkspacePathGuard.AcquireFile(workspaceRoot, file.FullPath);
+                await _services.OpenDocumentAsync(pathLease.FullPath, _lifetime.Token).ConfigureAwait(true);
+            }).ConfigureAwait(true);
         }
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex)
@@ -1650,11 +1727,19 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task RevertChangeAsync(ChangedFileViewModel file)
     {
-        // The lease is held across the whole operation: releasing it to delete by path unpins the
-        // ancestor chain and re-opens the reparse-point swap the lease type exists to prevent.
-        using var pathLease = WorkspacePathGuard.AcquireFile(_services.WorkspaceRoot, file.FullPath);
-        if (file.OriginalText is null) File.Delete(pathLease.FullPath);
-        else await WriteLeasedFileAsync(pathLease, file.OriginalText).ConfigureAwait(true);
+        // Same rule as UpsertToolCall: lease acquisition (path canonicalization plus a chain of
+        // directory-handle opens), File.Delete and WriteAllText are all synchronous, and Reject
+        // all runs them once per file in a row straight off a click. Only UntrackChange, which
+        // touches the observable collection, stays on the dispatcher.
+        var workspaceRoot = _services.WorkspaceRoot;
+        await Task.Run(async () =>
+        {
+            // The lease is held across the whole operation: releasing it to delete by path unpins
+            // the ancestor chain and re-opens the reparse-point swap the lease type prevents.
+            using var pathLease = WorkspacePathGuard.AcquireFile(workspaceRoot, file.FullPath);
+            if (file.OriginalText is null) File.Delete(pathLease.FullPath);
+            else await WriteLeasedFileAsync(pathLease, file.OriginalText).ConfigureAwait(true);
+        }).ConfigureAwait(true);
         UntrackChange(file);
     }
 

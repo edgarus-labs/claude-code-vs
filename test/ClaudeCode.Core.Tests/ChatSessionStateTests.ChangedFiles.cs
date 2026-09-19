@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Concurrent;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
 
@@ -211,8 +213,13 @@ public sealed partial class ChatSessionStateTests
         Assert.Empty(vm.ChangedFiles);
     }
 
+    // The client cannot tell "the agent created this file" from "the agent rewrote an existing file
+    // and omitted oldText": both arrive as an absent oldText over content that already matches the
+    // disk. Creation is therefore decided by the client's own read, and a write that landed before
+    // its notification is restored rather than deleted - a file left behind is recoverable, the
+    // user's file is not.
     [Fact]
-    public async Task ToolCallDiff_ForAFileTheAgentCreated_RejectDeletesItEvenWhenTheWriteLandedFirst()
+    public async Task ToolCallDiff_ForAFileWhoseWriteLandedFirst_RejectRestoresItRatherThanGuessingItWasCreated()
     {
         using var workspace = new TempWorkspace();
         var created = workspace.PathUnder("Created.cs");
@@ -235,10 +242,119 @@ public sealed partial class ChatSessionStateTests
         await sending;
 
         var file = Assert.Single(vm.ChangedFiles);
-        Assert.True(file.IsNew);
+        Assert.False(file.IsNew);
         await file.RejectCommand.ExecuteAsync(null);
 
-        Assert.False(File.Exists(created));
+        Assert.True(File.Exists(created));
+        Assert.Equal("brand new\n", File.ReadAllText(created));
+    }
+
+    // oldText is agent-controlled and adapters routinely omit it. Reading an absent oldText as
+    // "the agent created this file" let a diff whose newText already matches the disk turn a
+    // pre-existing file into a "New" row whose Reject - or Reject all - called File.Delete on it.
+    [Fact]
+    public async Task ToolCallDiff_WithoutOldTextOverAnUnchangedExistingFile_NeverDeletesItOnReject()
+    {
+        using var workspace = new TempWorkspace();
+        var targetPath = workspace.PathUnder("Existing.cs");
+        File.WriteAllText(targetPath, "the user's work\n");
+        var (vm, connection, _) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+        var turn = new TaskCompletionSource<bool>();
+        connection.PromptHandler = _ => turn.Task;
+        vm.InputText = "look at it";
+        var sending = vm.SendAsync();
+
+        // newText is the file's exact current content and oldText is absent: the agent need not
+        // have written anything at all to produce this.
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
+        {
+            ToolCallId = "write-1", Title = "Write Existing.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
+            Content = [new ClaudeCode.Contracts.ToolCallContent { Path = targetPath, OldText = null, NewText = "the user's work\n" }],
+        }));
+        await WaitUntilAsync(() => vm.ChangedFiles.Count == 1);
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.TurnEnded("end_turn"));
+        turn.SetResult(true);
+        await sending;
+
+        var file = Assert.Single(vm.ChangedFiles);
+        Assert.False(file.IsNew);
+
+        await vm.RejectAllChangesCommand.ExecuteAsync(null);
+
+        Assert.True(File.Exists(targetPath));
+        Assert.Equal("the user's work\n", File.ReadAllText(targetPath));
+    }
+
+    // "File-system work (path canonicalization, whole-file reads) must never run on the WPF
+    // dispatcher." Every entry point of the changed-file ledger does it: the pre-edit snapshot,
+    // the open (which re-resolves the tracked path), and the revert - which "Reject all" repeats
+    // once per file, back to back, straight off a click.
+    [Fact]
+    public async Task ChangedFileLedger_DoesItsFileWorkOffTheDispatcher()
+    {
+        using var workspace = new TempWorkspace();
+        var targetPath = workspace.PathUnder("Tracked.cs");
+        File.WriteAllText(targetPath, "before\n");
+        var (vm, connection, services) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+        var dispatcher = SynchronizationContext.Current;
+        Assert.NotNull(dispatcher);
+        services.OpenDocuments[Path.GetFullPath(targetPath)] = "before\n";
+        var snapshotContexts = new ConcurrentBag<SynchronizationContext?>();
+        var openContexts = new ConcurrentBag<SynchronizationContext?>();
+        var revertContexts = new ConcurrentBag<SynchronizationContext?>();
+        services.OpenDocumentHandler = (_, _) =>
+        {
+            openContexts.Add(SynchronizationContext.Current);
+            return Task.CompletedTask;
+        };
+        services.ReadOpenDocumentHandler = (_, _) =>
+        {
+            snapshotContexts.Add(SynchronizationContext.Current);
+            return Task.FromResult<string?>("before\n");
+        };
+        services.WriteOpenDocumentHandler = (path, text, _) =>
+        {
+            revertContexts.Add(SynchronizationContext.Current);
+            services.OpenDocuments[path] = text;
+            return Task.FromResult(true);
+        };
+
+        var turn = new TaskCompletionSource<bool>();
+        connection.PromptHandler = _ => turn.Task;
+        vm.InputText = "edit it";
+        var sending = vm.SendAsync();
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
+        {
+            ToolCallId = "edit-1", Title = "Edit Tracked.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
+            Content = [new ClaudeCode.Contracts.ToolCallContent { Path = targetPath, OldText = "before\n", NewText = "after\n" }],
+        }));
+        await WaitUntilAsync(() => vm.ChangedFiles.Count == 1);
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.TurnEnded("end_turn"));
+        turn.SetResult(true);
+        await sending;
+
+        // A WPF command runs with the dispatcher's context installed; that is the condition under
+        // which a synchronous lease acquisition plus file write is a visible devenv freeze.
+        await WithDispatcherInstalled(dispatcher!, () => vm.OpenChangedFileCommand.ExecuteAsync(vm.ChangedFiles[0]));
+        await WithDispatcherInstalled(dispatcher!, () => vm.RejectAllChangesCommand.ExecuteAsync(null));
+
+        Assert.Null(vm.StatusMessage);
+        Assert.NotEmpty(snapshotContexts);
+        Assert.All(snapshotContexts, context => Assert.NotSame(dispatcher, context));
+        Assert.NotEmpty(openContexts);
+        Assert.All(openContexts, context => Assert.NotSame(dispatcher, context));
+        Assert.NotEmpty(revertContexts);
+        Assert.All(revertContexts, context => Assert.NotSame(dispatcher, context));
+    }
+
+    private static Task WithDispatcherInstalled(SynchronizationContext dispatcher, Func<Task> action)
+    {
+        var previous = SynchronizationContext.Current;
+        SynchronizationContext.SetSynchronizationContext(dispatcher);
+        try { return action(); }
+        finally { SynchronizationContext.SetSynchronizationContext(previous); }
     }
 
     [Fact]
@@ -277,8 +393,8 @@ public sealed partial class ChatSessionStateTests
         Assert.True(await connection.RaiseFileWriteRequested(first, "A1").Response.Task);
         Assert.True(await connection.RaiseFileWriteRequested(second, "B1").Response.Task);
 
-        services.OpenDocuments[Path.GetFullPath(first)] = "A1";
-        services.OpenDocuments[Path.GetFullPath(second)] = "B1";
+        // The failure comes from the handler alone: the stub consults it before OpenDocuments, and
+        // what gets the revert as far as the handler is the lease's document pin, not an entry here.
         services.WriteOpenDocumentHandler = (_, _, _) => throw new UnauthorizedAccessException("the buffer is read-only");
 
         await vm.RejectAllChangesCommand.ExecuteAsync(null);

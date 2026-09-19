@@ -115,9 +115,12 @@ public sealed class ChatViewModelTests
         connection.RaisePermissionRequested(call,
             [new PermissionOption { OptionId = "allow-once", Label = "Allow", Outcome = PermissionOutcome.AllowOnce }]);
 
-        Assert.Equal("Visual Studio: List app windows", vm.PendingPermission!.Title);
+        // The wording itself belongs to ToolDisplayNameTests; what this path owns is that neither
+        // consent surface can present the raw routing identifier as the thing being approved.
+        Assert.DoesNotContain("mcp__", vm.PendingPermission!.Title, StringComparison.Ordinal);
+        Assert.Contains("windows", vm.PendingPermission.Title, StringComparison.OrdinalIgnoreCase);
         var card = Assert.Single(vm.Messages.SelectMany(message => message.ToolCalls), tool => tool.ToolCallId == "tc-mcp");
-        Assert.Equal("Visual Studio: List app windows", card.Title);
+        Assert.Equal(vm.PendingPermission.Title, card.Title);
     }
 
     [Fact]
@@ -258,7 +261,9 @@ public sealed class ChatViewModelTests
             new ToolCallUpdate { ToolCallId = "t1", Title = "Edit Program.cs", Status = ToolCallStatus.Pending },
             [new PermissionOption { OptionId = "allow-once", Label = "Yes", Outcome = PermissionOutcome.AllowOnce }]);
         vm.PendingPermission!.ChooseCommand.Execute(vm.PendingPermission.Options[0]);
-        connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("All done.\nDetails follow."));
+        // \r alone is a line break to WPF and to a Windows toast, so the one-line notification
+        // text must stop at it just as it stops at \n.
+        connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("All done.\rDetails follow.\nMore."));
         connection.RaiseSessionUpdate(new SessionUpdate.TurnEnded("end_turn"));
         var (planCall, planOptions) = PlanApprovalRequest("# Plan");
         connection.RaisePermissionRequested(planCall, planOptions);
@@ -339,6 +344,31 @@ public sealed class ChatViewModelTests
         var followUp = Assert.IsType<ContentBlock.Text>(connection.Prompts[^1][0]);
         Assert.Contains("Add a rollback step", followUp.Value);
         Assert.True(vm.PendingPlan.IsResolved);
+    }
+
+    // The composer stays live while the rejected plan's turn finishes, so the user can be mid-
+    // sentence when the review goes out. The review is its own prompt; the draft is not its input.
+    [Fact]
+    public async Task PlanReview_SendsItsOwnPrompt_WithoutConsumingTheUsersDraft()
+    {
+        var connection = new RecordingAcpAgentConnection();
+        using var vm = new ChatViewModel(new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService()));
+        await vm.InitializeAsync();
+        vm.InputText = "plan the feature";
+        await vm.SendAsync();
+        var promptsBefore = connection.Prompts.Count;
+        var (call, options) = PlanApprovalRequest("# Plan");
+        connection.RaisePermissionRequested(call, options);
+        vm.InputText = "meanwhile, what about the CI job?";
+
+        vm.PendingPlan!.ReviewCommand.Execute("Add a rollback step.");
+
+        await WaitUntilAsync(() => connection.Prompts.Count > promptsBefore);
+        var followUp = Assert.IsType<ContentBlock.Text>(connection.Prompts[^1][0]);
+        Assert.Contains("Add a rollback step", followUp.Value);
+        Assert.DoesNotContain("CI job", followUp.Value, StringComparison.Ordinal);
+        await WaitUntilAsync(() => vm.InputText.Length > 0);
+        Assert.Equal("meanwhile, what about the CI job?", vm.InputText);
     }
 
     [Fact]
