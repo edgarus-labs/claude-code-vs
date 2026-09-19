@@ -55,7 +55,9 @@ tools (see `docs/VsControlProtocol.md` for the exact wire contract).
   back so Claude revises the plan before implementing.
 - **Status and usage:** while Claude works the transcript shows elapsed time, tokens consumed by the
   turn and the current activity; the ring next to the model shows how full the context window is
-  (hover for numbers). The gauge button in the header opens the account's session/weekly limits.
+  (hover for numbers). The gauge button in the header opens the account's session/weekly limits;
+  behind a proxy, set `HTTPS_PROXY`/`HTTP_PROXY` for Visual Studio and use Node 24 or newer, which
+  is the first release whose HTTPS client honours those variables for the usage lookup.
 - **Remote Control:** the **Remote Control** pill turns on driving the session from
   [claude.ai/code](https://claude.ai/code) (same bridge as the CLI's `--remote-control`); the link button
   next to it opens this session there. **Tools > Options > Claude Code > Remote Control at startup**
