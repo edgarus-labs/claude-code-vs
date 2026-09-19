@@ -83,7 +83,20 @@ internal sealed class VsAttentionNotifier : IDisposable
             {
                 using var bitmap = new Bitmap(path);
                 using var sized = new Bitmap(bitmap, new Size(32, 32));
-                return Icon.FromHandle(sized.GetHicon());
+
+                // GetHicon allocates a native handle that Icon.FromHandle wraps with
+                // ownHandle: false - disposing that Icon never calls DestroyIcon. Clone into a
+                // managed icon that owns its own handle, then release the native one.
+                IntPtr nativeHandle = sized.GetHicon();
+                try
+                {
+                    using Icon unowned = Icon.FromHandle(nativeHandle);
+                    return (Icon)unowned.Clone();
+                }
+                finally
+                {
+                    _ = DestroyIcon(nativeHandle);
+                }
             }
         }
         catch (Exception)
@@ -109,4 +122,5 @@ internal sealed class VsAttentionNotifier : IDisposable
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")] private static extern bool DestroyIcon(IntPtr hIcon);
 }

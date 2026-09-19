@@ -196,22 +196,49 @@ internal sealed class ClaudeUsageService : IUsageService
                 continue;
             }
 
-            string? resetsAtRaw = limit["resetsAt"]?.Type == JTokenType.String ? limit["resetsAt"]!.Value<string>() : null;
             limits.Add(new UsageLimit
             {
                 Kind = limit["kind"]?.Value<string>() ?? "",
                 Group = limit["group"]?.Value<string>() ?? "",
                 Percent = limit["percent"]?.Value<int?>() ?? 0,
                 Severity = limit["severity"]?.Value<string>() ?? "normal",
-                ResetsAt = resetsAtRaw is not null && DateTimeOffset.TryParse(
-                    resetsAtRaw, CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTimeOffset resetsAt)
-                    ? resetsAt : null,
+                ResetsAt = ReadResetsAt(limit["resetsAt"]),
                 ScopeLabel = limit["scopeLabel"]?.Type == JTokenType.String ? limit["scopeLabel"]!.Value<string>() : null,
                 IsActive = limit["isActive"]?.Value<bool?>() ?? false,
             });
         }
 
         return new UsageSnapshot { Limits = limits, FetchedAt = DateTimeOffset.UtcNow };
+    }
+
+    /// <summary>Reads a limit's reset timestamp. <see cref="JObject.Parse(string)"/> materializes a
+    /// well-formed ISO-8601 timestamp as <see cref="JTokenType.Date"/>, so the string path alone
+    /// never fires for the payload the helper script actually emits.</summary>
+    private static DateTimeOffset? ReadResetsAt(JToken? token)
+    {
+        if (token is JValue { Type: JTokenType.Date } dateValue)
+        {
+            try
+            {
+                return dateValue.Value switch
+                {
+                    DateTimeOffset value => value,
+                    DateTime value => new DateTimeOffset(value),
+                    _ => null,
+                };
+            }
+            catch (ArgumentException)
+            {
+                // A local-time value whose UTC equivalent falls outside DateTimeOffset's range.
+                return null;
+            }
+        }
+
+        string? raw = token?.Type == JTokenType.String ? token.Value<string>() : null;
+        return raw is not null && DateTimeOffset.TryParse(
+            raw, CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTimeOffset resetsAt)
+            ? resetsAt
+            : null;
     }
 
     private static string? FindNodeOnPath()
@@ -226,25 +253,61 @@ internal sealed class ClaudeUsageService : IUsageService
         foreach (string entry in searchPath!.Split(Path.PathSeparator))
         {
             string directory = entry.Trim().Trim('"');
-            if (directory.Length == 0)
+            if (!AcpExecutableResolver.IsFullyQualifiedPath(directory))
             {
+                // Only fully qualified entries are independent of the workspace/current drive.
                 continue;
             }
 
             try
             {
-                string candidate = Path.Combine(directory, nodeName);
-                if (File.Exists(candidate))
-                {
-                    return candidate;
-                }
+                directory = Path.GetFullPath(directory);
             }
-            catch (ArgumentException)
+            catch (Exception ex) when (ex is ArgumentException || ex is NotSupportedException || ex is PathTooLongException)
             {
-                // Malformed PATH entry; skip it.
+                continue;
+            }
+
+            if (IsPackageDirectory(directory))
+            {
+                // Package content (node_modules\.bin and friends) is workspace-controlled and never
+                // a trusted source of a Node runtime.
+                continue;
+            }
+
+            string candidate = Path.Combine(directory, nodeName);
+            if (File.Exists(candidate))
+            {
+                return candidate;
             }
         }
 
         return null;
+    }
+
+    private static bool IsDirectorySeparator(char value) =>
+        value == Path.DirectorySeparatorChar || value == Path.AltDirectorySeparatorChar;
+
+    private static bool IsPackageDirectory(string directory)
+    {
+        int segmentStart = 0;
+        for (int index = 0; index <= directory.Length; index++)
+        {
+            if (index != directory.Length && !IsDirectorySeparator(directory[index]))
+            {
+                continue;
+            }
+
+            int length = index - segmentStart;
+            if ((length == 12 && string.Compare(directory, segmentStart, "node_modules", 0, length, StringComparison.OrdinalIgnoreCase) == 0)
+                || (length == 4 && string.Compare(directory, segmentStart, ".bin", 0, length, StringComparison.OrdinalIgnoreCase) == 0))
+            {
+                return true;
+            }
+
+            segmentStart = index + 1;
+        }
+
+        return false;
     }
 }

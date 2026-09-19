@@ -10,6 +10,7 @@
 // Everything else on stdin/stdout passes through untouched.
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { PassThrough } from "node:stream";
 import { createInterface } from "node:readline";
@@ -22,7 +23,23 @@ if (!adapterDir) {
   process.exit(1);
 }
 
-const sdkUrl = pathToFileURL(join(adapterDir, "node_modules", "@anthropic-ai", "claude-agent-sdk", "sdk.mjs")).href;
+// npm/pnpm may hoist @anthropic-ai/claude-agent-sdk into a parent node_modules, so resolve it
+// through Node's own resolution algorithm instead of assuming the nested layout. The published
+// package maps "." to ./sdk.mjs but does not export the "./sdk.mjs" subpath, so the bare specifier
+// is what resolves today; the subpath is tried first in case a future release exports it directly.
+// When resolution genuinely fails we keep the nested path so the original ERR_MODULE_NOT_FOUND
+// (naming the expected location) is still what the user sees.
+const requireFromAdapter = createRequire(join(adapterDir, "package.json"));
+let sdkPath = join(adapterDir, "node_modules", "@anthropic-ai", "claude-agent-sdk", "sdk.mjs");
+for (const specifier of ["@anthropic-ai/claude-agent-sdk/sdk.mjs", "@anthropic-ai/claude-agent-sdk"]) {
+  try {
+    sdkPath = requireFromAdapter.resolve(specifier);
+    break;
+  } catch {
+    // Not exported under this specifier; try the next one.
+  }
+}
+const sdkUrl = pathToFileURL(sdkPath).href;
 const agentUrl = pathToFileURL(join(adapterDir, "dist", "acp-agent.js")).href;
 
 const { resolveSettings } = await import(sdkUrl);
