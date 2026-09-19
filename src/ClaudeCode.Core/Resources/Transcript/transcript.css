@@ -88,9 +88,19 @@ html, body {
   font-family: var(--chat-code-font);
   font-size: 0.92em;
   white-space: pre;
+}
+
+/* Only the horizontal inset differs: the pasted-diff box draws its own border, a tool-card body
+   already sits behind its left rule. */
+.msg-user .user-diff .diff-line {
   padding: 0 8px;
 }
 
+.tool-card .diff-line {
+  padding: 0 6px;
+}
+
+/* Background tint only - the code keeps its syntax colors; the +/- gutter carries the diff color. */
 .msg-user .user-diff .diff-added,
 .tool-card .diff-added {
   background: var(--chat-diff-added-bg);
@@ -117,7 +127,14 @@ html, body {
 .tool-card .diff-path {
   font-weight: 600;
   color: var(--chat-subtle-fg);
+}
+
+.msg-user .user-diff .diff-path {
   padding: 4px 8px 2px 8px;
+}
+
+.tool-card .diff-path {
+  padding: 4px 6px 2px 6px;
 }
 
 .msg-user .user-diff .diff-prefix,
@@ -404,45 +421,6 @@ html, body {
   padding-right: 1.2em;
   text-align: right;
   color: var(--chat-subtle-fg);
-  user-select: none;
-}
-
-.tool-card .diff-line {
-  font-family: var(--chat-code-font);
-  font-size: 0.92em;
-  white-space: pre;
-  padding: 0 6px;
-}
-
-/* Background tint only - the code keeps its syntax colors; the +/- gutter carries the diff color. */
-.tool-card .diff-added {
-  background: var(--chat-diff-added-bg);
-}
-
-.tool-card .diff-removed {
-  background: var(--chat-diff-removed-bg);
-}
-
-.tool-card .diff-added .diff-prefix {
-  color: var(--chat-diff-added-fg);
-  opacity: 1;
-}
-
-.tool-card .diff-removed .diff-prefix {
-  color: var(--chat-diff-removed-fg);
-  opacity: 1;
-}
-
-.tool-card .diff-path {
-  font-weight: 600;
-  color: var(--chat-subtle-fg);
-  padding: 4px 6px 2px 6px;
-}
-
-.tool-card .diff-prefix {
-  display: inline-block;
-  width: 1em;
-  opacity: 0.7;
   user-select: none;
 }
 

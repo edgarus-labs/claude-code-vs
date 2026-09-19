@@ -41,8 +41,13 @@
   // hljs.highlight()'s cost is quadratic in the length of the text handed to one call, and an
   // explicit language does not make it linear - measured on the bundled v11.10.0, one call with
   // language "csharp" over a single line: 4 KB 19 ms, 8 KB 71 ms, 16 KB 285 ms, 20 KB 447 ms,
-  // 32 KB 1 139 ms, 64 KB 4 939 ms, 128 KB 21 331 ms. highlightAuto() is worse again because it
-  // runs every bundled grammar (106 ms over a 3 000-char sample), which is why hljs.highlightElement()
+  // 32 KB 1 139 ms, 64 KB 4 939 ms, 128 KB 21 331 ms. Crafted input moves the constant, not the
+  // class: swept over every bundled grammar with ~640 adversarial 20 000-char shapes (unterminated
+  // comments and strings, nested openers, one-token runs), the worst is "ini" over a single
+  // 20 000-char token at 970 ms, then less 782 ms and cpp/c ~700 ms, and every other grammar
+  // stays under 540 ms - so the budget below bounds one message rebuild at about a second.
+  // highlightAuto() is worse again because it runs every bundled grammar (106 ms over an ordinary
+  // 3 000-char sample, 177 ms over an unterminated comment), which is why hljs.highlightElement()
   // is never used: it falls back to highlightAuto() whenever the element carries no language-* class.
   // Code fences, diff lines and tool output are all untrusted agent text and none of them is
   // length-bounded upstream, and the host rebuilds the streaming message ~5x/s - so an unbounded
@@ -65,8 +70,10 @@
     // Charged whether or not the text was highlighted: the budget meters how much agent text one
     // message lays out through this sink, so it bounds the node count as well as the highlighting
     // cost. Without that, a tool result of a million over-long lines would render as plain text
-    // quickly and still grow the DOM without bound.
-    budget.remaining -= text.length;
+    // quickly and still grow the DOM without bound. At least one unit per call for the same
+    // reason: an empty line still costs its elements, so a million blank lines must run the
+    // budget down exactly like a million short ones.
+    budget.remaining -= Math.max(1, text.length);
     if (!language || !affordable) {
       el.textContent = text;
       return false;

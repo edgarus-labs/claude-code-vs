@@ -31,11 +31,14 @@
     return div;
   }
 
+  // Only grammars the bundled highlight.js common build registers (see vendor/highlight.min.js);
+  // languageForPath checks hljs.getLanguage() anyway, but an entry the bundle cannot honour would
+  // only promise highlighting that never happens.
   var languageByExtension = {
     cs: "csharp", ts: "typescript", tsx: "typescript", js: "javascript", jsx: "javascript",
     py: "python", java: "java", go: "go", rs: "rust", rb: "ruby", php: "php", json: "json",
     yml: "yaml", yaml: "yaml", css: "css", html: "xml", xml: "xml", sql: "sql", sh: "bash",
-    ps1: "powershell", md: "markdown", cpp: "cpp", c: "c", h: "cpp", swift: "swift", kt: "kotlin",
+    md: "markdown", cpp: "cpp", c: "c", h: "cpp", swift: "swift", kt: "kotlin",
   };
 
   function languageForPath(path) {
@@ -101,11 +104,30 @@
 
     var language = languageForPath(content.path) || detectDiffLanguage(lines, budget);
     for (var i = 0; i < lines.length; i++) {
+      // Diff lines are capped nowhere upstream either - DiffBuilder emits every old and new line
+      // of a large rewrite - so once the message's budget is spent the remainder goes in as one
+      // text node, the same rule as buildPlainBody: three elements per line would otherwise grow
+      // the DOM without bound long after highlighting had already stopped.
+      if (budget.remaining <= 0) {
+        var rest = document.createElement("div");
+        rest.className = "diff-line";
+        var restLines = [];
+        for (var r = i; r < lines.length; r++) {
+          restLines.push(lines[r].kind === "Hunk" ? lines[r].text || "" : (lines[r].prefix || " ") + (lines[r].text || ""));
+        }
+        rest.textContent = restLines.join("\n");
+        wrap.appendChild(rest);
+        break;
+      }
+
       var line = lines[i];
       var lineEl = document.createElement("div");
       if (line.kind === "Hunk") {
         lineEl.className = "diff-line diff-hunk";
         lineEl.textContent = line.text || "";
+        // Not a highlighting sink, but a rendered line all the same: charged so that a diff made
+        // of hunk headers alone runs into the check above like every other line.
+        budget.remaining -= Math.max(1, lineEl.textContent.length);
         wrap.appendChild(lineEl);
         continue;
       }
@@ -512,11 +534,16 @@
 
   // User prompts often carry pasted unified diffs ("=== DIFF: path ===" / "diff --git" headers,
   // "@@" hunks, +/- lines). Those runs are rendered like tool diffs - green/red rows with syntax
-  // colors for the file's language - and everything else stays plain text.
+  // colors for the file's language - and everything else stays plain text. These run over every
+  // line of every user message, and a user message can be agent-authored on session load, so
+  // each one has to be linear: a lazy capture followed by \s* over the same characters (the
+  // former "+++ " form) backtracked quadratically - 13 s on "+++ " plus 200 000 spaces and one
+  // letter, the host's MaxMarkdownLength - where a greedy capture ending on a mandatory
+  // non-space finds the same path in one pass.
   var diffHeaderPatterns = [
     /^=== DIFF: (.+?) ===\s*$/,
     /^diff --git a\/(.+?) b\/.+$/,
-    /^\+\+\+ (?:b\/)?(.+?)\s*$/,
+    /^\+\+\+ (?:b\/)?(.*\S)\s*$/,
   ];
 
   function renderUserText(text, budget) {
