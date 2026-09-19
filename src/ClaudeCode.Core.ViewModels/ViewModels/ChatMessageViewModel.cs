@@ -16,7 +16,7 @@ public sealed class ChatMessageViewModel : ObservableObject
         _isTruncated = text.Length > MarkdownSafetyLimits.MaxMarkdownLength;
         if (_text.Length > 0)
         {
-            Parts.Add(new ChatTextPart { Text = _text });
+            Parts.Add(new ChatTextPart(_text));
         }
     }
 
@@ -40,8 +40,14 @@ public sealed class ChatMessageViewModel : ObservableObject
         set => SetProperty(ref _durationSeconds, value);
     }
 
+    private System.Collections.Generic.IReadOnlyList<ChatMessageImage> _images = Array.Empty<ChatMessageImage>();
+
     /// <summary>Images the user sent with this message (rendered as thumbnails in the transcript).</summary>
-    public System.Collections.Generic.IReadOnlyList<ChatMessageImage> Images { get; set; } = Array.Empty<ChatMessageImage>();
+    public System.Collections.Generic.IReadOnlyList<ChatMessageImage> Images
+    {
+        get => _images;
+        set => SetProperty(ref _images, value);
+    }
 
     private long? _tokensUsed;
 
@@ -78,11 +84,11 @@ public sealed class ChatMessageViewModel : ObservableObject
         {
             if (Parts.Count > 0 && Parts[Parts.Count - 1] is ChatTextPart lastText)
             {
-                lastText.Text += appended;
+                lastText.Append(appended);
             }
             else
             {
-                Parts.Add(new ChatTextPart { Text = appended });
+                Parts.Add(new ChatTextPart(appended));
             }
         }
 

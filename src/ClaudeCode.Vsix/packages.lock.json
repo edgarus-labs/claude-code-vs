@@ -251,22 +251,6 @@
           "Microsoft.VisualStudio.Interop": "17.13.40008"
         }
       },
-      "Markdig": {
-        "type": "Transitive",
-        "resolved": "0.22.0",
-        "contentHash": "/GbIsc1Dc/fOPqJM2sWIlWymgRAVfJhet+MY1Ze46HpDMyl+9TTfs4AdYbXx5QZo7eRh+Ew7A/nyGSVNCuYd9g==",
-        "dependencies": {
-          "System.Memory": "4.5.4"
-        }
-      },
-      "Markdig.Wpf": {
-        "type": "Transitive",
-        "resolved": "0.5.0.1",
-        "contentHash": "lQRxu90ZqCATHTvd25yR/MxXABYA+Xcp7tmKW5jReTIgegB+AcU0+cd1GqdpM5k2KRVaD8BkBYQFdDw0lquT4w==",
-        "dependencies": {
-          "Markdig": "0.22.0"
-        }
-      },
       "MessagePack": {
         "type": "Transitive",
         "resolved": "2.5.192",
@@ -1668,7 +1652,6 @@
         "dependencies": {
           "EdgarusLabs.ClaudeCode.Contracts": "[1.0.0, )",
           "EdgarusLabs.ClaudeCode.Core.ViewModels": "[1.0.0, )",
-          "Markdig.Wpf": "[0.5.0.1, )",
           "Microsoft.Web.WebView2": "[1.0.3240.44, )",
           "Newtonsoft.Json": "[13.0.3, )"
         }

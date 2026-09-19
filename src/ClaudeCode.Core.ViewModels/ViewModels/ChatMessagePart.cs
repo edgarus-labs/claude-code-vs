@@ -1,4 +1,5 @@
 using CommunityToolkit.Mvvm.ComponentModel;
+using System.Text;
 
 namespace ClaudeCode.Core.ViewModels;
 
@@ -17,12 +18,25 @@ public abstract class ChatMessagePart : ObservableObject
 
 public sealed class ChatTextPart : ChatMessagePart
 {
-    private string _text = string.Empty;
+    private readonly StringBuilder _builder;
+    private string? _text;
 
-    public string Text
+    internal ChatTextPart(string text)
     {
-        get => _text;
-        set => SetProperty(ref _text, value);
+        _builder = new StringBuilder(text);
+        _text = text;
+    }
+
+    /// <summary>The run's accumulated text, materialized lazily so streaming stays amortized O(1):
+    /// the agent chooses both the chunk size and the total length, and re-concatenating the whole
+    /// run per chunk is quadratic work on the UI thread.</summary>
+    public string Text => _text ??= _builder.ToString();
+
+    internal void Append(string chunk)
+    {
+        _builder.Append(chunk);
+        _text = null;
+        OnPropertyChanged(nameof(Text));
     }
 }
 

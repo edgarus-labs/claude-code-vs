@@ -181,4 +181,64 @@ public sealed class ChatMessageViewModelTests
         var part = Assert.Single(message.Parts);
         Assert.Equal("seed", Assert.IsType<ChatTextPart>(part).Text);
     }
+
+    [Fact]
+    public void Parts_EmptyConstructorText_SeedsNoPart()
+    {
+        Assert.Empty(new ChatMessageViewModel(ChatRole.Assistant).Parts);
+    }
+
+    [Fact]
+    public void AppendText_ManyChunks_AccumulatesWithoutRecopyingTheWholeMessage()
+    {
+        // The agent picks both the chunk size and the total length, so a per-chunk full copy of
+        // the accumulated text is quadratic work on the UI thread. 2,000 x 10 chars recopied every
+        // time is ~20M characters (~40MB); an amortized append stays within a small multiple of
+        // the 20,000-character result.
+        const int chunkCount = 2000;
+        const string chunk = "0123456789";
+        var warmup = new ChatMessageViewModel(ChatRole.Assistant);
+        warmup.AppendText(chunk);
+        _ = warmup.Text;
+
+        var message = new ChatMessageViewModel(ChatRole.Assistant);
+        var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < chunkCount; i++)
+        {
+            message.AppendText(chunk);
+        }
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+
+        var expected = string.Concat(Enumerable.Repeat(chunk, chunkCount));
+        Assert.Equal(expected, message.Text);
+        Assert.Equal(expected, Assert.IsType<ChatTextPart>(Assert.Single(message.Parts)).Text);
+        Assert.True(allocated < 1_000_000, $"Streaming {chunkCount} chunks allocated {allocated} bytes.");
+    }
+
+    [Fact]
+    public void Parts_AppendCrossingLimit_CarriesTheTruncationNoticeIntoTheRenderedPart()
+    {
+        // Parts - not Text - is what the transcript serialises, so the notice has to reach the
+        // text part or the user sees a message that silently stops mid-sentence.
+        var message = new ChatMessageViewModel(ChatRole.Assistant);
+        message.AppendText(new string('x', MarkdownSafetyLimits.MaxMarkdownLength - 1));
+
+        message.AppendText("yz");
+
+        var textPart = Assert.IsType<ChatTextPart>(Assert.Single(message.Parts));
+        Assert.Equal(message.Text, textPart.Text);
+        Assert.Contains("truncated", textPart.Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Images_Assigned_RaisesPropertyChanged()
+    {
+        var message = new ChatMessageViewModel(ChatRole.User, "look");
+        var raised = new List<string?>();
+        message.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
+
+        message.Images = new[] { new ChatMessageImage("shot.png", "image/png", "AQID") };
+
+        Assert.Contains(nameof(ChatMessageViewModel.Images), raised);
+    }
 }
