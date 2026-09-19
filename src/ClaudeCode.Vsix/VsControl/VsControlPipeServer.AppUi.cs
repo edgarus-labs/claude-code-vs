@@ -53,6 +53,10 @@ internal sealed partial class VsControlPipeServer
     // a debuggee blocked in its paint handler never does. Declining the route once a few bodies are
     // outstanding turns an unbounded leak into a bounded one.
     private const int _maxOutstandingPrintWindows = 3;
+    // A UIA walk/action body the deadline abandons keeps a thread-pool thread and a COM proxy alive
+    // until the target answers or the provider's own timeout fires, so the count of still-running
+    // bodies bounds the damage; decline once a few are outstanding (the caller reports pending:true).
+    private const int _maxOutstandingUiBodies = 3;
     private const int _uiActionTimeoutMs = 5_000;
     private const uint _pumpProbeTimeoutMs = 1_000;
     private const int _maxZOrderWindows = 1_000;
@@ -130,7 +134,7 @@ internal sealed partial class VsControlPipeServer
 
         // UIA calls are cross-process and can stall while the target's UI thread is busy or stopped
         // at a breakpoint, so the walk runs off the VS UI thread under a deadline.
-        var tree = await RunWithDeadlineAsync(() => ElementToJson(AutomationElement.FromHandle(hwnd), 0, maxDepth, budget), cancellationToken);
+        var tree = await RunBoundedUiBodyAsync(() => ElementToJson(AutomationElement.FromHandle(hwnd), 0, maxDepth, budget), cancellationToken);
         if (tree is null)
         {
             return new JObject
@@ -231,7 +235,7 @@ internal sealed partial class VsControlPipeServer
     /// </summary>
     private static async Task<JObject> RunUiActionAsync(string action, Func<JObject> body, CancellationToken cancellationToken)
     {
-        var element = await RunWithDeadlineAsync(body, cancellationToken);
+        var element = await RunBoundedUiBodyAsync(body, cancellationToken);
         if (element is null)
         {
             return new JObject
@@ -302,6 +306,40 @@ internal sealed partial class VsControlPipeServer
 
     // Process-wide, like the GDI object quota and the address space it guards.
     private static int _outstandingPrintWindows;
+
+    // Process-wide, like the PrintWindow cap it mirrors: a UIA walk or element action abandoned at
+    // its deadline keeps running inside the debuggee and only releases its thread and COM proxy once
+    // the target answers or the UI Automation provider times out.
+    private static int _outstandingUiBodies;
+
+    /// <summary>Runs a UIA body (a tree walk or an element action) under the shared deadline while
+    /// bounding how many bodies may be outstanding, exactly as <see cref="PrintWindowCaptureAsync"/>
+    /// bounds its abandoned <c>PrintWindow</c> bodies. Declining returns <c>null</c>, which every
+    /// caller already reports as <c>pending: true</c>.</summary>
+    private static Task<JObject?> RunBoundedUiBodyAsync(Func<JObject?> body, CancellationToken cancellationToken)
+    {
+        if (Interlocked.Increment(ref _outstandingUiBodies) > _maxOutstandingUiBodies)
+        {
+            _ = Interlocked.Decrement(ref _outstandingUiBodies);
+            return Task.FromResult<JObject?>(null);
+        }
+
+        // The decrement belongs to the body rather than to this call: the deadline abandons the body
+        // while it is still blocked in a cross-process UIA call.
+        return RunWithDeadlineAsync(
+            () =>
+            {
+                try
+                {
+                    return body();
+                }
+                finally
+                {
+                    _ = Interlocked.Decrement(ref _outstandingUiBodies);
+                }
+            },
+            cancellationToken);
+    }
 
     /// <summary>Runs <c>PrintWindow</c> on a background thread and gives up after
     /// <see cref="_uiActionTimeoutMs"/>. The abandoned thread keeps sole ownership of its bitmap and
