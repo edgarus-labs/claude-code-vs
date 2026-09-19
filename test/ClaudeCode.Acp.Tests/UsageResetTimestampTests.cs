@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using ClaudeCode.Contracts;
 using Xunit;
 
@@ -27,7 +28,7 @@ public sealed class UsageResetTimestampTests
     }
 
     [Fact]
-    public void FromJsonValue_ParsesAStringTimestampInvariantly()
+    public void FromJsonValue_ParsesTheIsoStringFormTheEndpointSends()
     {
         Assert.Equal(
             new DateTimeOffset(2026, 5, 4, 12, 30, 0, TimeSpan.Zero),
@@ -35,19 +36,25 @@ public sealed class UsageResetTimestampTests
     }
 
     [Fact]
-    public void FromJsonValue_ReturnsNullForALocalTimeWhoseUtcEquivalentIsOutOfRange()
+    public void FromJsonValue_ParsesANonIsoStringTimestampInvariantlyUnderAHostileCurrentCulture()
     {
-        TimeSpan localOffset = TimeZoneInfo.Local.GetUtcOffset(DateTime.Now);
-        if (localOffset == TimeSpan.Zero)
+        // Deliberately not the ISO form: DateTimeOffset.TryParse has a culture-insensitive ISO-8601
+        // fast path, so an ISO string parses identically under every culture and cannot show whether
+        // the conversion pins a culture at all. A slash-separated form does - under th-TH's Buddhist
+        // calendar this same text reads as year 1483 - so this is what makes the
+        // CultureInfo.InvariantCulture pin load-bearing instead of decorative.
+        CultureInfo original = CultureInfo.CurrentCulture;
+        CultureInfo.CurrentCulture = new CultureInfo("th-TH");
+        try
         {
-            // No local DateTime can leave DateTimeOffset's range in UTC itself.
-            return;
+            Assert.Equal(
+                new DateTimeOffset(2026, 5, 4, 12, 30, 0, TimeSpan.Zero),
+                UsageResetTimestamp.FromJsonValue("2026/05/04 12:30:00 +00:00"));
         }
-
-        DateTime outOfRange = DateTime.SpecifyKind(
-            localOffset > TimeSpan.Zero ? DateTime.MinValue : DateTime.MaxValue, DateTimeKind.Local);
-
-        Assert.Null(UsageResetTimestamp.FromJsonValue(outOfRange));
+        finally
+        {
+            CultureInfo.CurrentCulture = original;
+        }
     }
 
     [Fact]

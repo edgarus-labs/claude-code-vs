@@ -1,11 +1,11 @@
 using ClaudeCode.Acp;
 using ClaudeCode.Contracts;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -47,18 +47,29 @@ internal sealed class ClaudeUsageService : IUsageService
             }
         }
 
-        if (!File.Exists(_scriptPath))
+        // Everything below touches the filesystem and spawns a process: File.Exists on the script,
+        // one File.Exists per fully-qualified PATH entry inside FindNodeOnPath (a single unreachable
+        // UNC or mapped-drive entry blocks on an SMB timeout), then CreateProcess. Both callers reach
+        // this from the UI thread - ChatViewModel's constructor fire-and-forgets the usage polling
+        // loop while ChatPanelView is still being constructed, and the IsUsagePanelOpen setter does
+        // the same - so none of it may run there. Same rule as ClaudeCodeConnectionFactory: hop to
+        // the thread pool first.
+        string? output = await Task.Run(async () =>
         {
-            return null;
-        }
+            if (!File.Exists(_scriptPath))
+            {
+                return null;
+            }
 
-        string? nodePath = AcpExecutableResolver.FindNodeOnPath(Environment.GetEnvironmentVariable("PATH"));
-        if (nodePath is null)
-        {
-            return null;
-        }
+            string? nodePath = AcpExecutableResolver.FindNodeOnPath(Environment.GetEnvironmentVariable("PATH"));
+            if (nodePath is null)
+            {
+                return null;
+            }
 
-        string? output = await RunNodeScriptAsync(nodePath, _scriptPath, cancellationToken).ConfigureAwait(false);
+            return await RunNodeScriptAsync(nodePath, _scriptPath, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken).ConfigureAwait(false);
+
         UsageSnapshot? snapshot = output is null ? null : ParseSnapshot(output);
         if (snapshot is null)
         {
@@ -103,7 +114,7 @@ internal sealed class ClaudeUsageService : IUsageService
             }
 
             Task stderrDrain = process.StandardError.BaseStream.CopyToAsync(Stream.Null);
-            Task<string> stdout = ReadBoundedAsync(process.StandardOutput);
+            Task<string> stdout = BoundedProcessOutput.ReadBoundedAsync(process.StandardOutput, _maxOutputCharacters);
             Task complete = Task.WhenAll(stderrDrain, stdout, exited.Task);
             _ = complete.ContinueWith(task => { _ = task.Exception; },
                 CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
@@ -132,35 +143,6 @@ internal sealed class ClaudeUsageService : IUsageService
         }
     }
 
-    private static async Task<string> ReadBoundedAsync(StreamReader reader)
-    {
-        var buffer = new char[1024];
-        var output = new StringBuilder();
-        bool exceededBound = false;
-        int count;
-        while ((count = await reader.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false)) != 0)
-        {
-            if (exceededBound)
-            {
-                continue;
-            }
-
-            if (output.Length + count > _maxOutputCharacters)
-            {
-                // Discard the oversize payload, but keep draining: stopping the read would leave the
-                // child blocked on a full stdout pipe, so it would never exit and the caller would
-                // wait out the whole process timeout before killing it.
-                exceededBound = true;
-                output.Clear();
-                continue;
-            }
-
-            output.Append(buffer, 0, count);
-        }
-
-        return output.ToString();
-    }
-
     private static void TryKill(Process process)
     {
         try
@@ -183,42 +165,46 @@ internal sealed class ClaudeUsageService : IUsageService
             return null;
         }
 
-        JObject parsed;
+        // IUsageService promises null rather than an exception for unavailable data, so the
+        // projection has to be inside the try too: the values are whatever the endpoint returned, and
+        // Value<int?>/Value<bool?> raise OverflowException for a number outside int range (1e308
+        // passes the helper's `typeof === "number"` filter untouched), FormatException or
+        // InvalidCastException for a token that will not convert.
         try
         {
-            parsed = JObject.Parse(output);
-        }
-        catch
-        {
-            return null;
-        }
-
-        if (parsed["error"] is not null || parsed["limits"] is not JArray limitsArray)
-        {
-            return null;
-        }
-
-        var limits = new System.Collections.Generic.List<UsageLimit>(limitsArray.Count);
-        foreach (JToken token in limitsArray)
-        {
-            if (token is not JObject limit)
+            JObject parsed = JObject.Parse(output);
+            if (parsed["error"] is not null || parsed["limits"] is not JArray limitsArray)
             {
-                continue;
+                return null;
             }
 
-            limits.Add(new UsageLimit
+            var limits = new System.Collections.Generic.List<UsageLimit>(limitsArray.Count);
+            foreach (JToken token in limitsArray)
             {
-                Kind = limit["kind"]?.Value<string>() ?? "",
-                Group = limit["group"]?.Value<string>() ?? "",
-                Percent = limit["percent"]?.Value<int?>() ?? 0,
-                Severity = limit["severity"]?.Value<string>() ?? "normal",
-                ResetsAt = ReadResetsAt(limit["resetsAt"]),
-                ScopeLabel = limit["scopeLabel"]?.Type == JTokenType.String ? limit["scopeLabel"]!.Value<string>() : null,
-                IsActive = limit["isActive"]?.Value<bool?>() ?? false,
-            });
-        }
+                if (token is not JObject limit)
+                {
+                    continue;
+                }
 
-        return new UsageSnapshot { Limits = limits, FetchedAt = DateTimeOffset.UtcNow };
+                limits.Add(new UsageLimit
+                {
+                    Kind = limit["kind"]?.Value<string>() ?? "",
+                    Group = limit["group"]?.Value<string>() ?? "",
+                    Percent = limit["percent"]?.Value<int?>() ?? 0,
+                    Severity = limit["severity"]?.Value<string>() ?? "normal",
+                    ResetsAt = ReadResetsAt(limit["resetsAt"]),
+                    ScopeLabel = limit["scopeLabel"]?.Type == JTokenType.String ? limit["scopeLabel"]!.Value<string>() : null,
+                    IsActive = limit["isActive"]?.Value<bool?>() ?? false,
+                });
+            }
+
+            return new UsageSnapshot { Limits = limits, FetchedAt = DateTimeOffset.UtcNow };
+        }
+        catch (Exception ex) when (ex is JsonException || ex is FormatException ||
+            ex is OverflowException || ex is InvalidCastException)
+        {
+            return null;
+        }
     }
 
     /// <summary>Reads a limit's reset timestamp. <see cref="JObject.Parse(string)"/> materializes a

@@ -4,10 +4,12 @@ using System.Net;
 namespace ClaudeCode.Core.ViewModels;
 
 /// <summary>
-/// Pure string/Uri guardrails for untrusted assistant Markdown. The transcript renders it in a
-/// WebView2 page (<c>Resources/Transcript/transcript.js</c>, markdown-it with <c>html:false</c>
-/// plus DOMPurify); these are the host-side bounds applied before the text ever gets there.
-/// Kept XAML-free so they are directly unit-testable.
+/// Pure string/Uri guardrails for untrusted assistant Markdown. Two WebView2 pages render it -
+/// the transcript (<c>Resources/Transcript/transcript.js</c>) and the plan document
+/// (<c>Resources/Transcript/plan.js</c>), both markdown-it with <c>html:false</c> plus DOMPurify -
+/// and both are bounded here before the text reaches either renderer: transcript message text in
+/// <see cref="ChatMessageViewModel"/>'s constructor and <c>AppendText</c>, plan text in
+/// <c>PlanReviewViewModel</c>'s constructor. Kept XAML-free so they are directly unit-testable.
 /// </summary>
 public static class MarkdownSafetyLimits
 {

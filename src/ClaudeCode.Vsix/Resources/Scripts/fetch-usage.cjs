@@ -57,6 +57,12 @@ function fetchUsage(token) {
     {
       method: "GET",
       timeout: 8000,
+      // Pinned explicitly rather than inherited: Node otherwise takes this from
+      // NODE_TLS_REJECT_UNAUTHORIZED, which this helper inherits from devenv.exe, which inherits it
+      // from the user session. With that set to 0 - a common workaround for TLS-inspecting proxies -
+      // the Authorization header below would be handed to whatever peer terminates the connection
+      // with no certificate check. Failing closed here just leaves the usage panel empty.
+      rejectUnauthorized: true,
       headers: {
         Authorization: `Bearer ${token}`,
         Accept: "application/json",

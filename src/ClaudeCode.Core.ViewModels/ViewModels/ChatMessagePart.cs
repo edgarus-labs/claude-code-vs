@@ -1,4 +1,3 @@
-using CommunityToolkit.Mvvm.ComponentModel;
 using System.Text;
 
 namespace ClaudeCode.Core.ViewModels;
@@ -12,7 +11,11 @@ namespace ClaudeCode.Core.ViewModels;
 /// is the ordered view used for rendering; Text/ToolCalls stay as they are since other code and
 /// tests already depend on their grouped-by-kind shape.
 /// </summary>
-public abstract class ChatMessagePart : ObservableObject
+/// <remarks>Deliberately not observable: nothing subscribes to a part. The transcript repaint is
+/// driven by <see cref="ChatMessageViewModel"/>'s own <c>Text</c> notification, which
+/// <c>TranscriptHostProtocol.AffectsTranscript</c> honours, and the page itself is re-rendered from
+/// the whole <see cref="ChatMessageViewModel.Parts"/> payload.</remarks>
+public abstract class ChatMessagePart
 {
 }
 
@@ -36,7 +39,6 @@ public sealed class ChatTextPart : ChatMessagePart
     {
         _builder.Append(chunk);
         _text = null;
-        OnPropertyChanged(nameof(Text));
     }
 }
 

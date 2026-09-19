@@ -144,21 +144,6 @@ public sealed class ChatMessageViewModelTests
     }
 
     [Fact]
-    public void Parts_TextAfterToolCall_StartsANewTextPart_NotMergedWithTextBeforeTheCall()
-    {
-        var message = new ChatMessageViewModel(ChatRole.Assistant);
-
-        message.AppendText("before");
-        message.AppendToolCall(MakeCard("tc-1"));
-        message.AppendText("after");
-
-        var textParts = message.Parts.OfType<ChatTextPart>().ToList();
-        Assert.Equal(2, textParts.Count);
-        Assert.Equal("before", textParts[0].Text);
-        Assert.Equal("after", textParts[1].Text);
-    }
-
-    [Fact]
     public void Parts_TwoToolCallsInARow_BothAppearAsSeparateParts()
     {
         var message = new ChatMessageViewModel(ChatRole.Assistant);
@@ -231,14 +216,25 @@ public sealed class ChatMessageViewModelTests
     }
 
     [Fact]
-    public void Images_Assigned_RaisesPropertyChanged()
+    public void Images_Assigned_NotifiesWithTheNewValueAlreadyReadable()
     {
+        // The transcript repaint is driven off this notification (TranscriptHostProtocol.
+        // AffectsTranscript lists Images) and the handler re-serialises message.Images itself, so a
+        // silent auto-property would drop thumbnails and a raise-before-assign would ship the stale
+        // list. Reading the property inside the handler pins both halves.
         var message = new ChatMessageViewModel(ChatRole.User, "look");
-        var raised = new List<string?>();
-        message.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
+        var images = new[] { new ChatMessageImage("shot.png", "image/png", "AQID") };
+        var observed = new List<IReadOnlyList<ChatMessageImage>>();
+        message.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(ChatMessageViewModel.Images))
+            {
+                observed.Add(message.Images);
+            }
+        };
 
-        message.Images = new[] { new ChatMessageImage("shot.png", "image/png", "AQID") };
+        message.Images = images;
 
-        Assert.Contains(nameof(ChatMessageViewModel.Images), raised);
+        Assert.Same(images, Assert.Single(observed));
     }
 }

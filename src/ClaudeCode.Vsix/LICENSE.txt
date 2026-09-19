@@ -15,3 +15,13 @@ at the top of the distributed file, which is the authoritative notice:
 Highlight.js 11.10.0 - BSD-3-Clause - Resources\Transcript\vendor\highlight.min.js
 markdown-it 14.3.2 - MIT - Resources\Transcript\vendor\markdown-it.min.js
 DOMPurify 3.4.15 - Apache-2.0 and MPL-2.0 - Resources\Transcript\vendor\purify.min.js
+
+The transcript and plan windows are hosted in WebView2, so the extension also
+redistributes the Microsoft WebView2 SDK:
+
+Microsoft.Web.WebView2 1.0.3240.44 - Microsoft Software License Terms
+(WebView2 SDK) - redistributed as Microsoft.Web.WebView2.Core.dll,
+Microsoft.Web.WebView2.Wpf.dll, Microsoft.Web.WebView2.WinForms.dll and
+runtimes\win-x64\native\WebView2Loader.dll,
+runtimes\win-x86\native\WebView2Loader.dll,
+runtimes\win-arm64\native\WebView2Loader.dll

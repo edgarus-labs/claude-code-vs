@@ -69,7 +69,7 @@ public sealed class MarkdownSafetyLimitsTests
     [Fact]
     public void IsNavigableLink_NullUri_ReturnsFalse()
     {
-        Assert.False(MarkdownSafetyLimits.IsNavigableLink(null!));
+        Assert.False(MarkdownSafetyLimits.IsNavigableLink(null));
     }
 
     [Theory]
