@@ -15,6 +15,27 @@ public sealed class VsControlPipeClient : IAsyncDisposable
 {
     private const string _handshakeTokenEnvironmentVariable = "CLAUDECODE_VSCONTROL_TOKEN";
     private const string _buildSolutionMethod = "buildSolution";
+    private const string _buildProjectMethod = "buildProject";
+    private const string _startDebuggingMethod = "startDebugging";
+    private const string _openSolutionMethod = "openSolution";
+    private const string _addProjectToSolutionMethod = "addProjectToSolution";
+
+    /// <summary>
+    /// Default budget for the methods that compile or load a solution. Nothing cancels the Visual
+    /// Studio side when a budget expires, so it must exceed the worst case the host can reach under it
+    /// and let the agent receive the host's own actionable error rather than a transport timeout
+    /// invented while MSBuild or a solution load is still running. The longest bounded case is
+    /// <c>startDebugging</c>: a build bounded at 10 minutes by the host's own <c>RunBuildAsync</c>
+    /// backstop, then up to 60 s for the launch to leave design mode
+    /// (<c>VsControlPipeServer.Debugger.cs</c> <c>_startDebuggingTimeoutMs</c>), then up to 45 s for a
+    /// breakpoint (<c>_maxWaitMs</c>, mirrored as the <c>waitForBreakMs</c> schema maximum):
+    /// 600 + 60 + 45 = 705 s. Raising any of those host bounds requires raising this budget to stay
+    /// above the sum; the Vsix has no test project, so nothing on this side can detect that drift.
+    /// <c>openSolution</c>/<c>addProjectToSolution</c> share the budget without being bounded at all -
+    /// their COM calls offer no completion signal to cancel against - so for those it is a ceiling
+    /// rather than a proof.
+    /// </summary>
+    public static readonly TimeSpan DefaultLongOperationTimeout = TimeSpan.FromMinutes(12);
 
     private static readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly UTF8Encoding _utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
@@ -51,7 +72,7 @@ public sealed class VsControlPipeClient : IAsyncDisposable
         _pipeName = pipeName;
         _connectTimeout = connectTimeout ?? TimeSpan.FromSeconds(5);
         _requestTimeout = requestTimeout ?? TimeSpan.FromSeconds(60);
-        _buildTimeout = buildTimeout ?? TimeSpan.FromMinutes(5);
+        _buildTimeout = buildTimeout ?? DefaultLongOperationTimeout;
         _handshakeToken = handshakeToken ?? Environment.GetEnvironmentVariable(_handshakeTokenEnvironmentVariable) ?? string.Empty;
         if (string.IsNullOrWhiteSpace(_handshakeToken) || _handshakeToken.IndexOfAny(['\r', '\n']) >= 0)
         {
@@ -109,7 +130,7 @@ public sealed class VsControlPipeClient : IAsyncDisposable
             throw;
         }
 
-        var timeout = string.Equals(request.Method, _buildSolutionMethod, StringComparison.Ordinal) ? _buildTimeout : _requestTimeout;
+        var timeout = UsesLongOperationBudget(request.Method) ? _buildTimeout : _requestTimeout;
         using var timeoutCts = new CancellationTokenSource(timeout);
         await using var timeoutRegistration = timeoutCts.Token.Register(static state => ((TaskCompletionSource<VsControlResponse>)state!).TrySetCanceled(), tcs);
         await using var registration = operationToken.Register(static state => ((TaskCompletionSource<VsControlResponse>)state!).TrySetCanceled(), tcs);
@@ -133,6 +154,21 @@ public sealed class VsControlPipeClient : IAsyncDisposable
             _pending.TryRemove(request.Id, out _);
         }
     }
+
+    // The methods whose server-side cost cannot fit the 60 s per-request budget.
+    // buildSolution/buildProject run MSBuild; startDebugging builds the solution before it launches;
+    // openSolution and addProjectToSolution drive DTE.Solution.Close/Open/AddFromFile, synchronous
+    // uncancellable COM calls that the host cannot bound at all - there is no completion signal to
+    // race a CancellationToken against, so abandoning the wait would only let a retry close and
+    // reopen the solution a second time. Every method that does have a server-side bound is bounded
+    // below _requestTimeout: 45 s mode waits, 60 s debug launch wait, 15 s stop, 5 s evaluations,
+    // 5 s UI-automation actions.
+    private static bool UsesLongOperationBudget(string method)
+        => method is _buildSolutionMethod
+            or _buildProjectMethod
+            or _startDebuggingMethod
+            or _openSolutionMethod
+            or _addProjectToSolutionMethod;
 
     private async Task EnsureConnectedAsync(CancellationToken cancellationToken)
     {
@@ -244,9 +280,37 @@ public sealed class VsControlPipeClient : IAsyncDisposable
             }
         }
 
-        if (ReferenceEquals(_pipe, pipe))
+        if (!ReferenceEquals(_pipe, pipe))
         {
-            DisposeConnectionState();
+            return;
+        }
+
+        // Tear down under the write gate. Disposing _writer while SendAsync is still inside
+        // WriteLineAsync/FlushAsync makes StreamWriter.Dispose throw InvalidOperationException
+        // ("the stream is currently in use by a previous operation"), which escapes DisposeQuietly's
+        // filter, faults this task and resurfaces from DisposeAsync's await. DisposeAsync cancels
+        // the lifetime before it takes the same gate and keeps it through disposal, so a canceled
+        // lifetime means disposal already owns teardown: stand down instead of waiting on a gate
+        // that is never released.
+        try
+        {
+            await _writeLock.WaitAsync(_lifetimeToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+
+        try
+        {
+            if (ReferenceEquals(_pipe, pipe))
+            {
+                DisposeConnectionState();
+            }
+        }
+        finally
+        {
+            _writeLock.Release();
         }
     }
 

@@ -20,6 +20,17 @@ public sealed partial class ChatSessionStateTests
             .Select(value => new SessionConfigValue(value, value, null)).ToArray()),
     ];
 
+    private static IReadOnlyList<SessionConfigOption> OptionsWithMode(string mode = "default") =>
+    [
+        .. Options(),
+        new SessionConfigOption("mode", "Mode", "mode", mode,
+        [
+            new SessionConfigValue("default", "Manual", "Always ask before making changes"),
+            new SessionConfigValue("acceptEdits", "Accept edits", "Automatically accept all file edits"),
+            new SessionConfigValue("plan", "Plan", "Create a plan before making changes"),
+        ]),
+    ];
+
     private static ChatViewModel Create(RecordingAcpAgentConnection connection) =>
         new(new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService()));
 
@@ -124,6 +135,49 @@ public sealed partial class ChatSessionStateTests
         connection.RaiseSessionUpdate(new SessionUpdate.ConfigOptionsChanged(Options("opus", "high", "high")));
         Assert.Equal("opus", vm.SelectedModel.Value);
         Assert.Equal("high", vm.SelectedEffort.Value);
+    }
+
+    [Fact]
+    public async Task Mode_PopulatesAvailableModesAndSelectedMode_FromInitialConfigOptions()
+    {
+        using var vm = Create(new RecordingAcpAgentConnection { ConfigOptions = OptionsWithMode("acceptEdits") });
+        await vm.Initialization;
+
+        Assert.True(vm.HasModes);
+        Assert.Equal(new[] { "default", "acceptEdits", "plan" }, vm.AvailableModes.Select(value => value.Value));
+        Assert.Equal("acceptEdits", vm.SelectedMode!.Value);
+        Assert.Equal("Accept edits", vm.ActiveModeName);
+    }
+
+    [Fact]
+    public async Task NoModeOption_HasModesFalse_AndAvailableModesEmpty()
+    {
+        using var vm = Create(new RecordingAcpAgentConnection { ConfigOptions = Options() });
+        await vm.Initialization;
+
+        Assert.False(vm.HasModes);
+        Assert.Empty(vm.AvailableModes);
+        Assert.Null(vm.SelectedMode);
+    }
+
+    // The agent's response is authoritative for mode exactly as it is for model/effort: the stub
+    // deliberately answers with a mode that was not the one clicked.
+    [Fact]
+    public async Task SelectModeAsync_SendsConfigChange_AndUpdatesSelectionFromResponse()
+    {
+        var connection = new RecordingAcpAgentConnection
+        {
+            ConfigOptions = OptionsWithMode(),
+            ConfigHandler = (_, _, _) => Task.FromResult(OptionsWithMode("acceptEdits")),
+        };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        Assert.Equal("default", vm.SelectedMode!.Value);
+
+        await vm.SelectModeAsync(vm.AvailableModes[2]);
+
+        Assert.Equal(("mode", "plan"), connection.ConfigChanges.Single());
+        Assert.Equal("acceptEdits", vm.SelectedMode!.Value);
     }
 
     [Fact]
@@ -233,7 +287,7 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("image/png", image.MimeType);
         Assert.Equal("AQID", image.Base64Data);
         Assert.Empty(vm.Attachments);
-        Assert.Contains("capture.png", Assert.Single(vm.Messages).Text);
+        Assert.Equal("capture.png", Assert.Single(Assert.Single(vm.Messages).Images).Name);
         Assert.False(vm.SendCommand.CanExecute(null));
     }
 
@@ -260,8 +314,12 @@ public sealed partial class ChatSessionStateTests
     }
 
     [Fact]
-    public async Task TurnEndedNotification_DoesNotPermitSettingsBeforePromptTaskCompletes()
+    public async Task IsBusy_StillPermitsChangingSessionSettings_ViaItsOwnConcurrentAcpRequest()
     {
+        // Model/mode/effort changes are their own ACP RPC call over the same JSON-RPC connection as
+        // an in-flight prompt, which already supports concurrent in-flight requests. Other clients
+        // (the reference VS Code extension, the CLI) let you switch settings mid-turn, so this one
+        // must not force you to interrupt/cancel first just to do the same thing.
         var completion = new TaskCompletionSource<bool>();
         var connection = new RecordingAcpAgentConnection { ConfigOptions = Options(), PromptHandler = _ => completion.Task };
         using var vm = Create(connection);
@@ -269,10 +327,12 @@ public sealed partial class ChatSessionStateTests
         vm.InputText = "pending turn";
         var prompt = vm.SendAsync();
         connection.RaiseSessionUpdate(new SessionUpdate.TurnEnded("end_turn"));
-        await vm.SelectModelAsync(vm.AvailableModels[1]);
+
         Assert.True(vm.IsBusy);
-        Assert.False(vm.CanConfigure);
-        Assert.Empty(connection.ConfigChanges);
+        Assert.True(vm.CanConfigure);
+        await vm.SelectModelAsync(vm.AvailableModels[1]);
+        Assert.Single(connection.ConfigChanges);
+
         completion.SetResult(true);
         await prompt;
         Assert.True(vm.CanConfigure);

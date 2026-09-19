@@ -2,6 +2,8 @@ using ClaudeCode.Contracts;
 using ClaudeCode.Core.ViewModels;
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
@@ -142,5 +144,229 @@ public sealed partial class ChatSessionStateTests
         var ex = Record.Exception(() => vm.Dispose());
 
         Assert.Null(ex);
+    }
+
+    // pending-state-leaks-on-release: losing the connection must resolve every request the user was
+    // still being asked about — an abandoned TaskCompletionSourceSlot never completes its awaiter,
+    // and a form left on screen would answer a connection that no longer exists.
+    [Fact]
+    public async Task Disconnected_ResolvesPendingPermissionAndElicitation_AndClearsTheirUi()
+    {
+        var connection = new RecordingAcpAgentConnection();
+        using var vm = Create(connection);
+        await vm.Initialization;
+
+        var call = new ToolCallUpdate { ToolCallId = "tc-1", Title = "Edit a.cs", Status = ToolCallStatus.Pending };
+        var permission = connection.RaisePermissionRequested(call,
+            [new PermissionOption { OptionId = "allow", Label = "Allow", Outcome = PermissionOutcome.AllowOnce }]);
+        var elicitation = connection.RaiseElicitationRequested("Pick a color",
+            [new ElicitationField("q0", null, null, ElicitationFieldKind.Text, [])]);
+        Assert.NotNull(vm.PendingPermission);
+        Assert.NotNull(vm.PendingElicitation);
+
+        connection.RaiseDisconnected();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            () => permission.Response.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        var answer = await elicitation.Response.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(ElicitationAction.Cancel, answer.Action);
+        Assert.Null(vm.PendingPermission);
+        Assert.Null(vm.PendingElicitation);
+    }
+
+    // poisoned-session-id-after-failed-load: a session/load that fails must not leave the viewmodel
+    // believing it owns a session the agent never loaded.
+    [Fact]
+    public async Task OpenSession_LoadFails_DoesNotAdoptTheSessionTheAgentNeverLoaded()
+    {
+        var connection = new RecordingAcpAgentConnection
+        {
+            LoadSessionHandler = (_, _, _, _) =>
+                Task.FromException<NewSessionResult>(new InvalidOperationException("Session not found")),
+        };
+        using var vm = Create(connection);
+        await vm.Initialization;
+
+        await vm.OpenSessionAsync(new SessionSummary("session-never-loaded", "/workspace", "Older chat", null));
+
+        Assert.Contains("Could not open session", vm.StatusMessage!, StringComparison.Ordinal);
+        // The presented state must roll back with the id: the panel must not be left titled after a
+        // session the agent never loaded while every prompt still goes to the previous one.
+        Assert.Equal("Untitled", vm.SessionTitle);
+
+        // Updates tagged with the session that failed to load must not be adopted as the transcript.
+        connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("ghost text"), "session-never-loaded");
+        Assert.Empty(vm.Messages);
+
+        // The session the agent really has must still drive the transcript, so the user can keep
+        // working (and send prompts) without manually starting a new session.
+        connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("live text"));
+        Assert.Equal("live text", Assert.Single(vm.Messages).Text);
+        vm.InputText = "carry on";
+        await vm.SendAsync();
+        Assert.Single(connection.Prompts);
+    }
+
+    // The rollback puts the user back in the conversation they were in, so everything
+    // ResetTranscriptState destroyed on the way into the load has to come back with it: a pending
+    // Accept/Reject row whose edit is still on disk, the context ring, and the slash catalog.
+    [Fact]
+    public async Task OpenSession_LoadFails_RestoresTheTranscriptItClearedBeforeTheLoad()
+    {
+        using var workspace = new TempWorkspace();
+        var targetPath = workspace.PathUnder("Tracked.cs");
+        File.WriteAllText(targetPath, "original\n");
+        var (vm, connection, _) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+        vm.InputText = "what does this do?";
+        await vm.SendAsync();
+        connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("it does this"));
+        connection.RaiseSessionUpdate(new SessionUpdate.UsageUpdate(12_000, 200_000, null, null));
+        connection.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([new AvailableCommand("review", "Review", "scope")]));
+        Assert.True(await connection.RaiseFileWriteRequested(targetPath, "agent edit\n").Response.Task);
+        var before = vm.Messages.ToList();
+        Assert.Equal(2, before.Count);
+        connection.LoadSessionHandler = (_, _, _, _) =>
+            Task.FromException<NewSessionResult>(new InvalidOperationException("Agent restarted"));
+
+        await vm.OpenSessionAsync(new SessionSummary("session-2", workspace.Root, "Older chat", null));
+
+        Assert.Equal(before, vm.Messages);
+        Assert.Equal("what does this do?", vm.SessionTitle);
+        Assert.Equal(12_000, vm.SessionUsedTokens);
+        Assert.Equal(200_000, vm.ContextWindowSize);
+        Assert.Equal(6, vm.ContextUsagePercent);
+        vm.InputText = "/";
+        Assert.Equal("review", Assert.Single(vm.SlashSuggestions).Name);
+        vm.InputText = string.Empty;
+
+        // The agent's edit is still on disk, so the row that offers to revert it must survive too.
+        var tracked = Assert.Single(vm.ChangedFiles);
+        await tracked.RejectCommand.ExecuteAsync(null);
+        Assert.Equal("original\n", File.ReadAllText(targetPath));
+    }
+
+    // C-D3 (CRITICAL, agent-supplied cwd): SessionSummary.Cwd is copied verbatim out of the agent's
+    // session/list reply and, passed to session/load, becomes the WorkspacePathGuard root of every
+    // VS-control tool for the resumed session. Resuming must use the client's own workspace root.
+    [Fact]
+    public async Task OpenSession_ResumesWithTheClientsWorkspaceRoot_NotTheAgentReportedCwd()
+    {
+        var connection = new RecordingAcpAgentConnection();
+        using var vm = new ChatViewModel(new StubChatSessionServices(
+            new SingleConnectionFactory(connection), new AlwaysSignedInAuthService(), @"C:\trusted\workspace"));
+        await vm.Initialization;
+
+        await vm.OpenSessionAsync(new SessionSummary("session-2", @"C:\", "Hostile", null));
+
+        var loaded = Assert.Single(connection.LoadedSessions);
+        Assert.Equal("session-2", loaded.SessionId);
+        Assert.Equal(@"C:\trusted\workspace", loaded.Cwd);
+    }
+
+    // A prompt accepted while session/new or session/load is still in flight is sent to the *old*
+    // session and then wiped by ResetTranscriptState, so the switch must gate the composer.
+    [Fact]
+    public async Task SessionSwitchInFlight_BlocksTheComposerAndASecondSwitch()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        var pending = new TaskCompletionSource<NewSessionResult>();
+        connection.NewSessionHandler = _ => pending.Task;
+
+        var switching = vm.NewSessionAsync();
+        vm.InputText = "typed while switching";
+        Assert.False(vm.SendCommand.CanExecute(null));
+        Assert.False(vm.NewSessionCommand.CanExecute(null));
+        Assert.False(vm.ShowHistoryCommand.CanExecute(null));
+        await vm.SendAsync();
+        Assert.Empty(connection.Prompts);
+        Assert.Empty(vm.Messages);
+
+        pending.SetResult(new NewSessionResult("session-2", Options()));
+        await switching;
+
+        Assert.Equal("typed while switching", vm.InputText);
+        Assert.True(vm.SendCommand.CanExecute(null));
+        await vm.SendAsync();
+        Assert.Single(connection.Prompts);
+        Assert.Single(vm.Messages);
+    }
+
+    // The previous session's pickers stay populated through a session/load, and _sessionId is
+    // already the incoming id so replayed updates are accepted. Without this gate a model change
+    // or Remote Control toggle mid-replay addresses a session the agent has not finished loading -
+    // and may roll back.
+    [Fact]
+    public async Task SessionLoadInFlight_DisablesSettingsAndRemoteControl()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        var pending = new TaskCompletionSource<NewSessionResult>();
+        connection.LoadSessionHandler = (_, _, _, _) => pending.Task;
+
+        var opening = vm.OpenSessionAsync(new SessionSummary("session-2", "/workspace", "Older chat", null));
+        Assert.False(vm.CanConfigure);
+        Assert.False(vm.ToggleRemoteControlCommand.CanExecute(null));
+        await vm.SelectModelAsync(vm.AvailableModels[1]);
+        Assert.Empty(connection.ConfigChanges);
+
+        pending.SetResult(new NewSessionResult("session-2", Options()));
+        await opening;
+
+        Assert.True(vm.CanConfigure);
+        Assert.True(vm.ToggleRemoteControlCommand.CanExecute(null));
+    }
+
+    // C-D3 for the other session path: session/new is issued on every connect and every New Chat,
+    // and both must carry the client's own workspace root, never anything that came off the wire.
+    [Fact]
+    public async Task NewSession_UsesTheClientsWorkspaceRoot_OnTheInitialConnectAndOnNewChat()
+    {
+        var connection = new RecordingAcpAgentConnection();
+        using var vm = new ChatViewModel(new StubChatSessionServices(
+            new SingleConnectionFactory(connection), new AlwaysSignedInAuthService(), @"C:\trusted\workspace"));
+        await vm.Initialization;
+        Assert.Equal(@"C:\trusted\workspace", Assert.Single(connection.NewSessionCwds));
+
+        connection.NewSessionHandler = _ => Task.FromResult(new NewSessionResult("session-2", []));
+        await vm.NewSessionAsync();
+
+        Assert.Equal(new[] { @"C:\trusted\workspace", @"C:\trusted\workspace" }, connection.NewSessionCwds);
+    }
+
+    // EnsureConnectedAsync creates a session of its own whenever it has to connect, so New Chat
+    // from a disconnected state must adopt that one: a second session/new leaves the first
+    // orphaned on the agent, and with RemoteControlAtStartup the orphan can be the session
+    // published to claude.ai/code - enabled, invisible, and unreachable from a toggle that only
+    // ever addresses the session the UI knows about.
+    [Fact]
+    public async Task NewChat_AfterADisconnect_AdoptsTheSessionTheReconnectCreated_InsteadOfOrphaningIt()
+    {
+        var connection = new RecordingAcpAgentConnection();
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "first prompt";
+        await vm.SendAsync();
+        Assert.NotEmpty(vm.Messages);
+        connection.RaiseDisconnected();
+
+        connection.NewSessionHandler = _ =>
+        {
+            // The reconnect's session/new publishes its catalog before its id is known, exactly as
+            // the initial connect does; adopting the reconnect's session must not discard it.
+            connection.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([new AvailableCommand("review", "Review", "scope")]), "session-reconnected");
+            return Task.FromResult(new NewSessionResult("session-reconnected", []));
+        };
+        await vm.NewSessionAsync();
+
+        // One session/new for the initial connect, one for the reconnect - not three.
+        Assert.Equal(2, connection.NewSessionCwds.Count);
+        Assert.Empty(vm.Messages);
+        Assert.Equal("Untitled", vm.SessionTitle);
+        vm.InputText = "/";
+        Assert.Equal("review", Assert.Single(vm.SlashSuggestions).Name);
     }
 }

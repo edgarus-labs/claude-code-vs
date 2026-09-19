@@ -28,6 +28,11 @@ public static class WorkspacePathGuard
     /// Performs a point-in-time containment check, including existing symlink targets.
     /// This does not authorize later path-based I/O: use <see cref="AcquireFile"/> or
     /// <see cref="AcquireDocument"/> to retain protection through the operation.
+    /// On Windows the reparse resolution addresses a path at or beyond MAX_PATH (260) through the
+    /// <c>\\?\</c> device form, so the answer never depends on whether the leaf exists yet. The
+    /// initial normalization is still host-dependent: on .NET Framework (the shipped Visual Studio
+    /// host) <see cref="Path.GetFullPath(string)"/> throws for a path at or beyond MAX_PATH, so the
+    /// check fails closed and a long workspace path is rejected there rather than resolved.
     /// </summary>
     /// <returns><c>true</c> and the resolved absolute path when containment holds; otherwise <c>false</c>.</returns>
     public static bool TryResolveWithinWorkspace(string? workspaceRoot, string? candidatePath, out string fullPath)
@@ -45,7 +50,14 @@ public static class WorkspacePathGuard
 
         // Reject UNC (\\server\share\...) and device-namespace (\\?\..., \\.\...) forms outright:
         // GetFullPath would happily resolve them, but they never denote a path under a local root.
-        if (nonNullCandidatePath.StartsWith(@"\\", StringComparison.Ordinal))
+        // Win32 accepts '/' as a separator, so "//server/share" and "/\server\share" are the same
+        // UNC form as "\\server\share" and have to be refused identically. On Linux a leading "//"
+        // is an ordinary absolute path, so only the backslash spelling is refused there.
+        if (nonNullCandidatePath.StartsWith(@"\\", StringComparison.Ordinal)
+            || (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+                && nonNullCandidatePath.Length >= 2
+                && IsWindowsSeparator(nonNullCandidatePath[0])
+                && IsWindowsSeparator(nonNullCandidatePath[1])))
         {
             return false;
         }
@@ -123,7 +135,7 @@ public static class WorkspacePathGuard
             // failures and dangling links are not evidence that the path is safe.
             int error = Marshal.GetLastWin32Error();
             bool windows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
-            if ((windows && error != 2 && error != 3)
+            if ((windows && !IsAbsentOnWindows(current, error))
                 || (!windows && (error != 2 || ReadLink(GetUnixPathBytes(current), new byte[1], new UIntPtr(1)).ToInt64() >= 0)))
             {
                 canonical = string.Empty;
@@ -145,6 +157,46 @@ public static class WorkspacePathGuard
         }
     }
 
+    /// <summary>
+    /// Distinguishes a component that does not exist from a dangling reparse point. CreateFileW
+    /// without FILE_FLAG_OPEN_REPARSE_POINT follows the reparse data, so a junction or symlink
+    /// whose target is missing fails with the same ERROR_FILE_NOT_FOUND / ERROR_PATH_NOT_FOUND as
+    /// an absent entry — yet the link itself exists and can be repointed anywhere at any time.
+    /// GetFileAttributesW reports the link's own attributes without following it.
+    /// </summary>
+    private static bool IsAbsentOnWindows(string path, int openError)
+    {
+        if (openError != 2 && openError != 3)
+        {
+            return false;
+        }
+
+        if (GetFileAttributesW(LongPathSafe(path)) != InvalidFileAttributes)
+        {
+            return false;
+        }
+
+        int attributeError = Marshal.GetLastWin32Error();
+        return attributeError == 2 || attributeError == 3;
+    }
+
+    /// <summary>
+    /// Renders a normalized path for the raw Win32 entry points used here and by
+    /// <see cref="WorkspacePathLease"/>. Those bypass the System.IO long-path shim, and without
+    /// the <c>\\?\</c> prefix Win32 normalization rejects a path at or beyond MAX_PATH with
+    /// ERROR_PATH_NOT_FOUND — the very error an absent component reports — unless the host
+    /// happens to have LongPathsEnabled set and the process is longPathAware. Addressing the
+    /// object through the device form removes that ambiguity on every host, so errors 2 and 3
+    /// always prove the component really is missing, absence never has to be assumed, and a path
+    /// the guard resolved can always be pinned and replaced by the lease. UNC candidates are
+    /// refused before they reach here and would need the <c>\\?\UNC\</c> spelling rather than a
+    /// bare prefix, so they are left untouched and keep failing closed.
+    /// </summary>
+    internal static string LongPathSafe(string path) =>
+        path.Length < MaxPath || path.StartsWith(@"\\", StringComparison.Ordinal) ? path : @"\\?\" + path;
+
+    private static bool IsWindowsSeparator(char value) => value == '\\' || value == '/';
+
     private static bool TryGetFinalPath(string path, out string finalPath)
     {
         finalPath = string.Empty;
@@ -165,7 +217,7 @@ public static class WorkspacePathGuard
         }
 
         using SafeFileHandle handle = CreateFileW(
-            path,
+            LongPathSafe(path),
             dwDesiredAccess: 0,
             dwShareMode: FileShareReadWriteDelete,
             lpSecurityAttributes: IntPtr.Zero,
@@ -192,6 +244,8 @@ public static class WorkspacePathGuard
     private const uint FileShareReadWriteDelete = 0x00000001 | 0x00000002 | 0x00000004;
     private const uint OpenExisting = 3;
     private const uint FileFlagBackupSemantics = 0x02000000;
+    private const int MaxPath = 260;
+    private const uint InvalidFileAttributes = 0xFFFFFFFF;
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, ExactSpelling = true)]
     private static extern SafeFileHandle CreateFileW(
@@ -209,6 +263,9 @@ public static class WorkspacePathGuard
         char[] lpszFilePath,
         uint cchFilePath,
         uint dwFlags);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, ExactSpelling = true)]
+    private static extern uint GetFileAttributesW(string lpFileName);
 
     internal static byte[] GetUnixPathBytes(string path)
     {

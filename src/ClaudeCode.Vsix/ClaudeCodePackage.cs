@@ -1,12 +1,14 @@
 using ClaudeCode.Vsix.Auth;
 using ClaudeCode.Vsix.Connections;
 using ClaudeCode.Vsix.Options;
+using ClaudeCode.Vsix.Usage;
 using ClaudeCode.Vsix.VsControl;
 using Community.VisualStudio.Toolkit;
 using Microsoft.VisualStudio;
 using Microsoft.VisualStudio.Shell;
 using System;
 using System.Diagnostics.CodeAnalysis;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -18,6 +20,7 @@ namespace ClaudeCode.Vsix;
 [InstalledProductRegistration("Claude Code for Visual Studio", "Chat with Claude Code from a native sidebar tool window, backed by the Agent Client Protocol.", GeneratedProductVersion.Value)]
 [ProvideMenuResource("Menus.ctmenu", 1)]
 [ProvideToolWindow(typeof(ChatToolWindowPane), Style = VsDockStyle.Tabbed, Window = Microsoft.VisualStudio.Shell.Interop.ToolWindowGuids80.SolutionExplorer)]
+[ProvideToolWindow(typeof(PlanToolWindowPane), Style = VsDockStyle.MDI, Transient = true)]
 [ProvideOptionPage(typeof(ClaudeCodeOptionsPage), "Claude Code", "General", 0, 0, true)]
 [Guid(PackageGuids.ClaudeCodePackageString)]
 [SuppressMessage("Design", "CA1001:Types that own disposable fields should be disposable",
@@ -41,6 +44,10 @@ public sealed class ClaudeCodePackage : AsyncPackage
         await editorDocumentTracker.InitializeAsync(cancellationToken);
 
         _authService = new AcpAuthService(() => GetOptions().CliExecutablePath);
+        string usageScriptPath = Path.Combine(
+            Path.GetDirectoryName(typeof(ClaudeCodePackage).Assembly.Location) ?? string.Empty,
+            "Resources", "Scripts", "fetch-usage.cjs");
+        var usageService = new ClaudeUsageService(usageScriptPath);
         _vsControlSessionRegistry = new VsControlSessionRegistry();
 
         // Seed the workspace-root cache once on the UI thread, then keep it current via solution
@@ -55,12 +62,35 @@ public sealed class ClaudeCodePackage : AsyncPackage
 
         ClaudeCodeServices.ConnectionFactory = connectionFactory;
         ClaudeCodeServices.AuthService = _authService;
+        ClaudeCodeServices.UsageService = usageService;
         ClaudeCodeServices.GetWorkspaceRoot = GetWorkspaceRoot;
 
         ClaudeCode.Core.Views.ChatPanelView.ServicesFactory =
-            () => new VsChatSessionServices(ClaudeCodeServices.ConnectionFactory!, ClaudeCodeServices.AuthService!, ClaudeCodeServices.GetWorkspaceRoot!, editorDocumentTracker);
+            () => new VsChatSessionServices(ClaudeCodeServices.ConnectionFactory!, ClaudeCodeServices.AuthService!, ClaudeCodeServices.UsageService!, ClaudeCodeServices.GetWorkspaceRoot!, editorDocumentTracker,
+                ReadRemoteControlAtStartup);
 
         await this.RegisterCommandsAsync();
+    }
+
+    /// <summary>Opens (or activates) the "Implementation Plan" document tab showing <paramref name="plan"/>.</summary>
+    internal async Task ShowPlanAsync(ClaudeCode.Core.ViewModels.PlanReviewViewModel plan)
+    {
+        var window = await FindToolWindowAsync(typeof(PlanToolWindowPane), 0, create: true, DisposalToken);
+        await JoinableTaskFactory.SwitchToMainThreadAsync(DisposalToken);
+        if (window is PlanToolWindowPane pane)
+        {
+            pane.ShowPlan(plan);
+            if (window.Frame is Microsoft.VisualStudio.Shell.Interop.IVsWindowFrame frame)
+            {
+                ErrorHandler.ThrowOnFailure(frame.Show());
+            }
+        }
+        else
+        {
+            // FindToolWindowAsync returns null rather than throwing when creation fails, so without
+            // this the plan silently never appears and the caller's try/catch logs nothing.
+            ActivityLog.TryLogError("Claude Code", "The implementation plan window could not be created.");
+        }
     }
 
     protected override void Dispose(bool disposing)
@@ -88,6 +118,7 @@ public sealed class ClaudeCodePackage : AsyncPackage
 
                 ClaudeCodeServices.ConnectionFactory = null;
                 ClaudeCodeServices.AuthService = null;
+                ClaudeCodeServices.UsageService = null;
                 ClaudeCodeServices.GetWorkspaceRoot = null;
                 ClaudeCode.Core.Views.ChatPanelView.ServicesFactory = null;
             }
@@ -96,11 +127,31 @@ public sealed class ClaudeCodePackage : AsyncPackage
         base.Dispose(disposing);
     }
 
-    private ClaudeCodeOptionsPage GetOptions()
+    internal ClaudeCodeOptionsPage GetOptions()
     {
         ThreadHelper.ThrowIfNotOnUIThread();
 
         return (ClaudeCodeOptionsPage)GetDialogPage(typeof(ClaudeCodeOptionsPage));
+    }
+
+    /// <summary>Reads the option on the UI thread. Once IVsPackage.Close has run, GetDialogPage
+    /// throws COMException (E_UNEXPECTED) instead of answering; a session that finishes connecting
+    /// during shutdown must not be torn down over a setting it can no longer read, so that reads as
+    /// "off".</summary>
+    private bool ReadRemoteControlAtStartup()
+    {
+        try
+        {
+            return JoinableTaskFactory.Run(async () =>
+            {
+                await JoinableTaskFactory.SwitchToMainThreadAsync();
+                return GetOptions().RemoteControlAtStartup;
+            });
+        }
+        catch (COMException)
+        {
+            return false;
+        }
     }
 
     private string? GetWorkspaceRoot() => _cachedWorkspaceRoot;

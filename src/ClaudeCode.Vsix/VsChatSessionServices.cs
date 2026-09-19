@@ -14,23 +14,44 @@ internal sealed class VsChatSessionServices : IChatSessionServices
 {
     private readonly Func<string?> _getWorkspaceRoot;
     private readonly ActiveEditorDocumentTracker _editorDocumentTracker;
+    private readonly Func<bool> _remoteControlAtStartup;
 
-    public VsChatSessionServices(IAcpAgentConnectionFactory connectionFactory, IAcpAuthService authService, Func<string?> getWorkspaceRoot, ActiveEditorDocumentTracker editorDocumentTracker)
+    public VsChatSessionServices(IAcpAgentConnectionFactory connectionFactory, IAcpAuthService authService, IUsageService usageService, Func<string?> getWorkspaceRoot, ActiveEditorDocumentTracker editorDocumentTracker, Func<bool> remoteControlAtStartup)
     {
         ConnectionFactory = connectionFactory ?? throw new ArgumentNullException(nameof(connectionFactory));
         AuthService = authService ?? throw new ArgumentNullException(nameof(authService));
+        UsageService = usageService ?? throw new ArgumentNullException(nameof(usageService));
         _getWorkspaceRoot = getWorkspaceRoot ?? throw new ArgumentNullException(nameof(getWorkspaceRoot));
         _editorDocumentTracker = editorDocumentTracker ?? throw new ArgumentNullException(nameof(editorDocumentTracker));
+        _remoteControlAtStartup = remoteControlAtStartup ?? throw new ArgumentNullException(nameof(remoteControlAtStartup));
     }
 
     public IAcpAgentConnectionFactory ConnectionFactory { get; }
 
     public IAcpAuthService AuthService { get; }
 
+    public IUsageService UsageService { get; }
+
     public string? WorkspaceRoot => _getWorkspaceRoot();
+
+    public bool HasActiveDocument => _editorDocumentTracker.HasActiveDocument;
+
+    public bool RemoteControlAtStartup => _remoteControlAtStartup();
+
+    public event EventHandler? ActiveDocumentChanged
+    {
+        add => _editorDocumentTracker.ActiveDocumentChanged += value;
+        remove => _editorDocumentTracker.ActiveDocumentChanged -= value;
+    }
 
     public Task<EditorDocumentSnapshot?> CaptureActiveDocumentAsync(CancellationToken cancellationToken) =>
         _editorDocumentTracker.CaptureActiveDocumentAsync(cancellationToken);
+
+    public async Task OpenDocumentAsync(string path, CancellationToken cancellationToken)
+    {
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
+        await VS.Documents.OpenAsync(path);
+    }
 
     public async Task<string?> TryReadOpenDocumentAsync(string path, CancellationToken cancellationToken)
     {

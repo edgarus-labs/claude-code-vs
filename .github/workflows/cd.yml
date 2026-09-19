@@ -122,6 +122,9 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: "v${{ needs.build.outputs.version }}"
+          # Published as a draft: the tag build is the candidate, a human reviews the notes and the
+          # attached VSIX/checksum and presses Publish.
+          draft: true
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |

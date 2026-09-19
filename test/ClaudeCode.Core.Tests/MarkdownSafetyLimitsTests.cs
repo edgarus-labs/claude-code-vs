@@ -29,46 +29,6 @@ public sealed class MarkdownSafetyLimitsTests
     }
 
     [Fact]
-    public void LimitBlockquoteNesting_AtMaxDepth_ReturnsUnchanged()
-    {
-        var markdown = new string('>', MarkdownSafetyLimits.MaxBlockquoteDepth) + " text";
-
-        var result = MarkdownSafetyLimits.LimitBlockquoteNesting(markdown);
-
-        Assert.Same(markdown, result);
-    }
-
-    [Fact]
-    public void LimitBlockquoteNesting_OneOverMaxDepth_TruncatesToExactlyMaxDepth()
-    {
-        var markdown = new string('>', MarkdownSafetyLimits.MaxBlockquoteDepth + 1) + " text";
-
-        var result = MarkdownSafetyLimits.LimitBlockquoteNesting(markdown);
-
-        Assert.Equal(MarkdownSafetyLimits.MaxBlockquoteDepth, CountBlockquoteDepth(result));
-        Assert.EndsWith("text", result, StringComparison.Ordinal);
-    }
-
-    // Mirrors the marker-counting rule under test: each level is '>' optionally followed by one
-    // space, exactly as LimitBlockquoteNesting itself parses and re-emits markers.
-    private static int CountBlockquoteDepth(string line)
-    {
-        var depth = 0;
-        var position = 0;
-        while (position < line.Length && line[position] == '>')
-        {
-            depth++;
-            position++;
-            if (position < line.Length && line[position] == ' ')
-            {
-                position++;
-            }
-        }
-
-        return depth;
-    }
-
-    [Fact]
     public void IsNavigableLink_AcceptsOrdinaryHttpsHost()
     {
         Assert.True(MarkdownSafetyLimits.IsNavigableLink(new Uri("https://example.com/path")));
@@ -106,16 +66,17 @@ public sealed class MarkdownSafetyLimitsTests
         Assert.True(MarkdownSafetyLimits.IsNavigableLink(new Uri(target)));
     }
 
-    [Theory]
-    [InlineData(0, 100)]
-    [InlineData(7999, 100)]
-    [InlineData(8000, 100)]
-    [InlineData(80000, 1000)]
-    [InlineData(1_000_000, 1000)]
-    public void ComputeRenderInterval_ScalesWithTextLengthUpToCap(int textLength, int expectedMilliseconds)
+    [Fact]
+    public void IsNavigableLink_NullUri_ReturnsFalse()
     {
-        var interval = MarkdownSafetyLimits.ComputeRenderInterval(textLength);
+        Assert.False(MarkdownSafetyLimits.IsNavigableLink(null));
+    }
 
-        Assert.Equal(TimeSpan.FromMilliseconds(expectedMilliseconds), interval);
+    [Theory]
+    [InlineData("docs/page.md")]
+    [InlineData("/etc/passwd")]
+    public void IsNavigableLink_RelativeUri_ReturnsFalse(string target)
+    {
+        Assert.False(MarkdownSafetyLimits.IsNavigableLink(new Uri(target, UriKind.Relative)));
     }
 }

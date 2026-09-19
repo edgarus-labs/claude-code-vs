@@ -1,11 +1,13 @@
+using ClaudeCode.Core.ViewModels;
 using ClaudeCode.Core.Views;
+using Microsoft.VisualStudio;
 using Microsoft.VisualStudio.Imaging.Interop;
 using Microsoft.VisualStudio.PlatformUI;
 using Microsoft.VisualStudio.Shell;
+using Microsoft.VisualStudio.Shell.Interop;
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
-using System.Windows.Media;
 using System.Windows.Media.Imaging;
 
 namespace ClaudeCode.Vsix;
@@ -14,10 +16,13 @@ namespace ClaudeCode.Vsix;
 public sealed class ChatToolWindowPane : ToolWindowPane
 {
     private readonly ChatPanelView _view;
+    private readonly VsAttentionNotifier _notifier;
+    private readonly Microsoft.VisualStudio.Text.Classification.IClassificationFormatMap? _editorFormatMap;
     private bool _disposed;
 
     public ChatToolWindowPane() : base(null)
     {
+        ThreadHelper.ThrowIfNotOnUIThread();
         Caption = "Claude Code";
         // TODO(imagemanifest-missing, Low/cosmetic): this GUID/ID moniker is only auto-registered with
         // the VS image service when used from the VSCT-compiled command table (see the OpenChatWindow
@@ -30,8 +35,46 @@ public sealed class ChatToolWindowPane : ToolWindowPane
         _view = new ChatPanelView();
         ApplyTheme();
         LoadBrandImage();
-        VSColorTheme.ThemeChanged += OnThemeChanged;
+        _notifier = new VsAttentionNotifier(ActivateChatWindow);
+        _view.PlanReviewRequested += OnPlanReviewRequested;
+        _view.AttentionRequested += OnAttentionRequested;
         Content = _view;
+        _editorFormatMap = VsChatTheme.TryGetEditorFormatMap();
+        // Subscribe to the long-lived publishers last: anything that throws after this point
+        // aborts the constructor, so Dispose(bool) never runs and VSColorTheme (process-wide static)
+        // or the editor's format map (MEF singleton) would root this pane - and through it the view,
+        // its view model and its WebView2 - for the life of devenv.
+        VSColorTheme.ThemeChanged += OnThemeChanged;
+        // Fonts and Colors edits change the syntax colors without a VS theme change.
+        if (_editorFormatMap is not null)
+        {
+            _editorFormatMap.ClassificationFormatMappingChanged += OnClassificationFormatMappingChanged;
+        }
+    }
+
+    /// <summary>Brings this tool window to the front; passed to the notifier as its click action.</summary>
+    private void ActivateChatWindow()
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        if (_disposed || Frame is not IVsWindowFrame frame) return;
+        ErrorHandler.ThrowOnFailure(frame.Show());
+    }
+
+    private void OnAttentionRequested(object? sender, ChatAttentionEventArgs e)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread(); // the view model raises this on its UI SynchronizationContext
+        if (_disposed) return;
+        try
+        {
+            // GetOptions() goes through GetDialogPage, which can throw once the package is being
+            // torn down; this handler runs in a dispatcher callback, so an escape kills devenv.
+            if (Package is not ClaudeCodePackage package || !package.GetOptions().NotifyWhenInBackground) return;
+            _notifier.Notify(e.Title, e.Message);
+        }
+        catch (Exception exception)
+        {
+            ActivityLog.TryLogError("Claude Code", "Could not show the notification: " + exception);
+        }
     }
 
     private void LoadBrandImage()
@@ -52,7 +95,13 @@ public sealed class ChatToolWindowPane : ToolWindowPane
         _view.Resources["ChatBrandImage"] = image;
     }
 
-    private void OnThemeChanged(ThemeChangedEventArgs e)
+    private void OnThemeChanged(ThemeChangedEventArgs e) => RefreshTheme();
+
+    private void OnClassificationFormatMappingChanged(object sender, EventArgs e) => RefreshTheme();
+
+    /// <summary>Re-applies the theme from an event whose thread is not guaranteed; the hop is
+    /// blocking on purpose so the publisher sees a synchronous handler.</summary>
+    private void RefreshTheme()
     {
         if (_disposed)
         {
@@ -61,11 +110,7 @@ public sealed class ChatToolWindowPane : ToolWindowPane
 
         try
         {
-            ThreadHelper.JoinableTaskFactory.Run(async () =>
-            {
-                await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
-                ApplyTheme();
-            });
+            ThreadHelper.JoinableTaskFactory.Run(RefreshThemeAsync);
         }
         catch (Exception exception)
         {
@@ -73,41 +118,33 @@ public sealed class ChatToolWindowPane : ToolWindowPane
         }
     }
 
+    private async System.Threading.Tasks.Task RefreshThemeAsync()
+    {
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+        ApplyTheme();
+    }
+
     private void ApplyTheme()
     {
+        ThreadHelper.ThrowIfNotOnUIThread();
         if (_disposed)
         {
             return;
         }
 
-        // Direct entries on the view override its merged standalone fallback dictionary.
-        SetBrush("ChatBackgroundBrush", EnvironmentColors.ToolWindowBackgroundColorKey);
-        SetBrush("ChatForegroundBrush", EnvironmentColors.ToolWindowTextColorKey);
-        SetBrush("ChatSubtleForegroundBrush", EnvironmentColors.SystemGrayTextColorKey);
-        SetBrush("ChatBorderBrush", EnvironmentColors.ComboBoxBorderColorKey);
-        SetBrush("ChatInputBackgroundBrush", EnvironmentColors.ComboBoxBackgroundColorKey);
-        SetBrush("ChatPopupBackgroundBrush", EnvironmentColors.CommandBarMenuBackgroundGradientBeginColorKey);
-        SetBrush("ChatHoverBrush", ThemedDialogColors.ListItemMouseOverColorKey);
-        SetBrush("ChatHoverForegroundBrush", ThemedDialogColors.ListItemMouseOverTextColorKey);
-        SetBrush("ChatSelectionBrush", ThemedDialogColors.SelectedItemActiveColorKey);
-        SetBrush("ChatSelectionForegroundBrush", ThemedDialogColors.SelectedItemActiveTextColorKey);
-        // Claude brand accent/focus colors are owned by Core, not the current VS accent.
-        SetBrush("ChatUserBubbleBackgroundBrush", ThemedDialogColors.SelectedItemInactiveColorKey);
-        SetBrush("ChatAssistantBubbleBackgroundBrush", EnvironmentColors.ToolWindowBackgroundColorKey);
-        SetBrush("ChatDiffAddedBackgroundBrush", ThemedDialogColors.SelectedItemInactiveColorKey);
-        SetBrush("ChatDiffAddedForegroundBrush", ThemedDialogColors.SelectedItemInactiveTextColorKey);
-        SetBrush("ChatDiffRemovedBackgroundBrush", EnvironmentColors.ToolWindowBackgroundColorKey);
-        SetBrush("ChatDiffRemovedForegroundBrush", EnvironmentColors.ToolWindowValidationErrorTextColorKey);
-        SetBrush("ChatErrorForegroundBrush", EnvironmentColors.ToolWindowValidationErrorTextColorKey);
-        SetBrush("ChatWarningBackgroundBrush", ThemedDialogColors.PromotionBoxBackgroundColorKey);
+        VsChatTheme.Apply(_view);
+        // The transcript's WebView2 page can't see WPF's DynamicResource updates above on its own.
+        _view.RefreshTranscriptTheme();
     }
 
-    private void SetBrush(string key, ThemeResourceKey themeKey)
+    private void OnPlanReviewRequested(object? sender, PlanReviewViewModel plan)
     {
-        var color = VSColorTheme.GetThemedColor(themeKey);
-        var brush = new SolidColorBrush(Color.FromArgb(color.A, color.R, color.G, color.B));
-        brush.Freeze();
-        _view.Resources[key] = brush;
+        if (_disposed || Package is not ClaudeCodePackage package) return;
+        package.JoinableTaskFactory.RunAsync(async () =>
+        {
+            try { await package.ShowPlanAsync(plan); }
+            catch (Exception exception) { ActivityLog.TryLogError("Claude Code", "Could not open the plan window: " + exception); }
+        }).FileAndForget("claudecode/showplan");
     }
 
     protected override void Dispose(bool disposing)
@@ -116,6 +153,14 @@ public sealed class ChatToolWindowPane : ToolWindowPane
         {
             _disposed = true;
             VSColorTheme.ThemeChanged -= OnThemeChanged;
+            if (_editorFormatMap is not null)
+            {
+                _editorFormatMap.ClassificationFormatMappingChanged -= OnClassificationFormatMappingChanged;
+            }
+
+            _view.PlanReviewRequested -= OnPlanReviewRequested;
+            _view.AttentionRequested -= OnAttentionRequested;
+            _notifier.Dispose();
             _view.Dispose();
         }
 

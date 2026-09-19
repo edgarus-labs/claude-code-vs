@@ -95,12 +95,20 @@
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageReference Include="EnvDTE" Version="17.13.40008" />
     <PackageReference Include="EnvDTE80" Version="17.13.40008" />
+    <!-- StackFrame2 (file/line of debugger stack frames) for the VS control debugger tools. -->
+    <PackageReference Include="EnvDTE90a" Version="17.13.40008" />
     <PackageReference Include="Microsoft.VisualStudio.Text.UI" Version="17.13.226" />
     <PackageReference Include="Microsoft.VisualStudio.Text.Logic" Version="17.13.226" />
   </ItemGroup>
 
   <ItemGroup>
     <Reference Include="System.Design" />
+    <Reference Include="System.Windows.Forms" />
+    <!-- Debugged-app UI automation and window capture (VsControlPipeServer.AppUi). -->
+    <Reference Include="System.Drawing" />
+    <Reference Include="UIAutomationClient" />
+    <Reference Include="UIAutomationTypes" />
+    <Reference Include="WindowsBase" />
     <Reference Include="System.Security" />
   </ItemGroup>
 
@@ -183,6 +191,28 @@
     <Content Include="LICENSE.txt">
       <IncludeInVSIX>true</IncludeInVSIX>
       <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </Content>
+    <!-- Spawned as its own subprocess by ClaudeUsageService (see Usage\ClaudeUsageService.cs); must
+         sit beside the built assembly both during F5 debugging and once installed from the .vsix. -->
+    <Content Include="Resources\Scripts\fetch-usage.cjs">
+      <IncludeInVSIX>true</IncludeInVSIX>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <!-- Launcher around the ACP adapter that adds the Remote Control extension request
+         (see ClaudeCode.Acp.AcpLauncherWrap.Wrap, invoked from Connections\ClaudeCodeConnectionFactory). -->
+    <Content Include="Resources\Scripts\claude-acp-vs.mjs">
+      <IncludeInVSIX>true</IncludeInVSIX>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <!-- ClaudeCode.Core's transcript WebView2 page (Resources\Transcript\index.html and friends).
+         ClaudeCode.Core.csproj carries the same Content group for F5/local builds; VSIX packaging
+         only picks up the startup project's own Content items, so it must be repeated here too,
+         with a Link that reproduces the same relative path in both places ChatPanelView.xaml.cs
+         resolves it from (this assembly's own directory). -->
+    <Content Include="..\ClaudeCode.Core\Resources\Transcript\**\*.*">
+      <Link>Resources\Transcript\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <IncludeInVSIX>true</IncludeInVSIX>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
 

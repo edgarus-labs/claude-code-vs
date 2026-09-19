@@ -1,5 +1,6 @@
 using ClaudeCode.Contracts;
 using System;
+using System.Buffers.Text;
 using System.IO;
 using System.IO.Pipes;
 using System.Linq;
@@ -30,6 +31,58 @@ public sealed class McpServerTests
         return Assert.IsType<JsonObject>(JsonNode.Parse(responseLine));
     }
 
+    private static async Task<JsonObject[]> RunRequestLinesAsync(VsControlPipeClient pipeClient, params string[] requestLines)
+    {
+        using var input = new StringReader(string.Join("\n", requestLines) + "\n");
+        using var output = new StringWriter { NewLine = "\n" };
+        var server = new McpServer(pipeClient, input, output);
+
+        await server.RunAsync(CancellationToken.None);
+
+        return output.ToString()
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => Assert.IsType<JsonObject>(JsonNode.Parse(line)))
+            .ToArray();
+    }
+
+    [Fact]
+    public async Task RequestLineWithDuplicatePropertyNames_IsDroppedLikeAnyMalformedLine_AndTheSidecarKeepsServing()
+    {
+        // JsonObject throws ArgumentException lazily, on the first lookup, for a payload with duplicate
+        // property names. The stdin peer is the Claude Code CLI, but a line it cannot be answered for
+        // (its `id` is the ambiguous member here) must be dropped exactly like unparsable JSON is -
+        // never let out of RunAsync, where it would take the whole sidecar down.
+        await using var pipeClient = new VsControlPipeClient($"unused-{Guid.NewGuid():N}", handshakeToken: "token");
+
+        JsonObject[] responses = await RunRequestLinesAsync(
+            pipeClient,
+            """{"jsonrpc":"2.0","id":1,"id":2,"method":"ping"}""",
+            """{"jsonrpc":"2.0","id":3,"method":"ping"}""");
+
+        var response = Assert.Single(responses);
+        Assert.Equal(3, response["id"]!.GetValue<int>());
+        Assert.NotNull(response["result"]);
+    }
+
+    [Fact]
+    public async Task ToolsCall_WithDuplicatePropertyNamesInsideParams_AnswersAParseError_AndTheSidecarKeepsServing()
+    {
+        // The root object is unambiguous here, so the request can be answered: a JSON-RPC parse error
+        // carrying the caller's id, followed by normal service for the next line.
+        await using var pipeClient = new VsControlPipeClient($"unused-{Guid.NewGuid():N}", handshakeToken: "token");
+
+        JsonObject[] responses = await RunRequestLinesAsync(
+            pipeClient,
+            """{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"getSolutionInfo","name":"openDocument"}}""",
+            """{"jsonrpc":"2.0","id":6,"method":"ping"}""");
+
+        Assert.Equal(2, responses.Length);
+        Assert.Equal(5, responses[0]["id"]!.GetValue<int>());
+        Assert.Equal(-32700, responses[0]["error"]!["code"]!.GetValue<int>());
+        Assert.Equal(6, responses[1]["id"]!.GetValue<int>());
+        Assert.NotNull(responses[1]["result"]);
+    }
+
     [Fact]
     public async Task ToolsList_ReturnsOneToolPerVsControlMethod_WithDescriptionAndSchema()
     {
@@ -55,6 +108,27 @@ public sealed class McpServerTests
             Assert.Equal("object", schema["type"]!.GetValue<string>());
             Assert.IsType<JsonObject>(schema["properties"]);
         }
+    }
+
+    [Fact]
+    public async Task ToolsList_AdvertisesRemoveBreakpoint_AsTheOneToolThatRejectsUnknownParameters()
+    {
+        // Sending removeBreakpoint with neither path nor line is the documented "delete every
+        // breakpoint in the solution" form, and breakpoints the user set by hand cannot be restored.
+        // So a model that spells the parameter `file` or `filePath` must be rejected, not silently
+        // promoted to the destructive form - which is what an open schema would do.
+        await using var pipeClient = new VsControlPipeClient($"unused-{Guid.NewGuid():N}", handshakeToken: "token");
+
+        JsonObject response = await RunSingleRequestAsync(pipeClient, """{"jsonrpc":"2.0","id":1,"method":"tools/list"}""");
+
+        var tools = Assert.IsType<JsonArray>(response["result"]!["tools"]);
+        var strict = tools
+            .Select(t => Assert.IsType<JsonObject>(t))
+            .Where(t => t["inputSchema"]!["additionalProperties"]!.GetValue<bool>() == false)
+            .Select(t => t["name"]!.GetValue<string>())
+            .ToList();
+
+        Assert.Equal(["removeBreakpoint"], strict);
     }
 
     [Fact]
@@ -224,6 +298,173 @@ public sealed class McpServerTests
         Assert.DoesNotContain(opening, body);
         Assert.DoesNotContain(closing, body);
         Assert.Contains("forged instructions", body);
+    }
+
+    private static async Task<JsonObject> RunToolCallAsync(string resultJson, string toolName = "captureWindow")
+    {
+        string pipeName = $"vscontrol-image-{Guid.NewGuid():N}";
+        using var pipe = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+        Task serve = Task.Run(async () =>
+        {
+            await pipe.WaitForConnectionAsync();
+            using var reader = new StreamReader(pipe, new UTF8Encoding(false), false, 1024, leaveOpen: true);
+            using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 1024, leaveOpen: true) { AutoFlush = true };
+            _ = await reader.ReadLineAsync();
+            var request = JsonSerializer.Deserialize<VsControlRequest>((await reader.ReadLineAsync())!, _wireOptions)!;
+            await writer.WriteLineAsync(JsonSerializer.Serialize(new VsControlResponse { Id = request.Id, ResultJson = resultJson }, _wireOptions));
+        });
+        await using var client = new VsControlPipeClient(pipeName, handshakeToken: "token");
+
+        JsonObject response = await RunSingleRequestAsync(client,
+            """{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"TOOL","arguments":{"hwnd":1234}}}""".Replace("TOOL", toolName));
+        await serve;
+
+        return Assert.IsType<JsonObject>(response["result"]);
+    }
+
+    [Fact]
+    public async Task ToolsCall_ResultWithoutAnImage_IsForwardedVerbatim_EvenWhenNestedDeeperThanJsonNodeParses()
+    {
+        // Every non-captureWindow result reaches the model exactly as the host wrote it - no
+        // re-serialization, no normalization - and getWindowElements trees requested with a large
+        // maxDepth nest deeper than JsonNode.Parse's 64-level default. Such a result must still be
+        // forwarded untouched, and finding out it carries no image must not cost a parse attempt.
+        const int depth = 80;
+        string tree = string.Concat(Enumerable.Repeat("{ \"children\": [", depth)) + "{ }" + string.Concat(Enumerable.Repeat("] }", depth));
+        string resultJson = "{ \"hwnd\": 1234, \"root\": " + tree + ", \"truncated\": false }";
+
+        JsonObject result = await RunToolCallAsync(resultJson, toolName: "getWindowElements");
+
+        var content = Assert.IsType<JsonArray>(result["content"]);
+        var text = Assert.IsType<JsonObject>(Assert.Single(content));
+        Assert.Contains("\n" + resultJson + "\n", text["text"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task ToolsCall_ResultWithImage_EmitsText_AnUntrustedImageLabel_AndTheImageBlock()
+    {
+        const string png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+        JsonObject result = await RunToolCallAsync(
+            """{"hwnd":1234,"width":1,"height":1,"_image":{"mimeType":"image/png","data":"PNG"}}""".Replace("PNG", png));
+
+        Assert.False(result["isError"]!.GetValue<bool>());
+        var content = Assert.IsType<JsonArray>(result["content"]);
+        Assert.Equal(3, content.Count);
+
+        var text = Assert.IsType<JsonObject>(content[0]);
+        Assert.Equal("text", text["type"]!.GetValue<string>());
+        string body = text["text"]!.GetValue<string>();
+        Assert.Contains("\"hwnd\":1234", body);
+        Assert.DoesNotContain(png, body); // the base64 payload goes in the image block, not into the model's text
+
+        // A screenshot of a workspace-built app is exactly as untrusted as the text, and the text
+        // block's delimiters cannot enclose a sibling block, so the label is its own block right
+        // before the picture.
+        var label = Assert.IsType<JsonObject>(content[1]);
+        Assert.Equal("text", label["type"]!.GetValue<string>());
+        Assert.Contains("untrusted", label["text"]!.GetValue<string>(), StringComparison.OrdinalIgnoreCase);
+
+        var image = Assert.IsType<JsonObject>(content[2]);
+        Assert.Equal("image", image["type"]!.GetValue<string>());
+        Assert.Equal("image/png", image["mimeType"]!.GetValue<string>());
+        Assert.Equal(png, image["data"]!.GetValue<string>());
+    }
+
+    [Theory]
+    [InlineData("""{"hwnd":1234,"captured":true,"_image":{"mimeType":"image/png","data":1234}}""")] // a JSON value of the wrong primitive type
+    [InlineData("""{"hwnd":1234,"captured":true,"_image":{"mimeType":["image/png"],"data":["abc"]}}""")] // not a JSON value at all
+    [InlineData("""{"hwnd":1234,"captured":true,"_image":{}}""")] // neither member present
+    [InlineData("""{"hwnd":1234,"captured":true,"_image":"not-an-object"}""")] // _image is not an object
+    [InlineData("""{"hwnd":1234,"captured":true,"_image":{"mimeType":"image/svg+xml","data":"PHN2Zz48L3N2Zz4="}}""")] // media type off the allow-list
+    [InlineData("""{"hwnd":1234,"captured":true,"_image":{"mimeType":"image/png","data":"@@not-base64@@"}}""")] // data is not base64, so no MCP client could decode the block
+    public async Task ToolsCall_ResultWithUnusableImagePayload_ReturnsTextThatSaysTheCaptureDidNotArrive(string resultJson)
+    {
+        JsonObject result = await RunToolCallAsync(resultJson);
+
+        Assert.False(result["isError"]!.GetValue<bool>());
+        var content = Assert.IsType<JsonArray>(result["content"]);
+        var text = Assert.IsType<JsonObject>(Assert.Single(content));
+        Assert.Equal("text", text["type"]!.GetValue<string>());
+        string body = text["text"]!.GetValue<string>();
+        Assert.Contains("\"hwnd\":1234", body);
+
+        // The host said captured:true. Forwarding that with no picture and no marker leaves the model
+        // retrying captureWindow forever, so the sidecar adds its own key. It must NOT rewrite
+        // `captured`: that flag plus one of the host's eight reasons means "the host declined to read
+        // those pixels", a different failure with a different remedy.
+        Assert.Contains("\"attachmentDropped\":true", body);
+        Assert.Contains("\"captured\":true", body);
+        Assert.DoesNotContain("\"captured\":false", body);
+    }
+
+    // Two failures must stay distinguishable on the wire: a host refusal (captured:false with one of
+    // the eight host reasons, carrying no width/height/scale) and a dropped attachment (the capture
+    // worked, this process could not forward it). Their remedies are opposite — change the window's
+    // state versus ask for a smaller window — and the dimensions are precisely what tells the agent
+    // the window was too large to encode, so they must survive.
+    [Fact]
+    public async Task ToolsCall_WhenTheAttachmentIsDropped_KeepsTheCaptureResultAndSaysWhyNoPictureArrived()
+    {
+        JsonObject result = await RunToolCallAsync(
+            """{"hwnd":1234,"captured":true,"width":3840,"height":2160,"scale":1,"_image":{"mimeType":"image/gif","data":"R0lGODlhAQABAAAAACw="}}""");
+
+        var content = Assert.IsType<JsonArray>(result["content"]);
+        string body = Assert.IsType<JsonObject>(content[0])["text"]!.GetValue<string>();
+
+        Assert.Contains("\"attachmentDropped\":true", body);
+        Assert.Contains("\"attachmentDropReason\":\"unsupportedMediaType\"", body);
+        Assert.Contains("\"captured\":true", body);
+        Assert.Contains("\"width\":3840", body);
+        Assert.Contains("\"height\":2160", body);
+    }
+
+    [Theory]
+    [InlineData(0, true)]
+    [InlineData(1, false)]
+    public async Task ToolsCall_ImagePayload_IsForwardedUpToTheEncodedPngCapAndNotOneCharacterPast(int overCap, bool expectImage)
+    {
+        // The attachment is the one payload exempt from the 256 KiB text cap, so it carries its own
+        // ceiling: the base64 length the VS host's 4 MiB encoded-PNG cap inflates to. Derive that
+        // length from the BCL rather than restating the production expression, so an off-by-one in the
+        // ceiling arithmetic shows up here instead of silently moving the boundary.
+        int cap = Base64.GetMaxEncodedToUtf8Length(4 * 1024 * 1024);
+        string data = new('A', cap + overCap);
+
+        JsonObject result = await RunToolCallAsync(
+            "{\"hwnd\":1234,\"captured\":true,\"_image\":{\"mimeType\":\"image/png\",\"data\":\"" + data + "\"}}");
+
+        var content = Assert.IsType<JsonArray>(result["content"]);
+        string body = Assert.IsType<JsonObject>(content[0])["text"]!.GetValue<string>();
+        Assert.Contains("\"hwnd\":1234", body);
+        Assert.DoesNotContain("AAAA", body); // never in the model's text, whichever side of the cap
+
+        if (expectImage)
+        {
+            Assert.Equal(3, content.Count);
+            Assert.Equal(data, Assert.IsType<JsonObject>(content[2])["data"]!.GetValue<string>());
+            Assert.Contains("\"captured\":true", body);
+        }
+        else
+        {
+            _ = Assert.Single(content);
+            Assert.Contains("\"attachmentDropped\":true", body);
+            Assert.Contains("\"attachmentDropReason\":\"tooLarge\"", body);
+            Assert.Contains("\"captured\":true", body);
+        }
+    }
+
+    [Fact]
+    public async Task ToolsCall_ResultWithDuplicatePropertyNames_ReturnsAToolResultInsteadOfKillingTheSidecar()
+    {
+        // CreateToolResult runs outside the tools/call try/catch, so anything thrown while inspecting
+        // the result escapes RunAsync and takes the MCP sidecar down. JsonObject throws
+        // ArgumentException from the very first lookup on a payload with duplicate property names.
+        JsonObject result = await RunToolCallAsync(
+            """{"hwnd":1234,"hwnd":5678,"_image":{"mimeType":"image/png","data":"abc"}}""");
+
+        var content = Assert.IsType<JsonArray>(result["content"]);
+        var text = Assert.IsType<JsonObject>(Assert.Single(content));
+        Assert.Contains("5678", text["text"]!.GetValue<string>());
     }
 
     [Theory]

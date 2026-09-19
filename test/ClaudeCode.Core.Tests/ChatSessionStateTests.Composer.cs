@@ -520,6 +520,28 @@ public sealed partial class ChatSessionStateTests
     }
 
     [Fact]
+    public async Task TurnEnded_SetsDurationSecondsOnTheAssistantMessage_ButNotBeforeTheTurnEnds()
+    {
+        var completed = new TaskCompletionSource<bool>();
+        var connection = new RecordingAcpAgentConnection { PromptHandler = _ => completed.Task };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "question";
+        var prompt = vm.SendAsync();
+        connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("answer"));
+
+        var assistantMessage = Assert.Single(vm.Messages, message => message.Role == ChatRole.Assistant);
+        Assert.Null(assistantMessage.DurationSeconds);
+
+        connection.RaiseSessionUpdate(new SessionUpdate.TurnEnded("end_turn"));
+
+        Assert.NotNull(assistantMessage.DurationSeconds);
+
+        completed.SetResult(true);
+        await prompt;
+    }
+
+    [Fact]
     public async Task PendingPermission_OverridesThoughtResponseAndToolActivityUntilChoice()
     {
         var completed = new TaskCompletionSource<bool>();
@@ -579,6 +601,126 @@ public sealed partial class ChatSessionStateTests
         Assert.False(string.IsNullOrWhiteSpace(vm.CommandCatalogStatus));
         Assert.NotEqual(empty, vm.CommandCatalogStatus);
         Assert.Empty(vm.SlashSuggestions);
+    }
+
+    // SendCoreAsync already added the user's bubble; an agent that echoes the prompt back as
+    // user_message_chunk during the live turn must not produce a second one. Replay (a loaded
+    // session, IsBusy false) is the case that legitimately builds the bubble.
+    [Fact]
+    public async Task UserMessageChunk_EchoedDuringALiveTurn_DoesNotDuplicateTheUsersBubble()
+    {
+        var completed = new TaskCompletionSource<bool>();
+        var connection = new RecordingAcpAgentConnection { PromptHandler = _ => completed.Task };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "summarize this file";
+        var prompt = vm.SendAsync();
+
+        connection.RaiseSessionUpdate(new SessionUpdate.UserMessageChunk("summarize this file"));
+
+        var user = Assert.Single(vm.Messages, message => message.Role == ChatRole.User);
+        Assert.Equal("summarize this file", user.Text);
+        completed.SetResult(true);
+        await prompt;
+    }
+
+    // New Chat issues the same session/new as the initial connect, so it needs the same buffering:
+    // the agent publishes the new session's catalog before the response resolves, while _sessionId
+    // still names the previous session.
+    [Fact]
+    public async Task NewChat_AdoptsACommandCatalogPublishedBeforeTheNewSessionIdIsKnown()
+    {
+        var connection = new RecordingAcpAgentConnection();
+        using var vm = Create(connection);
+        await vm.Initialization;
+        var ready = new TaskCompletionSource<NewSessionResult>();
+        connection.NewSessionHandler = _ => ready.Task;
+
+        var switching = vm.NewSessionAsync();
+        connection.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([new AvailableCommand("review", "Review", "scope")]), "session-2");
+        ready.SetResult(new NewSessionResult("session-2", []));
+        await switching;
+
+        vm.InputText = "/";
+        Assert.Equal("review", Assert.Single(vm.SlashSuggestions).Name);
+        Assert.Empty(vm.CommandCatalogStatus);
+    }
+
+    private static (ToolCallUpdate Call, List<PermissionOption> Options) PlanApprovalRequest() =>
+        (new ToolCallUpdate { ToolCallId = "plan-1", Title = "Approve Plan", Kind = "switch_mode", Status = ToolCallStatus.Pending, Content = [new ToolCallContent { Text = "# Plan" }] },
+        [
+            new PermissionOption { OptionId = "allow-once", Label = "Yes, proceed", Outcome = PermissionOutcome.AllowOnce },
+            new PermissionOption { OptionId = "reject-once", Label = "No, keep planning", Outcome = PermissionOutcome.RejectOnce },
+        ]);
+
+    // Review comments go out when the composer frees up, whichever blocker was holding it. A
+    // model/mode change (allowed mid-turn) still in flight when the rejected plan's turn returns
+    // must not strand them until the user's next unrelated Send.
+    [Fact]
+    public async Task PlanReview_HeldBackByAConfigChangeInFlight_GoesOutOnceTheChangeCompletes()
+    {
+        var turn = new TaskCompletionSource<bool>();
+        var config = new TaskCompletionSource<IReadOnlyList<SessionConfigOption>>();
+        var connection = new RecordingAcpAgentConnection
+        {
+            ConfigOptions = Options(),
+            PromptHandler = _ => turn.Task,
+            ConfigHandler = (_, _, _) => config.Task,
+        };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "plan the feature";
+        var sending = vm.SendAsync();
+        var (call, options) = PlanApprovalRequest();
+        connection.RaisePermissionRequested(call, options);
+        vm.PendingPlan!.ReviewCommand.Execute("Add a rollback step.");
+        var changing = vm.SelectModelAsync(vm.AvailableModels[1]);
+        Assert.True(vm.IsConfigBusy);
+
+        turn.SetResult(true);
+        await sending;
+        Assert.Single(connection.Prompts); // the composer is still blocked by the config change
+
+        config.SetResult(Options("opus"));
+        await changing;
+
+        await WaitUntilAsync(() => connection.Prompts.Count == 2);
+        Assert.Contains("Add a rollback step", Assert.IsType<ContentBlock.Text>(connection.Prompts[^1][0]).Value, StringComparison.Ordinal);
+        Assert.Equal("opus", vm.SelectedModel!.Value);
+    }
+
+    // With a document capture in flight the composer cannot send, so the review has to wait for
+    // the capture rather than be typed over the user's draft and left there unsent.
+    [Fact]
+    public async Task PlanReview_WhileADocumentCaptureIsInFlight_WaitsForItAndKeepsTheDraft()
+    {
+        var capture = new TaskCompletionSource<EditorDocumentSnapshot?>();
+        var connection = new RecordingAcpAgentConnection();
+        var services = new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService())
+        {
+            CaptureHandler = _ => capture.Task,
+        };
+        using var vm = new ChatViewModel(services);
+        await vm.Initialization;
+        vm.InputText = "meanwhile, what about the CI job?";
+        var attaching = vm.AttachActiveDocumentCommand.ExecuteAsync(null);
+        // No local turn owns IsBusy (a plan can arrive from a remote-driven turn), so the review is
+        // due as soon as the composer can take it.
+        var (call, options) = PlanApprovalRequest();
+        connection.RaisePermissionRequested(call, options);
+
+        vm.PendingPlan!.ReviewCommand.Execute("Add a rollback step.");
+
+        Assert.Equal("meanwhile, what about the CI job?", vm.InputText);
+        Assert.Empty(connection.Prompts);
+
+        capture.SetResult(null);
+        await attaching;
+
+        await WaitUntilAsync(() => connection.Prompts.Count == 1);
+        Assert.Contains("Add a rollback step", Assert.IsType<ContentBlock.Text>(connection.Prompts[0][0]).Value, StringComparison.Ordinal);
+        await WaitUntilAsync(() => vm.InputText.Length > 0);
+        Assert.Equal("meanwhile, what about the CI job?", vm.InputText);
     }
 
     private static ChatViewModel CreateOnUiContext(RecordingAcpAgentConnection connection, SynchronizationContext ui)

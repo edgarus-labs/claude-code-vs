@@ -5,6 +5,7 @@ using Xunit;
 
 namespace ClaudeCode.Acp.Tests;
 
+[Collection("Process current directory")] // SetCurrentDirectory below is process-wide; see ProcessCurrentDirectoryScope.
 public sealed class AcpExecutableResolverTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "claude acp & %resolver% " + Guid.NewGuid().ToString("N"));

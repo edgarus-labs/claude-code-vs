@@ -7,6 +7,7 @@
              xmlns:contracts="clr-namespace:ClaudeCode.Contracts;assembly=EdgarusLabs.ClaudeCode.Contracts"
              xmlns:conv="clr-namespace:ClaudeCode.Core.Views.Converters"
              xmlns:views="clr-namespace:ClaudeCode.Core.Views"
+             xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
              mc:Ignorable="d"
              x:Name="ChatPanel" UseLayoutRounding="True" SnapsToDevicePixels="True"
              d:DesignWidth="360" d:DesignHeight="640"
@@ -23,7 +24,13 @@
       <conv:NullToVisibilityConverter x:Key="NullToVisibilityConverter" />
       <conv:PlanStatusGlyphConverter x:Key="PlanStatusGlyphConverter" />
       <views:ChatTextFontSizeConverter x:Key="ChatTextFontSizeConverter" />
-      <conv:ToolCallStatusToDisplayTextConverter x:Key="ToolCallStatusToDisplayTextConverter" />
+      <conv:RelativeTimeConverter x:Key="RelativeTimeConverter" />
+      <conv:SessionTitleConverter x:Key="SessionTitleConverter" />
+      <conv:PercentToStarWidthConverter x:Key="PercentToStarWidthConverter" />
+      <conv:PercentToDashArrayConverter x:Key="PercentToDashArrayConverter" />
+      <conv:SessionModeGlyphConverter x:Key="SessionModeGlyphConverter" />
+      <conv:Base64ToImageSourceConverter x:Key="Base64ToImageSourceConverter" />
+      <conv:SingleLineHeightConverter x:Key="SingleLineHeightConverter" />
 
       <Style x:Key="ButtonIconStrokeStyle" TargetType="Path">
         <Setter Property="Stroke" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
@@ -76,6 +83,32 @@
         </Style.Triggers>
       </Style>
 
+      <Style x:Key="SectionToggleStyle" TargetType="ToggleButton">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{DynamicResource ChatForegroundBrush}" />
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="Padding" Value="2,3" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="ToggleButton">
+              <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="6" Padding="{TemplateBinding Padding}"
+                      BorderThickness="1" BorderBrush="Transparent">
+                <ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Center" />
+              </Border>
+              <ControlTemplate.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                  <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ChatHoverBrush}" />
+                </Trigger>
+                <Trigger Property="IsKeyboardFocused" Value="True">
+                  <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource ChatFocusBrush}" />
+                </Trigger>
+              </ControlTemplate.Triggers>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Style>
+
       <Style x:Key="DraftControlStyle" TargetType="Control">
         <Style.Triggers>
           <DataTrigger Binding="{Binding IsBusy}" Value="True">
@@ -110,7 +143,13 @@
         <Setter Property="Foreground" Value="{DynamicResource ChatForegroundBrush}" />
         <Setter Property="BorderThickness" Value="0" />
         <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled" />
-        <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Disabled" />
+        <!-- Hidden, not Disabled: a ListBox always owns an internal ScrollViewer. Disabled truly
+             blocks scrolling (not just the bar) and swallows the mouse wheel event before it can
+             bubble up to the ScrollViewer these lists are wrapped in - Hidden keeps the inner one
+             bar-less but lets the wheel event pass through. The Model/Effort/Mode wrappers below are
+             bar-less too, on purpose: those popups scroll by wheel and keyboard only, with no
+             scrollbar drawn against their rounded frame. -->
+        <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Hidden" />
         <Setter Property="HorizontalContentAlignment" Value="Stretch" />
         <Setter Property="KeyboardNavigation.DirectionalNavigation" Value="Contained" />
       </Style>
@@ -172,186 +211,103 @@
         </Grid>
       </DataTemplate>
 
-      <!-- One tool-call content entry: plain text, or a unified +/- diff. -->
-      <DataTemplate x:Key="ToolCallContentTemplate" DataType="{x:Type vm:ToolCallContentViewModel}">
-        <Grid Margin="0,4,0,0">
-          <TextBlock Text="{Binding Text}"
-                     TextWrapping="Wrap"
-                     FontFamily="Consolas"
-                     FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType=views:ChatPanelView}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=11}"
-                     Foreground="{DynamicResource ChatForegroundBrush}"
-                     Visibility="{Binding IsDiff, Converter={StaticResource BoolToVisibilityConverter}, ConverterParameter=Invert}" />
-
-          <Border Visibility="{Binding IsDiff, Converter={StaticResource BoolToVisibilityConverter}}"
-                  BorderBrush="{DynamicResource ChatBorderBrush}" BorderThickness="1" CornerRadius="3">
-            <StackPanel>
-              <TextBlock Text="{Binding Path}" FontWeight="SemiBold" Margin="6,4,6,2"
-                         FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType=views:ChatPanelView}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=11}"
-                         Foreground="{DynamicResource ChatSubtleForegroundBrush}" TextTrimming="CharacterEllipsis" />
-              <ItemsControl ItemsSource="{Binding DiffLines}">
-                <ItemsControl.ItemTemplate>
-                  <DataTemplate DataType="{x:Type vm:DiffLineViewModel}">
-                    <TextBlock Text="{Binding DisplayText}" FontFamily="Consolas"
-                               FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType=views:ChatPanelView}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=11}"
-                               TextWrapping="NoWrap" Padding="6,0">
-                      <TextBlock.Style>
-                        <Style TargetType="TextBlock">
-                          <Setter Property="Foreground" Value="{DynamicResource ChatForegroundBrush}" />
-                          <Style.Triggers>
-                            <DataTrigger Binding="{Binding Kind}" Value="Added">
-                              <Setter Property="Foreground" Value="{DynamicResource ChatDiffAddedForegroundBrush}" />
-                              <Setter Property="Background" Value="{DynamicResource ChatDiffAddedBackgroundBrush}" />
-                            </DataTrigger>
-                            <DataTrigger Binding="{Binding Kind}" Value="Removed">
-                              <Setter Property="Foreground" Value="{DynamicResource ChatDiffRemovedForegroundBrush}" />
-                              <Setter Property="Background" Value="{DynamicResource ChatDiffRemovedBackgroundBrush}" />
-                            </DataTrigger>
-                          </Style.Triggers>
-                        </Style>
-                      </TextBlock.Style>
-                    </TextBlock>
-                  </DataTemplate>
-                </ItemsControl.ItemTemplate>
-              </ItemsControl>
-            </StackPanel>
-          </Border>
+      <!-- Session modes get an icon each (hand / pencil / list / bolt), like the VS Code extension's mode menu. -->
+      <DataTemplate x:Key="ModeValueTemplate" DataType="{x:Type contracts:SessionConfigValue}">
+        <Grid>
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="24" />
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="22" />
+          </Grid.ColumnDefinitions>
+          <TextBlock Grid.Column="0" Text="{Binding Name, Converter={StaticResource SessionModeGlyphConverter}}"
+                     FontFamily="Segoe MDL2 Assets" FontSize="14" VerticalAlignment="Top" Margin="0,2,0,0"
+                     Foreground="{DynamicResource ChatSubtleForegroundBrush}" />
+          <StackPanel Grid.Column="1">
+            <TextBlock Text="{Binding Name}" FontSize="13" FontWeight="SemiBold" TextWrapping="Wrap" />
+            <TextBlock Text="{Binding Description}" FontSize="11" Margin="0,3,0,0" TextWrapping="Wrap"
+                       Foreground="{DynamicResource ChatSubtleForegroundBrush}"
+                       Visibility="{Binding Description, Converter={StaticResource NullToVisibilityConverter}}" />
+          </StackPanel>
+          <Path Grid.Column="2" Data="M 1,6 L 5,10 L 12,2" StrokeThickness="1.6"
+                Stroke="{DynamicResource ChatAccentBrush}"
+                HorizontalAlignment="Right" VerticalAlignment="Center"
+                Visibility="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}, Converter={StaticResource BoolToVisibilityConverter}}" />
         </Grid>
       </DataTemplate>
 
-      <!-- One collapsible tool-call card. -->
-      <DataTemplate x:Key="ToolCallCardTemplate" DataType="{x:Type vm:ToolCallCardViewModel}">
-        <Expander Margin="0,6,0,0"
-                  IsExpanded="{Binding IsExpanded, Mode=TwoWay}"
-                  Background="{DynamicResource ChatInputBackgroundBrush}"
-                  BorderBrush="{DynamicResource ChatBorderBrush}"
-                  BorderThickness="1">
-          <Expander.Header>
-            <StackPanel Orientation="Horizontal">
-              <TextBlock Text="{Binding Title}" VerticalAlignment="Center"
-                         FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType=views:ChatPanelView}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}" />
-              <TextBlock Text="{Binding Status, Converter={StaticResource ToolCallStatusToDisplayTextConverter}}" Margin="8,0,0,0" VerticalAlignment="Center"
-                         FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType=views:ChatPanelView}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=10}"
-                         Foreground="{DynamicResource ChatSubtleForegroundBrush}" />
-            </StackPanel>
-          </Expander.Header>
-          <ItemsControl ItemsSource="{Binding Content}" ItemTemplate="{StaticResource ToolCallContentTemplate}" Margin="8,4,8,8" />
-        </Expander>
-      </DataTemplate>
-
-      <!-- Assistant answers are a document on the canvas; only user messages have a bubble. -->
-      <DataTemplate x:Key="ChatMessageTemplate" DataType="{x:Type vm:ChatMessageViewModel}">
-        <StackPanel Margin="4,10,4,14">
-          <Grid>
-            <views:MarkdownMessageView x:Name="AssistantText" Markdown="{Binding Text}"
-                                       FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType=views:ChatPanelView}}"
-                                       Feedback="MarkdownMessage_Feedback" AutomationProperties.Name="Claude response" />
-            <Border x:Name="UserBubble" Visibility="Collapsed" HorizontalAlignment="Right"
-                    Background="{DynamicResource ChatUserBubbleBackgroundBrush}"
-                    CornerRadius="14" Padding="12,10" MaxWidth="580">
-              <TextBox Text="{Binding Text, Mode=OneWay}" IsReadOnly="True" IsReadOnlyCaretVisible="False"
-                       TextWrapping="Wrap" BorderThickness="0" Padding="0" Background="Transparent"
-                       Foreground="{DynamicResource ChatForegroundBrush}"
-                       FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType=views:ChatPanelView}}"
-                       SelectionBrush="{DynamicResource ChatSelectionBrush}"
-                       AutomationProperties.Name="Your message" />
-            </Border>
-          </Grid>
-          <ItemsControl ItemsSource="{Binding ToolCalls}" ItemTemplate="{StaticResource ToolCallCardTemplate}" />
-          <Button x:Name="CopyMessage" Content="&#xE8C8;" FontFamily="Segoe MDL2 Assets"
-                  HorizontalAlignment="Left" Margin="0,5,0,0" Width="28" Height="28" Padding="0"
-                  Style="{StaticResource LinkButtonStyle}" FontSize="14" Click="CopyMessage_Click"
-                  ToolTip="Copy original message text" AutomationProperties.Name="Copy Claude response"
-                  AutomationProperties.HelpText="Copies the original text, including Markdown, without tool activity." />
-        </StackPanel>
-        <DataTemplate.Triggers>
-          <DataTrigger Binding="{Binding Role}" Value="User">
-            <Setter TargetName="AssistantText" Property="Visibility" Value="Collapsed" />
-            <Setter TargetName="UserBubble" Property="Visibility" Value="Visible" />
-            <Setter TargetName="CopyMessage" Property="HorizontalAlignment" Value="Right" />
-            <Setter TargetName="CopyMessage" Property="AutomationProperties.Name" Value="Copy your message" />
-          </DataTrigger>
-        </DataTemplate.Triggers>
-      </DataTemplate>
-
-      <Style x:Key="ActivityStyle" TargetType="ContentControl">
-        <Setter Property="Visibility" Value="Collapsed" />
-        <Setter Property="Template">
-          <Setter.Value>
-            <ControlTemplate TargetType="ContentControl">
-              <Grid Margin="4,8,4,16">
-                <Grid.ColumnDefinitions>
-                  <ColumnDefinition Width="Auto" />
-                  <ColumnDefinition Width="*" />
-                </Grid.ColumnDefinitions>
-                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,10,0">
-                  <Ellipse x:Name="DotOne" Width="5" Height="5" Fill="{DynamicResource ChatAccentBrush}" Opacity="0.35" />
-                  <Ellipse x:Name="DotTwo" Width="5" Height="5" Margin="4,0" Fill="{DynamicResource ChatAccentBrush}" Opacity="0.35" />
-                  <Ellipse x:Name="DotThree" Width="5" Height="5" Fill="{DynamicResource ChatAccentBrush}" Opacity="0.35" />
-                </StackPanel>
-                <TextBlock Grid.Column="1" Text="{Binding ActivityText}" FontSize="12" TextWrapping="Wrap"
-                           Foreground="{DynamicResource ChatSubtleForegroundBrush}" AutomationProperties.LiveSetting="Polite" />
-              </Grid>
-              <ControlTemplate.Triggers>
-                <Trigger Property="IsVisible" Value="True">
-                  <Trigger.EnterActions>
-                    <BeginStoryboard x:Name="WorkingAnimation">
-                      <Storyboard RepeatBehavior="Forever">
-                        <DoubleAnimation Storyboard.TargetName="DotOne" Storyboard.TargetProperty="Opacity"
-                                         From="0.35" To="1" Duration="0:0:0.45" AutoReverse="True" />
-                        <DoubleAnimation Storyboard.TargetName="DotTwo" Storyboard.TargetProperty="Opacity"
-                                         From="0.35" To="1" BeginTime="0:0:0.15" Duration="0:0:0.45" AutoReverse="True" />
-                        <DoubleAnimation Storyboard.TargetName="DotThree" Storyboard.TargetProperty="Opacity"
-                                         From="0.35" To="1" BeginTime="0:0:0.3" Duration="0:0:0.45" AutoReverse="True" />
-                      </Storyboard>
-                    </BeginStoryboard>
-                  </Trigger.EnterActions>
-                  <Trigger.ExitActions>
-                    <RemoveStoryboard BeginStoryboardName="WorkingAnimation" />
-                  </Trigger.ExitActions>
-                </Trigger>
-              </ControlTemplate.Triggers>
-            </ControlTemplate>
-          </Setter.Value>
-        </Setter>
-        <Style.Triggers>
-          <DataTrigger Binding="{Binding IsBusy}" Value="True">
-            <Setter Property="Visibility" Value="Visible" />
-          </DataTrigger>
-        </Style.Triggers>
-      </Style>
     </ResourceDictionary>
   </UserControl.Resources>
 
   <Grid>
     <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
       <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
       <RowDefinition Height="Auto" />
       <RowDefinition Height="Auto" />
       <RowDefinition Height="Auto" />
     </Grid.RowDefinitions>
 
-    <!-- Message history -->
-    <ItemsControl Grid.Row="0" ItemsSource="{Binding Messages}" ItemTemplate="{StaticResource ChatMessageTemplate}"
-                  d:DataContext="{d:DesignInstance vm:ChatViewModel}"
-                  VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
-                  VirtualizingPanel.ScrollUnit="Pixel">
-      <ItemsControl.Template>
-        <ControlTemplate TargetType="{x:Type ItemsControl}">
-          <ScrollViewer x:Name="TranscriptScrollViewer" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
-                        CanContentScroll="True" Padding="12,4"
-                        ScrollChanged="TranscriptScrollViewer_ScrollChanged">
-            <ItemsPresenter MaxWidth="760" HorizontalAlignment="Stretch" />
-          </ScrollViewer>
-        </ControlTemplate>
-      </ItemsControl.Template>
-      <ItemsControl.ItemsPanel>
-        <ItemsPanelTemplate>
-          <VirtualizingStackPanel />
-        </ItemsPanelTemplate>
-      </ItemsControl.ItemsPanel>
-    </ItemsControl>
+    <!-- Session header: usage panel, start a new chat, or reopen one from this workspace's history. -->
+    <Border Grid.Row="0" BorderBrush="{DynamicResource ChatBorderBrush}" BorderThickness="0,0,0,1" Padding="10,5,8,5">
+    <Grid x:Name="HeaderBar">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*" />
+        <ColumnDefinition Width="Auto" />
+        <ColumnDefinition Width="Auto" />
+        <ColumnDefinition Width="Auto" />
+      </Grid.ColumnDefinitions>
+      <TextBlock Grid.Column="0" Text="{Binding SessionTitle}" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"
+                 TextTrimming="CharacterEllipsis" Margin="0,0,8,0" ToolTip="{Binding SessionTitle}"
+                 Foreground="{DynamicResource ChatForegroundBrush}" AutomationProperties.Name="Session title" />
+      <Button x:Name="UsageButton" Grid.Column="1" Width="28" Height="28" Click="UsageButton_Click"
+              Style="{StaticResource LinkButtonStyle}" ToolTip="Usage"
+              AutomationProperties.Name="Usage"
+              Visibility="{Binding Usage, Converter={StaticResource NullToVisibilityConverter}}">
+        <Grid Width="14" Height="14">
+          <Path Data="M 1,12 A 6,6 0 0 1 13,12" StrokeThickness="1.3" Style="{StaticResource ButtonIconStrokeStyle}" />
+          <Path Data="M 7,12 L 10,7" StrokeThickness="1.3" Style="{StaticResource ButtonIconStrokeStyle}" />
+        </Grid>
+      </Button>
+      <Button x:Name="HistoryButton" Grid.Column="2" Width="28" Height="28" Click="HistoryButton_Click"
+              Style="{StaticResource LinkButtonStyle}" ToolTip="Chat history"
+              AutomationProperties.Name="Chat history">
+        <Grid Width="14" Height="14">
+          <Ellipse Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.3" />
+          <Path Data="M 7,7 L 7,3 M 7,7 L 10,8.5" StrokeThickness="1.3" Style="{StaticResource ButtonIconStrokeStyle}" />
+        </Grid>
+      </Button>
+      <Button Grid.Column="3" Width="28" Height="28" Command="{Binding NewSessionCommand}"
+              Style="{StaticResource LinkButtonStyle}" ToolTip="New chat"
+              AutomationProperties.Name="New chat">
+        <Path Data="M 0,6 L 12,6 M 6,0 L 6,12" StrokeThickness="1.5" Style="{StaticResource ButtonIconStrokeStyle}" />
+      </Button>
+    </Grid>
+    </Border>
 
-    <StackPanel Grid.Row="0" VerticalAlignment="Center" Margin="24,20" IsHitTestVisible="False">
+    <!-- Message history: rendered as HTML inside WebView2 (markdown-it + DOMPurify + highlight.js,
+         see Resources\Transcript). Gives native text selection/copy across the whole transcript and
+         real code-block syntax highlighting; ChatPanelView.xaml.cs pushes message data, theme colors
+         and font size into the page and handles link-click messages coming back out. -->
+    <wv2:WebView2 x:Name="TranscriptView" Grid.Row="1" DefaultBackgroundColor="Transparent">
+      <!-- WebView2 is a native child HWND: it always paints on top of ordinary WPF content in the
+           same window ("airspace"), so the empty-state placeholder below would never be visible
+           behind it. Collapse the WebView2 itself instead whenever that placeholder should show. -->
+      <wv2:WebView2.Style>
+        <Style TargetType="wv2:WebView2">
+          <Style.Triggers>
+            <DataTrigger Binding="{Binding Messages.Count}" Value="0">
+              <Setter Property="Visibility" Value="Collapsed" />
+            </DataTrigger>
+            <DataTrigger Binding="{Binding IsBusy}" Value="True">
+              <Setter Property="Visibility" Value="Visible" />
+            </DataTrigger>
+          </Style.Triggers>
+        </Style>
+      </wv2:WebView2.Style>
+    </wv2:WebView2>
+
+    <StackPanel Grid.Row="1" VerticalAlignment="Center" Margin="24,20" IsHitTestVisible="False">
       <StackPanel.Style>
         <Style TargetType="StackPanel">
           <Setter Property="Visibility" Value="Collapsed" />
@@ -365,70 +321,272 @@
           </Style.Triggers>
         </Style>
       </StackPanel.Style>
-      <Image Source="{DynamicResource ChatBrandImage}" Width="44" Height="44" Margin="0,0,0,18"
-             RenderOptions.BitmapScalingMode="HighQuality" AutomationProperties.Name="Claude Code" />
-      <TextBlock Text="Let's noodle." FontFamily="Georgia, Cambria" FontSize="28"
-                 TextAlignment="Center" TextWrapping="Wrap" LineHeight="34" />
-      <TextBlock Text="Ask a question. Explore your code.&#10;Make something great."
-                 TextAlignment="Center" TextWrapping="Wrap" FontSize="12" LineHeight="19" Margin="0,12,0,0"
+      <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,40">
+        <Image Source="{DynamicResource ChatBrandImage}" Width="22" Height="22" Margin="0,0,6,0" VerticalAlignment="Center"
+               RenderOptions.BitmapScalingMode="HighQuality" AutomationProperties.Name="Claude Code" />
+        <TextBlock Text="Claude Code" FontFamily="Georgia, Cambria" FontSize="24" VerticalAlignment="Center" />
+      </StackPanel>
+      <TextBlock Text="Ask a question, explore your solution,&#10;or make something great."
+                 TextAlignment="Center" TextWrapping="Wrap" FontSize="13" LineHeight="20"
                  Foreground="{DynamicResource ChatSubtleForegroundBrush}" />
     </StackPanel>
 
-    <!-- Plan / todo strip -->
-    <Border Grid.Row="1" DataContext="{Binding CurrentPlan}"
-            Visibility="{Binding Converter={StaticResource NullToVisibilityConverter}}"
-            Background="{DynamicResource ChatInputBackgroundBrush}"
-            BorderBrush="{DynamicResource ChatBorderBrush}" BorderThickness="0,1,0,0"
-            Padding="10,6">
-      <ItemsControl ItemsSource="{Binding Entries}">
-        <ItemsControl.ItemTemplate>
-          <DataTemplate DataType="{x:Type contracts:PlanEntry}">
-            <StackPanel Orientation="Horizontal" Margin="0,1">
-              <TextBlock Text="{Binding Status, Converter={StaticResource PlanStatusGlyphConverter}}"
-                         Foreground="{DynamicResource ChatSubtleForegroundBrush}" Margin="0,0,6,0" />
-              <TextBlock Text="{Binding Content}" TextWrapping="Wrap" FontSize="12"
+    <!-- Agent task list (plan) and the files the agent changed this session, above the composer. -->
+    <StackPanel Grid.Row="2">
+      <Border DataContext="{Binding CurrentPlan}"
+              Visibility="{Binding Converter={StaticResource NullToVisibilityConverter}}"
+              Background="{DynamicResource ChatInputBackgroundBrush}"
+              BorderBrush="{DynamicResource ChatBorderBrush}" BorderThickness="1" CornerRadius="12"
+              Margin="12,6,12,0" Padding="10,6,10,6">
+        <StackPanel>
+          <ToggleButton IsChecked="{Binding IsExpanded}" Style="{StaticResource SectionToggleStyle}"
+                        AutomationProperties.Name="Tasks">
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+              </Grid.ColumnDefinitions>
+              <Path x:Name="TasksChevron" Grid.Column="0" Data="M 0,0 L 4,4 L 8,0" StrokeThickness="1.3" Margin="2,0,8,0"
+                    VerticalAlignment="Center" Stroke="{DynamicResource ChatSubtleForegroundBrush}" RenderTransformOrigin="0.5,0.5">
+                <Path.Style>
+                  <Style TargetType="Path">
+                    <Style.Triggers>
+                      <DataTrigger Binding="{Binding IsExpanded}" Value="False">
+                        <Setter Property="RenderTransform">
+                          <Setter.Value><RotateTransform Angle="-90" /></Setter.Value>
+                        </Setter>
+                      </DataTrigger>
+                    </Style.Triggers>
+                  </Style>
+                </Path.Style>
+              </Path>
+              <TextBlock Grid.Column="1" Text="Tasks" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"
                          Foreground="{DynamicResource ChatForegroundBrush}" />
-            </StackPanel>
-          </DataTemplate>
-        </ItemsControl.ItemTemplate>
-      </ItemsControl>
-    </Border>
+              <TextBlock Grid.Column="2" Text="{Binding ProgressLabel}" FontSize="11" VerticalAlignment="Center"
+                         Foreground="{DynamicResource ChatSubtleForegroundBrush}" />
+            </Grid>
+          </ToggleButton>
+          <ItemsControl ItemsSource="{Binding Entries}" Margin="0,4,0,2"
+                        Visibility="{Binding IsExpanded, Converter={StaticResource BoolToVisibilityConverter}}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate DataType="{x:Type contracts:PlanEntry}">
+                <Grid Margin="2,2">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                  </Grid.ColumnDefinitions>
+                  <TextBlock Text="{Binding Status, Converter={StaticResource PlanStatusGlyphConverter}}" FontSize="12"
+                             Foreground="{DynamicResource ChatSubtleForegroundBrush}" Margin="0,0,8,0" VerticalAlignment="Top" />
+                  <TextBlock Grid.Column="1" Text="{Binding Content}" TextWrapping="Wrap" FontSize="12">
+                    <TextBlock.Style>
+                      <Style TargetType="TextBlock">
+                        <Setter Property="Foreground" Value="{DynamicResource ChatForegroundBrush}" />
+                        <Style.Triggers>
+                          <DataTrigger Binding="{Binding Status}" Value="Completed">
+                            <Setter Property="Foreground" Value="{DynamicResource ChatSubtleForegroundBrush}" />
+                            <Setter Property="TextDecorations" Value="Strikethrough" />
+                          </DataTrigger>
+                          <DataTrigger Binding="{Binding Status}" Value="InProgress">
+                            <Setter Property="FontWeight" Value="SemiBold" />
+                          </DataTrigger>
+                        </Style.Triggers>
+                      </Style>
+                    </TextBlock.Style>
+                  </TextBlock>
+                </Grid>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </StackPanel>
+      </Border>
 
-    <!-- Permission request banner -->
-    <Border Grid.Row="2" DataContext="{Binding PendingPermission}"
+      <Border Background="{DynamicResource ChatInputBackgroundBrush}"
+              BorderBrush="{DynamicResource ChatBorderBrush}" BorderThickness="1" CornerRadius="12"
+              Margin="12,6,12,0" Padding="10,6,10,6">
+        <Border.Style>
+          <Style TargetType="Border">
+            <Style.Triggers>
+              <DataTrigger Binding="{Binding ChangedFiles.Count}" Value="0">
+                <Setter Property="Visibility" Value="Collapsed" />
+              </DataTrigger>
+            </Style.Triggers>
+          </Style>
+        </Border.Style>
+        <StackPanel>
+          <Grid Margin="2,2,0,2">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBlock FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"
+                       Foreground="{DynamicResource ChatForegroundBrush}">
+              <Run Text="Changed files" /><Run Text=" · " /><Run Text="{Binding ChangedFiles.Count, Mode=OneWay}" />
+            </TextBlock>
+            <Button Grid.Column="1" Content="Reject all" Padding="8,3" FontSize="11" Margin="0,0,4,0"
+                    Style="{StaticResource LinkButtonStyle}" Command="{Binding RejectAllChangesCommand}"
+                    AutomationProperties.Name="Reject all changes" />
+            <Button Grid.Column="2" Content="Accept all" Padding="8,3" FontSize="11"
+                    Style="{StaticResource LinkButtonStyle}" Foreground="{DynamicResource ChatAccentBrush}"
+                    Command="{Binding AcceptAllChangesCommand}" AutomationProperties.Name="Accept all changes" />
+          </Grid>
+          <ItemsControl ItemsSource="{Binding ChangedFiles}" MaxHeight="160">
+            <ItemsControl.Template>
+              <ControlTemplate TargetType="ItemsControl">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                  <ItemsPresenter />
+                </ScrollViewer>
+              </ControlTemplate>
+            </ItemsControl.Template>
+            <ItemsControl.ItemTemplate>
+              <DataTemplate DataType="{x:Type vm:ChangedFileViewModel}">
+                <Grid Margin="0,1">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                  </Grid.ColumnDefinitions>
+                  <Button Grid.Column="0" Style="{StaticResource LinkButtonStyle}" HorizontalContentAlignment="Left" Padding="4,3"
+                          Foreground="{DynamicResource ChatForegroundBrush}" ToolTip="{Binding FullPath}"
+                          Command="{Binding DataContext.OpenChangedFileCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                          CommandParameter="{Binding}" AutomationProperties.Name="{Binding Name, StringFormat='Open {0}'}">
+                    <StackPanel Orientation="Horizontal">
+                      <TextBlock Text="&#xE8A5;" FontFamily="Segoe MDL2 Assets" FontSize="11" Margin="0,0,7,0" VerticalAlignment="Center"
+                                 Foreground="{DynamicResource ChatSubtleForegroundBrush}" />
+                      <TextBlock Text="{Binding Name}" FontSize="12" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                      <TextBlock Text="new" FontSize="10" Margin="7,0,0,0" VerticalAlignment="Center"
+                                 Foreground="{DynamicResource ChatSubtleForegroundBrush}"
+                                 Visibility="{Binding IsNew, Converter={StaticResource BoolToVisibilityConverter}}" />
+                    </StackPanel>
+                  </Button>
+                  <TextBlock Grid.Column="1" FontSize="11" VerticalAlignment="Center" Margin="8,0,8,0" FontFamily="Consolas">
+                    <Run Text="{Binding AddedLines, Mode=OneWay, StringFormat='+{0}'}" Foreground="{DynamicResource ChatDiffAddedForegroundBrush}" />
+                    <Run Text="{Binding RemovedLines, Mode=OneWay, StringFormat='−{0}'}" Foreground="{DynamicResource ChatDiffRemovedForegroundBrush}" />
+                  </TextBlock>
+                  <Button Grid.Column="2" Width="24" Height="24"
+                          Command="{Binding RejectCommand}" AutomationProperties.Name="{Binding Name, StringFormat='Reject changes to {0}'}"
+                          ToolTipService.ShowOnDisabled="True">
+                    <!-- A row whose pre-edit content is unknown keeps a disabled reject button; its tooltip
+                         must say why rather than promise a restore that cannot happen. -->
+                    <Button.Style>
+                      <Style TargetType="Button" BasedOn="{StaticResource LinkButtonStyle}">
+                        <Setter Property="ToolTip" Value="Reject (restore original)" />
+                        <Style.Triggers>
+                          <DataTrigger Binding="{Binding CanRevert}" Value="False">
+                            <Setter Property="ToolTip" Value="Reject unavailable: the content from before the edit is not known" />
+                          </DataTrigger>
+                        </Style.Triggers>
+                      </Style>
+                    </Button.Style>
+                    <Path Data="M 0,0 L 8,8 M 0,8 L 8,0" StrokeThickness="1.4" Style="{StaticResource ButtonIconStrokeStyle}" />
+                  </Button>
+                  <Button Grid.Column="3" Width="24" Height="24" Style="{StaticResource LinkButtonStyle}" ToolTip="Accept (keep)"
+                          Foreground="{DynamicResource ChatAccentBrush}"
+                          Command="{Binding AcceptCommand}" AutomationProperties.Name="{Binding Name, StringFormat='Accept changes to {0}'}">
+                    <Path Data="M 0,4 L 3.5,8 L 10,1" StrokeThickness="1.6" Style="{StaticResource ButtonIconStrokeStyle}" />
+                  </Button>
+                </Grid>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </StackPanel>
+      </Border>
+    </StackPanel>
+
+    <StackPanel Grid.Row="3">
+      <!-- Permission request card (card-style banners: same margins/radius as the composer, not full-width strips) -->
+      <Border DataContext="{Binding PendingPermission}"
+              Visibility="{Binding Converter={StaticResource NullToVisibilityConverter}}"
+              Background="{DynamicResource ChatInputBackgroundBrush}"
+              BorderBrush="{DynamicResource ChatAccentBrush}" BorderThickness="1" CornerRadius="12"
+              Margin="12,6,12,0" Padding="12,10">
+        <StackPanel>
+          <!-- Title is agent-controlled (the tool name and its arguments), so it is bounded here as
+               well as at ToolDisplayName.Describe: row 3 is Auto, and an Auto row takes its full
+               desired height by collapsing the transcript's star row and pushing the composer past
+               the panel's bottom edge. A ScrollViewer rather than TextTrimming - this is a consent
+               surface, so the user must still be able to read every character of what they approve. -->
+          <ScrollViewer MaxHeight="120" VerticalScrollBarVisibility="Auto"
+                        HorizontalScrollBarVisibility="Disabled" Margin="0,0,0,6">
+            <TextBlock Text="{Binding Title}" TextWrapping="Wrap" FontWeight="SemiBold"
+                       Foreground="{DynamicResource ChatForegroundBrush}" />
+          </ScrollViewer>
+          <ItemsControl ItemsSource="{Binding Options}">
+            <ItemsControl.ItemsPanel>
+              <ItemsPanelTemplate>
+                <StackPanel Orientation="Horizontal" />
+              </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemTemplate>
+              <DataTemplate DataType="{x:Type contracts:PermissionOption}">
+                <Button Content="{Binding Label}" Margin="0,0,6,0" Style="{StaticResource ChatButtonStyle}"
+                        Command="{Binding DataContext.ChooseCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                        CommandParameter="{Binding}" />
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </StackPanel>
+      </Border>
+
+      <!-- Elicitation form card (the agent asking a structured question); same chrome family as the
+           permission card above, which ElicitationCardView draws itself - no wrapper Border here or
+           the frame would be doubled. Shares row 3 with the permission card rather than taking a row
+           of its own, since both are transient request cards that sit directly above the composer. -->
+      <views:ElicitationCardView DataContext="{Binding PendingElicitation}"
+                                 Visibility="{Binding Converter={StaticResource NullToVisibilityConverter}}" />
+    </StackPanel>
+
+    <!-- Usage limit warning banner: rounded top corners + the composer's own horizontal margin so
+         it reads as attached to the composer card directly below it, not a separate full-width bar. -->
+    <Border Grid.Row="4" Margin="12,8,12,0" DataContext="{Binding UsageWarning}"
             Visibility="{Binding Converter={StaticResource NullToVisibilityConverter}}"
             Background="{DynamicResource ChatWarningBackgroundBrush}"
-            BorderBrush="{DynamicResource ChatBorderBrush}" BorderThickness="0,1,0,0"
-            Padding="10,8">
-      <StackPanel>
-        <TextBlock Text="{Binding Title}" TextWrapping="Wrap" FontWeight="SemiBold"
-                   Foreground="{DynamicResource ChatForegroundBrush}" Margin="0,0,0,6" />
-        <ItemsControl ItemsSource="{Binding Options}">
-          <ItemsControl.ItemsPanel>
-            <ItemsPanelTemplate>
-              <StackPanel Orientation="Horizontal" />
-            </ItemsPanelTemplate>
-          </ItemsControl.ItemsPanel>
-          <ItemsControl.ItemTemplate>
-            <DataTemplate DataType="{x:Type contracts:PermissionOption}">
-              <Button Content="{Binding Label}" Margin="0,0,6,0" Style="{StaticResource ChatButtonStyle}"
-                      Command="{Binding DataContext.ChooseCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
-                      CommandParameter="{Binding}" />
-            </DataTemplate>
-          </ItemsControl.ItemTemplate>
-        </ItemsControl>
-      </StackPanel>
+            BorderBrush="{DynamicResource ChatBorderBrush}" BorderThickness="1,1,1,0"
+            CornerRadius="14,14,0,0"
+            Padding="12,8">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="Auto" />
+        </Grid.ColumnDefinitions>
+        <TextBlock Grid.Column="0" TextWrapping="Wrap" VerticalAlignment="Center"
+                   FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType=views:ChatPanelView}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}"
+                   Foreground="{DynamicResource ChatForegroundBrush}">
+          <Run Text="{Binding Message, Mode=OneWay}" />
+          <Hyperlink Click="UsageWarningLink_Click" Foreground="{DynamicResource ChatAccentBrush}">
+            <Run Text="View usage" />
+          </Hyperlink>
+        </TextBlock>
+        <Button Grid.Column="1" Width="24" Height="24" Padding="4" Margin="8,0,0,0" Click="UsageWarningDismiss_Click"
+                Style="{StaticResource LinkButtonStyle}" ToolTip="Dismiss" AutomationProperties.Name="Dismiss usage warning">
+          <Path Data="M 0,0 L 8,8 M 0,8 L 8,0" StrokeThickness="1.5" Style="{StaticResource ButtonIconStrokeStyle}" />
+        </Button>
+      </Grid>
     </Border>
 
     <!-- The input, attachments and controls are one integrated card. -->
-    <Grid Grid.Row="3" Margin="12,8,12,10">
+    <Grid Grid.Row="5">
+      <Grid.Style>
+        <Style TargetType="Grid">
+          <!-- Zero top margin when the usage banner is directly above so the two touch with no
+               gap; the trigger restores normal breathing room for the (far more common) case
+               where there's no banner and the composer needs its own spacing from row 4 above it. -->
+          <Setter Property="Margin" Value="12,0,12,10" />
+          <Style.Triggers>
+            <DataTrigger Binding="{Binding UsageWarning}" Value="{x:Null}">
+              <Setter Property="Margin" Value="12,8,12,10" />
+            </DataTrigger>
+          </Style.Triggers>
+        </Style>
+      </Grid.Style>
       <Grid.RowDefinitions>
         <RowDefinition Height="Auto" />
         <RowDefinition Height="Auto" />
         <RowDefinition Height="Auto" />
       </Grid.RowDefinitions>
       <StackPanel Grid.Row="0">
-        <ContentControl Style="{StaticResource ActivityStyle}" Focusable="False" />
         <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" FontSize="11" Margin="3,0,3,8"
                    Foreground="{DynamicResource ChatSubtleForegroundBrush}" AutomationProperties.LiveSetting="Polite"
                    Visibility="{Binding StatusMessage, Converter={StaticResource NullToVisibilityConverter}}" />
@@ -442,32 +600,74 @@
                 Command="{Binding SignInCommand}" />
       </StackPanel>
 
-      <Border x:Name="ComposerCard" Grid.Row="1" CornerRadius="20" BorderThickness="1"
-              Background="{DynamicResource ChatInputBackgroundBrush}"
-              Visibility="{Binding NeedsAuthentication, Converter={StaticResource BoolToVisibilityConverter}, ConverterParameter=Invert}">
-        <Border.Style>
-          <Style TargetType="Border">
-            <Setter Property="BorderBrush" Value="{DynamicResource ChatBorderBrush}" />
-            <Style.Triggers>
-              <Trigger Property="IsKeyboardFocusWithin" Value="True">
-                <Setter Property="BorderBrush" Value="{DynamicResource ChatFocusBrush}" />
-              </Trigger>
-            </Style.Triggers>
-          </Style>
-        </Border.Style>
-        <Grid Margin="10">
+      <!-- Composer: only the text area is boxed (rounded, focus-highlighted); the toolbar row sits
+           below it unboxed, like the Claude desktop app. -->
+      <Grid x:Name="ComposerCard" Grid.Row="1"
+            Visibility="{Binding NeedsAuthentication, Converter={StaticResource BoolToVisibilityConverter}, ConverterParameter=Invert}">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <Border x:Name="ComposerBox_Frame" Grid.Row="0" BorderThickness="1"
+                Background="{DynamicResource ChatInputBackgroundBrush}">
+          <Border.Style>
+            <Style TargetType="Border">
+              <Setter Property="BorderBrush" Value="{DynamicResource ChatBorderBrush}" />
+              <!-- Default assumes the usage warning banner is showing directly above (flattened top
+                   corners, so the two read as one attached shape); the trigger below restores full
+                   rounding for the (far more common) case where there's no banner. DataTrigger can only
+                   compare for equality, so "banner present" has to be the unconditional default and
+                   "no banner" the one explicit Value="{x:Null}" case, not the other way around. -->
+              <Setter Property="CornerRadius" Value="0,0,16,16" />
+              <Style.Triggers>
+                <DataTrigger Binding="{Binding IsKeyboardFocusWithin, ElementName=ComposerBox}" Value="True">
+                  <Setter Property="BorderBrush" Value="{DynamicResource ChatFocusBrush}" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding UsageWarning}" Value="{x:Null}">
+                  <Setter Property="CornerRadius" Value="16" />
+                </DataTrigger>
+              </Style.Triggers>
+            </Style>
+          </Border.Style>
+        <Grid Margin="10,6,10,6">
           <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
           </Grid.RowDefinitions>
 
-          <Grid Grid.Row="0" Margin="3,3,3,8">
+          <Grid Grid.Row="1" Margin="3,0,3,0">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <!-- Docked to the bottom so it stays by the last line while the text grows, but sized to exactly one
+                 text line (at the current font size) so it is centered on a single-line composer. -->
+            <Grid Grid.Column="1" Margin="8,0,0,0" VerticalAlignment="Bottom" MinHeight="28">
+              <Grid.Height>
+                <MultiBinding Converter="{StaticResource SingleLineHeightConverter}" ConverterParameter="6">
+                  <Binding ElementName="ComposerBox" Path="FontSize" />
+                  <Binding ElementName="ComposerBox" Path="FontFamily" />
+                </MultiBinding>
+              </Grid.Height>
+              <Button Width="28" Height="28" Padding="0" VerticalAlignment="Center" Command="{Binding SendCommand}" Click="SendButton_Click"
+                      Style="{StaticResource ChatButtonStyle}" ToolTip="Send message (Enter)" AutomationProperties.Name="Send message"
+                      Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibilityConverter}, ConverterParameter=Invert}">
+                <Path Data="M 6,12 L 6,0 M 1,5 L 6,0 L 11,5" StrokeThickness="1.8"
+                      Style="{StaticResource ButtonIconStrokeStyle}" />
+              </Button>
+              <Button Width="28" Height="28" Padding="0" VerticalAlignment="Center" Command="{Binding CancelCommand}"
+                      Style="{StaticResource ChatButtonStyle}" ToolTip="Stop response" AutomationProperties.Name="Stop response"
+                      Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibilityConverter}}">
+                <Rectangle Width="10" Height="10" RadiusX="1.5" RadiusY="1.5"
+                           Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+              </Button>
+            </Grid>
+            <!-- No MinHeight: one line tall initially, grows with the text up to MaxHeight (VS Code behavior). -->
             <TextBox x:Name="ComposerBox" Text="{Binding InputText, UpdateSourceTrigger=PropertyChanged}"
                      Style="{StaticResource ComposerStyle}" AcceptsReturn="True" AcceptsTab="False"
-                     TextWrapping="Wrap" MinHeight="88" MaxHeight="220" VerticalScrollBarVisibility="Auto"
-                     HorizontalScrollBarVisibility="Disabled" Padding="3"
+                     TextWrapping="Wrap" MaxHeight="220" VerticalScrollBarVisibility="Auto"
+                     HorizontalScrollBarVisibility="Disabled" Padding="3" VerticalAlignment="Center"
                      FontSize="{Binding ChatTextFontSize, ElementName=ChatPanel}"
                      Background="Transparent" Foreground="{DynamicResource ChatForegroundBrush}"
                      CaretBrush="{DynamicResource ChatForegroundBrush}" BorderThickness="0"
@@ -481,9 +681,9 @@
                 </ControlTemplate>
               </TextBox.Template>
             </TextBox>
-            <TextBlock Text="How can I help with your code?" Margin="5,4,5,0"
+            <TextBlock Text="Type / for commands" Margin="5,0,5,0"
                        FontSize="{Binding ChatTextFontSize, ElementName=ChatPanel}"
-                       TextWrapping="Wrap" IsHitTestVisible="False" VerticalAlignment="Top"
+                       TextWrapping="Wrap" IsHitTestVisible="False" VerticalAlignment="Center"
                        Foreground="{DynamicResource ChatSubtleForegroundBrush}">
               <TextBlock.Style>
                 <Style TargetType="TextBlock">
@@ -498,120 +698,222 @@
             </TextBlock>
           </Grid>
 
-          <ItemsControl Grid.Row="1" ItemsSource="{Binding Attachments}" Margin="2,0,2,4" Style="{StaticResource DraftControlStyle}">
+          <ItemsControl Grid.Row="0" ItemsSource="{Binding Attachments}" Margin="2,0,2,0" Style="{StaticResource DraftControlStyle}">
             <ItemsControl.ItemsPanel>
               <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
             </ItemsControl.ItemsPanel>
             <ItemsControl.ItemTemplate>
               <DataTemplate>
-                <Border Background="{DynamicResource ChatBackgroundBrush}" CornerRadius="8"
-                        BorderBrush="{DynamicResource ChatBorderBrush}" BorderThickness="1" Margin="0,0,6,6" Padding="8,4,3,4">
-                  <StackPanel Orientation="Horizontal">
-                    <TextBlock FontFamily="Segoe MDL2 Assets" VerticalAlignment="Center" Margin="0,0,6,0">
-                      <TextBlock.Style>
-                        <Style TargetType="TextBlock">
-                          <Setter Property="Text" Value="&#xE8A5;" />
-                          <Setter Property="AutomationProperties.Name" Value="Document snapshot" />
-                          <Style.Triggers>
-                            <DataTrigger Binding="{Binding IsImage}" Value="True">
-                              <Setter Property="Text" Value="&#xE91B;" />
-                              <Setter Property="AutomationProperties.Name" Value="Image" />
-                            </DataTrigger>
-                          </Style.Triggers>
-                        </Style>
-                      </TextBlock.Style>
-                    </TextBlock>
-                    <TextBlock Text="{Binding Name}" MaxWidth="125" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
-                               FontSize="11" ToolTip="{Binding Name}" />
-                    <Button Content="&#xE711;" FontFamily="Segoe MDL2 Assets" FontSize="9" Width="26" Height="26"
-                            Style="{StaticResource LinkButtonStyle}" ToolTip="{Binding Name, StringFormat='Remove attachment {0}'}"
-                            AutomationProperties.Name="{Binding Name, StringFormat='Remove attachment {0}'}"
+                <Grid Margin="0,0,6,6">
+                  <!-- Document snapshot: name chip. -->
+                  <Border Background="{DynamicResource ChatBackgroundBrush}" CornerRadius="8"
+                          BorderBrush="{DynamicResource ChatBorderBrush}" BorderThickness="1" Padding="8,4,3,4"
+                          Visibility="{Binding IsDocument, Converter={StaticResource BoolToVisibilityConverter}}">
+                    <StackPanel Orientation="Horizontal">
+                      <TextBlock Text="&#xE8A5;" FontFamily="Segoe MDL2 Assets" VerticalAlignment="Center" Margin="0,0,6,0"
+                                 AutomationProperties.Name="Document snapshot" />
+                      <TextBlock Text="{Binding Name}" MaxWidth="125" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                                 FontSize="11" ToolTip="{Binding Name}" />
+                      <Button Content="&#xE711;" FontFamily="Segoe MDL2 Assets" FontSize="9" Width="26" Height="26"
+                              Style="{StaticResource LinkButtonStyle}" ToolTip="{Binding Name, StringFormat='Remove attachment {0}'}"
+                              AutomationProperties.Name="{Binding Name, StringFormat='Remove attachment {0}'}"
+                              Command="{Binding DataContext.RemoveAttachmentCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                              CommandParameter="{Binding}" />
+                    </StackPanel>
+                  </Border>
+                  <!-- Image (pasted or attached): thumbnail with a remove button in the corner. -->
+                  <Grid Visibility="{Binding IsImage, Converter={StaticResource BoolToVisibilityConverter}}"
+                        ToolTip="{Binding Name}">
+                    <Border CornerRadius="8" BorderBrush="{DynamicResource ChatBorderBrush}" BorderThickness="1"
+                            Background="{DynamicResource ChatBackgroundBrush}" Width="88" Height="64">
+                      <Border.Clip>
+                        <RectangleGeometry Rect="0,0,88,64" RadiusX="8" RadiusY="8" />
+                      </Border.Clip>
+                      <Grid>
+                        <TextBlock Text="&#xE91B;" FontFamily="Segoe MDL2 Assets" FontSize="20" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource ChatSubtleForegroundBrush}" />
+                        <Image Source="{Binding Base64Data, Converter={StaticResource Base64ToImageSourceConverter}}"
+                               Stretch="UniformToFill" RenderOptions.BitmapScalingMode="HighQuality"
+                               AutomationProperties.Name="{Binding Name}" />
+                      </Grid>
+                    </Border>
+                    <Button Content="&#xE711;" FontFamily="Segoe MDL2 Assets" FontSize="8" Width="20" Height="20" Padding="0"
+                            HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,3,3,0"
+                            Background="{DynamicResource ChatPopupBackgroundBrush}" Foreground="{DynamicResource ChatForegroundBrush}"
+                            Style="{StaticResource LinkButtonStyle}" ToolTip="{Binding Name, StringFormat='Remove image {0}'}"
+                            AutomationProperties.Name="{Binding Name, StringFormat='Remove image {0}'}"
                             Command="{Binding DataContext.RemoveAttachmentCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
                             CommandParameter="{Binding}" />
-                  </StackPanel>
-                </Border>
+                  </Grid>
+                </Grid>
               </DataTemplate>
             </ItemsControl.ItemTemplate>
           </ItemsControl>
 
-          <TextBlock Grid.Row="2" Text="{Binding AttachmentError}" TextWrapping="Wrap"
-                     Visibility="{Binding AttachmentError, Converter={StaticResource NullToVisibilityConverter}}"
-                     FontSize="11" Margin="4,0,4,8" Foreground="{DynamicResource ChatErrorForegroundBrush}"
-                     AutomationProperties.LiveSetting="Polite" />
-
-          <Grid Grid.Row="3">
+          <Grid Grid.Row="2" Margin="4,0,0,6"
+                Visibility="{Binding AttachmentError, Converter={StaticResource NullToVisibilityConverter}}">
             <Grid.ColumnDefinitions>
-              <ColumnDefinition Width="Auto" />
               <ColumnDefinition Width="*" />
               <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
-            <ContentControl Grid.Column="0" Style="{StaticResource DraftControlStyle}" Focusable="False">
-              <StackPanel Orientation="Horizontal">
-                <Button x:Name="AttachButton" Width="32" Height="32" Command="{Binding AttachActiveDocumentCommand}"
-                        Style="{StaticResource LinkButtonStyle}" ToolTip="Attach active Visual Studio document (including unsaved edits)"
-                        AutomationProperties.Name="Attach active Visual Studio document"
-                        AutomationProperties.HelpText="Captures the current editor text now. Attach documents from multiple tabs before sending.">
-                  <Path Data="M 0,6 L 12,6 M 6,0 L 6,12" StrokeThickness="1.5"
-                        Style="{StaticResource ButtonIconStrokeStyle}" />
-                </Button>
-                <Button Width="32" Height="32" Click="AttachImageButton_Click"
-                        Style="{StaticResource LinkButtonStyle}" ToolTip="Attach an image file (or paste with Ctrl+V)"
-                        AutomationProperties.Name="Attach image file">
-                  <TextBlock Text="&#xE91B;" FontFamily="Segoe MDL2 Assets" />
-                </Button>
-              </StackPanel>
-            </ContentControl>
-            <Button x:Name="ModelButton" Grid.Column="1" HorizontalAlignment="Right" Margin="4,0,7,0"
-                    MaxWidth="280" Padding="9,6" Click="ModelButton_Click" IsEnabled="{Binding CanConfigure}"
-                    Style="{StaticResource LinkButtonStyle}" BorderBrush="{DynamicResource ChatBorderBrush}"
-                    Background="{DynamicResource ChatBackgroundBrush}" Foreground="{DynamicResource ChatForegroundBrush}"
-                    ToolTip="Choose model and effort" ToolTipService.ShowOnDisabled="True"
-                    AutomationProperties.Name="Model and effort" AutomationProperties.HelpText="Choose the model and reasoning effort for this conversation.">
-              <Grid>
-                <Grid.ColumnDefinitions>
-                  <ColumnDefinition Width="*" />
-                  <ColumnDefinition Width="Auto" />
-                  <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-                <TextBlock Text="{Binding ActiveModelName}" TextTrimming="CharacterEllipsis" FontSize="11" VerticalAlignment="Center" />
-                <TextBlock Grid.Column="1" FontSize="11" VerticalAlignment="Center"
-                           Visibility="{Binding HasEffort, Converter={StaticResource BoolToVisibilityConverter}}">
-                  <Run Text=" · " /><Run Text="{Binding ActiveEffortName, Mode=OneWay}" />
-                </TextBlock>
-                <Path Grid.Column="2" Data="M 0,0 L 4,4 L 8,0" Margin="7,0,0,2" VerticalAlignment="Center"
-                      Style="{StaticResource ButtonIconStrokeStyle}" StrokeThickness="1.3" />
-              </Grid>
+            <TextBlock Text="{Binding AttachmentError}" TextWrapping="Wrap" VerticalAlignment="Center"
+                       FontSize="11" Foreground="{DynamicResource ChatSubtleForegroundBrush}"
+                       AutomationProperties.LiveSetting="Polite" />
+            <Button Grid.Column="1" Width="22" Height="22" Padding="4" Margin="6,0,0,0" Click="AttachmentErrorDismiss_Click"
+                    Style="{StaticResource LinkButtonStyle}" ToolTip="Dismiss" AutomationProperties.Name="Dismiss attachment message">
+              <Path Data="M 0,0 L 7,7 M 0,7 L 7,0" StrokeThickness="1.3" Style="{StaticResource ButtonIconStrokeStyle}" />
             </Button>
-            <Grid Grid.Column="2">
-              <Button Width="32" Height="32" Padding="0" Command="{Binding SendCommand}" Click="SendButton_Click"
-                      Style="{StaticResource ChatButtonStyle}" ToolTip="Send message (Enter)" AutomationProperties.Name="Send message"
-                      Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibilityConverter}, ConverterParameter=Invert}">
-                <Path Data="M 7,14 L 7,0 M 1,6 L 7,0 L 13,6" StrokeThickness="1.8"
-                      Style="{StaticResource ButtonIconStrokeStyle}" />
-              </Button>
-              <Button Width="32" Height="32" Padding="0" Command="{Binding CancelCommand}"
-                      Style="{StaticResource ChatButtonStyle}" ToolTip="Stop response" AutomationProperties.Name="Stop response"
-                      Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibilityConverter}}">
-                <Rectangle Width="11" Height="11" RadiusX="1.5" RadiusY="1.5"
-                           Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
-              </Button>
-            </Grid>
           </Grid>
+
         </Grid>
-      </Border>
-      <TextBlock Grid.Row="2" Text="Enter to send · Shift+Enter for a new line · / for session commands" FontSize="10"
-                 HorizontalAlignment="Center" Margin="0,7,0,0" TextWrapping="Wrap"
-                 Foreground="{DynamicResource ChatSubtleForegroundBrush}"
-                 Visibility="{Binding NeedsAuthentication, Converter={StaticResource BoolToVisibilityConverter}, ConverterParameter=Invert}" />
+        </Border>
+        <Grid Grid.Row="1" Margin="4,6,4,0">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <!-- DockPanel (not StackPanel): the model pill is the last child, so it gets the remaining
+                 width and its text trims instead of pushing the mode/send buttons out of the panel
+                 when the tool window is narrow. -->
+            <ContentControl Grid.Column="0" Focusable="False" Margin="0,0,6,0">
+              <DockPanel LastChildFill="True">
+                <!-- Only the draft-composition buttons are disabled mid-turn. IsEnabled is inherited
+                     in WPF, so this wrapper must never enclose the mode/model/Remote Control pills:
+                     a disabled ancestor wins over their own IsEnabled="{Binding CanConfigure}" and
+                     they would be unusable while Claude works, which is exactly when switching mode
+                     or model matters. CanConfigure deliberately ignores IsBusy for the same reason. -->
+                <ContentControl Style="{StaticResource DraftControlStyle}" Focusable="False">
+                  <StackPanel Orientation="Horizontal">
+                    <Button x:Name="AttachButton" Width="32" Height="32" Command="{Binding AttachActiveDocumentCommand}"
+                            Style="{StaticResource LinkButtonStyle}" ToolTipService.ShowOnDisabled="True"
+                            AutomationProperties.Name="Attach active Visual Studio document"
+                            AutomationProperties.HelpText="Captures the current editor text now. Attach documents from multiple tabs before sending.">
+                      <Button.ToolTip>
+                        <ToolTip>
+                          <TextBlock>
+                            <TextBlock.Style>
+                              <Style TargetType="TextBlock">
+                                <Setter Property="Text" Value="Attach active Visual Studio document (including unsaved edits)" />
+                                <Style.Triggers>
+                                  <DataTrigger Binding="{Binding HasActiveDocument}" Value="False">
+                                    <Setter Property="Text" Value="Open a text document in the editor to attach it" />
+                                  </DataTrigger>
+                                </Style.Triggers>
+                              </Style>
+                            </TextBlock.Style>
+                          </TextBlock>
+                        </ToolTip>
+                      </Button.ToolTip>
+                      <Path Data="M 0,6 L 12,6 M 6,0 L 6,12" StrokeThickness="1.5"
+                            Style="{StaticResource ButtonIconStrokeStyle}" />
+                    </Button>
+                    <Button Width="32" Height="32" Click="SlashButton_Click"
+                            Style="{StaticResource LinkButtonStyle}" ToolTip="Session commands (/)"
+                            AutomationProperties.Name="Session commands">
+                      <Border Width="15" Height="15" CornerRadius="3" BorderThickness="1.2"
+                              BorderBrush="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}">
+                        <Path Data="M 4,11 L 8,2" StrokeThickness="1.3" Style="{StaticResource ButtonIconStrokeStyle}"
+                              HorizontalAlignment="Center" VerticalAlignment="Center" />
+                      </Border>
+                    </Button>
+                    <Button Width="32" Height="32" Click="AttachImageButton_Click"
+                            Style="{StaticResource LinkButtonStyle}" ToolTip="Attach an image file (or paste with Ctrl+V)"
+                            AutomationProperties.Name="Attach image file">
+                      <TextBlock Text="&#xE91B;" FontFamily="Segoe MDL2 Assets" />
+                    </Button>
+                  </StackPanel>
+                </ContentControl>
+                <Button x:Name="ModeButton" Margin="4,0,0,0" MaxWidth="180" Padding="6,5"
+                        Click="ModeButton_Click" IsEnabled="{Binding CanConfigure}"
+                        Style="{StaticResource LinkButtonStyle}" BorderBrush="Transparent"
+                        Background="Transparent" Foreground="{DynamicResource ChatForegroundBrush}"
+                        ToolTip="Choose session mode" ToolTipService.ShowOnDisabled="True"
+                        Visibility="{Binding HasModes, Converter={StaticResource BoolToVisibilityConverter}}"
+                        AutomationProperties.Name="Session mode" AutomationProperties.HelpText="Choose how Claude asks for permission in this conversation.">
+                  <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="{Binding ActiveModeName, Converter={StaticResource SessionModeGlyphConverter}}"
+                               FontFamily="Segoe MDL2 Assets" FontSize="13" Margin="0,0,6,0" VerticalAlignment="Center" />
+                    <TextBlock Text="{Binding ActiveModeName}" TextTrimming="CharacterEllipsis" FontSize="12" VerticalAlignment="Center" />
+                    <Path Data="M 0,0 L 4,4 L 8,0" Margin="6,2,0,0" VerticalAlignment="Center"
+                          Style="{StaticResource ButtonIconStrokeStyle}" StrokeThickness="1.3" />
+                  </StackPanel>
+                </Button>
+                <!-- Remote Control pill: blue while the session can be driven from claude.ai/code.
+                     No Visibility binding: session modes (HasModes) are an unrelated capability, and
+                     the view model exposes no remote-control capability flag, so let
+                     ToggleRemoteControlCommand.CanExecute disable the pill instead of hiding it. -->
+                <Button x:Name="RemoteControlButton" Margin="4,0,0,0" Padding="9,4" Command="{Binding ToggleRemoteControlCommand}"
+                        ToolTipService.ShowOnDisabled="True" AutomationProperties.Name="Remote Control">
+                  <Button.Style>
+                    <Style TargetType="Button" BasedOn="{StaticResource LinkButtonStyle}">
+                      <Setter Property="BorderBrush" Value="Transparent" />
+                      <Setter Property="ToolTip" Value="Turn on Remote Control to drive this session from claude.ai/code" />
+                      <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsRemoteControlEnabled}" Value="True">
+                          <Setter Property="Background" Value="{DynamicResource ChatRemoteControlBrush}" />
+                          <Setter Property="Foreground" Value="White" />
+                          <Setter Property="ToolTip" Value="Remote Control is active · click to turn off" />
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding IsRemoteControlBusy}" Value="True">
+                          <Setter Property="Opacity" Value="0.6" />
+                        </DataTrigger>
+                      </Style.Triggers>
+                    </Style>
+                  </Button.Style>
+                  <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="&#xE774;" FontFamily="Segoe MDL2 Assets" FontSize="12" Margin="0,0,6,0" VerticalAlignment="Center" />
+                    <TextBlock Text="Remote Control" FontSize="12" VerticalAlignment="Center" />
+                  </StackPanel>
+                </Button>
+                <Button Width="26" Height="26" Click="RemoteControlLink_Click" Style="{StaticResource LinkButtonStyle}"
+                        ToolTip="{Binding RemoteControlUrl}" AutomationProperties.Name="Open this session on claude.ai/code"
+                        Visibility="{Binding RemoteControlUrl, Converter={StaticResource NullToVisibilityConverter}}">
+                  <TextBlock Text="&#xE8A7;" FontFamily="Segoe MDL2 Assets" FontSize="11" />
+                </Button>
+                <Button x:Name="ModelButton" Margin="7,0,0,0" HorizontalAlignment="Right"
+                        MaxWidth="280" Padding="6,5" Click="ModelButton_Click" IsEnabled="{Binding CanConfigure}"
+                        Style="{StaticResource LinkButtonStyle}" BorderBrush="Transparent"
+                        Background="Transparent" Foreground="{DynamicResource ChatForegroundBrush}"
+                        ToolTip="Choose model and effort" ToolTipService.ShowOnDisabled="True"
+                        AutomationProperties.Name="Model and effort" AutomationProperties.HelpText="Choose the model and reasoning effort for this conversation.">
+                  <Grid>
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="*" />
+                      <ColumnDefinition Width="Auto" />
+                      <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.ColumnSpan="2" Text="{Binding ModelEffortLabel}" TextTrimming="CharacterEllipsis" FontSize="12" VerticalAlignment="Center" />
+                    <Path Grid.Column="2" Data="M 0,0 L 4,4 L 8,0" Margin="7,0,0,2" VerticalAlignment="Center"
+                          Style="{StaticResource ButtonIconStrokeStyle}" StrokeThickness="1.3" />
+                  </Grid>
+                </Button>
+              </DockPanel>
+            </ContentControl>
+            <!-- Context-window fill ring (hover for exact numbers). -->
+            <Grid Grid.Column="1" Width="16" Height="16" Margin="6,0,4,0" VerticalAlignment="Center"
+                  ToolTip="{Binding ContextUsageLabel}" AutomationProperties.Name="{Binding ContextUsageLabel}"
+                  Visibility="{Binding ContextUsagePercent, Converter={StaticResource NullToVisibilityConverter}}">
+              <Ellipse Stroke="{DynamicResource ChatBorderBrush}" StrokeThickness="2" />
+              <Ellipse Stroke="{DynamicResource ChatAccentBrush}" StrokeThickness="2" RenderTransformOrigin="0.5,0.5"
+                       StrokeDashArray="{Binding ContextUsagePercent, Converter={StaticResource PercentToDashArrayConverter}, ConverterParameter=7\,2}">
+                <Ellipse.RenderTransform>
+                  <RotateTransform Angle="-90" />
+                </Ellipse.RenderTransform>
+              </Ellipse>
+            </Grid>
+        </Grid>
+      </Grid>
 
       <Popup x:Name="SlashPopup" PlacementTarget="{Binding ElementName=ComposerCard}" Placement="Top"
-             VerticalOffset="-6" AllowsTransparency="True" StaysOpen="False" Closed="SlashPopup_Closed"
+             VerticalOffset="-6" AllowsTransparency="True" StaysOpen="False"
+             Closed="SlashPopup_Closed"
              IsOpen="{Binding AreSlashSuggestionsVisible, Mode=OneWay}"
              DataContext="{Binding DataContext, ElementName=ChatPanel}">
         <Border Width="{Binding ActualWidth, ElementName=ComposerCard}" MaxWidth="600"
                 Background="{DynamicResource ChatPopupBackgroundBrush}" BorderBrush="{DynamicResource ChatBorderBrush}"
                 BorderThickness="1" CornerRadius="12" Padding="7"
-                TextElement.Foreground="{DynamicResource ChatForegroundBrush}">
+                TextElement.Foreground="{DynamicResource ChatForegroundBrush}"
+                PreviewMouseWheel="Popup_PreviewMouseWheel">
           <StackPanel>
             <TextBlock Text="Session commands" FontSize="11" Margin="10,5,10,7"
                        Foreground="{DynamicResource ChatSubtleForegroundBrush}" />
@@ -658,10 +960,11 @@
       <Popup x:Name="ModelPopup" PlacementTarget="{Binding ElementName=ComposerCard}" Placement="Top"
              VerticalOffset="-6" AllowsTransparency="True" StaysOpen="False" Opened="ModelPopup_Opened"
              Closed="ModelPopup_Closed" DataContext="{Binding DataContext, ElementName=ChatPanel}">
-        <Border Width="{Binding ActualWidth, ElementName=ComposerCard}" MaxWidth="400" MaxHeight="440"
+        <Border Width="{Binding ActualWidth, ElementName=ComposerCard}" MaxHeight="440"
                 Background="{DynamicResource ChatPopupBackgroundBrush}" BorderBrush="{DynamicResource ChatBorderBrush}"
                 BorderThickness="1" CornerRadius="12" Padding="7" KeyboardNavigation.TabNavigation="Cycle"
-                TextElement.Foreground="{DynamicResource ChatForegroundBrush}" PreviewKeyDown="ModelPopup_PreviewKeyDown">
+                TextElement.Foreground="{DynamicResource ChatForegroundBrush}" PreviewKeyDown="ModelPopup_PreviewKeyDown"
+                PreviewMouseWheel="Popup_PreviewMouseWheel">
           <Grid>
             <Grid x:Name="ModelPickerView">
               <Grid.RowDefinitions>
@@ -671,7 +974,7 @@
               </Grid.RowDefinitions>
               <TextBlock Grid.Row="0" Text="Model" FontSize="11" Margin="11,6,11,5"
                          Foreground="{DynamicResource ChatSubtleForegroundBrush}" />
-              <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+              <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled">
                 <ListBox x:Name="ModelList" ItemsSource="{Binding AvailableModels}" SelectedItem="{Binding SelectedModel, Mode=OneWay}"
                          IsEnabled="{Binding CanConfigure}" Style="{StaticResource ConfigListStyle}"
                          ItemContainerStyle="{StaticResource ConfigItemStyle}" ItemTemplate="{StaticResource ConfigValueTemplate}"
@@ -714,7 +1017,7 @@
                   <TextBlock Text="Effort" FontSize="12" FontWeight="SemiBold" />
                 </StackPanel>
               </Button>
-              <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+              <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled">
                 <ListBox x:Name="EffortList" ItemsSource="{Binding AvailableEfforts}" SelectedItem="{Binding SelectedEffort, Mode=OneWay}"
                          IsEnabled="{Binding CanConfigure}" Style="{StaticResource ConfigListStyle}"
                          ItemContainerStyle="{StaticResource ConfigItemStyle}" ItemTemplate="{StaticResource ConfigValueTemplate}"
@@ -723,6 +1026,246 @@
               </ScrollViewer>
             </Grid>
           </Grid>
+        </Border>
+      </Popup>
+
+      <Popup x:Name="ModePopup" PlacementTarget="{Binding ElementName=ComposerCard}" Placement="Top"
+             VerticalOffset="-6" AllowsTransparency="True" StaysOpen="False"
+             Opened="ModePopup_Opened"
+             DataContext="{Binding DataContext, ElementName=ChatPanel}">
+        <Border Width="{Binding ActualWidth, ElementName=ComposerCard}" MaxHeight="360"
+                Background="{DynamicResource ChatPopupBackgroundBrush}" BorderBrush="{DynamicResource ChatBorderBrush}"
+                BorderThickness="1" CornerRadius="12" Padding="7"
+                TextElement.Foreground="{DynamicResource ChatForegroundBrush}"
+                PreviewMouseWheel="Popup_PreviewMouseWheel">
+          <Grid>
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <TextBlock Grid.Row="0" Text="Mode" FontSize="11" Margin="11,6,11,5"
+                       Foreground="{DynamicResource ChatSubtleForegroundBrush}" />
+            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled">
+              <ListBox x:Name="ModeList" ItemsSource="{Binding AvailableModes}" SelectedItem="{Binding SelectedMode, Mode=OneWay}"
+                       IsEnabled="{Binding CanConfigure}" Style="{StaticResource ConfigListStyle}" Margin="0,0,0,6"
+                       ItemContainerStyle="{StaticResource ConfigItemStyle}" ItemTemplate="{StaticResource ModeValueTemplate}"
+                       AutomationProperties.Name="Session mode" PreviewMouseLeftButtonUp="ConfigList_PreviewMouseLeftButtonUp"
+                       PreviewKeyDown="ConfigList_PreviewKeyDown" />
+            </ScrollViewer>
+          </Grid>
+        </Border>
+      </Popup>
+
+      <Popup x:Name="HistoryPopup" PlacementTarget="{Binding ElementName=HeaderBar}" Placement="Bottom"
+             VerticalOffset="8" AllowsTransparency="True" StaysOpen="False"
+             IsOpen="{Binding IsHistoryOpen, Mode=OneWay}"
+             Opened="HistoryPopup_Opened" Closed="HistoryPopup_Closed"
+             DataContext="{Binding DataContext, ElementName=ChatPanel}">
+        <Border Width="{Binding ActualWidth, ElementName=HeaderBar}"
+                Background="{DynamicResource ChatPopupBackgroundBrush}" BorderBrush="{DynamicResource ChatBorderBrush}"
+                BorderThickness="1" CornerRadius="12" Padding="7"
+                TextElement.Foreground="{DynamicResource ChatForegroundBrush}"
+                PreviewMouseWheel="Popup_PreviewMouseWheel">
+          <Grid MaxHeight="520">
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <Grid Grid.Row="0" Margin="4,2,0,4">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+              </Grid.ColumnDefinitions>
+              <Grid Grid.Column="0" Width="14" Height="14" Margin="6,0,8,0" VerticalAlignment="Center">
+                <Ellipse Width="9" Height="9" HorizontalAlignment="Left" VerticalAlignment="Top" StrokeThickness="1.4"
+                         Stroke="{DynamicResource ChatSubtleForegroundBrush}" />
+                <Path Data="M 8,8 L 13,13" StrokeThickness="1.4" Stroke="{DynamicResource ChatSubtleForegroundBrush}" />
+              </Grid>
+              <TextBox x:Name="HistoryFilterBox" Grid.Column="1" Padding="0,6" FontSize="13" BorderThickness="0"
+                       Background="Transparent" Foreground="{DynamicResource ChatForegroundBrush}"
+                       CaretBrush="{DynamicResource ChatForegroundBrush}"
+                       Text="{Binding HistoryFilter, UpdateSourceTrigger=PropertyChanged}"
+                       AutomationProperties.Name="Search sessions"
+                       AutomationProperties.HelpText="Filters the session list below by title or session id." />
+              <TextBlock Grid.Column="1" Text="Search sessions…" FontSize="13" Margin="0,6" IsHitTestVisible="False"
+                         Foreground="{DynamicResource ChatSubtleForegroundBrush}" VerticalAlignment="Center">
+                <TextBlock.Style>
+                  <Style TargetType="TextBlock">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                    <Style.Triggers>
+                      <DataTrigger Binding="{Binding Text.Length, ElementName=HistoryFilterBox}" Value="0">
+                        <Setter Property="Visibility" Value="Visible" />
+                      </DataTrigger>
+                    </Style.Triggers>
+                  </Style>
+                </TextBlock.Style>
+              </TextBlock>
+              <Button Grid.Column="2" Width="24" Height="24" Click="HistoryCloseButton_Click"
+                      Style="{StaticResource LinkButtonStyle}" ToolTip="Close" AutomationProperties.Name="Close history">
+                <Path Data="M 0,0 L 8,8 M 0,8 L 8,0" StrokeThickness="1.5" Style="{StaticResource ButtonIconStrokeStyle}" />
+              </Button>
+            </Grid>
+            <Border Grid.Row="1" Height="1" Margin="4,0,4,4" Background="{DynamicResource ChatBorderBrush}" />
+            <TextBlock Grid.Row="2" Text="Loading…" Margin="11,6" FontSize="12"
+                       Foreground="{DynamicResource ChatSubtleForegroundBrush}"
+                       Visibility="{Binding IsHistoryLoading, Converter={StaticResource BoolToVisibilityConverter}}" />
+            <TextBlock Grid.Row="2" Text="{Binding HistoryError}" Margin="11,6" FontSize="12" TextWrapping="Wrap"
+                       Foreground="{DynamicResource ChatErrorForegroundBrush}"
+                       Visibility="{Binding HistoryError, Converter={StaticResource NullToVisibilityConverter}}" />
+            <TextBlock Grid.Row="2" Text="No sessions match your search." Margin="11,6" FontSize="12" TextWrapping="Wrap"
+                       Foreground="{DynamicResource ChatSubtleForegroundBrush}">
+              <TextBlock.Style>
+                <Style TargetType="TextBlock">
+                  <Setter Property="Visibility" Value="Collapsed" />
+                  <Style.Triggers>
+                    <MultiDataTrigger>
+                      <MultiDataTrigger.Conditions>
+                        <Condition Binding="{Binding IsHistoryLoading}" Value="False" />
+                        <Condition Binding="{Binding HistoryError}" Value="{x:Null}" />
+                        <Condition Binding="{Binding SessionHistory.Count}" Value="0" />
+                      </MultiDataTrigger.Conditions>
+                      <Setter Property="Visibility" Value="Visible" />
+                    </MultiDataTrigger>
+                  </Style.Triggers>
+                </Style>
+              </TextBlock.Style>
+            </TextBlock>
+            <!-- The ScrollViewer lives *inside* the ItemsControl: a plain ItemsControl does not
+                 implement IScrollInfo, so with the ScrollViewer wrapped around it instead the child
+                 was measured with infinite height and the VirtualizingStackPanel realised every one
+                 of a long-lived workspace's sessions (rebuilt on each filter keystroke). -->
+            <ItemsControl x:Name="HistoryList" Grid.Row="2" ItemsSource="{Binding SessionHistory}"
+                          AutomationProperties.Name="Session history"
+                          Visibility="{Binding IsHistoryLoading, Converter={StaticResource BoolToVisibilityConverter}, ConverterParameter=Invert}"
+                          VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
+                          VirtualizingPanel.ScrollUnit="Pixel">
+              <ItemsControl.Template>
+                <ControlTemplate TargetType="ItemsControl">
+                  <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                                CanContentScroll="True" Focusable="False">
+                    <ItemsPresenter />
+                  </ScrollViewer>
+                </ControlTemplate>
+              </ItemsControl.Template>
+              <ItemsControl.ItemTemplate>
+                <DataTemplate DataType="{x:Type contracts:SessionSummary}">
+                  <Button Style="{StaticResource LinkButtonStyle}" HorizontalContentAlignment="Stretch" Padding="10,9"
+                          Foreground="{DynamicResource ChatForegroundBrush}" FontSize="12"
+                          Command="{Binding DataContext.OpenSessionCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                          CommandParameter="{Binding}"
+                          AutomationProperties.Name="{Binding Converter={StaticResource SessionTitleConverter}}">
+                    <Grid>
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                      </Grid.ColumnDefinitions>
+                      <TextBlock Text="{Binding Converter={StaticResource SessionTitleConverter}}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="1" Margin="12,0,0,0" FontSize="11" VerticalAlignment="Center"
+                                 Foreground="{DynamicResource ChatSubtleForegroundBrush}"
+                                 Text="{Binding UpdatedAt, Converter={StaticResource RelativeTimeConverter}}"
+                                 ToolTip="{Binding UpdatedAt, StringFormat='{}{0:f}'}" />
+                    </Grid>
+                  </Button>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+              <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                  <VirtualizingStackPanel />
+                </ItemsPanelTemplate>
+              </ItemsControl.ItemsPanel>
+            </ItemsControl>
+          </Grid>
+        </Border>
+      </Popup>
+
+      <Popup x:Name="UsagePopup" PlacementTarget="{Binding ElementName=ComposerCard}" Placement="Top"
+             VerticalOffset="-6" AllowsTransparency="True" StaysOpen="False"
+             IsOpen="{Binding IsUsagePanelOpen, Mode=OneWay}"
+             Closed="UsagePopup_Closed"
+             DataContext="{Binding DataContext, ElementName=ChatPanel}">
+        <Border x:Name="UsagePopupBorder" Width="{Binding ActualWidth, ElementName=ComposerCard}"
+                Background="{DynamicResource ChatPopupBackgroundBrush}" BorderBrush="{DynamicResource ChatBorderBrush}"
+                BorderThickness="1" CornerRadius="12" Padding="7"
+                TextElement.Foreground="{DynamicResource ChatForegroundBrush}"
+                PreviewMouseWheel="Popup_PreviewMouseWheel">
+          <StackPanel>
+            <StackPanel.Resources>
+              <DataTemplate x:Key="UsageLimitRowTemplate" DataType="{x:Type vm:UsageLimitDisplay}">
+                <Grid Margin="11,6,11,7">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                  </Grid.ColumnDefinitions>
+                  <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                  </Grid.RowDefinitions>
+                  <TextBlock Grid.Row="0" Grid.Column="0" Text="{Binding Label}" FontSize="12" VerticalAlignment="Center" />
+                  <TextBlock Grid.Row="0" Grid.Column="1" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"
+                             Text="{Binding Percent, Mode=OneWay, StringFormat={}{0}% used}">
+                    <TextBlock.Style>
+                      <Style TargetType="TextBlock">
+                        <Setter Property="Foreground" Value="{DynamicResource ChatForegroundBrush}" />
+                        <Style.Triggers>
+                          <DataTrigger Binding="{Binding IsWarning}" Value="True">
+                            <Setter Property="Foreground" Value="{DynamicResource ChatErrorForegroundBrush}" />
+                          </DataTrigger>
+                        </Style.Triggers>
+                      </Style>
+                    </TextBlock.Style>
+                  </TextBlock>
+                  <Grid Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Height="4" Margin="0,5,0,0">
+                    <Border CornerRadius="2" Background="{DynamicResource ChatBorderBrush}" />
+                    <Grid>
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="{Binding Percent, Converter={StaticResource PercentToStarWidthConverter}}" />
+                        <ColumnDefinition Width="{Binding Percent, Converter={StaticResource PercentToStarWidthConverter}, ConverterParameter=Invert}" />
+                      </Grid.ColumnDefinitions>
+                      <Border Grid.Column="0" CornerRadius="2">
+                        <Border.Style>
+                          <Style TargetType="Border">
+                            <Setter Property="Background" Value="{DynamicResource ChatAccentBrush}" />
+                            <Style.Triggers>
+                              <DataTrigger Binding="{Binding IsWarning}" Value="True">
+                                <Setter Property="Background" Value="{DynamicResource ChatErrorForegroundBrush}" />
+                              </DataTrigger>
+                            </Style.Triggers>
+                          </Style>
+                        </Border.Style>
+                      </Border>
+                    </Grid>
+                  </Grid>
+                  <TextBlock Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" Text="{Binding ResetText}" FontSize="10" Margin="0,4,0,0"
+                             Foreground="{DynamicResource ChatSubtleForegroundBrush}"
+                             Visibility="{Binding ResetText, Converter={StaticResource NullToVisibilityConverter}}" />
+                </Grid>
+              </DataTemplate>
+            </StackPanel.Resources>
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+              </Grid.ColumnDefinitions>
+              <TextBlock Grid.Column="0" Text="Usage" FontSize="11" Margin="11,6,11,5" VerticalAlignment="Center"
+                         Foreground="{DynamicResource ChatSubtleForegroundBrush}" />
+              <Button Grid.Column="1" Width="24" Height="24" Click="UsageCloseButton_Click"
+                      Style="{StaticResource LinkButtonStyle}" ToolTip="Close" AutomationProperties.Name="Close usage">
+                <Path Data="M 0,0 L 8,8 M 0,8 L 8,0" StrokeThickness="1.5" Style="{StaticResource ButtonIconStrokeStyle}" />
+              </Button>
+            </Grid>
+            <ContentControl Content="{Binding SessionUsage}" ContentTemplate="{StaticResource UsageLimitRowTemplate}"
+                             Visibility="{Binding SessionUsage, Converter={StaticResource NullToVisibilityConverter}}" />
+            <ContentControl Content="{Binding WeeklyUsage}" ContentTemplate="{StaticResource UsageLimitRowTemplate}"
+                             Visibility="{Binding WeeklyUsage, Converter={StaticResource NullToVisibilityConverter}}" />
+            <ContentControl Content="{Binding ScopedWeeklyUsage}" ContentTemplate="{StaticResource UsageLimitRowTemplate}"
+                             Visibility="{Binding ScopedWeeklyUsage, Converter={StaticResource NullToVisibilityConverter}}" />
+            <TextBlock Text="No usage data available." Margin="11,6,11,8" FontSize="12" TextWrapping="Wrap"
+                       Foreground="{DynamicResource ChatSubtleForegroundBrush}"
+                       Visibility="{Binding Usage, Converter={StaticResource NullToVisibilityConverter}, ConverterParameter=Invert}" />
+          </StackPanel>
         </Border>
       </Popup>
     </Grid>

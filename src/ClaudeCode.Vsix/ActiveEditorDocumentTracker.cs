@@ -24,6 +24,11 @@ internal sealed class ActiveEditorDocumentTracker : IDisposable
         _windowEvents.ActiveFrameChanged += OnActiveFrameChanged;
     }
 
+    /// <summary>Raised on the UI thread whenever the tracked document view changes.</summary>
+    public event EventHandler? ActiveDocumentChanged;
+
+    public bool HasActiveDocument => !_disposed && _lastDocumentView?.TextView is { IsClosed: false } && _lastDocumentView.TextBuffer is not null;
+
     public async Task InitializeAsync(CancellationToken cancellationToken)
     {
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
@@ -116,6 +121,13 @@ internal sealed class ActiveEditorDocumentTracker : IDisposable
         if (view?.TextView is { } current)
         {
             current.Closed += OnTextViewClosed;
+        }
+
+        // Dispose() calls this with null after setting _disposed; a teardown notification has no
+        // subscriber that needs it (HasActiveDocument already reports false) and is a latent trap.
+        if (!_disposed)
+        {
+            ActiveDocumentChanged?.Invoke(this, EventArgs.Empty);
         }
     }
 

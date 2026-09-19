@@ -9,18 +9,33 @@ namespace ClaudeCode.Core.Tests;
 
 internal sealed class StubChatSessionServices : IChatSessionServices
 {
-    public StubChatSessionServices(IAcpAgentConnectionFactory connectionFactory, IAcpAuthService authService, string? workspaceRoot = null)
+    public StubChatSessionServices(IAcpAgentConnectionFactory connectionFactory, IAcpAuthService authService, string? workspaceRoot = null, IUsageService? usageService = null)
     {
         ConnectionFactory = connectionFactory;
         AuthService = authService;
         WorkspaceRoot = workspaceRoot;
+        UsageService = usageService ?? new ClaudeCode.Core.ViewModels.Demo.NullUsageService();
     }
 
     public IAcpAgentConnectionFactory ConnectionFactory { get; }
 
     public IAcpAuthService AuthService { get; }
 
+    public IUsageService UsageService { get; }
+
     public string? WorkspaceRoot { get; }
+
+    public bool HasActiveDocument { get; private set; } = true;
+
+    public bool RemoteControlAtStartup { get; set; }
+
+    public event EventHandler? ActiveDocumentChanged;
+
+    public void SetHasActiveDocument(bool value)
+    {
+        HasActiveDocument = value;
+        ActiveDocumentChanged?.Invoke(this, EventArgs.Empty);
+    }
 
     public Func<CancellationToken, Task<EditorDocumentSnapshot?>>? CaptureHandler { get; set; }
 
@@ -28,6 +43,18 @@ internal sealed class StubChatSessionServices : IChatSessionServices
         CaptureHandler?.Invoke(cancellationToken) ?? Task.FromResult<EditorDocumentSnapshot?>(null);
 
     public Dictionary<string, string> OpenDocuments { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public List<string> OpenedDocumentPaths { get; } = new();
+
+    /// <summary>Injects a failure for the real host's <c>VS.Documents.OpenAsync</c>, which can fail
+    /// for a deleted, renamed or locked document.</summary>
+    public Func<string, CancellationToken, Task>? OpenDocumentHandler { get; set; }
+
+    public Task OpenDocumentAsync(string path, CancellationToken cancellationToken)
+    {
+        OpenedDocumentPaths.Add(path);
+        return OpenDocumentHandler?.Invoke(path, cancellationToken) ?? Task.CompletedTask;
+    }
 
     public Func<string, CancellationToken, Task<string?>>? ReadOpenDocumentHandler { get; set; }
 

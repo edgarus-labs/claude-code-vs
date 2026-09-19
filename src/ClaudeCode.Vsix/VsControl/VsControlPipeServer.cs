@@ -12,7 +12,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Pipes;
-using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -20,7 +19,7 @@ using System.Threading.Tasks;
 
 namespace ClaudeCode.Vsix.VsControl;
 
-internal sealed class VsControlPipeServer : IAsyncDisposable
+internal sealed partial class VsControlPipeServer : IAsyncDisposable
 {
     private static readonly JsonSerializerSettings _envelopeSettings = new JsonSerializerSettings
     {
@@ -31,10 +30,13 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
     // (e.g. it is mid another automation call or a modal dialog is up); not a real failure.
     private const int _rpcServerCallRetryLaterHResult = unchecked((int)0x8001010A);
 
-    // Only commands that never execute code from the open solution/workspace are allow-listed here.
-    // Debug.Start, Debug.StartWithoutDebugging, Build.BuildSolution, and Build.RebuildSolution are
-    // deliberately excluded: an ACP agent (or anything impersonating one over this pipe) must not be
-    // able to trigger arbitrary code execution by driving the debugger or MSBuild.
+    // This allow-list is what keeps `runCommand` from becoming a generic "execute any DTE command by
+    // name" surface for an ACP agent (or anything impersonating one over this pipe): adding an entry
+    // here adds a capability. It is deliberately NOT a claim that this channel cannot execute code
+    // from the open solution - build and debug execution are exposed through the dedicated,
+    // individually documented `buildSolution`, `buildProject` and `startDebugging` methods below
+    // (see docs/VsControlProtocol.md), so the absence of Build.* / Debug.Start command names here
+    // does not remove that capability.
     private static readonly HashSet<string> _allowedCommands = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
         "Edit.FormatDocument",
@@ -43,6 +45,15 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
         "File.SaveAll",
         "View.ErrorList",
     };
+
+    // Matches the client's 5s connect timeout: a peer that has not sent its token by then is not a
+    // legitimate client and must not keep the single retained pipe instance occupied.
+    private static readonly TimeSpan _handshakeTimeout = TimeSpan.FromSeconds(5);
+
+    // The handshake token is a 32-byte RNG value base64-encoded by VsControlSessionRegistry - 44
+    // characters - so no longer line can ever authenticate. Capping the read keeps an
+    // unauthenticated peer from streaming newline-free bytes into this process for the whole window.
+    private const int _maxHandshakeLineChars = 512;
 
     private readonly string _pipeName;
     private readonly string? _workspaceRoot;
@@ -53,9 +64,14 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
 
     public VsControlPipeServer(string pipeName, string? workspaceRoot, string token)
     {
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            throw new ArgumentException("A non-empty handshake token is required; an empty token would authenticate any local caller.", nameof(token));
+        }
+
         _pipeName = pipeName;
         _workspaceRoot = workspaceRoot;
-        _token = token ?? string.Empty;
+        _token = token;
     }
 
     public void Start()
@@ -95,7 +111,7 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
                 using var reader = new StreamReader(pipe, utf8NoBom, detectEncodingFromByteOrderMarks: false, bufferSize: 4096, leaveOpen: true);
                 using var writer = new StreamWriter(pipe, utf8NoBom, bufferSize: 4096, leaveOpen: true) { AutoFlush = true, NewLine = "\n" };
 
-                if (!await TryHandshakeAsync(reader).ConfigureAwait(false))
+                if (!await TryHandshakeAsync(reader, cancellationToken).ConfigureAwait(false))
                 {
                     // Missing/wrong token: another process on this machine (permitted by the pipe ACL
                     // because it runs as the same Windows user) guessed the pipe name. Drop the
@@ -153,12 +169,31 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
         }
     }
 
-    private async Task<bool> TryHandshakeAsync(StreamReader reader)
+    private async Task<bool> TryHandshakeAsync(StreamReader reader, CancellationToken cancellationToken)
     {
+        // The sole server instance is retained across reconnects, so a peer that connects and then
+        // stays silent would hold the only listener forever. Bound the handshake read twice over: by
+        // time (here) and by length (PipeHandshakeLineReader), because the pipe name is enumerable by
+        // any process running as this Windows user. On timeout or shutdown the caller drops the
+        // connection and goes back to accepting.
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(_handshakeTimeout);
+
         string? tokenLine;
         try
         {
-            tokenLine = await reader.ReadLineAsync().ConfigureAwait(false);
+            var readTask = PipeHandshakeLineReader.ReadBoundedLineAsync(reader, _maxHandshakeLineChars);
+            var timeoutTask = Task.Delay(Timeout.Infinite, timeoutCts.Token);
+            if (await Task.WhenAny(readTask, timeoutTask).ConfigureAwait(false) != readTask)
+            {
+                // Observe the abandoned read so tearing the pipe down under it cannot surface as an
+                // unobserved task exception.
+                _ = readTask.ContinueWith(task => { _ = task.Exception; },
+                    CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                return false;
+            }
+
+            tokenLine = await readTask.ConfigureAwait(false);
         }
         catch (IOException)
         {
@@ -212,11 +247,35 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
             case "getSelection": return (await GetSelectionAsync()).ToString(Formatting.None);
             case "replaceSelection": return (await ReplaceSelectionAsync(args)).ToString(Formatting.None);
             case "saveAll": return (await SaveAllAsync()).ToString(Formatting.None);
-            case "buildSolution": return (await BuildSolutionAsync(args)).ToString(Formatting.None);
-            case "getBuildErrors": return (await GetBuildErrorsAsync()).ToString(Formatting.None);
+            case "buildSolution": return (await BuildSolutionAsync(args, cancellationToken)).ToString(Formatting.None);
+            case "buildProject": return (await BuildProjectAsync(args, cancellationToken)).ToString(Formatting.None);
+            case "getBuildErrors": return (await GetBuildErrorsAsync(args)).ToString(Formatting.None);
+            case "getOutput": return (await GetOutputAsync(args)).ToString(Formatting.None);
             case "getDiagnostics": return (await GetDiagnosticsAsync(args)).ToString(Formatting.None);
             case "runCommand": return (await RunCommandAsync(args)).ToString(Formatting.None);
             case "getSolutionInfo": return (await GetSolutionInfoAsync()).ToString(Formatting.None);
+            case "addFileToProject": return (await AddFileToProjectAsync(args)).ToString(Formatting.None);
+            case "addProjectToSolution": return (await AddProjectToSolutionAsync(args)).ToString(Formatting.None);
+            case "openSolution": return (await OpenSolutionAsync(args)).ToString(Formatting.None);
+            case "startDebugging": return (await StartDebuggingAsync(args, cancellationToken)).ToString(Formatting.None);
+            case "stopDebugging": return (await StopDebuggingAsync(cancellationToken)).ToString(Formatting.None);
+            case "getDebuggerState": return (await GetDebuggerStateAsync()).ToString(Formatting.None);
+            case "setBreakpoint": return (await SetBreakpointAsync(args)).ToString(Formatting.None);
+            case "removeBreakpoint": return (await RemoveBreakpointAsync(args)).ToString(Formatting.None);
+            case "listBreakpoints": return (await ListBreakpointsAsync()).ToString(Formatting.None);
+            case "continueDebugging": return (await StepAsync(args, DebuggerStep.Continue, cancellationToken)).ToString(Formatting.None);
+            case "stepOver": return (await StepAsync(args, DebuggerStep.Over, cancellationToken)).ToString(Formatting.None);
+            case "stepInto": return (await StepAsync(args, DebuggerStep.Into, cancellationToken)).ToString(Formatting.None);
+            case "stepOut": return (await StepAsync(args, DebuggerStep.Out, cancellationToken)).ToString(Formatting.None);
+            case "waitForBreak": return (await WaitForBreakAsync(args, cancellationToken)).ToString(Formatting.None);
+            case "getCallStack": return (await GetCallStackAsync()).ToString(Formatting.None);
+            case "getLocals": return (await GetLocalsAsync(args)).ToString(Formatting.None);
+            case "evaluateExpression": return (await EvaluateExpressionAsync(args)).ToString(Formatting.None);
+            case "listAppWindows": return (await ListAppWindowsAsync(cancellationToken)).ToString(Formatting.None);
+            case "getWindowElements": return (await GetWindowElementsAsync(args, cancellationToken)).ToString(Formatting.None);
+            case "invokeElement": return (await InvokeElementAsync(args, cancellationToken)).ToString(Formatting.None);
+            case "setElementValue": return (await SetElementValueAsync(args, cancellationToken)).ToString(Formatting.None);
+            case "captureWindow": return (await CaptureWindowAsync(args, cancellationToken)).ToString(Formatting.None);
             default: throw new InvalidOperationException($"Unknown VsControl method '{method}'.");
         }
     }
@@ -336,19 +395,28 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
 
         var span = view.TextView.Selection.StreamSelectionSpan.SnapshotSpan;
         var edit = view.TextBuffer.CreateEdit();
-        bool canceled;
+        bool rejected;
         try
         {
-            edit.Replace(span.Span, text);
-            edit.Apply();
-            canceled = edit.Canceled;
+            // A read-only region or a conflicting edit makes Replace return false and sets
+            // HasFailedChanges without ever setting Canceled, so checking Canceled alone would
+            // report success for a replacement that never landed.
+            if (!edit.Replace(span.Span, text) || edit.HasFailedChanges)
+            {
+                rejected = true;
+            }
+            else
+            {
+                edit.Apply();
+                rejected = edit.HasFailedChanges || edit.Canceled;
+            }
         }
         finally
         {
             edit.Dispose();
         }
 
-        if (canceled)
+        if (rejected)
         {
             throw new InvalidOperationException("The edit was rejected (read-only buffer or vetoed by another extension).");
         }
@@ -366,74 +434,47 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
     }
 
     /// <summary>
-    /// Builds the current solution and waits for completion. <c>errorCount</c>/<c>warningCount</c>
-    /// reflect the Error List window's contents right after the build - which are themselves subject
-    /// to the Error List's own Build/IntelliSense scope filters - not a raw MSBuild diagnostic count.
-    /// The VS SDK does not expose MSBuild's own diagnostic totals without driving
-    /// <c>IVsSolutionBuildManager</c> directly; the Error List is the diagnostic surface
-    /// <see cref="Community.VisualStudio.Toolkit"/> already gives us.
+    /// Activates the solution configuration named <paramref name="configurationName"/> if one
+    /// exists, and returns the configuration that is active afterwards. Visual Studio matches on
+    /// <c>SolutionConfiguration.Name</c>, which is the bare name (<c>Release</c>), so a
+    /// platform-qualified request (<c>Release|Any CPU</c>) matches nothing and the existing active
+    /// configuration is kept. The caller reports the returned name so that substitution is visible
+    /// to the agent instead of being reported as a successful build of what it asked for.
+    /// Pass <see langword="null"/> to read the active configuration without changing it.
     /// </summary>
-    private static async Task<JObject> BuildSolutionAsync(JObject args)
-    {
-        // The optional `configuration` param only takes effect if it matches an existing solution
-        // configuration name; VsControlProtocol.md leaves per-configuration switching unspecified, so a
-        // mismatched or omitted value simply builds whatever configuration is currently active.
-        var configurationName = args["configuration"]?.Value<string>();
-        if (!string.IsNullOrEmpty(configurationName))
-        {
-            await TrySetActiveConfigurationAsync(configurationName!);
-        }
-
-        var succeeded = await VS.Build.BuildSolutionAsync();
-        var (errorCount, warningCount) = await CountBuildDiagnosticsAsync();
-
-        return new JObject
-        {
-            ["succeeded"] = succeeded,
-            ["errorCount"] = errorCount,
-            ["warningCount"] = warningCount,
-        };
-    }
-
-    private static async Task TrySetActiveConfigurationAsync(string configurationName)
+    private static async Task<string?> TrySetActiveConfigurationAsync(string? configurationName)
     {
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
         var dte = await VS.GetRequiredServiceAsync<DTE, DTE>();
         var solutionBuild = dte.Solution?.SolutionBuild;
         if (solutionBuild is null)
         {
-            return;
+            return null;
         }
 
-        foreach (SolutionConfiguration configuration in solutionBuild.SolutionConfigurations)
+        if (!string.IsNullOrEmpty(configurationName))
         {
-            if (string.Equals(configuration.Name, configurationName, StringComparison.OrdinalIgnoreCase))
+            foreach (SolutionConfiguration configuration in solutionBuild.SolutionConfigurations)
             {
-                configuration.Activate();
+                if (string.Equals(configuration.Name, configurationName, StringComparison.OrdinalIgnoreCase))
+                {
+                    configuration.Activate();
 
-                return;
+                    break;
+                }
             }
         }
-    }
 
-    private static async Task<JObject> GetBuildErrorsAsync()
-    {
-        var items = await GetErrorListItemsAsync();
-        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
-        var errors = new JArray();
-        foreach (var item in items)
+        try
         {
-            errors.Add(new JObject
-            {
-                ["file"] = item.FileName,
-                ["line"] = item.Line,
-                ["column"] = item.Column,
-                ["message"] = item.Description,
-                ["severity"] = ErrorLevelToSeverity(item.ErrorLevel),
-            });
+            return solutionBuild.ActiveConfiguration?.Name;
         }
-
-        return new JObject { ["errors"] = errors };
+        catch (COMException)
+        {
+            // This read only reports what happened; a solution still loading can refuse it, and
+            // that must not turn the build the caller actually asked for into an error reply.
+            return null;
+        }
     }
 
     private async Task<JObject> GetDiagnosticsAsync(JObject args)
@@ -490,19 +531,111 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
         {
             dte.ExecuteCommand(commandName, commandArgs);
         }
-        catch (COMException ex) when (ex.HResult == _rpcServerCallRetryLaterHResult)
+        catch (COMException ex)
         {
-            throw new InvalidOperationException("Visual Studio is busy, try again.");
-        }
-        catch (COMException)
-        {
-            // Swallow the raw COM/HRESULT text (e.g. "Exception from HRESULT: 0x80010001") - it is
-            // meaningless to the agent on the other end of the pipe and can leak host implementation
-            // detail; a flat, actionable message is all a tool caller needs.
-            throw new InvalidOperationException($"Command '{commandName}' could not be executed.");
+            throw ActionableDteError(ex, $"Command '{commandName}' could not be executed.");
         }
 
         return new JObject();
+    }
+
+    /// <summary>
+    /// The error a failed synchronous DTE call is reported as. Raw COM/HRESULT text ("Exception from
+    /// HRESULT: 0x80010001") is meaningless to the agent on the other end of the pipe and can leak
+    /// host implementation detail, so it is replaced with a flat, actionable message; the one
+    /// HRESULT that is not a real failure - Visual Studio rejecting the call because it is busy with
+    /// another automation call or a modal dialog - is reported as a retry instead.
+    /// </summary>
+    private static InvalidOperationException ActionableDteError(COMException error, string failureMessage) =>
+        error.HResult == _rpcServerCallRetryLaterHResult
+            ? new InvalidOperationException("Visual Studio is busy, try again.")
+            : new InvalidOperationException(failureMessage);
+
+    private async Task<JObject> AddFileToProjectAsync(JObject args)
+    {
+        var projectName = RequireString(args, "projectName");
+        var path = RequireString(args, "path");
+        using var pathLease = WorkspacePathGuard.AcquireDocument(_workspaceRoot, path);
+        var fullPath = pathLease.FullPath;
+        var project = await FindProjectAsync(projectName);
+        await project.AddExistingFilesAsync(fullPath);
+        return new JObject { ["project"] = project.Name, ["path"] = fullPath };
+    }
+
+    /// <summary>
+    /// Adds an existing project file to the open solution. <c>Solution.AddFromFile</c> is a
+    /// synchronous, uncancellable COM call that loads the project and can trigger a NuGet restore,
+    /// so - unlike every method whose wait this server owns - it cannot be bounded here: there is
+    /// no completion signal to race a <see cref="CancellationToken"/> against, and abandoning the
+    /// wait would only leave Visual Studio still loading. The budget therefore has to live on the
+    /// client, which puts this method in the same long bucket as the build methods
+    /// (<c>VsControlPipeClient._buildTimeout</c>); a 60 s budget here would time out mid-load and
+    /// invite a retry that adds the project a second time.
+    /// </summary>
+    private async Task<JObject> AddProjectToSolutionAsync(JObject args)
+    {
+        var path = RequireString(args, "path");
+        using var pathLease = WorkspacePathGuard.AcquireDocument(_workspaceRoot, path);
+        var fullPath = pathLease.FullPath;
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+        var dte = await VS.GetRequiredServiceAsync<EnvDTE.DTE, EnvDTE80.DTE2>();
+        var solution = dte.Solution;
+        if (solution is null || !solution.IsOpen)
+        {
+            throw new InvalidOperationException("No solution is open.");
+        }
+
+        EnvDTE.Project? project;
+        try
+        {
+            project = solution.AddFromFile(fullPath, Exclusive: false);
+        }
+        catch (COMException ex)
+        {
+            throw ActionableDteError(ex, $"'{path}' could not be added to the solution; check that it is a project type this Visual Studio can load and that no dialog is open.");
+        }
+
+        return new JObject { ["name"] = project?.Name, ["path"] = fullPath };
+    }
+
+    /// <summary>
+    /// Closes the current solution (saving first) and opens another one from inside the workspace.
+    /// <c>Solution.Close</c> and <c>Solution.Open</c> are synchronous, uncancellable COM calls, so
+    /// this method carries no server-side bound for the same reason
+    /// <see cref="AddProjectToSolutionAsync"/> does not, and is on the client's long budget
+    /// (<c>VsControlPipeClient._buildTimeout</c>). That budget is load-bearing rather than
+    /// cosmetic: under the 60 s request budget the agent is told the call timed out while Visual
+    /// Studio is still loading, and the natural retry closes and reopens the user's solution a
+    /// second time.
+    /// </summary>
+    private async Task<JObject> OpenSolutionAsync(JObject args)
+    {
+        var path = RequireString(args, "path");
+        using var pathLease = WorkspacePathGuard.AcquireDocument(_workspaceRoot, path);
+        var fullPath = pathLease.FullPath;
+        var extension = Path.GetExtension(fullPath);
+        if (!string.Equals(extension, ".sln", StringComparison.OrdinalIgnoreCase) && !string.Equals(extension, ".slnx", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException($"'{path}' is not a solution file (.sln/.slnx).");
+        }
+
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+        var dte = await VS.GetRequiredServiceAsync<DTE, DTE2>();
+        try
+        {
+            if (dte.Solution.IsOpen)
+            {
+                dte.Solution.Close(SaveFirst: true);
+            }
+
+            dte.Solution.Open(fullPath);
+        }
+        catch (COMException ex)
+        {
+            throw ActionableDteError(ex, $"'{path}' could not be opened; check that it is a solution this Visual Studio can load and that no dialog is open.");
+        }
+
+        return await GetSolutionInfoAsync();
     }
 
     private static async Task<JObject> GetSolutionInfoAsync()
@@ -544,7 +677,9 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
         return results;
     }
 
-    private static async Task<(int ErrorCount, int WarningCount)> CountBuildDiagnosticsAsync()
+    /// <summary>Counts Error List errors/warnings, optionally narrowed to one project so a
+    /// single-project build does not report unrelated projects' diagnostics as its own.</summary>
+    private static async Task<(int ErrorCount, int WarningCount)> CountBuildDiagnosticsAsync(string? projectName = null)
     {
         var items = await GetErrorListItemsAsync();
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
@@ -553,6 +688,11 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
         var warningCount = 0;
         foreach (var item in items)
         {
+            if (projectName is not null && !VsBuildChannelRules.MatchesProject(item.Project, projectName))
+            {
+                continue;
+            }
+
             if (item.ErrorLevel == vsBuildErrorLevel.vsBuildErrorLevelHigh)
             {
                 errorCount++;

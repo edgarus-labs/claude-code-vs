@@ -19,6 +19,7 @@ public sealed partial class AcpProcessConnection
             "fs/read_text_file" => HandleReadTextFileAsync(RequireObject(@params, method), cancellationToken),
             "fs/write_text_file" => HandleWriteTextFileAsync(RequireObject(@params, method), cancellationToken),
             "session/request_permission" => HandleRequestPermissionAsync(RequireObject(@params, method), cancellationToken),
+            "elicitation/create" => HandleCreateElicitationAsync(RequireObject(@params, method), cancellationToken),
             _ => throw new AcpRemoteException(-32601, $"Method not found: {method}"),
         };
     }
@@ -92,6 +93,207 @@ public sealed partial class AcpProcessConnection
         }
     }
 
+    private async Task<JsonNode?> HandleCreateElicitationAsync(JsonObject @params, CancellationToken cancellationToken)
+    {
+        // Only form mode was advertised in `initialize`'s clientCapabilities.elicitation. ACP is
+        // explicit that a request using a mode the client has not advertised produces -32602;
+        // answering `decline` would instead read as "the user refused", destroying the only signal
+        // that stops a conforming agent from retrying a url-mode (secret-bearing) flow as a form.
+        if (GetOptionalString(@params, "mode") != "form")
+        {
+            throw new AcpRemoteException(-32602, "Unsupported elicitation mode; this client advertises 'form' only.");
+        }
+
+        var handler = ElicitationRequested;
+        if (handler is null)
+        {
+            throw new AcpRemoteException(-32603, "No client handler registered for elicitation/create.");
+        }
+
+        // ACP also allows a request-scoped form (`requestId` in place of `sessionId`) for prompts
+        // raised before any session exists. This client has no surface for one, so refuse it the way
+        // an unadvertised mode is refused: -32602 names the limitation and lets a conforming agent
+        // fall back, where AcpProtocolException would claim the client malfunctioned (-32603).
+        string? sessionId = GetOptionalString(@params, "sessionId");
+        if (sessionId is null)
+        {
+            throw new AcpRemoteException(-32602, "Only session-scoped elicitation is supported; 'sessionId' is required.");
+        }
+
+        string message = GetRequiredString(@params, "message");
+        var schema = RequireObject(@params["requestedSchema"], "elicitation/create.requestedSchema");
+        IReadOnlyList<ElicitationField> fields = ParseElicitationFields(schema);
+
+        var args = new ElicitationRequestEventArgs(sessionId, message, fields);
+        TrackPendingElicitation(sessionId, args);
+        try
+        {
+            handler(this, args);
+            ElicitationAnswer answer = await WaitWithCancellationAsync(args.Response.Task, cancellationToken).ConfigureAwait(false);
+            return BuildElicitationResponse(answer, fields, schema);
+        }
+        finally
+        {
+            UntrackPendingElicitation(sessionId, args);
+        }
+    }
+
+    private static IReadOnlyList<ElicitationField> ParseElicitationFields(JsonObject schema)
+    {
+        if (schema["properties"] is not JsonObject properties)
+        {
+            return Array.Empty<ElicitationField>();
+        }
+
+        var fields = new List<ElicitationField>(properties.Count);
+        foreach (KeyValuePair<string, JsonNode?> entry in properties)
+        {
+            if (entry.Value is JsonObject property)
+            {
+                fields.Add(ParseElicitationField(entry.Key, property));
+            }
+        }
+
+        return fields;
+    }
+
+    private static ElicitationField ParseElicitationField(string key, JsonObject property)
+    {
+        string? title = GetOptionalString(property, "title");
+        string? description = GetOptionalString(property, "description");
+        string? type = GetOptionalString(property, "type");
+
+        // ACP's StringPropertySchema declares both `oneOf` (titled options) and `enum` (bare values)
+        // as single-select, and MultiSelectItems declares both `items.anyOf` and `items.enum`. Letting
+        // the untitled forms fall through to Text would render a closed choice as a free-text box and
+        // send back a value the agent was promised could not occur.
+        if (type == "string")
+        {
+            if (property["oneOf"] is JsonArray oneOf)
+            {
+                return new ElicitationField(key, title, description, ElicitationFieldKind.SingleSelect, ParseElicitationOptions(oneOf));
+            }
+
+            if (property["enum"] is JsonArray plainEnum)
+            {
+                return new ElicitationField(key, title, description, ElicitationFieldKind.SingleSelect, ParsePlainEnumOptions(plainEnum));
+            }
+        }
+
+        if (type == "array" && property["items"] is JsonObject items)
+        {
+            if (items["anyOf"] is JsonArray anyOf)
+            {
+                return new ElicitationField(key, title, description, ElicitationFieldKind.MultiSelect, ParseElicitationOptions(anyOf));
+            }
+
+            if (items["enum"] is JsonArray itemEnum)
+            {
+                return new ElicitationField(key, title, description, ElicitationFieldKind.MultiSelect, ParsePlainEnumOptions(itemEnum));
+            }
+        }
+
+        // Any other JSON Schema property type (number/integer/boolean, or a plain string with no
+        // enum/oneOf) - AskUserQuestion, the only realistic source of these requests, never emits them,
+        // so a plain text field is a reasonable fallback rather than a dedicated renderer per type.
+        return new ElicitationField(key, title, description, ElicitationFieldKind.Text, Array.Empty<ElicitationOption>());
+    }
+
+    // A JSON Schema `enum` carries bare values with no titles, so each value is also its own label.
+    private static IReadOnlyList<ElicitationOption> ParsePlainEnumOptions(JsonArray values)
+    {
+        if (values.Count == 0)
+        {
+            return Array.Empty<ElicitationOption>();
+        }
+
+        var result = new List<ElicitationOption>(values.Count);
+        foreach (JsonNode? entry in values)
+        {
+            if (entry is JsonValue value && value.TryGetValue<string>(out string? text))
+            {
+                result.Add(new ElicitationOption(text, text, null));
+            }
+        }
+
+        return result;
+    }
+
+    private static IReadOnlyList<ElicitationOption> ParseElicitationOptions(JsonArray options)
+    {
+        if (options.Count == 0)
+        {
+            return Array.Empty<ElicitationOption>();
+        }
+
+        var result = new List<ElicitationOption>(options.Count);
+        foreach (JsonNode? entry in options)
+        {
+            if (entry is JsonObject option)
+            {
+                // `title` is an optional JSON Schema annotation and `const` carries the option's
+                // value; either one alone is enough to render and answer the option, so only an
+                // option with neither is unusable.
+                string? value = GetOptionalString(option, "const");
+                string? title = GetOptionalString(option, "title");
+                if (value is null && title is null)
+                {
+                    throw new AcpProtocolException("Missing or invalid required 'const' field.");
+                }
+
+                result.Add(new ElicitationOption(value ?? title!, title ?? value!, GetOptionalString(option, "description")));
+            }
+        }
+
+        return result;
+    }
+
+    private static JsonObject BuildElicitationResponse(ElicitationAnswer answer, IReadOnlyList<ElicitationField> fields, JsonObject schema)
+    {
+        string action = answer.Action switch
+        {
+            ElicitationAction.Accept => "accept",
+            ElicitationAction.Decline => "decline",
+            _ => "cancel",
+        };
+
+        if (answer.Action != ElicitationAction.Accept)
+        {
+            return new JsonObject { ["action"] = action };
+        }
+
+        var content = new JsonObject();
+        foreach (ElicitationField field in fields)
+        {
+            if (!answer.Content.TryGetValue(field.Key, out IReadOnlyList<string>? values) || values.Count == 0)
+            {
+                continue; // left blank - omit, rather than sending an empty string/array answer.
+            }
+
+            if (field.Kind != ElicitationFieldKind.MultiSelect && !IsStringTyped(schema, field.Key))
+            {
+                // ACP's ElicitationPropertySchema also covers boolean/number/integer, which render as
+                // free text above; answering one with a JSON string would violate the very schema the
+                // agent published, so leave it unanswered rather than sending "true" for a boolean.
+                continue;
+            }
+
+            content[field.Key] = field.Kind == ElicitationFieldKind.MultiSelect
+                ? new JsonArray(values.Select(value => (JsonNode)value).ToArray())
+                : values[0];
+        }
+
+        return new JsonObject { ["action"] = action, ["content"] = content };
+    }
+
+    private static bool IsStringTyped(JsonObject schema, string key)
+    {
+        string? type = schema["properties"] is JsonObject properties && properties[key] is JsonObject property
+            ? GetOptionalString(property, "type")
+            : null;
+        return type is null || type == "string";
+    }
+
     // Awaits `task`, but also completes (with an OperationCanceledException) as soon as
     // `cancellationToken` fires - e.g. because the underlying connection is being torn down - so a
     // client-side event handler that never resolves its TaskCompletionSourceSlot (an unanswered
@@ -142,13 +344,30 @@ public sealed partial class AcpProcessConnection
             return;
         }
 
-        string? sessionId = GetOptionalString(obj, "sessionId");
-        if (sessionId is null || obj["update"] is not JsonObject updateNode)
+        string? sessionId;
+        SessionUpdate? update;
+        try
         {
+            sessionId = GetOptionalString(obj, "sessionId");
+            if (sessionId is null || obj["update"] is not JsonObject updateNode)
+            {
+                return;
+            }
+
+            update = ParseSessionUpdate(updateNode);
+        }
+        catch (Exception)
+        {
+            // Parsing runs inline on the JSON-RPC read pump, and an escaping exception ends the read
+            // loop and faults every in-flight request. A tool_call without `toolCallId`, a malformed
+            // config_option_update/available_commands_update, or an object System.Text.Json refuses
+            // to materialize (a repeated key throws ArgumentException on the first property read)
+            // degrades to a dropped notification instead - the same treatment usage_update and
+            // session/list rows get. Only the parse is covered: a throwing SessionUpdate subscriber
+            // is a client bug and still surfaces through Disconnected.
             return;
         }
 
-        SessionUpdate? update = ParseSessionUpdate(updateNode);
         if (update is null)
         {
             return; // sessionUpdate discriminator has no ClaudeCode.Contracts.SessionUpdate subclass (yet).
@@ -164,6 +383,9 @@ public sealed partial class AcpProcessConnection
         {
             case "agent_message_chunk":
                 return new SessionUpdate.AgentMessageChunk(ExtractChunkText(update));
+
+            case "user_message_chunk":
+                return new SessionUpdate.UserMessageChunk(ExtractChunkText(update));
 
             case "agent_thought_chunk":
                 return new SessionUpdate.AgentThoughtChunk(ExtractChunkText(update));
@@ -186,12 +408,136 @@ public sealed partial class AcpProcessConnection
             case "available_commands_update":
                 return new SessionUpdate.AvailableCommandsChanged(ParseAvailableCommands(update));
 
+            case "usage_update":
+                return ParseUsageUpdate(update);
+
             default:
-                // user_message_chunk (echo of our own prompt), current_mode_update, usage_update,
-                // etc. have no SessionUpdate subclass in ClaudeCode.Contracts yet;
-                // silently ignored rather than throwing.
+                // current_mode_update, etc. have no SessionUpdate subclass in ClaudeCode.Contracts
+                // yet; silently ignored rather than throwing.
                 return null;
         }
+    }
+
+    // { "used": 8300, "size": 200000, "cost": { "amount": 0.12, "currency": "USD" } } - size/cost optional.
+    // Every number here is agent-supplied and unbounded on the wire, and this runs inline on the
+    // JSON-RPC read pump: an OverflowException out of (decimal), or a wrapped (long) cast, would tear
+    // down the whole connection instead of degrading one notification.
+    private static SessionUpdate.UsageUpdate? ParseUsageUpdate(JsonObject update)
+    {
+        if (ClampToTokenCount(update["used"]) is not long used)
+        {
+            return null;
+        }
+
+        long? size = ClampToTokenCount(update["size"]);
+        decimal? amount = null;
+        string? currency = null;
+        if (update["cost"] is JsonObject cost)
+        {
+            amount = ParseCostAmount(cost["amount"]);
+            currency = GetOptionalString(cost, "currency");
+        }
+
+        return new SessionUpdate.UsageUpdate(used, size, amount, currency);
+    }
+
+    // `used`/`size` are uint64 in ACP: anything above long.MaxValue arrives as a double whose plain
+    // cast wraps to a negative count, so saturate instead, and floor the (schema-invalid) negatives
+    // at zero. Absent, non-numeric or NaN yields null - unknown, not zero.
+    private static long? ClampToTokenCount(JsonNode? node)
+    {
+        if (node is not JsonValue value)
+        {
+            return null;
+        }
+
+        if (value.TryGetValue<long>(out long exact))
+        {
+            return exact < 0L ? 0L : exact;
+        }
+
+        if (!value.TryGetValue<double>(out double approximate) || double.IsNaN(approximate))
+        {
+            return null;
+        }
+
+        if (approximate <= 0d)
+        {
+            return 0L;
+        }
+
+        return approximate >= long.MaxValue ? long.MaxValue : (long)approximate;
+    }
+
+    // decimal's range is far narrower than double's - (decimal)1e29 throws OverflowException, and ACP
+    // bounds cost.amount at nothing. An unrepresentable (or NaN/infinite) cost degrades to "unknown".
+    private static decimal? ParseCostAmount(JsonNode? node) =>
+        node is JsonValue value
+        && value.TryGetValue<double>(out double amount)
+        && amount > -_maxRepresentableCostAmount
+        && amount < _maxRepresentableCostAmount
+            ? (decimal)amount
+            : null;
+
+    private static readonly double _maxRepresentableCostAmount = (double)decimal.MaxValue;
+
+    private static IReadOnlyList<SessionSummary> ParseSessionSummaries(JsonObject response)
+    {
+        JsonArray sessions;
+        try
+        {
+            sessions = response["sessions"] as JsonArray
+                ?? throw new AcpProtocolException("Missing or invalid 'sessions' array.");
+        }
+        catch (ArgumentException)
+        {
+            // A repeated key anywhere in the response body surfaces when the object is first
+            // materialized; report it as the same malformed-response failure the missing-array case
+            // raises, so the caller's broad error handling answers "could not load history".
+            throw new AcpProtocolException("Missing or invalid 'sessions' array.");
+        }
+
+        if (sessions.Count == 0)
+        {
+            return Array.Empty<SessionSummary>();
+        }
+
+        var result = new List<SessionSummary>(sessions.Count);
+        foreach (JsonNode? entry in sessions)
+        {
+            // A single malformed row degrades that row only - the rest of the session history must
+            // still reach the user, otherwise one bad entry hides every session behind "Could not
+            // load session history". ACP marks these list items x-deserialize-skip-invalid-items.
+            if (entry is not JsonObject session)
+            {
+                continue;
+            }
+
+            try
+            {
+                string? sessionId = GetOptionalString(session, "sessionId");
+                string? cwd = GetOptionalString(session, "cwd");
+                if (sessionId is null || cwd is null)
+                {
+                    continue;
+                }
+
+                string? updatedAtRaw = GetOptionalString(session, "updatedAt");
+                DateTimeOffset? updatedAt = updatedAtRaw is not null
+                    && DateTimeOffset.TryParse(updatedAtRaw, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out DateTimeOffset parsed)
+                        ? parsed
+                        : null;
+                result.Add(new SessionSummary(sessionId, cwd, GetOptionalString(session, "title"), updatedAt));
+            }
+            catch (ArgumentException)
+            {
+                // A repeated key in this row throws on its first property read; skip the row exactly
+                // like the other malformed-row cases above.
+                continue;
+            }
+        }
+
+        return result;
     }
 
     private static IReadOnlyList<AvailableCommand> ParseAvailableCommands(JsonObject update)
@@ -386,13 +732,21 @@ public sealed partial class AcpProcessConnection
 
     private static IReadOnlyList<SessionConfigOption> ParseConfigOptions(JsonObject response, bool required = false)
     {
-        if (response["configOptions"] is null && !required)
+        JsonArray configOptions;
+        try
         {
-            return Array.Empty<SessionConfigOption>();
-        }
+            if (response["configOptions"] is null && !required)
+            {
+                return Array.Empty<SessionConfigOption>();
+            }
 
-        if (response["configOptions"] is not JsonArray configOptions)
+            configOptions = response["configOptions"] as JsonArray
+                ?? throw new AcpProtocolException("Missing or invalid 'configOptions' array.");
+        }
+        catch (ArgumentException)
         {
+            // A repeated key in the response body surfaces on first materialization; report it as the
+            // same malformed-response failure the missing-array case raises.
             throw new AcpProtocolException("Missing or invalid 'configOptions' array.");
         }
 
@@ -404,38 +758,47 @@ public sealed partial class AcpProcessConnection
                 throw new AcpProtocolException("Invalid session config option.");
             }
 
-            // This client advertises no boolean-config extension. Ignore future option types
-            // rather than interpreting their values as select strings.
-            if (GetOptionalString(option, "type") != "select")
+            try
             {
-                continue;
-            }
-
-            var id = GetRequiredString(option, "id");
-            var name = GetRequiredString(option, "name");
-            var currentValue = GetRequiredString(option, "currentValue");
-            if (option["options"] is not JsonArray values)
-            {
-                throw new AcpProtocolException("Missing or invalid session config option values.");
-            }
-
-            var choices = new List<SessionConfigValue>();
-            foreach (JsonNode? value in values)
-            {
-                if (value is JsonObject group && group["options"] is JsonArray groupedValues)
+                // This client advertises no boolean-config extension. Ignore future option types
+                // rather than interpreting their values as select strings.
+                if (GetOptionalString(option, "type") != "select")
                 {
-                    foreach (JsonNode? groupedValue in groupedValues)
+                    continue;
+                }
+
+                var id = GetRequiredString(option, "id");
+                var name = GetRequiredString(option, "name");
+                var currentValue = GetRequiredString(option, "currentValue");
+                if (option["options"] is not JsonArray values)
+                {
+                    throw new AcpProtocolException("Missing or invalid session config option values.");
+                }
+
+                var choices = new List<SessionConfigValue>();
+                foreach (JsonNode? value in values)
+                {
+                    if (value is JsonObject group && group["options"] is JsonArray groupedValues)
                     {
-                        choices.Add(ParseConfigValue(groupedValue));
+                        foreach (JsonNode? groupedValue in groupedValues)
+                        {
+                            choices.Add(ParseConfigValue(groupedValue));
+                        }
+                    }
+                    else
+                    {
+                        choices.Add(ParseConfigValue(value));
                     }
                 }
-                else
-                {
-                    choices.Add(ParseConfigValue(value));
-                }
-            }
 
-            result.Add(new SessionConfigOption(id, name, GetOptionalString(option, "category"), currentValue, choices));
+                result.Add(new SessionConfigOption(id, name, GetOptionalString(option, "category"), currentValue, choices));
+            }
+            catch (ArgumentException)
+            {
+                // A repeated key in this option throws on its first property read; skip the option so
+                // one malformed entry cannot hide the rest of the picker.
+                continue;
+            }
         }
 
         return result;

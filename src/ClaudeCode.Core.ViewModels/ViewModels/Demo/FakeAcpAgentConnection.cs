@@ -30,6 +30,14 @@ public sealed class FakeAcpAgentConnection : IAcpAgentConnection
     public Task<NewSessionResult> NewSessionAsync(string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken) =>
         Task.FromResult(new NewSessionResult(Guid.NewGuid().ToString("N"), GetConfigOptions()));
 
+    // The demo/fallback double never persists sessions, so there is nothing to list; History shows
+    // its empty state.
+    public Task<IReadOnlyList<SessionSummary>> ListSessionsAsync(string? cwd, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<SessionSummary>>(Array.Empty<SessionSummary>());
+
+    public Task<NewSessionResult> LoadSessionAsync(string sessionId, string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken) =>
+        Task.FromResult(new NewSessionResult(sessionId, GetConfigOptions()));
+
     public Task<IReadOnlyList<SessionConfigOption>> SetSessionConfigOptionAsync(string sessionId, string configId, string value, CancellationToken cancellationToken)
     {
         if (configId != "model" || (value != "sonnet" && value != "opus"))
@@ -86,13 +94,19 @@ public sealed class FakeAcpAgentConnection : IAcpAgentConnection
         return Task.CompletedTask;
     }
 
+    public Task<RemoteControlState> SetRemoteControlAsync(string sessionId, bool enabled, string? name, CancellationToken cancellationToken) =>
+        Task.FromException<RemoteControlState>(new InvalidOperationException("Remote Control is not available in the demo connection."));
+
     public event EventHandler<SessionUpdateEventArgs>? SessionUpdate;
 
     // FakeAcpAgentConnection is a scripted demo/fallback double: it never asks the client to read or
-    // write files, never requests permission, and never disconnects unexpectedly. These four events
-    // are required by IAcpAgentConnection and legitimately unused here, not dead code.
+    // write files, never requests permission, never asks the user a question, and never disconnects
+    // unexpectedly. These five events are required by IAcpAgentConnection and legitimately unused
+    // here, not dead code.
 #pragma warning disable CS0067
     public event EventHandler<PermissionRequestEventArgs>? PermissionRequested;
+
+    public event EventHandler<ElicitationRequestEventArgs>? ElicitationRequested;
 
     public event EventHandler<FileReadRequestEventArgs>? FileReadRequested;
 

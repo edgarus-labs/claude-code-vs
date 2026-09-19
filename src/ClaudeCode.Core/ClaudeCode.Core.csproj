@@ -10,7 +10,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Markdig.Wpf" Version="0.5.0.1" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3240.44" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
   </ItemGroup>
 
   <ItemGroup>
@@ -23,6 +24,16 @@
       task; ClaudeCode.Acp and ClaudeCode.Vsix are still never referenced.
     -->
     <ProjectReference Include="../ClaudeCode.Core.ViewModels/ClaudeCode.Core.ViewModels.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The transcript's WebView2 page (see Views/ChatPanelView.xaml.cs). Resolved at runtime
+         relative to this assembly's own location, so it must sit alongside the built DLL both
+         here (F5/local build) and in the packaged .vsix (ClaudeCode.Vsix.csproj mirrors this
+         same Content group so it ends up in the same flattened extension folder). -->
+    <Content Include="Resources\Transcript\**\*.*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
 </Project>

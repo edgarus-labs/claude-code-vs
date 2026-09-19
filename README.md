@@ -9,8 +9,10 @@ reads/writes, and answers permission prompts natively in VS UI. Features depend 
 advertised capabilities; this is not a claim of feature parity with the official extension.
 
 Authentication reuses the Claude Code CLI's native configuration and credentials, including
-`CLAUDE_CONFIG_DIR`. The extension does not read, copy, store, or refresh tokens and does not launch its own
-login flow. If needed, run `claude auth login` in a terminal, then use **Check CLI sign-in** in the sidebar.
+`CLAUDE_CONFIG_DIR`. The extension does not launch its own login flow and never touches credentials
+inside the Visual Studio process: the one component that reads an OAuth token (the usage-limit
+lookup) does so in a short-lived subprocess, and only the trimmed JSON it prints crosses back. If
+needed, run `claude auth login` in a terminal, then use **Check CLI sign-in** in the sidebar.
 Restart Visual Studio after changing environment variables.
 
 Install Node.js 22 or newer and the current adapter with
@@ -44,6 +46,38 @@ tools (see `docs/VsControlProtocol.md` for the exact wire contract).
 - **Chat text size:** Ctrl+mouse wheel over the composer or assistant response changes the chat font
   size by one step, from 10 to 28 (default 13). This setting is local to the current chat UI session and
   does not change Visual Studio's editor zoom. Scrolling without Ctrl keeps its normal behavior.
+- **History:** the clock button lists this workspace's sessions; type to filter by title or session id.
+  The header shows the current session's title (first prompt, or the saved title when resumed).
+- **Tasks and changed files:** the agent's task list (plan entries) and every file it edited this session
+  appear as cards above the composer. Each changed file can be opened, accepted (kept) or rejected
+  (restored to its pre-edit content); **Accept all** / **Reject all** apply to the whole list. The list is
+  reset when you start or resume another session.
+- **Implementation plan:** in **Plan** mode, when Claude asks to approve its plan an **Implementation
+  Plan** document tab opens next to your code. **Proceed** approves it; **Review** sends your comments
+  back so Claude revises the plan before implementing.
+- **Status and usage:** while Claude works the transcript shows elapsed time, tokens consumed by the
+  turn and the current activity; the ring next to the model shows how full the context window is
+  (hover for numbers). The gauge button in the header opens the account's session/weekly limits;
+  behind a proxy, set `HTTPS_PROXY`/`HTTP_PROXY` for Visual Studio and use Node 24 or newer, which
+  is the first release whose HTTPS client honours those variables for the usage lookup.
+- **Remote Control:** the **Remote Control** pill turns on driving the session from
+  [claude.ai/code](https://claude.ai/code) (same bridge as the CLI's `--remote-control`); the link button
+  next to it opens this session there. **Tools > Options > Claude Code > Remote Control at startup**
+  turns it on for every new session. Requires the adapter installed via npm (the extension launches it
+  through its bundled `claude-acp-vs.mjs`, which adds this capability on top of the stock adapter).
+- **Notifications:** when Visual Studio is in the background, a Windows notification appears when
+  Claude finishes, needs a permission, or has a plan to review; click it to jump back. Disable it under
+  **Tools > Options > Claude Code > Notify when Visual Studio is in the background**.
+- **Driving Visual Studio:** every session gets MCP tools that act on the live VS instance — open files,
+  read the active document/selection, add files to projects and projects to the solution, **build /
+  rebuild / clean** the solution or one project and read the **Error List** and any **Output** pane, and
+  a full **debugging loop**: set breakpoints, start the startup project under the debugger, wait for a
+  break, inspect the call stack, locals and arbitrary expressions, step, continue, stop. While the app
+  runs Claude can list its windows, read their UI Automation tree, click buttons, toggle checkboxes,
+  type into text boxes and take screenshots of them — only windows of the debugged process are reachable.
+  In **Manual** mode each of these calls asks for permission first; **Accept edits** / **Auto** run
+  them unprompted. See [docs/VsControlProtocol.md](docs/VsControlProtocol.md) for the full list and the
+  trust boundary.
 
 ## Installing and debugging
 
@@ -91,9 +125,10 @@ instance described above.
 
 ## CI/CD
 
-- **CI** (`.github/workflows/ci.yml`): every PR (open/update) and push to `develop`/`main` builds the full solution
+- **CI** (`.github/workflows/ci.yml`): every PR (open/update) and push to `develop` builds the full solution
   in Release and runs all three test projects, on `windows-latest`.
 - **CD** (`.github/workflows/cd.yml`): pushing a tag matching `vX.Y.Z` stamps that version into both the
   `.vsixmanifest` `Identity/@Version` (what Visual Studio's Extensions & Updates dialog displays) and the .NET
-  assembly metadata (`-p:Version=X.Y.Z`), rebuilds, re-runs tests, and publishes a GitHub Release with the built
-  `.vsix` attached.
+  assembly metadata (`-p:Version=X.Y.Z`), rebuilds, re-runs tests, and creates a **draft** GitHub Release with the
+  built `.vsix` and its `SHA256SUMS` attached. A maintainer reviews the generated notes and the assets, then
+  publishes the release by hand.

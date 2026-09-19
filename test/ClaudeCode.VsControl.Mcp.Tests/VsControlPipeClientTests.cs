@@ -298,8 +298,13 @@ public sealed class VsControlPipeClientTests
         Assert.True(sw.Elapsed < TimeSpan.FromSeconds(5), $"Expected the request timeout to fire quickly; took {sw.Elapsed}.");
     }
 
-    [Fact]
-    public async Task SendAsync_ForBuildSolution_UsesTheLongerBuildTimeout_NotTheDefaultRequestTimeout()
+    [Theory]
+    [InlineData("buildSolution")]
+    [InlineData("buildProject")]
+    [InlineData("startDebugging")]
+    [InlineData("openSolution")]
+    [InlineData("addProjectToSolution")]
+    public async Task SendAsync_ForAMethodWithoutAUsableServerSideBound_UsesTheLongerBudget_NotTheDefaultRequestTimeout(string method)
     {
         string pipeName = $"vscontrol-buildtimeout-{Guid.NewGuid():N}";
         using var serverStarted = new SemaphoreSlim(0, 1);
@@ -319,7 +324,7 @@ public sealed class VsControlPipeClientTests
             var request = JsonSerializer.Deserialize<VsControlRequest>(requestLine!, _wireOptions);
 
             // Respond just after the short default request timeout would have fired, but well within
-            // the longer build timeout: proves buildSolution actually gets the longer budget.
+            // the longer build timeout: proves every method that compiles actually gets the longer budget.
             await Task.Delay(TimeSpan.FromMilliseconds(250));
             var response = new VsControlResponse { Id = request!.Id, ResultJson = """{"succeeded":true,"errorCount":0,"warningCount":0}""" };
             await writer.WriteLineAsync(JsonSerializer.Serialize(response, _wireOptions));
@@ -336,12 +341,51 @@ public sealed class VsControlPipeClientTests
             buildTimeout: TimeSpan.FromSeconds(5),
             handshakeToken: "token");
 
-        var result = await client.SendAsync(new VsControlRequest { Id = "1", Method = "buildSolution", ParamsJson = "{}" }, CancellationToken.None);
+        var result = await client.SendAsync(new VsControlRequest { Id = "1", Method = method, ParamsJson = "{}" }, CancellationToken.None);
 
         serverShouldExit.Release();
         await serverTask;
 
         Assert.Null(result.Error);
         Assert.Contains("succeeded", result.ResultJson);
+    }
+
+    [Fact]
+    public async Task ReadLoopTeardown_WhileARequestWriteIsStillInFlight_DoesNotFaultDisposal()
+    {
+        string pipeName = $"vscontrol-teardown-race-{Guid.NewGuid():N}";
+        using var server = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+        await using var client = new VsControlPipeClient(pipeName, handshakeToken: "token");
+        Task connected = server.WaitForConnectionAsync();
+        Task<VsControlResponse> attempt = client.SendAsync(new VsControlRequest
+        {
+            Id = "in-flight",
+            Method = "getSolutionInfo",
+            ParamsJson = new string('x', 8 * 1024 * 1024),
+        }, CancellationToken.None);
+        try
+        {
+            await connected.WaitAsync(TimeSpan.FromSeconds(5));
+            using (var reader = new StreamReader(server, new UTF8Encoding(false), false, 1024, leaveOpen: true))
+            {
+                Assert.Equal("token", await reader.ReadLineAsync());
+                // One char of the request read, the rest backpressured: the write is now in flight.
+                Assert.Equal(1, await reader.ReadAsync(new char[1]));
+            }
+
+            // The VS host vanishes mid-request, so the read loop tears the connection down while
+            // that write is still running. Teardown must join the write instead of disposing the
+            // writer underneath it - otherwise the read loop faults and disposal rethrows.
+            server.Disconnect();
+
+            var disposeFailure = await Record.ExceptionAsync(
+                async () => await client.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.Null(disposeFailure);
+        }
+        finally
+        {
+            _ = await Record.ExceptionAsync(async () => await attempt.WaitAsync(TimeSpan.FromSeconds(5)));
+            server.Dispose();
+        }
     }
 }
