@@ -249,6 +249,19 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         return new NewSessionResult(sessionId, ParseConfigOptions(obj));
     }
 
+    // Extension request answered by the Visual Studio launcher script (claude-acp-vs.mjs), not by the
+    // stock adapter; the launcher forwards it to the Agent SDK's enableRemoteControl control request.
+    public async Task<RemoteControlState> SetRemoteControlAsync(string sessionId, bool enabled, string? name, CancellationToken cancellationToken)
+    {
+        var @params = new JsonObject { ["sessionId"] = sessionId, ["enabled"] = enabled };
+        if (!string.IsNullOrWhiteSpace(name)) @params["name"] = name;
+
+        JsonNode? result = await _rpc.SendRequestAsync("_vs/remoteControl", @params, cancellationToken).ConfigureAwait(false);
+        var obj = result as JsonObject ?? throw new AcpProtocolException("_vs/remoteControl response did not contain a result object.");
+        bool resultEnabled = obj["enabled"] is JsonValue value && value.TryGetValue<bool>(out var parsed) ? parsed : enabled;
+        return new RemoteControlState(resultEnabled, GetOptionalString(obj, "sessionUrl"), GetOptionalString(obj, "connectUrl"));
+    }
+
     public async Task<IReadOnlyList<SessionSummary>> ListSessionsAsync(string? cwd, CancellationToken cancellationToken)
     {
         var @params = new JsonObject { ["cwd"] = cwd };

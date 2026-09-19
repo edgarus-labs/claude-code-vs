@@ -33,6 +33,11 @@ public interface IAcpAgentConnection : IAsyncDisposable
 
     Task CancelAsync(string sessionId, CancellationToken cancellationToken);
 
+    /// <summary>Turns Remote Control (claude.ai/code) on or off for <paramref name="sessionId"/>.
+    /// <paramref name="name"/> labels the session on claude.ai when enabling. Throws when the agent
+    /// does not support it.</summary>
+    Task<RemoteControlState> SetRemoteControlAsync(string sessionId, bool enabled, string? name, CancellationToken cancellationToken);
+
     event EventHandler<SessionUpdateEventArgs> SessionUpdate;
 
     event EventHandler<PermissionRequestEventArgs> PermissionRequested;

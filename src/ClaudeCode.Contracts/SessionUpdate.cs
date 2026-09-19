@@ -57,6 +57,27 @@ public abstract class SessionUpdate
         public IReadOnlyList<AvailableCommand> Commands { get; }
     }
 
+    /// <summary>Context-window usage reported by the agent (ACP <c>usage_update</c>): tokens currently
+    /// used, the window size, and optionally the session's running cost.</summary>
+    public sealed class UsageUpdate : SessionUpdate
+    {
+        public UsageUpdate(long usedTokens, long? contextWindowSize, decimal? costAmount, string? costCurrency)
+        {
+            UsedTokens = usedTokens;
+            ContextWindowSize = contextWindowSize;
+            CostAmount = costAmount;
+            CostCurrency = costCurrency;
+        }
+
+        public long UsedTokens { get; }
+
+        public long? ContextWindowSize { get; }
+
+        public decimal? CostAmount { get; }
+
+        public string? CostCurrency { get; }
+    }
+
     public sealed class TurnEnded : SessionUpdate
     {
         public TurnEnded(string stopReason) => StopReason = stopReason;

@@ -155,6 +155,34 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
     }
 
     [Fact]
+    public async Task SessionUpdate_UsageUpdate_IsSurfacedWithTokensWindowAndCost()
+    {
+        var received = new TaskCompletionSource<List<SessionUpdateEventArgs>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var notifications = new List<SessionUpdateEventArgs>();
+        _connection.SessionUpdate += (_, update) =>
+        {
+            notifications.Add(update);
+            if (notifications.Count == 2) received.TrySetResult(notifications);
+        };
+
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer,
+            """{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"usage_update","used":8300,"size":200000,"cost":{"amount":0.125,"currency":"USD"}}}}""");
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer,
+            """{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"usage_update","used":9100}}}""");
+
+        var updates = await received.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var first = Assert.IsType<SessionUpdate.UsageUpdate>(updates[0].Update);
+        Assert.Equal(8300, first.UsedTokens);
+        Assert.Equal(200000, first.ContextWindowSize);
+        Assert.Equal(0.125m, first.CostAmount);
+        Assert.Equal("USD", first.CostCurrency);
+        var second = Assert.IsType<SessionUpdate.UsageUpdate>(updates[1].Update);
+        Assert.Equal(9100, second.UsedTokens);
+        Assert.Null(second.ContextWindowSize);
+        Assert.Null(second.CostAmount);
+    }
+
+    [Fact]
     public async Task InitializeAsync_CalledTwice_SendsOnlyOneInitializeRequestOverTheWire()
     {
         var firstCall = _connection.InitializeAsync(CancellationToken.None);

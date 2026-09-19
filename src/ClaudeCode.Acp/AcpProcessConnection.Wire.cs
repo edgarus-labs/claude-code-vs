@@ -315,12 +315,35 @@ public sealed partial class AcpProcessConnection
             case "available_commands_update":
                 return new SessionUpdate.AvailableCommandsChanged(ParseAvailableCommands(update));
 
+            case "usage_update":
+                return ParseUsageUpdate(update);
+
             default:
-                // user_message_chunk (echo of our own prompt), current_mode_update, usage_update,
-                // etc. have no SessionUpdate subclass in ClaudeCode.Contracts yet;
-                // silently ignored rather than throwing.
+                // user_message_chunk (echo of our own prompt), current_mode_update, etc. have no
+                // SessionUpdate subclass in ClaudeCode.Contracts yet; silently ignored rather than throwing.
                 return null;
         }
+    }
+
+    // { "used": 8300, "size": 200000, "cost": { "amount": 0.12, "currency": "USD" } } - size/cost optional.
+    private static SessionUpdate.UsageUpdate? ParseUsageUpdate(JsonObject update)
+    {
+        if (update["used"] is not JsonValue usedValue || !usedValue.TryGetValue<long>(out var used))
+        {
+            if (update["used"] is JsonValue usedDouble && usedDouble.TryGetValue<double>(out var asDouble)) used = (long)asDouble;
+            else return null;
+        }
+
+        long? size = update["size"] is JsonValue sizeValue && sizeValue.TryGetValue<double>(out var sizeDouble) ? (long)sizeDouble : null;
+        decimal? amount = null;
+        string? currency = null;
+        if (update["cost"] is JsonObject cost)
+        {
+            if (cost["amount"] is JsonValue amountValue && amountValue.TryGetValue<double>(out var amountDouble)) amount = (decimal)amountDouble;
+            currency = GetOptionalString(cost, "currency");
+        }
+
+        return new SessionUpdate.UsageUpdate(used, size, amount, currency);
     }
 
     private static IReadOnlyList<SessionSummary> ParseSessionSummaries(JsonObject response)
