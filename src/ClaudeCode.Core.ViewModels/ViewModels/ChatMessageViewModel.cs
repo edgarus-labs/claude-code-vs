@@ -1,5 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Text;
 
@@ -30,20 +31,21 @@ public sealed class ChatMessageViewModel : ObservableObject
 
     private int? _durationSeconds;
 
-    /// <summary>How long this turn took, set once when it ends. Token/cost usage would belong here
-    /// too, but the ACP adapter this extension talks to (@zed-industries/claude-code-acp, an external
-    /// npm package) reads that off the SDK's "result" message and never forwards it - only
-    /// `stopReason` survives into the ACP response. Not fixable from this repo.</summary>
+    /// <summary>How long this turn took, set once when it ends. Per-turn cost would belong here too,
+    /// but the ACP adapter this extension talks to (@agentclientprotocol/claude-agent-acp, an
+    /// external npm package) reads the SDK "result" message's cost/usage and does not forward it -
+    /// only `stopReason` survives into the ACP response. Context tokens arrive separately as
+    /// <c>usage_update</c> (see <see cref="TokensUsed"/>).</summary>
     public int? DurationSeconds
     {
         get => _durationSeconds;
         set => SetProperty(ref _durationSeconds, value);
     }
 
-    private System.Collections.Generic.IReadOnlyList<ChatMessageImage> _images = Array.Empty<ChatMessageImage>();
+    private IReadOnlyList<ChatMessageImage> _images = Array.Empty<ChatMessageImage>();
 
     /// <summary>Images the user sent with this message (rendered as thumbnails in the transcript).</summary>
-    public System.Collections.Generic.IReadOnlyList<ChatMessageImage> Images
+    public IReadOnlyList<ChatMessageImage> Images
     {
         get => _images;
         set => SetProperty(ref _images, value);

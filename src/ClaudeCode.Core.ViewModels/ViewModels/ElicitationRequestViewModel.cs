@@ -178,6 +178,13 @@ public sealed class ElicitationRequestViewModel
                 return text;
             }
 
+            // Cutting between the halves of a surrogate pair leaves a lone high surrogate that the
+            // card renders as a replacement box before the ellipsis.
+            if (allowed > 0 && char.IsHighSurrogate(text[allowed - 1]))
+            {
+                allowed--;
+            }
+
             _remaining -= allowed;
             return text.Substring(0, allowed) + "…";
         }

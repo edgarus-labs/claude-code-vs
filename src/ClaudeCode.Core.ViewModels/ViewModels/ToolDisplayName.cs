@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Text;
 
 namespace ClaudeCode.Core.ViewModels;
@@ -18,18 +17,22 @@ public static class ToolDisplayName
     private const string McpSeparator = "__";
 
     /// <summary>
-    /// The bound on the returned string, matching the one the notification path already applies to
-    /// the same text (<c>ChatViewModel.Truncate(message, 160)</c>).
+    /// A denial-of-service bound on the returned string, not a layout rule: the permission card
+    /// bounds its own height with a ScrollViewer (ChatPanelView.xaml) and the transcript header
+    /// clips with an ellipsis, so the text itself may keep every line the agent authored. The
+    /// single-line rule for the attention notification lives in
+    /// <see cref="SessionTitleFormat.SingleLine"/>, applied by <c>ChatViewModel.RaiseAttention</c>.
     /// </summary>
-    private const int MaxDisplayLength = 160;
+    public const int MaxDisplayLength = 4_000;
 
     /// <summary>
     /// Formats <paramref name="title"/> for display. MCP identifiers become
     /// "<c>Visual Studio: List app windows</c>"; anything else is already human-authored
-    /// (<c>Read</c>, <c>Bash</c>, <c>Find "**/*.sln"</c>) and keeps its wording. Either way the
-    /// result is one bounded line with control and bidi characters removed: the permission card
-    /// wraps this string in an auto-sized row above the Allow/Deny buttons, so an unbounded one
-    /// would push the user's only way to answer the prompt out of the panel.
+    /// (<c>Read</c>, <c>Bash</c>, <c>Find "**/*.sln"</c>) and keeps its wording, line breaks
+    /// included. A Bash/PowerShell title is the whole command and, with no terminal capability
+    /// advertised, the only text the permission card can show for it - the user cannot approve a
+    /// tail they were not shown, so lines are never collapsed or cut short of
+    /// <see cref="MaxDisplayLength"/>. Control and bidi characters are removed on every line.
     /// </summary>
     public static string Describe(string? title)
     {
@@ -74,9 +77,10 @@ public static class ToolDisplayName
     }
 
     /// <summary>
-    /// Reduces an agent-authored title to its first non-empty line and drops control and bidi
-    /// formatting characters, which can hide or reverse part of the name the user is approving.
-    /// Runs before the MCP marker is matched, so a leading control character cannot conceal it.
+    /// Drops control and bidi formatting characters, which can hide or reverse part of the name the
+    /// user is approving, line by line so the line structure of a shell command survives. A tab
+    /// becomes a space rather than vanishing, so it still separates the words it separated. Runs
+    /// before the MCP marker is matched, so a leading control character cannot conceal it.
     /// </summary>
     private static string Normalize(string? title)
     {
@@ -85,42 +89,32 @@ public static class ToolDisplayName
             return string.Empty;
         }
 
-        var builder = new StringBuilder(Math.Min(title!.Length, MaxDisplayLength));
-        bool hasContent = false;
-        foreach (char c in title!)
+        string[] lines = title!.Replace('\t', ' ').Split('\n');
+        for (int i = 0; i < lines.Length; i++)
         {
-            if (c == '\n' || c == '\r')
-            {
-                if (hasContent)
-                {
-                    break;
-                }
-
-                // Nothing but whitespace so far, so this was a blank leading line.
-                builder.Clear();
-                continue;
-            }
-
-            if (char.IsControl(c) || char.GetUnicodeCategory(c) == UnicodeCategory.Format)
-            {
-                // A tab still separates words; the rest carry no meaning worth displaying.
-                if (char.IsWhiteSpace(c))
-                {
-                    builder.Append(' ');
-                }
-
-                continue;
-            }
-
-            hasContent |= !char.IsWhiteSpace(c);
-            builder.Append(c);
+            lines[i] = SessionTitleFormat.StripControlAndBidi(lines[i]).TrimEnd();
         }
 
-        return builder.ToString().Trim();
+        return string.Join("\n", lines).Trim();
     }
 
-    private static string Cap(string value) =>
-        value.Length <= MaxDisplayLength ? value : value.Substring(0, MaxDisplayLength - 1) + "…";
+    private static string Cap(string value)
+    {
+        if (value.Length <= MaxDisplayLength)
+        {
+            return value;
+        }
+
+        // Cutting between the halves of a surrogate pair would leave a lone high surrogate that
+        // renders as a replacement box before the ellipsis.
+        int cut = MaxDisplayLength - 1;
+        if (char.IsHighSurrogate(value[cut - 1]))
+        {
+            cut--;
+        }
+
+        return value.Substring(0, cut).TrimEnd() + "…";
+    }
 
     /// <summary>"visual-studio" -> "Visual Studio".</summary>
     private static string TitleCase(string slug)

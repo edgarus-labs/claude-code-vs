@@ -17,14 +17,15 @@ public static class SessionTitleFormat
 
     /// <summary>The first usable line of <paramref name="title"/>, ellipsised at
     /// <see cref="MaxTitleLength"/>. With no usable title, falls back to the leading
-    /// <c>8</c> characters of <paramref name="sessionId"/> - or the empty string when that is null
-    /// too, which callers that own their own fallback (the panel header) pass.</summary>
+    /// <c>8</c> characters of <paramref name="sessionId"/>'s first usable line - the id is
+    /// agent-reported too, and lands in the same single-row surface - or the empty string when
+    /// that is null too, which callers that own their own fallback (the panel header) pass.</summary>
     public static string Describe(string? title, string? sessionId)
     {
         string line = SingleLine(title, MaxTitleLength);
         if (line.Length > 0) return line;
 
-        string id = sessionId ?? string.Empty;
+        string id = FirstUsableLine(sessionId);
         return id.Length <= SessionIdPrefixLength ? id : id.Substring(0, SessionIdPrefixLength);
     }
 
@@ -34,17 +35,22 @@ public static class SessionTitleFormat
     /// <paramref name="maxLength"/>, or the empty string when there is none.</summary>
     internal static string SingleLine(string? text, int maxLength)
     {
+        string line = FirstUsableLine(text);
+        if (line.Length <= maxLength) return line;
+        // Cutting between the halves of a surrogate pair leaves a lone high surrogate that
+        // TrimEnd will not remove and the text layout renders as a replacement box.
+        int cut = maxLength - 1;
+        if (char.IsHighSurrogate(line[cut - 1])) cut--;
+        return line.Substring(0, cut).TrimEnd() + "…";
+    }
+
+    private static string FirstUsableLine(string? text)
+    {
         if (string.IsNullOrWhiteSpace(text)) return string.Empty;
         foreach (string rawLine in text!.Split(LineBreaks))
         {
             string line = StripControlAndBidi(rawLine).Trim();
-            if (line.Length == 0) continue;
-            if (line.Length <= maxLength) return line;
-            // Cutting between the halves of a surrogate pair leaves a lone high surrogate that
-            // TrimEnd will not remove and the text layout renders as a replacement box.
-            int cut = maxLength - 1;
-            if (char.IsHighSurrogate(line[cut - 1])) cut--;
-            return line.Substring(0, cut).TrimEnd() + "…";
+            if (line.Length > 0) return line;
         }
 
         return string.Empty;
@@ -57,7 +63,8 @@ public static class SessionTitleFormat
     // Trim only reaches the ends. Interior C0/C1 controls and bidi overrides survive into the
     // header, its tooltip and the notification text, where U+202E silently reverses the rest of
     // the line; nothing downstream makes a decision on the title, so removing them is enough.
-    private static string StripControlAndBidi(string line)
+    // Shared with ToolDisplayName so the tool-title consent surface strips the same set.
+    internal static string StripControlAndBidi(string line)
     {
         int first = -1;
         for (int index = 0; index < line.Length; index++)
@@ -78,8 +85,9 @@ public static class SessionTitleFormat
         return kept.ToString();
     }
 
+    // Format (Cf) covers every bidi control (U+061C, U+200E/F, U+202A-E, U+2066-9) and the
+    // zero-width characters (U+200B-D, U+2060, U+FEFF); none of them is whitespace, so a title
+    // made only of them would otherwise pass as content and blank the row with no fallback.
     private static bool IsControlOrBidi(char value) =>
-        CharUnicodeInfo.GetUnicodeCategory(value) == UnicodeCategory.Control
-        || value == '\u061C' || value == '\u200E' || value == '\u200F'
-        || (value >= '\u202A' && value <= '\u202E') || (value >= '\u2066' && value <= '\u2069');
+        CharUnicodeInfo.GetUnicodeCategory(value) is UnicodeCategory.Control or UnicodeCategory.Format;
 }

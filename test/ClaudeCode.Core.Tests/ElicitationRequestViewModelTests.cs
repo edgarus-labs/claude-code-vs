@@ -318,6 +318,10 @@ public sealed class ElicitationRequestViewModelTests
 
         var vm = new ElicitationRequestViewModel(huge, fields, _ => { });
 
+        // The message is spent from the budget first: it is the prompt the user has to read, so a
+        // form padded with overlong option text must not be what squeezes it down to "…".
+        Assert.Equal(huge, vm.Message);
+
         int rendered = vm.Message.Length + vm.Fields.Sum(field =>
             (field.Title?.Length ?? 0) + (field.Description?.Length ?? 0)
             + field.Options.Sum(option => option.Label.Length + (option.Description?.Length ?? 0)));
@@ -329,6 +333,18 @@ public sealed class ElicitationRequestViewModelTests
             rendered <= ElicitationRequestViewModel.MaxFormTextLength + markers,
             $"The form carries {rendered} characters of agent-authored display text; the per-form budget is "
                 + $"{ElicitationRequestViewModel.MaxFormTextLength}.");
+    }
+
+    // The cut lands at index MaxDisplayTextLength; a pair straddling it would be halved and the
+    // card would render a replacement box before the ellipsis - reachable from an ordinary emoji.
+    [Fact]
+    public void Constructor_CuttingOverlongText_NeverLeavesHalfOfASurrogatePair()
+    {
+        var message = new string('a', ElicitationRequestViewModel.MaxDisplayTextLength - 1) + "\U0001F600" + new string('b', 40);
+
+        var vm = new ElicitationRequestViewModel(message, [], _ => { });
+
+        Assert.Equal(new string('a', ElicitationRequestViewModel.MaxDisplayTextLength - 1) + "…", vm.Message);
     }
 
     [Fact]
