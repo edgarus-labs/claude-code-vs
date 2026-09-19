@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Security.AccessControl;
 using System.Security.Principal;
+using System.Text;
 using ClaudeCode.Contracts;
 using Xunit;
 
@@ -20,6 +21,20 @@ public sealed class WorkspacePathGuardTests
             path = Path.Combine(path, segment);
         }
         return path;
+    }
+
+    private static void CreateJunction(string junctionPath, string targetPath)
+    {
+        var startInfo = new ProcessStartInfo("cmd.exe", $"/c mklink /J \"{junctionPath}\" \"{targetPath}\"")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        using var mklink = Process.Start(startInfo)!;
+        mklink.WaitForExit(10_000);
+        Assert.Equal(0, mklink.ExitCode);
     }
 
     [Fact]
@@ -127,16 +142,7 @@ public sealed class WorkspacePathGuardTests
         {
             File.WriteAllText(Path.Combine(outside, "secret.txt"), "top secret");
 
-            var startInfo = new ProcessStartInfo("cmd.exe", $"/c mklink /J \"{junctionPath}\" \"{outside}\"")
-            {
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-            };
-            using var mklink = Process.Start(startInfo)!;
-            mklink.WaitForExit(10_000);
-            Assert.Equal(0, mklink.ExitCode);
+            CreateJunction(junctionPath, outside);
 
             var candidate = Path.Combine(junctionPath, "secret.txt");
 
@@ -199,6 +205,40 @@ public sealed class WorkspacePathGuardTests
         }
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("secret.txt")]
+    public void TryResolveWithinWorkspace_WindowsDanglingJunction_IsRejected(string leaf)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            // NTFS junctions are a Windows-only reparse-point mechanism; nothing to verify elsewhere.
+            return;
+        }
+
+        string workspace = Directory.CreateTempSubdirectory("wpg-workspace-").FullName;
+        string outside = Directory.CreateTempSubdirectory("wpg-outside-").FullName;
+        string junctionPath = Path.Combine(workspace, "link");
+        try
+        {
+            CreateJunction(junctionPath, outside);
+            // A junction outlives its target: the reparse point now names a location outside the
+            // workspace that does not exist, so opening through it reports ERROR_FILE_NOT_FOUND /
+            // ERROR_PATH_NOT_FOUND exactly like a component that was never created.
+            Directory.Delete(outside);
+
+            string candidate = leaf.Length == 0 ? junctionPath : Path.Combine(junctionPath, leaf);
+
+            Assert.False(WorkspacePathGuard.TryResolveWithinWorkspace(workspace, candidate, out _));
+        }
+        finally
+        {
+            Directory.Delete(junctionPath);
+            Directory.Delete(workspace, recursive: true);
+            if (Directory.Exists(outside)) Directory.Delete(outside, recursive: true);
+        }
+    }
+
     [Fact]
     public void AcquireDocument_WindowsBlocksPathReplacementUntilDisposed()
     {
@@ -258,6 +298,110 @@ public sealed class WorkspacePathGuardTests
             Assert.False(rule.IsInherited);
             Assert.Equal(InheritanceFlags.None, rule.InheritanceFlags);
             Assert.Equal(PropagationFlags.None, rule.PropagationFlags);
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void AcquireFile_ReadAllText_IsRepeatable()
+    {
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux()) return;
+
+        string workspace = Directory.CreateTempSubdirectory("wpg-read-").FullName;
+        string file = Path.Combine(workspace, "notes.txt");
+        File.WriteAllText(file, "retained content");
+        try
+        {
+            using var lease = WorkspacePathGuard.AcquireFile(workspace, file);
+
+            Assert.Equal("retained content", lease.ReadAllText());
+            // The lease's whole purpose is to hold the handle for the duration of the operation:
+            // a read must not close it, or the sharing pin dies mid-operation.
+            Assert.Equal("retained content", lease.ReadAllText());
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void AcquireFile_WriteThenRead_ThroughOneLease_RoundTrips()
+    {
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux()) return;
+
+        string workspace = Directory.CreateTempSubdirectory("wpg-write-").FullName;
+        string file = Path.Combine(workspace, "notes.txt");
+        File.WriteAllText(file, "original");
+        try
+        {
+            using var lease = WorkspacePathGuard.AcquireFile(workspace, file);
+
+            lease.WriteAllText("replacement");
+
+            Assert.Equal("replacement", lease.ReadAllText());
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void AcquireFile_ReadThenWrite_ThroughOneLease_PreservesByteOrderMark()
+    {
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux()) return;
+
+        string workspace = Directory.CreateTempSubdirectory("wpg-bom-").FullName;
+        string file = Path.Combine(workspace, "notes.txt");
+        File.WriteAllText(file, "original", new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+        try
+        {
+            using (var lease = WorkspacePathGuard.AcquireFile(workspace, file))
+            {
+                Assert.Equal("original", lease.ReadAllText());
+
+                lease.WriteAllText("replacement");
+            }
+
+            // BOM detection reads through the lease handle, so a preceding read must leave it usable.
+            Assert.Equal(new byte[] { 0xEF, 0xBB, 0xBF }, File.ReadAllBytes(file)[..3]);
+            Assert.Equal("replacement", File.ReadAllText(file));
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void AcquireDocument_WindowsPermitsHostWriterWhilePinningAgainstDeletion()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        string workspace = Directory.CreateTempSubdirectory("wpg-doc-").FullName;
+        string file = Path.Combine(workspace, "doc.txt");
+        File.WriteAllText(file, "original");
+        try
+        {
+            using (WorkspacePathGuard.AcquireDocument(workspace, file))
+            {
+                // VS opens and saves the protected document by path; denying write sharing would
+                // fail every editor save with a sharing violation.
+                using (var editor = new FileStream(file, FileMode.Create, FileAccess.Write, FileShare.ReadWrite))
+                using (var writer = new StreamWriter(editor))
+                {
+                    writer.Write("saved by the host editor");
+                }
+
+                Assert.Throws<IOException>(() => File.Delete(file));
+            }
+
+            Assert.Equal("saved by the host editor", File.ReadAllText(file));
+            File.Delete(file);
         }
         finally
         {

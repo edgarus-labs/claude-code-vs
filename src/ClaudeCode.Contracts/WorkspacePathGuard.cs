@@ -123,7 +123,7 @@ public static class WorkspacePathGuard
             // failures and dangling links are not evidence that the path is safe.
             int error = Marshal.GetLastWin32Error();
             bool windows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
-            if ((windows && error != 2 && error != 3)
+            if ((windows && !IsAbsentOnWindows(current, error))
                 || (!windows && (error != 2 || ReadLink(GetUnixPathBytes(current), new byte[1], new UIntPtr(1)).ToInt64() >= 0)))
             {
                 canonical = string.Empty;
@@ -143,6 +143,29 @@ public static class WorkspacePathGuard
             suffix = suffix.Length == 0 ? segment : segment + Path.DirectorySeparatorChar + suffix;
             current = parent;
         }
+    }
+
+    /// <summary>
+    /// Distinguishes a component that does not exist from a dangling reparse point. CreateFileW
+    /// without FILE_FLAG_OPEN_REPARSE_POINT follows the reparse data, so a junction or symlink
+    /// whose target is missing fails with the same ERROR_FILE_NOT_FOUND / ERROR_PATH_NOT_FOUND as
+    /// an absent entry — yet the link itself exists and can be repointed anywhere at any time.
+    /// GetFileAttributesW reports the link's own attributes without following it.
+    /// </summary>
+    private static bool IsAbsentOnWindows(string path, int openError)
+    {
+        if (openError != 2 && openError != 3)
+        {
+            return false;
+        }
+
+        if (GetFileAttributesW(path) != InvalidFileAttributes)
+        {
+            return false;
+        }
+
+        int attributeError = Marshal.GetLastWin32Error();
+        return attributeError == 2 || attributeError == 3;
     }
 
     private static bool TryGetFinalPath(string path, out string finalPath)
@@ -192,6 +215,7 @@ public static class WorkspacePathGuard
     private const uint FileShareReadWriteDelete = 0x00000001 | 0x00000002 | 0x00000004;
     private const uint OpenExisting = 3;
     private const uint FileFlagBackupSemantics = 0x02000000;
+    private const uint InvalidFileAttributes = 0xFFFFFFFF;
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, ExactSpelling = true)]
     private static extern SafeFileHandle CreateFileW(
@@ -209,6 +233,9 @@ public static class WorkspacePathGuard
         char[] lpszFilePath,
         uint cchFilePath,
         uint dwFlags);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, ExactSpelling = true)]
+    private static extern uint GetFileAttributesW(string lpFileName);
 
     internal static byte[] GetUnixPathBytes(string path)
     {

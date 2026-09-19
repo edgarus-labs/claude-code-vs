@@ -68,9 +68,33 @@ public sealed class WorkspacePathLease : IDisposable
     {
         ThrowIfDisposed();
         if (_file is null) throw new FileNotFoundException("The workspace file does not exist.", FullPath);
-        using var stream = new FileStream(_file, FileAccess.Read);
+        using var stream = OpenRetainedRead();
         using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
         return reader.ReadToEnd();
+    }
+
+    /// <summary>
+    /// Reads through the retained handle without surrendering it: a <see cref="FileStream"/> built
+    /// directly over <c>_file</c> closes that handle on dispose, which both breaks every later
+    /// operation on the lease and drops the sharing pin the lease exists to hold.
+    /// </summary>
+    private FileStream OpenRetainedRead()
+    {
+        var borrowed = new SafeFileHandle(_file!.DangerousGetHandle(), ownsHandle: false);
+        FileStream? stream = null;
+        try
+        {
+            stream = new FileStream(borrowed, FileAccess.Read);
+            // The handle's file position is shared with every earlier read, so rewind explicitly.
+            stream.Seek(0, SeekOrigin.Begin);
+            return stream;
+        }
+        catch
+        {
+            stream?.Dispose();
+            borrowed.Dispose();
+            throw;
+        }
     }
 
     /// <summary>Preserves a supported BOM and atomically replaces the entry in the pinned parent directory.</summary>
@@ -124,13 +148,17 @@ public sealed class WorkspacePathLease : IDisposable
             }
             throw;
         }
+
+        // The lease outlives the replacement: reopen the new leaf through the still-pinned parent
+        // so later reads, DACL capture and BOM detection keep working against the current entry.
+        _file = OpenLeaf(document: false);
     }
 
     private Encoding DetectEncoding()
     {
         if (_file is null) return new UTF8Encoding(false);
         var buffer = new byte[4];
-        using var stream = new FileStream(_file, FileAccess.Read);
+        using var stream = OpenRetainedRead();
         int count = stream.Read(buffer, 0, buffer.Length);
         if (count >= 3 && buffer[0] == 0xEF && buffer[1] == 0xBB && buffer[2] == 0xBF) return new UTF8Encoding(true);
         if (count >= 2 && buffer[0] == 0xFF && buffer[1] == 0xFE) return Encoding.Unicode;
@@ -226,7 +254,9 @@ public sealed class WorkspacePathLease : IDisposable
         if (_windows)
         {
             // A zero-access metadata handle cannot enforce the document's no-delete sharing.
-            var handle = CreateFileW(FullPath, GenericRead, document ? 1u : 7u, IntPtr.Zero, 3, OpenReparsePoint, IntPtr.Zero);
+            // A document lease shares read and write so the host editor can still open and save
+            // the file, and withholds only FILE_SHARE_DELETE so the path cannot be replaced.
+            var handle = CreateFileW(FullPath, GenericRead, document ? FileShareReadWrite : FileShareReadWriteDelete, IntPtr.Zero, 3, OpenReparsePoint, IntPtr.Zero);
             if (handle.IsInvalid && Marshal.GetLastWin32Error() == 2)
             {
                 handle.Dispose();
@@ -280,6 +310,8 @@ public sealed class WorkspacePathLease : IDisposable
     private const uint GenericRead = 0x80000000;
     private const uint BackupSemantics = 0x02000000;
     private const uint OpenReparsePoint = 0x00200000;
+    private const uint FileShareReadWrite = 0x00000001 | 0x00000002;
+    private const uint FileShareReadWriteDelete = 0x00000001 | 0x00000002 | 0x00000004;
     private const int OpenWriteOnly = 1;
     private const int OpenCreate = 0x40;
     private const int OpenExclusive = 0x80;
