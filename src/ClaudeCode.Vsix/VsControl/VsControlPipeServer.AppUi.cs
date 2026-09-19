@@ -26,11 +26,13 @@ namespace ClaudeCode.Vsix.VsControl;
 /// Screenshots take one of two routes. <c>PrintWindow</c> asks the app to render itself, so it is
 /// unaffected by what is on top of it and needs no gate. The desktop-reading fallback - the only route
 /// while the app is stopped at a breakpoint - does read the screen, and is allowed only while the
-/// window provably owns every pixel it would copy: a top-level window that is visible, restored, not
+/// window owns every pixel it would copy: a top-level window that is visible, restored, not
 /// DWM-cloaked, neither layered nor region-shaped, entirely on screen, no larger than the desktop,
-/// uncovered, and unmoved across the blit. It copies the DWM frame rather than the window rectangle,
-/// whose invisible resize border and rounded corners belong to the window below. Anything less refuses
-/// with <c>captured: false</c> and a reason, carrying no image and no dimensions.
+/// uncovered, and unmoved across the blit. It copies the DWM extended frame rather than the window
+/// rectangle, which drops the invisible resize border that belongs to the window below; the extended
+/// frame is still a rectangle, so on Windows 11 the few blended pixels of each rounded corner show
+/// what lies beneath. Anything less refuses with <c>captured: false</c> and a reason, carrying no
+/// image and no dimensions.
 /// </para>
 /// </summary>
 internal sealed partial class VsControlPipeServer
@@ -135,17 +137,35 @@ internal sealed partial class VsControlPipeServer
             {
                 ["hwnd"] = hwnd.ToInt64(),
                 ["pending"] = true,
-                ["note"] = "The app has not answered the UI Automation walk yet (it may be stopped at a breakpoint); use waitForBreak or getDebuggerState.",
+                ["note"] = "The app has not answered the UI Automation walk yet; an app stopped at a breakpoint cannot answer it, so check getDebuggerState and continueDebugging before retrying.",
             };
         }
 
         return new JObject { ["hwnd"] = hwnd.ToInt64(), ["root"] = tree, ["truncated"] = budget.Truncated };
     }
 
+    private static readonly HashSet<string> _elementActions = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "invoke",
+        "toggle",
+        "select",
+        "expand",
+        "collapse",
+        "focus",
+    };
+
     private static async Task<JObject> InvokeElementAsync(JObject args, CancellationToken cancellationToken = default)
     {
         var hwnd = await ResolveDebuggedWindowAsync(args, cancellationToken);
         var action = (args["action"]?.Value<string>() ?? "invoke").ToLowerInvariant();
+
+        // Before the element search: a request that can never succeed must not spend a cross-process
+        // UIA walk against the debuggee, and against a stopped app must not report "pending" instead
+        // of the error.
+        if (!_elementActions.Contains(action))
+        {
+            throw UnknownElementAction(action);
+        }
 
         var result = await RunUiActionAsync(action, () =>
         {
@@ -171,7 +191,7 @@ internal sealed partial class VsControlPipeServer
                     element.SetFocus();
                     break;
                 default:
-                    throw new InvalidOperationException($"Unknown action '{action}'; use invoke, toggle, select, expand, collapse or focus.");
+                    throw UnknownElementAction(action);
             }
 
             return DescribeElement(element);
@@ -180,6 +200,9 @@ internal sealed partial class VsControlPipeServer
         result["action"] = action;
         return result;
     }
+
+    private static InvalidOperationException UnknownElementAction(string action) =>
+        new InvalidOperationException($"Unknown action '{action}'; use invoke, toggle, select, expand, collapse or focus.");
 
     private static async Task<JObject> SetElementValueAsync(JObject args, CancellationToken cancellationToken = default)
     {
@@ -366,9 +389,10 @@ internal sealed partial class VsControlPipeServer
         }
 
         // The window rectangle is larger than the pixels the window owns: the invisible resize border
-        // lies outside the DWM frame and is transparent, and rounded corners leave the corner pixels to
-        // the window below. Classify the window rectangle - the conservative one for occlusion - and
-        // copy only the frame.
+        // lies outside the DWM frame and is transparent. Classify the window rectangle - the
+        // conservative one for occlusion - and copy only the frame. The frame is itself a rectangle,
+        // so the blended pixels of each rounded corner (a few per corner on Windows 11) still belong
+        // to the window below; that is the one known leak of this route, and it carries no content.
         var painted = WindowCaptureRules.PaintedBounds(window, ExtendedFrameBounds(hwnd));
         using var bitmap = new Bitmap(painted.Width, painted.Height, PixelFormat.Format24bppRgb);
         using (var graphics = Graphics.FromImage(bitmap))
@@ -669,7 +693,7 @@ internal sealed partial class VsControlPipeServer
         AutomationElement? element;
         if (!string.IsNullOrEmpty(runtimeId))
         {
-            element = FindByRuntimeId(root, runtimeId!);
+            element = FindByRuntimeId(root, runtimeId!, 0, new ElementBudget(_maxElementCount - 1));
         }
         else
         {
@@ -684,27 +708,35 @@ internal sealed partial class VsControlPipeServer
         return element ?? throw new InvalidOperationException("No matching element; use getWindowElements to see what the window contains.");
     }
 
-    private static AutomationElement? FindByRuntimeId(AutomationElement root, string runtimeId)
+    /// <summary>
+    /// Resolves a <c>runtimeId</c> the server itself handed out. The search must be able to reach
+    /// every node <see cref="ElementToJson"/> can list, so it is the same walk: forward pre-order,
+    /// the depth clamp, and a node budget charged per child before descending - at the ceilings of
+    /// both, since the request does not say which <c>maxDepth</c>/<c>maxNodes</c> listed the id. A
+    /// reverse-order walk with a global budget would spend it all on a late sibling's data-bound
+    /// rows and never descend into the earlier one the id came from. Charging before descending
+    /// also caps the cross-process <c>GetNextSibling</c> calls a hundred-thousand-row list would
+    /// otherwise cost.
+    /// </summary>
+    private static AutomationElement? FindByRuntimeId(AutomationElement element, string runtimeId, int depth, ElementBudget budget)
     {
-        var budget = _maxElementCount;
-        var walker = TreeWalker.ControlViewWalker;
-        var stack = new Stack<AutomationElement>();
-        stack.Push(root);
-        while (stack.Count > 0)
+        if (string.Equals(FormatRuntimeId(element.GetRuntimeId()), runtimeId, StringComparison.Ordinal))
         {
-            var element = stack.Pop();
-            if (string.Equals(FormatRuntimeId(element.GetRuntimeId()), runtimeId, StringComparison.Ordinal))
-            {
-                return element;
-            }
+            return element;
+        }
 
-            // The budget is charged per sibling pushed rather than per element popped: one data-bound
-            // list with a hundred thousand children would otherwise run that many cross-process
-            // GetNextSibling calls, and grow the stack to match, before a single unit was spent.
-            for (var child = walker.GetFirstChild(element); child is not null && budget > 0; child = walker.GetNextSibling(child))
+        if (depth >= _maxElementDepth)
+        {
+            return null;
+        }
+
+        var walker = TreeWalker.ControlViewWalker;
+        for (var child = walker.GetFirstChild(element); child is not null && budget.TryTake(); child = walker.GetNextSibling(child))
+        {
+            var found = FindByRuntimeId(child, runtimeId, depth + 1, budget);
+            if (found is not null)
             {
-                budget--;
-                stack.Push(child);
+                return found;
             }
         }
 
@@ -731,9 +763,9 @@ internal sealed partial class VsControlPipeServer
         {
             ["runtimeId"] = FormatRuntimeId(element.GetRuntimeId()),
             ["controlType"] = ControlTypeName(current.ControlType),
-            ["name"] = NullIfEmpty(current.Name),
-            ["automationId"] = NullIfEmpty(current.AutomationId),
-            ["className"] = NullIfEmpty(current.ClassName),
+            ["name"] = NullIfEmpty(CapValue(current.Name)),
+            ["automationId"] = NullIfEmpty(CapValue(current.AutomationId)),
+            ["className"] = NullIfEmpty(CapValue(current.ClassName)),
             ["bounds"] = RectToJson(current.BoundingRectangle),
             ["isEnabled"] = current.IsEnabled,
             ["isOffscreen"] = current.IsOffscreen,
@@ -810,8 +842,8 @@ internal sealed partial class VsControlPipeServer
         {
             ["runtimeId"] = FormatRuntimeId(element.GetRuntimeId()),
             ["controlType"] = ControlTypeName(current.ControlType),
-            ["name"] = NullIfEmpty(current.Name),
-            ["automationId"] = NullIfEmpty(current.AutomationId),
+            ["name"] = NullIfEmpty(CapValue(current.Name)),
+            ["automationId"] = NullIfEmpty(CapValue(current.AutomationId)),
             ["isEnabled"] = current.IsEnabled,
         };
 
@@ -830,9 +862,11 @@ internal sealed partial class VsControlPipeServer
     private static JValue NullIfEmpty(string? value) => string.IsNullOrEmpty(value) ? JValue.CreateNull() : new JValue(value);
 
     /// <summary>
-    /// Bounds an element's value before it goes on the wire. The content is the debuggee's - unbounded
-    /// and attacker-influenced - and every successful invoke/setValue response echoes the value of the
-    /// control it touched.
+    /// Bounds an element's text - value, name, automationId, className - before it goes on the wire.
+    /// The content is the debuggee's, unbounded and attacker-influenced: WPF reports a TextBlock's
+    /// whole text as its UIA name, so one log control would otherwise push the response past the
+    /// sidecar's line ceiling and hand the agent a tree cut mid-JSON. Every successful
+    /// invoke/setValue response echoes the same fields of the control it touched.
     /// </summary>
     private static string CapValue(string? value)
     {
