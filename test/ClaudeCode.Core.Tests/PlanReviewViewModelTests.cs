@@ -72,6 +72,36 @@ public sealed class PlanReviewViewModelTests
         Assert.False(plan.ReviewCommand.CanExecute(null));
     }
 
+    // An agent that offers only the "always" variants still gets a Proceed and a Review button:
+    // the outcome fallback is what keeps the plan window answerable on that option set.
+    [Fact]
+    public void Options_WithOnlyAlwaysVariants_FallBackToThemForProceedAndReview()
+    {
+        var chosen = new List<string>();
+        var plan = new PlanReviewViewModel("# Plan",
+            new[] { Option("allow-always", PermissionOutcome.AllowAlways), Option("reject-always", PermissionOutcome.RejectAlways) },
+            option => chosen.Add(option.OptionId), _ => { });
+
+        Assert.Equal("allow-always", plan.ProceedOption?.OptionId);
+        Assert.Equal("reject-always", plan.RejectOption?.OptionId);
+        Assert.True(plan.ReviewCommand.CanExecute("tighten the tests"));
+
+        plan.ProceedCommand.Execute(null);
+
+        Assert.Equal(new[] { "allow-always" }, chosen);
+    }
+
+    [Fact]
+    public void ReviewCommand_SendsTheCommentsTrimmed()
+    {
+        string? sent = null;
+        var plan = new PlanReviewViewModel("# Plan", BothOptions, _ => { }, comments => sent = comments);
+
+        plan.ReviewCommand.Execute("  add a rollback step \n");
+
+        Assert.Equal("add a rollback step", sent);
+    }
+
     [Fact]
     public void Markdown_BeyondTheRenderableLimit_IsBoundedBeforeThePlanWindowCanSerializeIt()
     {
