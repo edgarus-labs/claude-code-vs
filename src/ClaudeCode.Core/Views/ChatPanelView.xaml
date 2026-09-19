@@ -24,7 +24,6 @@
       <conv:NullToVisibilityConverter x:Key="NullToVisibilityConverter" />
       <conv:PlanStatusGlyphConverter x:Key="PlanStatusGlyphConverter" />
       <views:ChatTextFontSizeConverter x:Key="ChatTextFontSizeConverter" />
-      <conv:ToolCallStatusToDisplayTextConverter x:Key="ToolCallStatusToDisplayTextConverter" />
       <conv:RelativeTimeConverter x:Key="RelativeTimeConverter" />
       <conv:SessionTitleConverter x:Key="SessionTitleConverter" />
       <conv:PercentToStarWidthConverter x:Key="PercentToStarWidthConverter" />
@@ -481,31 +480,40 @@
       </Border>
     </StackPanel>
 
-    <!-- Permission request card (card-style banners: same margins/radius as the composer, not full-width strips) -->
-    <Border Grid.Row="3" DataContext="{Binding PendingPermission}"
-            Visibility="{Binding Converter={StaticResource NullToVisibilityConverter}}"
-            Background="{DynamicResource ChatInputBackgroundBrush}"
-            BorderBrush="{DynamicResource ChatAccentBrush}" BorderThickness="1" CornerRadius="12"
-            Margin="12,6,12,0" Padding="12,10">
-      <StackPanel>
-        <TextBlock Text="{Binding Title}" TextWrapping="Wrap" FontWeight="SemiBold"
-                   Foreground="{DynamicResource ChatForegroundBrush}" Margin="0,0,0,6" />
-        <ItemsControl ItemsSource="{Binding Options}">
-          <ItemsControl.ItemsPanel>
-            <ItemsPanelTemplate>
-              <StackPanel Orientation="Horizontal" />
-            </ItemsPanelTemplate>
-          </ItemsControl.ItemsPanel>
-          <ItemsControl.ItemTemplate>
-            <DataTemplate DataType="{x:Type contracts:PermissionOption}">
-              <Button Content="{Binding Label}" Margin="0,0,6,0" Style="{StaticResource ChatButtonStyle}"
-                      Command="{Binding DataContext.ChooseCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
-                      CommandParameter="{Binding}" />
-            </DataTemplate>
-          </ItemsControl.ItemTemplate>
-        </ItemsControl>
-      </StackPanel>
-    </Border>
+    <StackPanel Grid.Row="3">
+      <!-- Permission request card (card-style banners: same margins/radius as the composer, not full-width strips) -->
+      <Border DataContext="{Binding PendingPermission}"
+              Visibility="{Binding Converter={StaticResource NullToVisibilityConverter}}"
+              Background="{DynamicResource ChatInputBackgroundBrush}"
+              BorderBrush="{DynamicResource ChatAccentBrush}" BorderThickness="1" CornerRadius="12"
+              Margin="12,6,12,0" Padding="12,10">
+        <StackPanel>
+          <TextBlock Text="{Binding Title}" TextWrapping="Wrap" FontWeight="SemiBold"
+                     Foreground="{DynamicResource ChatForegroundBrush}" Margin="0,0,0,6" />
+          <ItemsControl ItemsSource="{Binding Options}">
+            <ItemsControl.ItemsPanel>
+              <ItemsPanelTemplate>
+                <StackPanel Orientation="Horizontal" />
+              </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemTemplate>
+              <DataTemplate DataType="{x:Type contracts:PermissionOption}">
+                <Button Content="{Binding Label}" Margin="0,0,6,0" Style="{StaticResource ChatButtonStyle}"
+                        Command="{Binding DataContext.ChooseCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                        CommandParameter="{Binding}" />
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </StackPanel>
+      </Border>
+
+      <!-- Elicitation form card (the agent asking a structured question); same chrome family as the
+           permission card above, which ElicitationCardView draws itself - no wrapper Border here or
+           the frame would be doubled. Shares row 3 with the permission card rather than taking a row
+           of its own, since both are transient request cards that sit directly above the composer. -->
+      <views:ElicitationCardView DataContext="{Binding PendingElicitation}"
+                                 Visibility="{Binding Converter={StaticResource NullToVisibilityConverter}}" />
+    </StackPanel>
 
     <!-- Usage limit warning banner: rounded top corners + the composer's own horizontal margin so
          it reads as attached to the composer card directly below it, not a separate full-width bar. -->
@@ -744,8 +752,15 @@
             <!-- DockPanel (not StackPanel): the model pill is the last child, so it gets the remaining
                  width and its text trims instead of pushing the mode/send buttons out of the panel
                  when the tool window is narrow. -->
-            <ContentControl Grid.Column="0" Style="{StaticResource DraftControlStyle}" Focusable="False" Margin="0,0,6,0">
+            <ContentControl Grid.Column="0" Focusable="False" Margin="0,0,6,0">
               <DockPanel LastChildFill="True">
+                <!-- Only the draft-composition buttons are disabled mid-turn. IsEnabled is inherited
+                     in WPF, so this wrapper must never enclose the mode/model/Remote Control pills:
+                     a disabled ancestor wins over their own IsEnabled="{Binding CanConfigure}" and
+                     they would be unusable while Claude works, which is exactly when switching mode
+                     or model matters. CanConfigure deliberately ignores IsBusy for the same reason. -->
+                <ContentControl Style="{StaticResource DraftControlStyle}" Focusable="False">
+                  <StackPanel Orientation="Horizontal">
                 <Button x:Name="AttachButton" Width="32" Height="32" Command="{Binding AttachActiveDocumentCommand}"
                         Style="{StaticResource LinkButtonStyle}" ToolTipService.ShowOnDisabled="True"
                         AutomationProperties.Name="Attach active Visual Studio document"
@@ -783,6 +798,8 @@
                         AutomationProperties.Name="Attach image file">
                   <TextBlock Text="&#xE91B;" FontFamily="Segoe MDL2 Assets" />
                 </Button>
+                  </StackPanel>
+                </ContentControl>
                 <Button x:Name="ModeButton" Margin="4,0,0,0" MaxWidth="180" Padding="6,5"
                         Click="ModeButton_Click" IsEnabled="{Binding CanConfigure}"
                         Style="{StaticResource LinkButtonStyle}" BorderBrush="Transparent"
@@ -798,10 +815,12 @@
                           Style="{StaticResource ButtonIconStrokeStyle}" StrokeThickness="1.3" />
                   </StackPanel>
                 </Button>
-                <!-- Remote Control pill: blue while the session can be driven from claude.ai/code. -->
+                <!-- Remote Control pill: blue while the session can be driven from claude.ai/code.
+                     No Visibility binding: session modes (HasModes) are an unrelated capability, and
+                     the view model exposes no remote-control capability flag, so let
+                     ToggleRemoteControlCommand.CanExecute disable the pill instead of hiding it. -->
                 <Button x:Name="RemoteControlButton" Margin="4,0,0,0" Padding="9,4" Command="{Binding ToggleRemoteControlCommand}"
-                        ToolTipService.ShowOnDisabled="True" AutomationProperties.Name="Remote Control"
-                        Visibility="{Binding HasModes, Converter={StaticResource BoolToVisibilityConverter}}">
+                        ToolTipService.ShowOnDisabled="True" AutomationProperties.Name="Remote Control">
                   <Button.Style>
                     <Style TargetType="Button" BasedOn="{StaticResource LinkButtonStyle}">
                       <Setter Property="BorderBrush" Value="Transparent" />
@@ -864,7 +883,7 @@
 
       <Popup x:Name="SlashPopup" PlacementTarget="{Binding ElementName=ComposerCard}" Placement="Top"
              VerticalOffset="-6" AllowsTransparency="True" StaysOpen="False"
-             Opened="SlashPopup_Opened" Closed="SlashPopup_Closed"
+             Closed="SlashPopup_Closed"
              IsOpen="{Binding AreSlashSuggestionsVisible, Mode=OneWay}"
              DataContext="{Binding DataContext, ElementName=ChatPanel}">
         <Border Width="{Binding ActualWidth, ElementName=ComposerCard}" MaxWidth="600"
@@ -989,7 +1008,7 @@
 
       <Popup x:Name="ModePopup" PlacementTarget="{Binding ElementName=ComposerCard}" Placement="Top"
              VerticalOffset="-6" AllowsTransparency="True" StaysOpen="False"
-             Opened="ModePopup_Opened" Closed="ModePopup_Closed"
+             Opened="ModePopup_Opened"
              DataContext="{Binding DataContext, ElementName=ChatPanel}">
         <Border Width="{Binding ActualWidth, ElementName=ComposerCard}" MaxHeight="360"
                 Background="{DynamicResource ChatPopupBackgroundBrush}" BorderBrush="{DynamicResource ChatBorderBrush}"
@@ -1090,41 +1109,50 @@
                 </Style>
               </TextBlock.Style>
             </TextBlock>
-            <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
-                          CanContentScroll="True"
-                          Visibility="{Binding IsHistoryLoading, Converter={StaticResource BoolToVisibilityConverter}, ConverterParameter=Invert}">
-              <ItemsControl x:Name="HistoryList" ItemsSource="{Binding SessionHistory}"
-                            AutomationProperties.Name="Session history"
-                            VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
-                            VirtualizingPanel.ScrollUnit="Pixel">
-                <ItemsControl.ItemTemplate>
-                  <DataTemplate DataType="{x:Type contracts:SessionSummary}">
-                    <Button Style="{StaticResource LinkButtonStyle}" HorizontalContentAlignment="Stretch" Padding="10,9"
-                            Foreground="{DynamicResource ChatForegroundBrush}" FontSize="12"
-                            Command="{Binding DataContext.OpenSessionCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
-                            CommandParameter="{Binding}"
-                            AutomationProperties.Name="{Binding Converter={StaticResource SessionTitleConverter}}">
-                      <Grid>
-                        <Grid.ColumnDefinitions>
-                          <ColumnDefinition Width="*" />
-                          <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="{Binding Converter={StaticResource SessionTitleConverter}}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
-                        <TextBlock Grid.Column="1" Margin="12,0,0,0" FontSize="11" VerticalAlignment="Center"
-                                   Foreground="{DynamicResource ChatSubtleForegroundBrush}"
-                                   Text="{Binding UpdatedAt, Converter={StaticResource RelativeTimeConverter}}"
-                                   ToolTip="{Binding UpdatedAt, StringFormat='{}{0:f}'}" />
-                      </Grid>
-                    </Button>
-                  </DataTemplate>
-                </ItemsControl.ItemTemplate>
-                <ItemsControl.ItemsPanel>
-                  <ItemsPanelTemplate>
-                    <VirtualizingStackPanel />
-                  </ItemsPanelTemplate>
-                </ItemsControl.ItemsPanel>
-              </ItemsControl>
-            </ScrollViewer>
+            <!-- The ScrollViewer lives *inside* the ItemsControl: a plain ItemsControl does not
+                 implement IScrollInfo, so with the ScrollViewer wrapped around it instead the child
+                 was measured with infinite height and the VirtualizingStackPanel realised every one
+                 of a long-lived workspace's sessions (rebuilt on each filter keystroke). -->
+            <ItemsControl x:Name="HistoryList" Grid.Row="2" ItemsSource="{Binding SessionHistory}"
+                          AutomationProperties.Name="Session history"
+                          Visibility="{Binding IsHistoryLoading, Converter={StaticResource BoolToVisibilityConverter}, ConverterParameter=Invert}"
+                          VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
+                          VirtualizingPanel.ScrollUnit="Pixel">
+              <ItemsControl.Template>
+                <ControlTemplate TargetType="ItemsControl">
+                  <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                                CanContentScroll="True" Focusable="False">
+                    <ItemsPresenter />
+                  </ScrollViewer>
+                </ControlTemplate>
+              </ItemsControl.Template>
+              <ItemsControl.ItemTemplate>
+                <DataTemplate DataType="{x:Type contracts:SessionSummary}">
+                  <Button Style="{StaticResource LinkButtonStyle}" HorizontalContentAlignment="Stretch" Padding="10,9"
+                          Foreground="{DynamicResource ChatForegroundBrush}" FontSize="12"
+                          Command="{Binding DataContext.OpenSessionCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                          CommandParameter="{Binding}"
+                          AutomationProperties.Name="{Binding Converter={StaticResource SessionTitleConverter}}">
+                    <Grid>
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                      </Grid.ColumnDefinitions>
+                      <TextBlock Text="{Binding Converter={StaticResource SessionTitleConverter}}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="1" Margin="12,0,0,0" FontSize="11" VerticalAlignment="Center"
+                                 Foreground="{DynamicResource ChatSubtleForegroundBrush}"
+                                 Text="{Binding UpdatedAt, Converter={StaticResource RelativeTimeConverter}}"
+                                 ToolTip="{Binding UpdatedAt, StringFormat='{}{0:f}'}" />
+                    </Grid>
+                  </Button>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+              <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                  <VirtualizingStackPanel />
+                </ItemsPanelTemplate>
+              </ItemsControl.ItemsPanel>
+            </ItemsControl>
           </Grid>
         </Border>
       </Popup>
@@ -1132,7 +1160,7 @@
       <Popup x:Name="UsagePopup" PlacementTarget="{Binding ElementName=ComposerCard}" Placement="Top"
              VerticalOffset="-6" AllowsTransparency="True" StaysOpen="False"
              IsOpen="{Binding IsUsagePanelOpen, Mode=OneWay}"
-             Opened="UsagePopup_Opened" Closed="UsagePopup_Closed"
+             Closed="UsagePopup_Closed"
              DataContext="{Binding DataContext, ElementName=ChatPanel}">
         <Border x:Name="UsagePopupBorder" Width="{Binding ActualWidth, ElementName=ComposerCard}"
                 Background="{DynamicResource ChatPopupBackgroundBrush}" BorderBrush="{DynamicResource ChatBorderBrush}"
@@ -1209,8 +1237,8 @@
                              Visibility="{Binding SessionUsage, Converter={StaticResource NullToVisibilityConverter}}" />
             <ContentControl Content="{Binding WeeklyUsage}" ContentTemplate="{StaticResource UsageLimitRowTemplate}"
                              Visibility="{Binding WeeklyUsage, Converter={StaticResource NullToVisibilityConverter}}" />
-            <ContentControl Content="{Binding FableUsage}" ContentTemplate="{StaticResource UsageLimitRowTemplate}"
-                             Visibility="{Binding FableUsage, Converter={StaticResource NullToVisibilityConverter}}" />
+            <ContentControl Content="{Binding ScopedWeeklyUsage}" ContentTemplate="{StaticResource UsageLimitRowTemplate}"
+                             Visibility="{Binding ScopedWeeklyUsage, Converter={StaticResource NullToVisibilityConverter}}" />
             <TextBlock Text="No usage data available." Margin="11,6,11,8" FontSize="12" TextWrapping="Wrap"
                        Foreground="{DynamicResource ChatSubtleForegroundBrush}"
                        Visibility="{Binding Usage, Converter={StaticResource NullToVisibilityConverter}, ConverterParameter=Invert}" />

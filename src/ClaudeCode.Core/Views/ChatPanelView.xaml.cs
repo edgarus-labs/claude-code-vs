@@ -6,6 +6,7 @@ using Microsoft.Win32;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System;
+using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -45,9 +46,14 @@ public partial class ChatPanelView : UserControl, IDisposable
     private readonly DispatcherTimer _copyFeedbackTimer;
     private readonly DispatcherTimer _transcriptRenderTimer;
     private readonly DispatcherTimer _transcriptRenderDebounceTimer;
+    private readonly List<ChatMessageViewModel> _trackedMessages = new List<ChatMessageViewModel>();
+    private readonly List<ToolCallCardViewModel> _trackedCards = new List<ToolCallCardViewModel>();
     private bool _disposed;
     private bool _transcriptReady;
     private DateTimeOffset? _busyStartedAt;
+    private string? _messagesJson;
+    private string? _activityJson;
+    private bool _messagesJsonStale = true;
 
     public ChatPanelView()
     {
@@ -63,31 +69,29 @@ public partial class ChatPanelView : UserControl, IDisposable
             Interval = TimeSpan.FromMilliseconds(CopyFeedbackDisplayMilliseconds)
         };
         _copyFeedbackTimer.Tick += OnCopyFeedbackTimerTick;
-        // Message text and tool-call content/status only ever change while IsBusy is true (an
-        // in-flight assistant turn) - so polling the transcript at a short interval exactly while
-        // busy, plus an immediate render on any Messages add/remove/reset, captures every change
-        // without wiring a change listener onto every message/tool-call/content item individually.
+        // Content changes arrive as change notifications (see TrackTranscriptItems), not by polling:
+        // a turn driven from claude.ai/code (Remote Control) never sets IsBusy, so an IsBusy-gated
+        // poll made its streamed text and tool-call progress invisible. The one thing no view model
+        // raises is the activity block's own elapsed-seconds counter, so this timer exists solely to
+        // advance that - its interval is the counter's display granularity, one second.
         _transcriptRenderTimer = new DispatcherTimer(DispatcherPriority.Background, Dispatcher)
         {
-            Interval = TimeSpan.FromMilliseconds(200)
+            Interval = TimeSpan.FromSeconds(1)
         };
-        _transcriptRenderTimer.Tick += (_, __) => RenderTranscript();
-        // Session-resume replays every past message as its own Messages.Add - rendering the whole
-        // transcript synchronously on each one is O(n^2) work for an n-message history and was
-        // visibly slow. Debounce instead: a burst of adds arriving within one tick collapses into a
-        // single render once the burst goes quiet.
+        _transcriptRenderTimer.Tick += OnTranscriptActivityTick;
+        // Session-resume replays every past message as its own Messages.Add, and a streaming turn
+        // raises one change per chunk - rendering synchronously on each is O(n^2) work for an
+        // n-message history and was visibly slow. Debounce instead: a burst arriving within one tick
+        // collapses into a single render once it goes quiet.
         _transcriptRenderDebounceTimer = new DispatcherTimer(DispatcherPriority.Background, Dispatcher)
         {
             Interval = TimeSpan.FromMilliseconds(60)
         };
-        _transcriptRenderDebounceTimer.Tick += (_, __) =>
-        {
-            _transcriptRenderDebounceTimer.Stop();
-            RenderTranscript();
-        };
+        _transcriptRenderDebounceTimer.Tick += OnTranscriptRenderDebounceTick;
         _viewModel.Messages.CollectionChanged += OnMessagesCollectionChanged;
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
         _viewModel.PlanReviewRequested += OnPlanReviewRequested;
+        TrackTranscriptItems();
         Unloaded += OnUnloaded;
         _ = InitializeTranscriptWebViewAsync();
     }
@@ -141,7 +145,7 @@ public partial class ChatPanelView : UserControl, IDisposable
         // Intercept before any transcript/composer child scrolls or reroutes the wheel.
         // Even at a limit, keep Ctrl+wheel inside this pane rather than zooming its host.
         e.Handled = true;
-        ChatTextFontSize = Math.Max(10d, Math.Min(28d, ChatTextFontSize + Math.Sign(e.Delta)));
+        ChatTextFontSize = TranscriptHostProtocol.StepFontSize(ChatTextFontSize, e.Delta);
     }
 
     private async Task InitializeTranscriptWebViewAsync()
@@ -158,41 +162,76 @@ public partial class ChatPanelView : UserControl, IDisposable
             }
 
             await TranscriptView.EnsureCoreWebView2Async(environment).ConfigureAwait(true);
+            if (_disposed)
+            {
+                return;
+            }
+
+            // Dropping a file from Explorer or Solution Explorer onto the transcript would otherwise
+            // navigate the frame to file:///... - and since Source is assigned exactly once, the
+            // transcript would be dead for the rest of the session while the host kept pushing the
+            // whole conversation into the foreign document.
+            TranscriptView.AllowExternalDrop = false;
+            CoreWebView2 core = TranscriptView.CoreWebView2;
+            core.Settings.IsWebMessageEnabled = true;
+            core.Settings.AreDefaultContextMenusEnabled = false;
+            core.Settings.AreDevToolsEnabled = false;
+            core.Settings.IsStatusBarEnabled = false;
+            // Ctrl+S/Ctrl+P/Ctrl+F/F5 belong to the IDE, not to Chromium, inside a tool window.
+            core.Settings.AreBrowserAcceleratorKeysEnabled = false;
+            // Nothing is ever exposed via AddHostObjectToScript; don't leave the door that permits it open.
+            core.Settings.AreHostObjectsAllowed = false;
+            // Deny: nothing outside this page's own origin may load resources through this mapping.
+            core.SetVirtualHostNameToFolderMapping(
+                TranscriptHostProtocol.VirtualHostName, GetTranscriptAssetsPath(),
+                CoreWebView2HostResourceAccessKind.Deny);
+            core.WebMessageReceived += OnTranscriptWebMessageReceived;
+            core.NewWindowRequested += OnTranscriptNewWindowRequested;
+            core.NavigationStarting += OnTranscriptNavigationStarting;
+            core.NavigationCompleted += OnTranscriptNavigationCompleted;
+            core.ProcessFailed += OnTranscriptProcessFailed;
+            TranscriptView.Source = new Uri(TranscriptHostProtocol.PageUrl);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            // Most likely cause: the WebView2 Runtime isn't installed on this machine. The transcript
-            // area simply stays blank rather than crashing the whole tool window over it.
-            return;
+            // Most likely causes: the WebView2 Runtime isn't installed, or the transcript assets
+            // weren't deployed next to this assembly (SetVirtualHostNameToFolderMapping rejects the
+            // relative path GetTranscriptAssetsPath falls back to). Either way the transcript area
+            // stays blank, so say so instead of leaving the user staring at nothing - this task is
+            // fire-and-forget, so an escaping exception would be an unobserved, undiagnosable fault.
+            if (!_disposed)
+            {
+                ShowCopyFeedback(
+                    "The transcript could not be displayed. The Microsoft Edge WebView2 Runtime is " +
+                    "required: " + ex.Message);
+            }
         }
-
-        if (_disposed)
-        {
-            return;
-        }
-
-        CoreWebView2 core = TranscriptView.CoreWebView2;
-        core.Settings.IsWebMessageEnabled = true;
-        core.Settings.AreDefaultContextMenusEnabled = false;
-        core.Settings.AreDevToolsEnabled = false;
-        core.Settings.IsStatusBarEnabled = false;
-        // Deny: nothing outside this page's own origin may load resources through this mapping.
-        core.SetVirtualHostNameToFolderMapping(
-            "claudecode.transcript", GetTranscriptAssetsPath(), CoreWebView2HostResourceAccessKind.Deny);
-        core.WebMessageReceived += OnTranscriptWebMessageReceived;
-        // Sanitized, local-only content never legitimately opens a new window/tab; block it outright.
-        core.NewWindowRequested += (_, args) => args.Handled = true;
-        core.NavigationCompleted += OnTranscriptNavigationCompleted;
-        TranscriptView.Source = new Uri("https://claudecode.transcript/index.html");
     }
 
     private static string GetTranscriptAssetsPath() => Path.Combine(
         Path.GetDirectoryName(typeof(ChatPanelView).Assembly.Location) ?? string.Empty, "Resources", "Transcript");
 
+    // Sanitized, local-only content never legitimately opens a new window/tab; block it outright.
+    private void OnTranscriptNewWindowRequested(object? sender, CoreWebView2NewWindowRequestedEventArgs e) =>
+        e.Handled = true;
+
+    private void OnTranscriptNavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e) =>
+        e.Cancel = !TranscriptHostProtocol.IsTranscriptOrigin(e.Uri);
+
+    private void OnTranscriptProcessFailed(object? sender, CoreWebView2ProcessFailedEventArgs e) =>
+        InvalidateTranscriptPage();
+
     private void OnTranscriptNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
     {
-        if (_disposed || !e.IsSuccess)
+        if (_disposed)
         {
+            return;
+        }
+
+        if (!e.IsSuccess)
+        {
+            // Never leave a stale "ready" latch behind a failed reload.
+            InvalidateTranscriptPage();
             return;
         }
 
@@ -204,41 +243,141 @@ public partial class ChatPanelView : UserControl, IDisposable
 
     private void OnMessagesCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
+        TrackTranscriptItems();
+        ScheduleTranscriptRender();
+    }
+
+    // Streamed content mutates existing view models in place - ChatMessageViewModel.AppendText and
+    // ToolCallCardViewModel.Apply - without touching Messages. IsBusy is set only by the local
+    // composer (SendCoreAsync), so a Remote-Control turn arriving as session/update notifications
+    // left the transcript frozen on whatever chunk happened to coincide with the Messages.Add.
+    // Listening to the items themselves covers both cases and costs nothing when idle, unlike a
+    // permanently running poll timer.
+    private void TrackTranscriptItems()
+    {
+        // Full resync rather than incremental add/remove bookkeeping: a Reset (New Chat clears
+        // Messages) arrives with null OldItems, so incremental tracking would leak every handler.
+        // It is O(items) on an event that already schedules an O(items) render.
+        StopTrackingTranscriptItems();
+        if (_disposed)
+        {
+            return;
+        }
+
+        foreach (ChatMessageViewModel message in _viewModel.Messages)
+        {
+            message.PropertyChanged += OnTranscriptItemPropertyChanged;
+            message.Parts.CollectionChanged += OnTranscriptPartsChanged;
+            _trackedMessages.Add(message);
+            foreach (ChatMessagePart part in message.Parts)
+            {
+                if (part is ChatToolCallPart toolCall)
+                {
+                    toolCall.Card.PropertyChanged += OnTranscriptItemPropertyChanged;
+                    toolCall.Card.Content.CollectionChanged += OnTranscriptContentChanged;
+                    _trackedCards.Add(toolCall.Card);
+                }
+            }
+        }
+    }
+
+    private void StopTrackingTranscriptItems()
+    {
+        foreach (ChatMessageViewModel message in _trackedMessages)
+        {
+            message.PropertyChanged -= OnTranscriptItemPropertyChanged;
+            message.Parts.CollectionChanged -= OnTranscriptPartsChanged;
+        }
+
+        foreach (ToolCallCardViewModel card in _trackedCards)
+        {
+            card.PropertyChanged -= OnTranscriptItemPropertyChanged;
+            card.Content.CollectionChanged -= OnTranscriptContentChanged;
+        }
+
+        _trackedMessages.Clear();
+        _trackedCards.Clear();
+    }
+
+    private void OnTranscriptItemPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (TranscriptHostProtocol.AffectsTranscript(e.PropertyName))
+        {
+            ScheduleTranscriptRender();
+        }
+    }
+
+    // A new part can bring a tool-call card that needs its own subscriptions; the content items
+    // inside a card are immutable, so their collection only needs a repaint.
+    private void OnTranscriptPartsChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        TrackTranscriptItems();
+        ScheduleTranscriptRender();
+    }
+
+    private void OnTranscriptContentChanged(object? sender, NotifyCollectionChangedEventArgs e) =>
+        ScheduleTranscriptRender();
+
+    private void ScheduleTranscriptRender()
+    {
+        _messagesJsonStale = true;
         _transcriptRenderDebounceTimer.Stop();
         _transcriptRenderDebounceTimer.Start();
     }
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName != nameof(ChatViewModel.IsBusy))
+        switch (e.PropertyName)
         {
-            return;
-        }
+            case nameof(ChatViewModel.IsBusy):
+                _busyStartedAt = _viewModel.IsBusy ? DateTimeOffset.UtcNow : (DateTimeOffset?)null;
+                if (_viewModel.IsBusy)
+                {
+                    _transcriptRenderTimer.Start();
+                }
+                else
+                {
+                    _transcriptRenderTimer.Stop();
+                }
 
-        if (_viewModel.IsBusy)
-        {
-            _busyStartedAt = DateTimeOffset.UtcNow;
-            _transcriptRenderTimer.Start();
-            RenderTranscript(); // show the activity indicator immediately, don't wait for the first tick
-        }
-        else
-        {
-            _busyStartedAt = null;
-            _transcriptRenderTimer.Stop();
-            RenderTranscript(); // final flush so the last streamed chunk/tool update isn't missed
+                // Show/remove the activity indicator now, don't wait for the debounce or the tick.
+                RenderTranscript();
+                break;
+            case nameof(ChatViewModel.ActivityText):
+            case nameof(ChatViewModel.TurnTokens):
+                RenderTranscript();
+                break;
         }
     }
 
+    private void OnTranscriptRenderDebounceTick(object? sender, EventArgs e)
+    {
+        _transcriptRenderDebounceTimer.Stop();
+        RenderTranscript();
+    }
+
+    private void OnTranscriptActivityTick(object? sender, EventArgs e) => RenderTranscript();
+
     private void RenderTranscript()
     {
+        // Bail before serializing anything: while the page is down the stale flag must survive so
+        // the next successful navigation re-pushes whatever changed in the meantime.
         if (!_transcriptReady || _disposed)
         {
             return;
         }
 
-        var payload = new
+        // The page keeps a per-message signature and reuses unchanged DOM, so re-sending an
+        // identical payload is pure waste - and the messages array carries every attached image's
+        // full base64 payload (up to 5 x 5 MB per message, ~33 MB encoded). Serialize the messages
+        // only when a change notification says they moved, and skip the script entirely when
+        // neither they nor the tiny activity block differ from what the page already has.
+        // (Deferred: a dedicated setActivity() entry point in transcript.js would let the
+        // once-a-second activity tick carry no messages at all; that is TranscriptWeb's file.)
+        bool mustPush = _messagesJsonStale || _messagesJson is null;
+        if (mustPush)
         {
-            messages = _viewModel.Messages.Select(message => new
+            _messagesJson = JsonConvert.SerializeObject(_viewModel.Messages.Select(message => new
             {
                 role = message.Role.ToString(),
                 // Ordered so text and tool calls interleave exactly as the agent emitted them,
@@ -248,19 +387,64 @@ public partial class ChatPanelView : UserControl, IDisposable
                 durationSeconds = message.DurationSeconds,
                 tokensUsed = message.TokensUsed,
                 images = message.Images.Select(image => new { name = image.Name, mimeType = image.MimeType, data = image.Base64Data }),
-            }),
-            activity = _busyStartedAt is DateTimeOffset startedAt
-                ? new
-                {
-                    text = _viewModel.ActivityText,
-                    elapsedSeconds = Math.Max(0, (int)(DateTimeOffset.UtcNow - startedAt).TotalSeconds),
-                    tokens = _viewModel.TurnTokens,
-                }
-                : null,
-        };
+            }));
+            _messagesJsonStale = false;
+        }
 
-        string json = JsonConvert.SerializeObject(payload);
-        _ = TranscriptView.CoreWebView2.ExecuteScriptAsync($"window.claudeTranscript.render({json});");
+        string activityJson = JsonConvert.SerializeObject(_busyStartedAt is DateTimeOffset startedAt
+            ? new
+            {
+                text = _viewModel.ActivityText,
+                elapsedSeconds = Math.Max(0, (int)(DateTimeOffset.UtcNow - startedAt).TotalSeconds),
+                tokens = _viewModel.TurnTokens,
+            }
+            : null);
+        if (!mustPush && activityJson == _activityJson)
+        {
+            return;
+        }
+
+        // Newtonsoft's output is interpolated as a JS expression: safe on the evergreen Chromium
+        // WebView2 runtime, where ES2019 legalised raw U+2028/U+2029 inside string literals.
+        if (PostToTranscript($"window.claudeTranscript.render({{\"messages\":{_messagesJson},\"activity\":{activityJson}}});"))
+        {
+            _activityJson = activityJson;
+        }
+    }
+
+    // A browser-process crash or an Edge Evergreen update under a running devenv invalidates
+    // CoreWebView2, after which ExecuteScriptAsync throws at the COM boundary. Two of the three
+    // callers run from a DispatcherTimer tick and from a DependencyProperty callback, where an
+    // escaping exception is an unhandled dispatcher exception - a devenv crash, not a blank panel.
+    // Fail closed instead: drop the ready latch and let ProcessFailed / the next successful
+    // navigation restore it.
+    private bool PostToTranscript(string script)
+    {
+        if (!_transcriptReady || _disposed || TranscriptView.CoreWebView2 is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            _ = TranscriptView.CoreWebView2.ExecuteScriptAsync(script);
+            return true;
+        }
+        catch (Exception exception) when (exception is COMException || exception is InvalidOperationException ||
+                                          exception is ObjectDisposedException)
+        {
+            InvalidateTranscriptPage();
+            return false;
+        }
+    }
+
+    private void InvalidateTranscriptPage()
+    {
+        _transcriptReady = false;
+        // The page's own render cache dies with it, so the next load must re-push everything.
+        _messagesJson = null;
+        _activityJson = null;
+        _messagesJsonStale = true;
     }
 
     private static object BuildPartPayload(ChatMessagePart part)
@@ -289,25 +473,12 @@ public partial class ChatPanelView : UserControl, IDisposable
         };
     }
 
-    private void PushFontSize()
-    {
-        if (!_transcriptReady || _disposed)
-        {
-            return;
-        }
-
-        _ = TranscriptView.CoreWebView2.ExecuteScriptAsync(
-            $"window.claudeTranscript.setFontSize({ChatTextFontSize.ToString(CultureInfo.InvariantCulture)});");
-    }
+    private void PushFontSize() => PostToTranscript(
+        $"window.claudeTranscript.setFontSize({ChatTextFontSize.ToString(CultureInfo.InvariantCulture)});");
 
     private void PushTheme()
     {
-        if (!_transcriptReady || _disposed)
-        {
-            return;
-        }
-
-        var vars = new System.Collections.Generic.Dictionary<string, string>
+        var vars = new Dictionary<string, string>
         {
             ["--chat-bg"] = ResourceBrushToCss("ChatBackgroundBrush"),
             ["--chat-fg"] = ResourceBrushToCss("ChatForegroundBrush"),
@@ -333,8 +504,7 @@ public partial class ChatPanelView : UserControl, IDisposable
         AddBrushIfPresent(vars, "--hljs-identifier", "ChatCodeIdentifierBrush");
         AddBrushIfPresent(vars, "--hljs-attribute", "ChatCodeAttributeBrush");
 
-        string json = JsonConvert.SerializeObject(vars);
-        _ = TranscriptView.CoreWebView2.ExecuteScriptAsync($"window.claudeTranscript.applyTheme({json});");
+        _ = PostToTranscript($"window.claudeTranscript.applyTheme({JsonConvert.SerializeObject(vars)});");
     }
 
     /// <summary>Called by the host (ChatToolWindowPane) after it applies new VS theme colors onto
@@ -362,7 +532,9 @@ public partial class ChatPanelView : UserControl, IDisposable
 
     private void OnTranscriptWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
-        if (_disposed)
+        // The page renders untrusted agent-authored markdown, so the envelope is untrusted too -
+        // and only the transcript document itself may drive the host at all.
+        if (_disposed || !TranscriptHostProtocol.IsTranscriptOrigin(e.Source))
         {
             return;
         }
@@ -377,17 +549,42 @@ public partial class ChatPanelView : UserControl, IDisposable
             return;
         }
 
-        switch (message["type"]?.Value<string>())
+        // Read through JValue rather than JToken.Value<T>(): Value<T>() throws InvalidCastException
+        // for a container token and FormatException/OverflowException for an unconvertible scalar,
+        // neither of which is a JsonException. Escaping here means an unhandled dispatcher exception
+        // on devenv's UI thread. Note `?.` only guards a missing key - a JSON null is JValue.Null.
+        switch (ReadString(message, "type"))
         {
             case "openLink":
-                OpenTranscriptLink(message["url"]?.Value<string>());
+                OpenTranscriptLink(ReadString(message, "url"));
                 break;
             case "zoom":
-                // JS wheel deltaY>0 is "scroll down" (zoom out); WPF's own Ctrl+wheel convention is
-                // the opposite sign (wheel-up/positive Delta = zoom in) - negate to match.
-                double delta = message["delta"]?.Value<double>() ?? 0;
-                ChatTextFontSize = Math.Max(10d, Math.Min(28d, ChatTextFontSize - Math.Sign(delta)));
+                // DOM deltaY>0 is "scroll down" (zoom out); WPF's Ctrl+wheel convention is the
+                // opposite sign (positive Delta = zoom in) - negate to match.
+                ChatTextFontSize = TranscriptHostProtocol.StepFontSize(
+                    ChatTextFontSize, -ReadDouble(message, "delta"));
                 break;
+        }
+    }
+
+    private static string? ReadString(JObject message, string property) =>
+        (message[property] as JValue)?.Value as string;
+
+    private static double ReadDouble(JObject message, string property) =>
+        (message[property] as JValue)?.Value is IConvertible value && value is not string
+            ? SafeToDouble(value)
+            : 0d;
+
+    private static double SafeToDouble(IConvertible value)
+    {
+        try
+        {
+            return value.ToDouble(CultureInfo.InvariantCulture);
+        }
+        catch (Exception exception) when (exception is InvalidCastException || exception is FormatException ||
+                                          exception is OverflowException)
+        {
+            return 0d;
         }
     }
 
@@ -413,9 +610,20 @@ public partial class ChatPanelView : UserControl, IDisposable
     }
 
     // Docking/reparenting can unload WPF views; only the owning host ends the session.
-    private void OnUnloaded(object sender, RoutedEventArgs e)
+    private void OnUnloaded(object sender, RoutedEventArgs e) => CloseAllPopups();
+
+    // Every Popup here is a separate top-level window (AllowsTransparency="True"), and
+    // StaysOpen="False" only dismisses on an outside *click* - which an unload is not. Left open,
+    // one becomes an orphaned borderless window floating over the IDE, detached from a live visual
+    // tree. HistoryPopup/UsagePopup bind IsOpen OneWay, so they must be closed through the view
+    // model (see HistoryCloseButton_Click): assigning IsOpen directly would replace the binding
+    // with a local value and the popup could never be reopened.
+    private void CloseAllPopups()
     {
         ModelPopup.IsOpen = false;
+        ModePopup.IsOpen = false;
+        _viewModel.CloseHistory();
+        _viewModel.IsUsagePanelOpen = false;
         _viewModel.DismissSlashSuggestions();
     }
 
@@ -427,21 +635,27 @@ public partial class ChatPanelView : UserControl, IDisposable
         }
 
         _disposed = true;
+        CloseAllPopups();
         Unloaded -= OnUnloaded;
         _copyFeedbackTimer.Stop();
         _copyFeedbackTimer.Tick -= OnCopyFeedbackTimerTick;
         _transcriptRenderTimer.Stop();
+        _transcriptRenderTimer.Tick -= OnTranscriptActivityTick;
         _transcriptRenderDebounceTimer.Stop();
+        _transcriptRenderDebounceTimer.Tick -= OnTranscriptRenderDebounceTick;
         _viewModel.Messages.CollectionChanged -= OnMessagesCollectionChanged;
         _viewModel.PropertyChanged -= OnViewModelPropertyChanged;
         _viewModel.PlanReviewRequested -= OnPlanReviewRequested;
-        if (TranscriptView.CoreWebView2 is not null)
+        StopTrackingTranscriptItems();
+        if (TranscriptView.CoreWebView2 is CoreWebView2 core)
         {
-            TranscriptView.CoreWebView2.WebMessageReceived -= OnTranscriptWebMessageReceived;
+            core.WebMessageReceived -= OnTranscriptWebMessageReceived;
+            core.NavigationStarting -= OnTranscriptNavigationStarting;
+            core.NavigationCompleted -= OnTranscriptNavigationCompleted;
+            core.NewWindowRequested -= OnTranscriptNewWindowRequested;
+            core.ProcessFailed -= OnTranscriptProcessFailed;
         }
 
-        ModelPopup.IsOpen = false;
-        _viewModel.DismissSlashSuggestions();
         CommandManager.RemovePreviewCanExecuteHandler(ComposerBox, ComposerBox_PreviewCanExecute);
         CommandManager.RemovePreviewExecutedHandler(ComposerBox, ComposerBox_PreviewExecuted);
         _viewModel.Dispose();
@@ -715,27 +929,10 @@ public partial class ChatPanelView : UserControl, IDisposable
         }
     }
 
-    // WebView2 hosts a native child HWND that always paints on top of ordinary WPF content
-    // ("airspace") - including these Popups, which open above the composer and so land right over
-    // the transcript area. Hiding TranscriptView for as long as any popup is open is the standard
-    // workaround; a counter (rather than a bool) tolerates one popup opening before another finishes
-    // closing instead of the second Closed prematurely revealing the WebView2 mid-way through.
-    private int _openPopupCount;
-
-    // Popups are separate top-level windows, so they paint above the WebView2 child HWND on their
-    // own; the transcript stays visible while they are open. The counter is kept so a future
-    // popup-aware behavior (e.g. pausing transcript re-renders) has a single place to hook.
-    private void OnAnyPopupOpened() => _openPopupCount++;
-
-    private void OnAnyPopupClosed() => _openPopupCount = Math.Max(0, _openPopupCount - 1);
-
-    private void SlashPopup_Opened(object sender, EventArgs e) => OnAnyPopupOpened();
-
-    private void SlashPopup_Closed(object sender, EventArgs e)
-    {
-        OnAnyPopupClosed();
-        _viewModel.DismissSlashSuggestions();
-    }
+    // The Popups in this view all set AllowsTransparency="True", which makes each one a separate
+    // top-level window: they paint above the WebView2 transcript's native child HWND on their own,
+    // so no airspace workaround (hiding TranscriptView while a popup is open) is needed.
+    private void SlashPopup_Closed(object sender, EventArgs e) => _viewModel.DismissSlashSuggestions();
 
     private void ModelButton_Click(object sender, RoutedEventArgs e)
     {
@@ -745,7 +942,6 @@ public partial class ChatPanelView : UserControl, IDisposable
 
     private void ModelPopup_Opened(object sender, EventArgs e)
     {
-        OnAnyPopupOpened();
         ModelPickerView.Visibility = Visibility.Visible;
         EffortPickerView.Visibility = Visibility.Collapsed;
         ModelList.GetBindingExpression(Selector.SelectedItemProperty)?.UpdateTarget();
@@ -761,12 +957,9 @@ public partial class ChatPanelView : UserControl, IDisposable
 
     private void ModePopup_Opened(object sender, EventArgs e)
     {
-        OnAnyPopupOpened();
         ModeList.GetBindingExpression(Selector.SelectedItemProperty)?.UpdateTarget();
         FocusConfigList(ModeList, ModePopup);
     }
-
-    private void ModePopup_Closed(object sender, EventArgs e) => OnAnyPopupClosed();
 
     private void FocusConfigList(ListBox list, Popup owner)
     {
@@ -817,7 +1010,6 @@ public partial class ChatPanelView : UserControl, IDisposable
 
     private void ModelPopup_Closed(object sender, EventArgs e)
     {
-        OnAnyPopupClosed();
         if (!_disposed && (ModelPickerView.IsKeyboardFocusWithin || EffortPickerView.IsKeyboardFocusWithin))
         {
             ModelButton.Focus();
@@ -828,17 +1020,18 @@ public partial class ChatPanelView : UserControl, IDisposable
 
     private void RemoteControlLink_Click(object sender, RoutedEventArgs e)
     {
-        if (Uri.TryCreate(_viewModel.RemoteControlUrl, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps)
+        // RemoteControlUrl is agent-reported, so https only: claude.ai/code always is, and http
+        // would let a hostile agent point this at a plaintext endpoint. OpenTranscriptLink owns the
+        // rest - IsNavigableLink, disposing the Process, a filtered catch, and telling the user when
+        // the launch fails (the tooltip only ever showed the URL, never the failure).
+        if (Uri.TryCreate(_viewModel.RemoteControlUrl, UriKind.Absolute, out Uri? uri) &&
+            uri.Scheme == Uri.UriSchemeHttps)
         {
-            try
-            {
-                Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
-            }
-            catch (Exception)
-            {
-                // No browser/handler available: the tooltip still shows the URL to copy.
-            }
+            OpenTranscriptLink(uri.AbsoluteUri);
+            return;
         }
+
+        ShowCopyFeedback("This session link cannot be opened. Only absolute HTTPS links are allowed.");
     }
 
     private void SlashButton_Click(object sender, RoutedEventArgs e)
@@ -872,15 +1065,10 @@ public partial class ChatPanelView : UserControl, IDisposable
     // through the view model, same as the Popup's own Closed handler below.
     private void HistoryCloseButton_Click(object sender, RoutedEventArgs e) => _viewModel.CloseHistory();
 
-    private void HistoryPopup_Opened(object sender, EventArgs e)
-    {
-        OnAnyPopupOpened();
-        HistoryFilterBox.Focus();
-    }
+    private void HistoryPopup_Opened(object sender, EventArgs e) => HistoryFilterBox.Focus();
 
     private void HistoryPopup_Closed(object sender, EventArgs e)
     {
-        OnAnyPopupClosed();
         _viewModel.CloseHistory();
         if (!_disposed && HistoryList.IsKeyboardFocusWithin)
         {
@@ -896,11 +1084,8 @@ public partial class ChatPanelView : UserControl, IDisposable
 
     private void UsageCloseButton_Click(object sender, RoutedEventArgs e) => _viewModel.IsUsagePanelOpen = false;
 
-    private void UsagePopup_Opened(object sender, EventArgs e) => OnAnyPopupOpened();
-
     private void UsagePopup_Closed(object sender, EventArgs e)
     {
-        OnAnyPopupClosed();
         _viewModel.IsUsagePanelOpen = false;
         if (!_disposed && UsagePopupBorder.IsKeyboardFocusWithin)
         {
