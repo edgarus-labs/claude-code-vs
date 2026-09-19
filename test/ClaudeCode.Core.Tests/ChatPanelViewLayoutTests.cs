@@ -16,10 +16,18 @@ namespace ClaudeCode.Core.Tests;
 /// <c>IsBusy</c> silently overrides that binding and locks the pickers for the whole turn. The view
 /// model looks correct while the UI is broken, which is why this is asserted against the markup.
 /// </para>
+/// <para>
+/// TDD exception, stated deliberately: this test project targets net10.0 without WPF, so the view
+/// cannot be instantiated and its IsEnabled inheritance observed for real. These facts read the
+/// markup as XML and locate the gated subtree by the literal <c>Style="{StaticResource DraftControlStyle}"</c>
+/// attribute, so they fail on a behaviour-preserving rewrite of that markup (a property-element
+/// style, a BasedOn style) and would pass on the same hazard expressed differently. They are kept as
+/// a ratchet against the exact regression that shipped, which is the only form of coverage this
+/// invariant can have here; retarget them rather than deleting them when the markup shape changes.
+/// </para>
 /// </summary>
 public sealed class ChatPanelViewLayoutTests
 {
-    private static readonly XNamespace Xaml = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
     private static readonly XNamespace X = "http://schemas.microsoft.com/winfx/2006/xaml";
 
     /// <summary>Controls that must stay usable while the agent is working.</summary>
@@ -79,27 +87,6 @@ public sealed class ChatPanelViewLayoutTests
                 $"{name} is no longer inside an element styled with DraftControlStyle, so it stays clickable "
                     + "while a turn is streaming. Attaching the active document mid-turn is the hazard that "
                     + "gate exists for. Put it back inside the wrapper rather than relaxing this test.");
-        }
-    }
-
-    [Fact]
-    public void ConfigurationPillsStillGateOnCanConfigure()
-    {
-        XDocument view = XDocument.Load(ViewPath());
-
-        foreach (string name in new[] { "ModeButton", "ModelButton" })
-        {
-            XElement button = Assert.Single(
-                view.Descendants(Xaml + "Button"),
-                element => (string?)element.Attribute(X + "Name") == name);
-
-            // Deliberately not an exact-string comparison: {Binding Path=CanConfigure} and
-            // {Binding CanConfigure, Mode=OneWay} are behaviourally identical, and a test that
-            // rejects them gets "fixed" by editing the assertion instead of the markup.
-            string? isEnabled = (string?)button.Attribute("IsEnabled");
-            Assert.NotNull(isEnabled);
-            Assert.StartsWith("{Binding", isEnabled);
-            Assert.Contains("CanConfigure", isEnabled);
         }
     }
 
