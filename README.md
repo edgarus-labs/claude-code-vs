@@ -121,9 +121,10 @@ instance described above.
 
 ## CI/CD
 
-- **CI** (`.github/workflows/ci.yml`): every PR (open/update) and push to `develop`/`main` builds the full solution
+- **CI** (`.github/workflows/ci.yml`): every PR (open/update) and push to `develop` builds the full solution
   in Release and runs all three test projects, on `windows-latest`.
 - **CD** (`.github/workflows/cd.yml`): pushing a tag matching `vX.Y.Z` stamps that version into both the
   `.vsixmanifest` `Identity/@Version` (what Visual Studio's Extensions & Updates dialog displays) and the .NET
-  assembly metadata (`-p:Version=X.Y.Z`), rebuilds, re-runs tests, and publishes a GitHub Release with the built
-  `.vsix` attached.
+  assembly metadata (`-p:Version=X.Y.Z`), rebuilds, re-runs tests, and creates a **draft** GitHub Release with the
+  built `.vsix` and its `SHA256SUMS` attached. A maintainer reviews the generated notes and the assets, then
+  publishes the release by hand.
