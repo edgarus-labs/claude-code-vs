@@ -344,17 +344,25 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
     {
         // session/cancel is a notification (fire-and-forget); the in-flight session/prompt call for this
         // session resolves later with stopReason "cancelled" once the agent has wound down.
-        await _rpc.SendNotificationAsync("session/cancel", new JsonObject { ["sessionId"] = sessionId }, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await _rpc.SendNotificationAsync("session/cancel", new JsonObject { ["sessionId"] = sessionId }, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            // Per spec, once session/cancel has been sent the client MUST answer any outstanding
+            // session/request_permission calls for this session with RequestPermissionOutcome::Cancelled, even
+            // if the UI never gets around to answering the prompt itself. Resolve them proactively.
+            // This also has to happen when the notification could not be written at all (already
+            // cancelled token, dead transport) - that is exactly when an unanswered prompt would
+            // otherwise hang in the UI forever.
+            CancelPendingPermissions(sessionId);
 
-        // Per spec, once session/cancel has been sent the client MUST answer any outstanding
-        // session/request_permission calls for this session with RequestPermissionOutcome::Cancelled, even
-        // if the UI never gets around to answering the prompt itself. Resolve them proactively.
-        CancelPendingPermissions(sessionId);
-
-        // Same reasoning for a still-open elicitation form (e.g. an unanswered AskUserQuestion): the
-        // turn is winding down, so resolve it as cancelled rather than leaving the UI's response task
-        // hanging forever.
-        CancelPendingElicitations(sessionId);
+            // Same reasoning for a still-open elicitation form (e.g. an unanswered AskUserQuestion): the
+            // turn is winding down, so resolve it as cancelled rather than leaving the UI's response task
+            // hanging forever.
+            CancelPendingElicitations(sessionId);
+        }
     }
 
     public ValueTask DisposeAsync() => DisposeAsync(_gracefulShutdownTimeout);

@@ -292,6 +292,39 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
     }
 
     [Fact]
+    public async Task InboundElicitationCreateRequest_OptionWithoutTitle_FallsBackToItsConstAsTheLabel()
+    {
+        // `title` is an optional JSON Schema annotation - an agent may legitimately emit an option
+        // carrying only `const`. Such a prompt must still reach the user, not fail the request.
+        ElicitationRequestEventArgs? captured = null;
+        _connection.ElicitationRequested += (_, e) =>
+        {
+            captured = e;
+            e.Response.TrySetResult(new ElicitationAnswer(ElicitationAction.Accept, new Dictionary<string, IReadOnlyList<string>>
+            {
+                ["question_0"] = new[] { "red" },
+            }));
+        };
+
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer, JsonNode.Parse("""
+            {"jsonrpc":"2.0","id":24,"method":"elicitation/create","params":{
+              "mode":"form","sessionId":"s1","message":"Pick one",
+              "requestedSchema":{"type":"object","properties":{
+                "question_0":{"type":"string","oneOf":[{"const":"red"},{"const":"blue","title":"Blue"}]}
+              }}
+            }}
+            """)!.ToJsonString());
+
+        JsonObject response = await ReadResponseWithIdAsync(_toAgent.Reader, 24);
+        Assert.True(response["error"] is null, "elicitation/create was rejected instead of surfaced: " + response.ToJsonString());
+        Assert.Equal("red", response["result"]!["content"]!["question_0"]!.GetValue<string>());
+        ElicitationField field = Assert.Single(captured!.Fields);
+        Assert.Collection(field.Options,
+            option => { Assert.Equal("red", option.Value); Assert.Equal("red", option.Label); },
+            option => { Assert.Equal("blue", option.Value); Assert.Equal("Blue", option.Label); });
+    }
+
+    [Fact]
     public async Task CancelAsync_ResolvesStillPendingElicitationRequest_AsCancelledAction()
     {
         var elicitationReceived = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -336,6 +369,50 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         // A session/cancel notification (no "id") is written first; scan past it to the id:3 response.
         JsonObject response = await ReadResponseWithIdAsync(_toAgent.Reader, 3);
         Assert.Equal("cancelled", response["result"]!["outcome"]!["outcome"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task CancelAsync_NotificationWriteFails_StillResolvesPendingPermissionAndElicitation()
+    {
+        var permissionReceived = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _connection.PermissionRequested += (_, _) => permissionReceived.TrySetResult(true);
+        var elicitationReceived = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _connection.ElicitationRequested += (_, _) => elicitationReceived.TrySetResult(true);
+
+        await PipeTestHelpers.WriteLineAsync(
+            _fromAgent.Writer,
+            "{\"jsonrpc\":\"2.0\",\"id\":31,\"method\":\"session/request_permission\",\"params\":{\"sessionId\":\"s1\"," +
+            "\"toolCall\":{\"toolCallId\":\"tc1\",\"title\":\"Run rm\",\"status\":\"pending\"}," +
+            "\"options\":[{\"optionId\":\"allow\",\"name\":\"Allow\",\"kind\":\"allow_once\"}]}}");
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer, JsonNode.Parse("""
+            {"jsonrpc":"2.0","id":32,"method":"elicitation/create","params":{
+              "mode":"form","sessionId":"s1","message":"Pick one",
+              "requestedSchema":{"type":"object","properties":{
+                "question_0":{"type":"string","oneOf":[{"const":"red","title":"Red"}]}
+              }}
+            }}
+            """)!.ToJsonString());
+        await permissionReceived.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await elicitationReceived.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // The session/cancel write itself fails (here: an already-cancelled token, the same shape as
+        // an IOException from a dead transport) - precisely when the in-flight prompts most need
+        // resolving. The caller still observes the failure...
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => _connection.CancelAsync("s1", cts.Token));
+
+        // ...but neither prompt may be left hanging in the UI forever.
+        var responses = new Dictionary<int, JsonObject>();
+        while (responses.Count < 2)
+        {
+            string line = await PipeTestHelpers.ReadLineAsync(_toAgent.Reader).WaitAsync(TimeSpan.FromSeconds(5));
+            JsonObject message = JsonNode.Parse(line)!.AsObject();
+            responses[message["id"]!.GetValue<int>()] = message;
+        }
+
+        Assert.Equal("cancelled", responses[31]["result"]!["outcome"]!["outcome"]!.GetValue<string>());
+        Assert.Equal("cancel", responses[32]["result"]!["action"]!.GetValue<string>());
     }
 
     [Fact]
@@ -579,6 +656,33 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
                 Assert.Equal("s2", second.SessionId);
                 Assert.Null(second.Title);
                 Assert.Null(second.UpdatedAt);
+            });
+    }
+
+    [Fact]
+    public async Task ListSessionsAsync_OneUnparseableUpdatedAt_StillReturnsEveryOtherSession()
+    {
+        Task<IReadOnlyList<SessionSummary>> pending = _connection.ListSessionsAsync(null, CancellationToken.None);
+        JsonObject request = await ReadRequestAsync("session/list");
+
+        await ReplyAsync(request, """
+            {
+              "sessions": [
+                { "sessionId": "s1", "cwd": "/workspace", "updatedAt": "yesterday" },
+                { "sessionId": "s2", "cwd": "/workspace", "updatedAt": "" },
+                { "sessionId": "s3", "cwd": "/workspace", "updatedAt": "2026-09-18T12:00:00Z" }
+              ]
+            }
+            """);
+
+        IReadOnlyList<SessionSummary> result = await pending.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Collection(result,
+            first => { Assert.Equal("s1", first.SessionId); Assert.Null(first.UpdatedAt); },
+            second => { Assert.Equal("s2", second.SessionId); Assert.Null(second.UpdatedAt); },
+            third =>
+            {
+                Assert.Equal("s3", third.SessionId);
+                Assert.Equal(DateTimeOffset.Parse("2026-09-18T12:00:00Z", System.Globalization.CultureInfo.InvariantCulture), third.UpdatedAt);
             });
     }
 

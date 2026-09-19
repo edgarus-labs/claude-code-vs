@@ -181,7 +181,17 @@ public sealed partial class AcpProcessConnection
         {
             if (entry is JsonObject option)
             {
-                result.Add(new ElicitationOption(GetRequiredString(option, "const"), GetRequiredString(option, "title"), GetOptionalString(option, "description")));
+                // `title` is an optional JSON Schema annotation and `const` carries the option's
+                // value; either one alone is enough to render and answer the option, so only an
+                // option with neither is unusable.
+                string? value = GetOptionalString(option, "const");
+                string? title = GetOptionalString(option, "title");
+                if (value is null && title is null)
+                {
+                    throw new AcpProtocolException("Missing or invalid required 'const' field.");
+                }
+
+                result.Add(new ElicitationOption(value ?? title!, title ?? value!, GetOptionalString(option, "description")));
             }
         }
 
@@ -363,11 +373,18 @@ public sealed partial class AcpProcessConnection
         {
             var session = entry as JsonObject ?? throw new AcpProtocolException("Invalid session summary.");
             string? updatedAtRaw = GetOptionalString(session, "updatedAt");
+
+            // A single row with a timestamp this client cannot parse degrades that row only - the
+            // rest of the session history must still reach the user.
+            DateTimeOffset? updatedAt = updatedAtRaw is not null
+                && DateTimeOffset.TryParse(updatedAtRaw, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out DateTimeOffset parsed)
+                    ? parsed
+                    : null;
             result.Add(new SessionSummary(
                 GetRequiredString(session, "sessionId"),
                 GetRequiredString(session, "cwd"),
                 GetOptionalString(session, "title"),
-                updatedAtRaw is null ? null : DateTimeOffset.Parse(updatedAtRaw, System.Globalization.CultureInfo.InvariantCulture)));
+                updatedAt));
         }
 
         return result;
