@@ -1,0 +1,88 @@
+.plan-doc {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 28px 40px 60px 40px;
+  line-height: 1.6;
+}
+
+.plan-doc h1 {
+  font-size: 1.6em;
+  font-weight: 600;
+  margin: 0 0 14px 0;
+}
+
+.plan-doc h2 {
+  font-size: 1.25em;
+  font-weight: 600;
+  margin: 26px 0 10px 0;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--chat-border);
+}
+
+.plan-doc h3 {
+  font-size: 1.05em;
+  font-weight: 600;
+  margin: 18px 0 8px 0;
+}
+
+.plan-doc p {
+  margin: 0 0 10px 0;
+}
+
+.plan-doc ul,
+.plan-doc ol {
+  margin: 0 0 10px 0;
+  padding-left: 24px;
+}
+
+.plan-doc li {
+  margin: 3px 0;
+}
+
+.plan-doc pre {
+  background: var(--chat-input-bg);
+  border: 1px solid var(--chat-border);
+  border-radius: 6px;
+  padding: 10px;
+  overflow-x: auto;
+}
+
+.plan-doc code {
+  font-family: var(--chat-code-font);
+  font-size: 0.95em;
+}
+
+.plan-doc :not(pre) > code {
+  background: var(--chat-input-bg);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.plan-doc blockquote {
+  border-left: 3px solid var(--chat-accent);
+  margin: 8px 0;
+  padding: 2px 0 2px 12px;
+  color: var(--chat-subtle-fg);
+}
+
+.plan-doc table {
+  border-collapse: collapse;
+  margin: 6px 0 12px 0;
+}
+
+.plan-doc th,
+.plan-doc td {
+  border-bottom: 1px solid var(--chat-border);
+  padding: 5px 8px;
+  text-align: left;
+}
+
+.plan-doc a {
+  color: var(--chat-link);
+}
+
+.plan-empty {
+  color: var(--chat-subtle-fg);
+  text-align: center;
+  margin-top: 80px;
+}

@@ -21,6 +21,9 @@
 	<Color x:Key="ChatDiffRemovedForegroundColor">#FFF14C4C</Color>
 	<Color x:Key="ChatErrorForegroundColor">#FFF14C4C</Color>
 	<Color x:Key="ChatWarningBackgroundColor">#FF3B3315</Color>
+	<Color x:Key="ChatCodeKeywordColor">#FF569CD6</Color>
+	<Color x:Key="ChatCodeStringColor">#FFD69D85</Color>
+	<Color x:Key="ChatCodeNumberColor">#FF6A9E8F</Color>
 
 	<SolidColorBrush x:Key="ChatBackgroundBrush" Color="{StaticResource ChatBackgroundColor}" />
 	<SolidColorBrush x:Key="ChatForegroundBrush" Color="{StaticResource ChatForegroundColor}" />
@@ -38,7 +41,11 @@
 	<SolidColorBrush x:Key="ChatDiffRemovedForegroundBrush" Color="{StaticResource ChatDiffRemovedForegroundColor}" />
 	<SolidColorBrush x:Key="ChatErrorForegroundBrush" Color="{StaticResource ChatErrorForegroundColor}" />
 	<SolidColorBrush x:Key="ChatWarningBackgroundBrush" Color="{StaticResource ChatWarningBackgroundColor}" />
+	<SolidColorBrush x:Key="ChatCodeKeywordBrush" Color="{StaticResource ChatCodeKeywordColor}" />
+	<SolidColorBrush x:Key="ChatCodeStringBrush" Color="{StaticResource ChatCodeStringColor}" />
+	<SolidColorBrush x:Key="ChatCodeNumberBrush" Color="{StaticResource ChatCodeNumberColor}" />
 	<SolidColorBrush x:Key="ChatPopupBackgroundBrush" Color="#FF252526" />
+	<SolidColorBrush x:Key="ChatRemoteControlBrush" Color="#FF3B6FD9" />
 	<SolidColorBrush x:Key="ChatHoverBrush" Color="#FF3A3A3C" />
 	<SolidColorBrush x:Key="ChatHoverForegroundBrush" Color="{StaticResource ChatForegroundColor}" />
 	<SolidColorBrush x:Key="ChatSelectionBrush" Color="#FF3F3F46" />

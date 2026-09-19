@@ -1,0 +1,427 @@
+/* Fallback values match ChatBrushes.xaml's standalone dark palette; the WPF host overwrites these
+   custom properties on load and on every VS theme change (see TranscriptWebView.ApplyTheme). */
+:root {
+  --chat-bg: #1e1e1e;
+  --chat-fg: #d4d4d4;
+  --chat-subtle-fg: #9d9d9d;
+  --chat-border: #3f3f46;
+  --chat-user-bubble-bg: #264f78;
+  --chat-input-bg: #252526;
+  --chat-accent: #d97757;
+  --chat-accent-fg: #211a17;
+  --chat-link: #d97757;
+  --chat-diff-added-bg: #1b3b1b;
+  --chat-diff-added-fg: #6a9955;
+  --chat-diff-removed-bg: #3b1b1b;
+  --chat-diff-removed-fg: #f14c4c;
+  --chat-error-fg: #f14c4c;
+  --chat-font-size: 13px;
+  --chat-code-font: Consolas, "Cascadia Mono", monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--chat-bg);
+  color: var(--chat-fg);
+  font: var(--chat-font-size) / 1.5 "Segoe UI", sans-serif;
+  overflow-x: hidden;
+}
+
+#transcript {
+  padding: 12px;
+}
+
+.msg {
+  margin: 0 4px 16px 4px;
+}
+
+.msg-user {
+  display: block;
+}
+
+.msg-user .bubble {
+  background: transparent;
+  border: 1px solid var(--chat-border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.msg-user .user-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 2px 0 6px 0;
+}
+
+.msg-user .user-image {
+  max-width: 260px;
+  max-height: 180px;
+  border-radius: 8px;
+  border: 1px solid var(--chat-border);
+  display: block;
+}
+
+.msg-user .bubble-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.msg-assistant {
+  padding-left: 22px;
+}
+
+.msg-assistant .content {
+  position: relative;
+}
+
+/* Only markdown text gets the leading dot; tool rows carry their own accent dot. */
+.msg-assistant .content::before {
+  content: "";
+  position: absolute;
+  left: -16px;
+  top: 0.55em;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--chat-subtle-fg);
+  opacity: 0.8;
+}
+
+.msg-assistant .content {
+  line-height: 1.5;
+}
+
+.msg-assistant .content p {
+  margin: 0 0 8px 0;
+}
+
+.msg-assistant .content > *:last-child {
+  margin-bottom: 0;
+}
+
+.msg-assistant .content a {
+  color: var(--chat-link);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.msg-footer {
+  color: var(--chat-subtle-fg);
+  font-size: 0.78em;
+  margin: 6px 4px 0 4px;
+}
+
+.msg-assistant .content pre {
+  background: var(--chat-input-bg);
+  border: 1px solid var(--chat-border);
+  border-radius: 6px;
+  padding: 10px;
+  overflow-x: auto;
+  margin: 4px 0 10px 0;
+}
+
+.msg-assistant .content code {
+  font-family: var(--chat-code-font);
+  font-size: 0.95em;
+}
+
+.msg-assistant .content :not(pre) > code {
+  background: var(--chat-input-bg);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.msg-assistant .content blockquote {
+  border-left: 3px solid var(--chat-border);
+  margin: 4px 0 8px 0;
+  padding: 0 0 0 10px;
+  color: var(--chat-subtle-fg);
+}
+
+.msg-assistant .content table {
+  border-collapse: collapse;
+  margin: 4px 0 10px 0;
+}
+
+.msg-assistant .content th,
+.msg-assistant .content td {
+  border-bottom: 1px solid var(--chat-border);
+  padding: 5px 8px;
+  text-align: left;
+}
+
+.msg-assistant .content th {
+  font-weight: 600;
+  background: var(--chat-input-bg);
+}
+
+/* Plain row, not a bordered "card": content is always visible (truncated by default, see
+   .tool-body-wrapper below) so there is no separate all-or-nothing collapsed state to fight with. */
+/* Tool rows as in the Claude desktop app: a stack of rounded cards, "Edited File.cs +3 −1", chevron
+   on the right, status only while running or when failed. */
+.tool-card {
+  border: 1px solid var(--chat-border);
+  background: var(--chat-input-bg);
+  border-radius: 8px;
+  margin: 4px 0 0 0;
+}
+
+.tool-card .tool-header {
+  padding: 7px 12px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  color: var(--chat-subtle-fg);
+}
+
+.tool-card .tool-header:hover {
+  color: var(--chat-fg);
+}
+
+.tool-card .tool-header .chevron {
+  flex: none;
+  margin-left: auto;
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid var(--chat-subtle-fg);
+  border-bottom: 1.5px solid var(--chat-subtle-fg);
+  transform: rotate(45deg);
+  margin-right: 2px;
+  margin-bottom: 2px;
+  transition: transform 0.12s ease;
+}
+
+.tool-card.collapsed .tool-header .chevron {
+  transform: rotate(-45deg);
+  margin-bottom: 0;
+}
+
+.tool-card.collapsed .tool-body-wrapper,
+.tool-card.collapsed .expand-button {
+  display: none;
+}
+
+.tool-card .tool-header .title {
+  font-size: 0.95em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-card .tool-header .title strong {
+  color: var(--chat-fg);
+  font-weight: 600;
+}
+
+.tool-card .diff-added-count {
+  color: var(--chat-diff-added-fg);
+  font-size: 0.9em;
+  flex: none;
+}
+
+.tool-card .diff-removed-count {
+  color: var(--chat-diff-removed-fg);
+  font-size: 0.9em;
+  flex: none;
+  margin-left: -4px;
+}
+
+.tool-card .status {
+  color: var(--chat-subtle-fg);
+  font-size: 0.8em;
+  flex: none;
+}
+
+.tool-card .status.status-failed {
+  color: var(--chat-error-fg);
+}
+
+.tool-card .preview {
+  color: var(--chat-subtle-fg);
+  font-family: var(--chat-code-font);
+  font-size: 0.8em;
+  white-space: nowrap;
+  flex: none;
+}
+
+.tool-card .tool-body-wrapper {
+  position: relative;
+  margin: 0 12px 8px 12px;
+  border-left: 2px solid var(--chat-border);
+}
+
+.tool-card .body {
+  padding: 4px 0 4px 10px;
+}
+
+.tool-card .body.truncated {
+  overflow: hidden;
+}
+
+.tool-card .truncate-gradient {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 48px;
+  background: linear-gradient(to bottom, transparent, var(--chat-input-bg));
+  pointer-events: none;
+}
+
+.tool-card .expand-button {
+  display: block;
+  margin: 2px 0 4px 10px;
+  padding: 2px 0;
+  background: transparent;
+  border: none;
+  color: var(--chat-link);
+  font-size: 0.85em;
+  cursor: pointer;
+}
+
+.tool-card .expand-button:hover {
+  text-decoration: underline;
+}
+
+.tool-card pre {
+  font-family: var(--chat-code-font);
+  font-size: 0.92em;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 4px 0;
+  user-select: text;
+}
+
+.tool-card .diff-line {
+  font-family: var(--chat-code-font);
+  font-size: 0.92em;
+  white-space: pre;
+  padding: 0 6px;
+}
+
+.tool-card .diff-added {
+  color: var(--chat-diff-added-fg);
+  background: var(--chat-diff-added-bg);
+}
+
+.tool-card .diff-removed {
+  color: var(--chat-diff-removed-fg);
+  background: var(--chat-diff-removed-bg);
+}
+
+.tool-card .diff-path {
+  font-weight: 600;
+  color: var(--chat-subtle-fg);
+  padding: 4px 6px 2px 6px;
+}
+
+.tool-card .diff-prefix {
+  display: inline-block;
+  width: 1em;
+  opacity: 0.7;
+  user-select: none;
+}
+
+/* Token colors for highlight.js output inside diff lines and plain tool-output code blocks -
+   VS Code's default dark+ syntax palette, a well-known public color scheme (not vendor CSS). */
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-section,
+.hljs-link {
+  color: #569cd6;
+}
+
+.hljs-string,
+.hljs-attr,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-addition {
+  color: #ce9178;
+}
+
+.hljs-number {
+  color: #b5cea8;
+}
+
+.hljs-comment,
+.hljs-quote,
+.hljs-deletion {
+  color: var(--chat-subtle-fg);
+}
+
+.hljs-title,
+.hljs-name,
+.hljs-type {
+  color: #4ec9b0;
+}
+
+.hljs-variable,
+.hljs-template-variable,
+.hljs-attribute {
+  color: #9cdcfe;
+}
+
+.hljs-built_in {
+  color: #dcdcaa;
+}
+
+.activity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 8px 16px 8px;
+}
+
+.activity-dots {
+  display: flex;
+  gap: 4px;
+}
+
+.activity-dots i {
+  display: block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--chat-accent);
+  opacity: 0.35;
+  animation: activity-pulse 1.3s ease-in-out infinite;
+  font-style: normal;
+}
+
+.activity-dots i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.activity-dots i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes activity-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.activity-text {
+  color: var(--chat-subtle-fg);
+  font-size: 0.9em;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--chat-accent) 35%, transparent);
+}

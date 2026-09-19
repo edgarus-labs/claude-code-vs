@@ -150,7 +150,8 @@ public sealed class MarkdownMessageView : RichTextBox
         }
 
         var markdown = Markdown ?? string.Empty;
-        var renderableMarkdown = MarkdownSafetyLimits.LimitBlockquoteNesting(MarkdownSafetyLimits.LimitMarkdownLength(markdown));
+        var renderableMarkdown = MarkdownSafetyLimits.EnsureBlankLineBeforeFences(
+            MarkdownSafetyLimits.LimitBlockquoteNesting(MarkdownSafetyLimits.LimitMarkdownLength(markdown)));
         if (string.Equals(renderableMarkdown, _renderedMarkdown, StringComparison.Ordinal))
         {
             return;
@@ -219,7 +220,11 @@ public sealed class MarkdownMessageView : RichTextBox
         AddStyle(Styles.DocumentStyleKey, typeof(FlowDocument),
             new Setter(TextElement.FontSizeProperty, new Binding(nameof(FontSize)) { Source = this }),
             new Setter(FlowDocument.PagePaddingProperty, new Thickness(0)),
-            new Setter(TextElement.ForegroundProperty, BrushResource("ChatForegroundBrush")));
+            new Setter(TextElement.ForegroundProperty, BrushResource("ChatForegroundBrush")),
+            // FlowDocument defaults to Justify, which stretches word spacing to fill the line -
+            // barely visible in a narrow column, glaring now that the transcript spans the full
+            // (potentially very wide) panel width.
+            new Setter(FlowDocument.TextAlignmentProperty, TextAlignment.Left));
         AddStyle(Styles.ParagraphStyleKey, typeof(Paragraph),
             new Setter(Block.MarginProperty, new Thickness(0, 0, 0, 8)));
 
@@ -305,6 +310,7 @@ public sealed class MarkdownMessageView : RichTextBox
             // creates BitmapImage instances (including remote and local resources).
             ObjectRenderers.Replace<LinkInlineRenderer>(new SafeLinkRenderer(_owner));
             ObjectRenderers.Replace<AutolinkInlineRenderer>(new SafeAutolinkRenderer(_owner));
+            ObjectRenderers.Replace<CodeBlockRenderer>(new HighlightingCodeBlockRenderer());
         }
     }
 
@@ -356,6 +362,50 @@ public sealed class MarkdownMessageView : RichTextBox
 
             renderer.Push(_owner.CreateHyperlink(link.Url));
             renderer.WriteText(link.Url);
+            renderer.Pop();
+        }
+    }
+
+    /// <summary>Renders fenced/indented code blocks with the lightweight approximate highlighting
+    /// from <see cref="CodeHighlighter"/> instead of Markdig.Wpf's single-color default.</summary>
+    private sealed class HighlightingCodeBlockRenderer : WpfObjectRenderer<Markdig.Syntax.CodeBlock>
+    {
+        protected override void Write(WpfRenderer renderer, Markdig.Syntax.CodeBlock obj)
+        {
+            var paragraph = new Paragraph();
+            paragraph.SetResourceReference(FrameworkContentElement.StyleProperty, Styles.CodeBlockStyleKey);
+
+            string? language = obj is Markdig.Syntax.FencedCodeBlock fenced ? fenced.Info : null;
+            var lines = obj.Lines;
+            for (int i = 0; i < lines.Count; i++)
+            {
+                if (i > 0)
+                {
+                    paragraph.Inlines.Add(new LineBreak());
+                }
+
+                string lineText = lines.Lines[i].Slice.ToString();
+                foreach (CodeToken token in CodeHighlighter.TokenizeLine(language, lineText))
+                {
+                    var run = new Run(token.Text);
+                    string? brushKey = token.Kind switch
+                    {
+                        CodeTokenKind.Comment => "ChatSubtleForegroundBrush",
+                        CodeTokenKind.String => "ChatCodeStringBrush",
+                        CodeTokenKind.Number => "ChatCodeNumberBrush",
+                        CodeTokenKind.Keyword => "ChatCodeKeywordBrush",
+                        _ => null,
+                    };
+                    if (brushKey is not null)
+                    {
+                        run.SetResourceReference(TextElement.ForegroundProperty, brushKey);
+                    }
+
+                    paragraph.Inlines.Add(run);
+                }
+            }
+
+            renderer.Push(paragraph);
             renderer.Pop();
         }
     }

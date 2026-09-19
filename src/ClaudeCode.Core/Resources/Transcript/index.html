@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<!-- Local page only: no network resources, no inline event handlers, no remote content ever
+     loaded here. Message content is untrusted (model/tool output) and is always run through
+     DOMPurify before touching the DOM - see transcript.js renderMarkdown(). -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src data:; connect-src 'none';" />
+<link rel="stylesheet" href="transcript.css" />
+</head>
+<body>
+<div id="transcript" role="log" aria-live="polite"></div>
+<script src="vendor/markdown-it.min.js"></script>
+<script src="vendor/purify.min.js"></script>
+<script src="vendor/highlight.min.js"></script>
+<script src="transcript.js"></script>
+</body>
+</html>
