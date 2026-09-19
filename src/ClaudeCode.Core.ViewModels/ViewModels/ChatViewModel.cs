@@ -42,7 +42,6 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private long? _contextWindowSize;
     private string? _explicitSessionTitle;
     private const string UntitledSessionTitle = "Untitled";
-    private const int MaxSessionTitleLength = 80;
     private IReadOnlyList<AvailableCommand> _availableCommands = Array.Empty<AvailableCommand>();
     private Dictionary<string, IReadOnlyList<AvailableCommand>>? _pendingCommandCatalogs;
     private AvailableCommand? _selectedSlashSuggestion;
@@ -57,6 +56,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private bool _isBusy;
     private bool _isConnecting;
     private bool _isConfigBusy;
+    private bool _isSwitchingSession;
     private bool _isSignedIn;
     private bool _needsAuthentication;
     private string _inputText = string.Empty;
@@ -106,13 +106,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         AcceptAllChangesCommand = new AsyncRelayCommand(() => OnUiAsync(async () =>
         {
             foreach (var file in ChangedFiles.ToList()) await AcceptChangeAsync(file).ConfigureAwait(true);
-        }));
-        RejectAllChangesCommand = new AsyncRelayCommand(() => OnUiAsync(async () =>
+        }), () => ChangedFiles.Count > 0);
+        RejectAllChangesCommand = new AsyncRelayCommand(() => OnUiAsync(RejectAllChangesAsync), () => ChangedFiles.Count > 0);
+        ChangedFiles.CollectionChanged += (_, __) =>
         {
-            foreach (var file in ChangedFiles.ToList()) await RejectChangeAsync(file).ConfigureAwait(true);
-        }));
-        OpenChangedFileCommand = new AsyncRelayCommand<ChangedFileViewModel>(file =>
-            file is null ? Task.CompletedTask : _services.OpenDocumentAsync(file.FullPath, _lifetime.Token));
+            AcceptAllChangesCommand.NotifyCanExecuteChanged();
+            RejectAllChangesCommand.NotifyCanExecuteChanged();
+        };
+        OpenChangedFileCommand = new AsyncRelayCommand<ChangedFileViewModel>(OpenChangedFileAsync);
         ToggleRemoteControlCommand = new AsyncRelayCommand(ToggleRemoteControlAsync, () => CanConfigure && !_isRemoteControlBusy);
         OpenUsagePanelCommand = new RelayCommand(() => IsUsagePanelOpen = true);
         CloseUsagePanelCommand = new RelayCommand(() => IsUsagePanelOpen = false);
@@ -145,6 +146,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     public IRelayCommand<AvailableCommand> ApplySlashSuggestionCommand { get; }
     public IAsyncRelayCommand ToggleRemoteControlCommand { get; }
     public IRelayCommand OpenUsagePanelCommand { get; }
+    public IRelayCommand CloseUsagePanelCommand { get; }
+    public IRelayCommand DismissUsageWarningCommand { get; }
+    public Task Initialization { get; }
 
     private bool _isRemoteControlEnabled;
     private bool _isRemoteControlBusy;
@@ -217,9 +221,6 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         RemoteControlUrl = null;
         if (_services.RemoteControlAtStartup) _ = SetRemoteControlAsync(true);
     }
-    public IRelayCommand CloseUsagePanelCommand { get; }
-    public IRelayCommand DismissUsageWarningCommand { get; }
-    public Task Initialization { get; }
 
     public string InputText
     {
@@ -265,7 +266,15 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         private set { if (SetProperty(ref _needsAuthentication, value)) NotifyStateChanged(); }
     }
 
-    private bool CanEditDraft => !_disposed && !NeedsAuthentication && !IsConnecting && !IsBusy && !IsConfigBusy;
+    // _isSwitchingSession covers the session/new and session/load round trips: neither IsBusy nor
+    // IsConnecting is set for their duration, so without it a prompt accepted mid-switch is sent to
+    // the outgoing session and then wiped from the transcript by ResetTranscriptState.
+    private bool CanEditDraft => !_disposed && !NeedsAuthentication && !IsConnecting && !IsBusy
+        && !IsConfigBusy && !_isSwitchingSession;
+
+    /// <summary>The working directory this client trusts - never a path the agent reported.</summary>
+    private string WorkspaceCwd => _services.WorkspaceRoot ?? Environment.CurrentDirectory;
+
     // Deliberately does not require !IsBusy: SetSessionConfigOptionAsync is its own ACP RPC call
     // over the same JSON-RPC connection as an in-flight prompt, which already supports concurrent
     // in-flight requests (matched by request id) - there's no protocol reason model/mode/effort
@@ -362,10 +371,16 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private void UpdateSessionTitleFromFirstUserMessage()
     {
         if (_explicitSessionTitle is not null || Messages.Count == 0 || Messages[0].Role != ChatRole.User) return;
-        var firstLine = Messages[0].Text.Split('\n').Select(line => line.Trim()).FirstOrDefault(line => line.Length > 0) ?? string.Empty;
-        if (firstLine.Length == 0) return;
-        SessionTitle = firstLine.Length > MaxSessionTitleLength ? firstLine.Substring(0, MaxSessionTitleLength - 1) + "…" : firstLine;
+        var title = SessionTitleFormat.Describe(Messages[0].Text, sessionId: null);
+        if (title.Length > 0) SessionTitle = title;
     }
+
+    /// <summary>Normalizes an agent-reported session title through the same rule as a locally
+    /// derived one. It is bound straight into the single-row panel header and its tooltip, where an
+    /// embedded line break reflows the toolbar and a huge string hangs WPF's measure pass - and it
+    /// crosses the untrusted boundary, unlike the prompt text. Null means "no title of its own".</summary>
+    private static string? NormalizeSessionTitle(string? title) =>
+        SessionTitleFormat.Describe(title, sessionId: null) is { Length: > 0 } normalized ? normalized : null;
 
     public string HistoryFilter
     {
@@ -418,7 +433,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             {
                 await Task.Delay(UsagePollInterval, _lifetime.Token).ConfigureAwait(false);
             }
-            catch (OperationCanceledException)
+            // Dispose() cancels before it disposes, but an iteration preempted between the loop's
+            // cancellation check and this call reads _lifetime.Token after disposal, which throws
+            // ObjectDisposedException and would fault the discarded task.
+            catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
             {
                 return;
             }
@@ -557,7 +575,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             {
                 OnPropertyChanged(nameof(SessionUsage));
                 OnPropertyChanged(nameof(WeeklyUsage));
-                OnPropertyChanged(nameof(FableUsage));
+                OnPropertyChanged(nameof(ScopedWeeklyUsage));
             }
         }
     }
@@ -566,8 +584,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     public UsageLimitDisplay? WeeklyUsage => BuildUsageDisplay("This week", limit => limit.Kind == "weekly_all");
 
-    public UsageLimitDisplay? FableUsage => BuildUsageDisplay(
-        (_usage?.Limits.FirstOrDefault(limit => limit.Kind == "weekly_scoped")?.ScopeLabel ?? "Fable") + " this week",
+    /// <summary>The agent's <c>weekly_scoped</c> limit, labelled with whatever scope the agent
+    /// named. Nothing about it is product-specific, so the fallback must not invent a product name.</summary>
+    public UsageLimitDisplay? ScopedWeeklyUsage => BuildUsageDisplay(
+        (_usage?.Limits.FirstOrDefault(limit => limit.Kind == "weekly_scoped")?.ScopeLabel ?? "Scoped") + " this week",
         limit => limit.Kind == "weekly_scoped");
 
     public UsageWarningViewModel? UsageWarning
@@ -933,17 +953,16 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private async Task NewSessionCoreAsync()
     {
         if (!CanEditDraft) return;
+        _isSwitchingSession = true;
+        NotifyStateChanged();
         try
         {
             var (connection, _) = await EnsureConnectedAsync(_lifetime.Token).ConfigureAwait(true);
             if (_disposed || !ReferenceEquals(connection, _connection)) return;
-            var cwd = _services.WorkspaceRoot ?? Environment.CurrentDirectory;
-            var session = await connection.NewSessionAsync(cwd, null, _lifetime.Token).ConfigureAwait(true);
+            var session = await RequestNewSessionAsync(connection, _lifetime.Token).ConfigureAwait(true);
             if (_disposed || !ReferenceEquals(connection, _connection)) return;
             ResetTranscriptState();
-            _sessionId = session.SessionId;
-            ApplyConfigOptions(session.ConfigOptions);
-            OnSessionStarted();
+            AdoptNewSession(session);
             StatusMessage = null;
         }
         catch (OperationCanceledException) when (_disposed) { }
@@ -953,6 +972,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
         finally
         {
+            _pendingCommandCatalogs = null;
+            _isSwitchingSession = false;
             NotifyStateChanged();
         }
     }
@@ -971,8 +992,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         {
             var (connection, _) = await EnsureConnectedAsync(_lifetime.Token).ConfigureAwait(true);
             if (_disposed || !ReferenceEquals(connection, _connection)) return;
-            var cwd = _services.WorkspaceRoot ?? Environment.CurrentDirectory;
-            var sessions = await connection.ListSessionsAsync(cwd, _lifetime.Token).ConfigureAwait(true);
+            var sessions = await connection.ListSessionsAsync(WorkspaceCwd, _lifetime.Token).ConfigureAwait(true);
             if (_disposed || !ReferenceEquals(connection, _connection)) return;
             _allSessionHistory = sessions.ToList();
             RefreshHistoryFilter();
@@ -995,21 +1015,29 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         if (session is null || !CanEditDraft) return;
         IsHistoryOpen = false;
         StatusMessage = null;
-        // Kept so the failure path below can put it back: an id the agent never loaded would keep
-        // routing every later prompt and config change to a session that does not exist.
+        // Kept so the failure path below can put it all back: an id the agent never loaded would
+        // keep routing every later prompt and config change to a session that does not exist, and
+        // a transient session/load failure must not destroy the conversation the user was in.
         var sessionIdBeforeLoad = _sessionId;
+        var messagesBeforeLoad = Messages.ToList();
+        var explicitTitleBeforeLoad = _explicitSessionTitle;
+        var titleBeforeLoad = SessionTitle;
+        _isSwitchingSession = true;
+        NotifyStateChanged();
         try
         {
             var (connection, _) = await EnsureConnectedAsync(_lifetime.Token).ConfigureAwait(true);
             if (_disposed || !ReferenceEquals(connection, _connection)) return;
             ResetTranscriptState();
-            _explicitSessionTitle = string.IsNullOrWhiteSpace(session.Title) ? null : session.Title;
+            _explicitSessionTitle = NormalizeSessionTitle(session.Title);
             if (_explicitSessionTitle is not null) SessionTitle = _explicitSessionTitle;
             // Known upfront (unlike session/new): set it before the call below so replayed
             // session/update notifications, tagged with this id, are not dropped by OnSessionUpdate's
             // "belongs to the known session" check while the request is still in flight.
             _sessionId = session.SessionId;
-            var result = await connection.LoadSessionAsync(session.SessionId, session.Cwd, null, _lifetime.Token).ConfigureAwait(true);
+            // Never session.Cwd: it is copied verbatim out of the agent's session/list reply and
+            // becomes the WorkspacePathGuard root of every VS-control tool for the resumed session.
+            var result = await connection.LoadSessionAsync(session.SessionId, WorkspaceCwd, null, _lifetime.Token).ConfigureAwait(true);
             if (_disposed || !ReferenceEquals(connection, _connection)) return;
             ApplyConfigOptions(result.ConfigOptions);
             OnSessionStarted();
@@ -1017,11 +1045,20 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex)
         {
-            if (_sessionId == session.SessionId) _sessionId = sessionIdBeforeLoad;
+            if (_sessionId == session.SessionId)
+            {
+                _sessionId = sessionIdBeforeLoad;
+                ResetTranscriptState();
+                foreach (var message in messagesBeforeLoad) Messages.Add(message);
+                _explicitSessionTitle = explicitTitleBeforeLoad;
+                SessionTitle = titleBeforeLoad;
+            }
+
             if (!_disposed) StatusMessage = $"Could not open session: {ex.Message}";
         }
         finally
         {
+            _isSwitchingSession = false;
             NotifyStateChanged();
         }
     }
@@ -1041,12 +1078,26 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         _hasCommandCatalog = false;
         RefreshSlashSuggestions();
         ActivityText = string.Empty;
+        // The context ring and the turn-token delta belong to the session that is going away:
+        // leaving them behind shows the previous conversation's usage over an empty transcript and
+        // makes the next turn's TurnTokens a nonsense delta.
+        _sessionUsedTokens = 0;
+        _contextWindowSize = null;
+        _turnStartUsedTokens = 0;
+        TurnTokens = null;
+        OnPropertyChanged(nameof(SessionUsedTokens));
+        OnPropertyChanged(nameof(ContextWindowSize));
+        OnPropertyChanged(nameof(ContextUsagePercent));
+        OnPropertyChanged(nameof(ContextUsageLabel));
     }
 
     // Resolve, never abandon: an unresolved TaskCompletionSourceSlot leaves the agent's awaiter
     // hanging forever, and a form left on screen would answer a session that is already gone.
     private void ClearPendingRequests(string reason)
     {
+        // Resolve the plan before dropping it: nothing else ever does, and a still-open plan
+        // document would keep Proceed/Review live on a session that no longer exists.
+        _pendingPlan?.MarkResolved("Session ended");
         PendingPlan = null;
         _pendingPlanReviewComments = null;
         _pendingPermissionResponse?.TrySetException(new OperationCanceledException(reason));
@@ -1086,18 +1137,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 cancellationToken.ThrowIfCancellationRequested();
                 if (!ReferenceEquals(connection, _connection) || NeedsAuthentication)
                     throw new InvalidOperationException("The agent disconnected before the session was ready.");
-                _pendingCommandCatalogs = new Dictionary<string, IReadOnlyList<AvailableCommand>>(StringComparer.Ordinal);
-                var session = await connection.NewSessionAsync(_services.WorkspaceRoot ?? Environment.CurrentDirectory, null, cancellationToken).ConfigureAwait(true);
+                var session = await RequestNewSessionAsync(connection, cancellationToken).ConfigureAwait(true);
                 cancellationToken.ThrowIfCancellationRequested();
                 if (!ReferenceEquals(connection, _connection) || NeedsAuthentication)
                     throw new InvalidOperationException("The agent disconnected before the session was ready.");
-                _sessionId = session.SessionId;
-                if (_pendingCommandCatalogs.TryGetValue(session.SessionId, out var commands)) ApplyCommandCatalog(commands);
-                _pendingCommandCatalogs = null;
                 IsSignedIn = true;
                 NeedsAuthentication = false;
-                ApplyConfigOptions(session.ConfigOptions);
-            OnSessionStarted();
+                AdoptNewSession(session);
                 StatusMessage = null;
                 return (connection, session.SessionId);
             }
@@ -1117,6 +1163,28 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             try { _connectGate.Release(); } catch (ObjectDisposedException) { }
             NotifyStateChanged();
         }
+    }
+
+    /// <summary>Issues <c>session/new</c> with the client's own trusted workspace root, buffering
+    /// any command catalog the agent publishes while the new session's id is still unknown. Both
+    /// call sites (the initial connect and New Chat) must pair this with
+    /// <see cref="AdoptNewSession"/> and clear <c>_pendingCommandCatalogs</c> in their own finally.</summary>
+    private Task<NewSessionResult> RequestNewSessionAsync(IAcpAgentConnection connection, CancellationToken cancellationToken)
+    {
+        _pendingCommandCatalogs = new Dictionary<string, IReadOnlyList<AvailableCommand>>(StringComparer.Ordinal);
+        return connection.NewSessionAsync(WorkspaceCwd, null, cancellationToken);
+    }
+
+    /// <summary>Publishes the id <c>session/new</c> returned, drains the catalog buffered while it
+    /// was unknown, and applies the settings the agent advertised for it.</summary>
+    private void AdoptNewSession(NewSessionResult session)
+    {
+        _sessionId = session.SessionId;
+        if (_pendingCommandCatalogs is { } buffered && buffered.TryGetValue(session.SessionId, out var commands))
+            ApplyCommandCatalog(commands);
+        _pendingCommandCatalogs = null;
+        ApplyConfigOptions(session.ConfigOptions);
+        OnSessionStarted();
     }
 
     private void ApplyConfigOptions(IReadOnlyList<SessionConfigOption> options)
@@ -1181,6 +1249,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                     ApplyConfigOptions(config.ConfigOptions);
                     break;
                 case SessionUpdate.UserMessageChunk chunk:
+                    // Replay only: a live turn already has the bubble SendCoreAsync added, so an
+                    // agent that echoes the prompt back must not duplicate it (and must not be
+                    // allowed to author the session title).
+                    if (IsBusy) break;
                     EnsureUserMessage().AppendText(chunk.Text);
                     UpdateSessionTitleFromFirstUserMessage();
                     break;
@@ -1195,7 +1267,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                     UpsertToolCall(toolCall.Call);
                     break;
                 case SessionUpdate.Plan plan:
-                    CurrentPlan = new PlanViewModel(plan.Entries);
+                    // Agents emit a plan update per todo transition; replacing the view model must
+                    // not re-expand a Tasks list the user collapsed.
+                    CurrentPlan = new PlanViewModel(plan.Entries) { IsExpanded = CurrentPlan?.IsExpanded ?? true };
                     break;
                 case SessionUpdate.UsageUpdate usage:
                     _sessionUsedTokens = usage.UsedTokens;
@@ -1229,7 +1303,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private void UpsertToolCall(ToolCallUpdate call)
     {
-        _ = TrackToolCallFileChangesAsync(call);
+        // File-system work (path canonicalization, whole-file reads) must never run on the WPF
+        // dispatcher. Eligibility is captured here, on the UI thread: only a live turn produces
+        // changes to revert - a resumed session replays old, already-applied tool calls whose
+        // "original" would be the current file, giving 50 phantom rows with nothing to revert.
+        if (IsBusy) _ = Task.Run(() => TrackToolCallFileChangesAsync(call));
         var message = EnsureAssistantMessage();
         var existing = message.ToolCalls.FirstOrDefault(t => t.ToolCallId == call.ToolCallId);
         if (existing is not null)
@@ -1288,7 +1366,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 UpdateActivity("Working…");
             }
 
-            PendingPermission = new PermissionRequestViewModel(e.Call.Title, e.Options, Choose);
+            PendingPermission = new PermissionRequestViewModel(ToolDisplayName.Describe(e.Call.Title), e.Options, Choose);
             UpdateActivity("Waiting for permission…");
 
             // ExitPlanMode arrives as a switch_mode tool call whose content is the plan markdown.
@@ -1306,9 +1384,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                     },
                     comments =>
                     {
-                        if (plan!.RejectOption is null) return;
+                        // Unreachable, and only here to satisfy nullability: PlanReviewViewModel's
+                        // ReviewCommand body itself returns before invoking this callback when
+                        // RejectOption is null, so no host - panel, plan document, or a programmatic
+                        // Execute that bypasses CanExecute - can get here with nothing to answer.
+                        if (plan!.RejectOption is not PermissionOption reject) return;
                         _pendingPlanReviewComments = comments;
-                        Choose(plan.RejectOption);
+                        Choose(reject);
                         plan.MarkResolved("Sent back for revision");
                         if (!IsBusy) SendPendingPlanReview();
                     });
@@ -1318,7 +1400,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             }
             else
             {
-                RaiseAttention(ChatAttentionKind.PermissionNeeded, "Claude needs your permission", e.Call.Title);
+                RaiseAttention(ChatAttentionKind.PermissionNeeded, "Claude needs your permission", ToolDisplayName.Describe(e.Call.Title));
             }
         });
     }
@@ -1337,9 +1419,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             PendingElicitation = new ElicitationRequestViewModel(e.Message, e.Fields, answer =>
             {
                 e.Response.TrySetResult(answer);
+                // A superseded form can still be on screen in a host surface; answering it must not
+                // wipe the form the user is now looking at, whose slot nothing else would resolve.
+                if (!ReferenceEquals(_pendingElicitationResponse, e.Response)) return;
                 _pendingElicitationResponse = null;
                 PendingElicitation = null;
             });
+            RaiseAttention(ChatAttentionKind.PermissionNeeded, "Claude needs your input", e.Message);
         });
     }
 
@@ -1358,11 +1444,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
             if (e.Line.HasValue || e.Limit.HasValue)
             {
-                var newline = text.IndexOf("\r\n", StringComparison.Ordinal) >= 0 ? "\r\n" : "\n";
-                var lines = SplitLines(text);
+                var lines = SplitLinesKeepingTerminators(text);
                 var start = Math.Max(0, (e.Line ?? 1) - 1);
                 var count = e.Limit ?? Math.Max(0, lines.Length - start);
-                text = string.Join(newline, lines.Skip(start).Take(count));
+                text = JoinRequestedLines(lines, start, count);
             }
 
             e.Response.TrySetResult(text);
@@ -1370,18 +1455,44 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         catch (Exception ex) { e.Response.TrySetException(ex); }
     }
 
-    // Split on LF and drop the CR of a CRLF pair: the requested slice is re-joined with the
-    // terminator the document itself uses, so a partial read never hands back a dangling "\r".
-    private static string[] SplitLines(string text)
+    // Each entry keeps the terminator the document actually has after it. Choosing one terminator
+    // for the whole slice from a whole-file scan rewrites the interior separators of a mixed-ending
+    // document, and the agent then uses that text as the old_text of its follow-up Edit.
+    private static string[] SplitLinesKeepingTerminators(string text)
     {
-        var lines = (text ?? string.Empty).Split('\n');
-        for (var i = 0; i < lines.Length; i++)
+        var lines = new List<string>();
+        var start = 0;
+        for (var index = 0; index < text.Length; index++)
         {
-            var line = lines[i];
-            if (line.Length > 0 && line[line.Length - 1] == '\r') lines[i] = line.Substring(0, line.Length - 1);
+            if (text[index] != '\n') continue;
+            lines.Add(text.Substring(start, index - start + 1));
+            start = index + 1;
         }
 
-        return lines;
+        if (start < text.Length) lines.Add(text.Substring(start));
+        return lines.ToArray();
+    }
+
+    // Only the terminator following the last requested line is dropped: a partial read must not
+    // hand back a dangling "\r", and must not invent a terminator the file does not have there.
+    private static string JoinRequestedLines(string[] lines, int start, int count)
+    {
+        if (start >= lines.Length || count <= 0) return string.Empty;
+        var end = (int)Math.Min(lines.Length, (long)start + count);
+        var builder = new StringBuilder();
+        for (var index = start; index < end; index++)
+        {
+            var line = lines[index];
+            if (index == end - 1)
+            {
+                if (line.EndsWith("\r\n", StringComparison.Ordinal)) line = line.Substring(0, line.Length - 2);
+                else if (line.Length > 0 && line[line.Length - 1] == '\n') line = line.Substring(0, line.Length - 1);
+            }
+
+            builder.Append(line);
+        }
+
+        return builder.ToString();
     }
 
     private async void OnFileWriteRequested(object? sender, FileWriteRequestEventArgs e)
@@ -1406,16 +1517,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // still pending (before the file changes), refresh the +/- counts once it completes.
     private async Task TrackToolCallFileChangesAsync(ToolCallUpdate call)
     {
-        // Only live turns: a resumed session replays old, already-applied tool calls whose "original"
-        // would be the current file - nothing to revert, and 50 phantom rows in the panel.
-        if (!IsBusy) return;
         try
         {
             foreach (var content in call.Content)
             {
                 if (!content.IsDiff || string.IsNullOrWhiteSpace(content.Path)) continue;
                 ChangedFileViewModel tracked;
-                try { tracked = await TrackChangeBeforeWriteAsync(content.Path!).ConfigureAwait(true); }
+                try { tracked = await TrackChangeBeforeWriteAsync(content.Path!, content).ConfigureAwait(true); }
                 catch (Exception) { continue; } // outside the workspace or unreadable: not ours to revert.
 
                 if (call.Status == ToolCallStatus.Completed)
@@ -1434,7 +1542,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     }
 
     // Snapshot the pre-edit content on the agent's first write to a path, so Reject can restore it.
-    private async Task<ChangedFileViewModel> TrackChangeBeforeWriteAsync(string requestedPath)
+    private async Task<ChangedFileViewModel> TrackChangeBeforeWriteAsync(string requestedPath, ToolCallContent? diff = null)
     {
         using var pathLease = WorkspacePathGuard.AcquireFile(_services.WorkspaceRoot, requestedPath);
         lock (_changedFilesByPath)
@@ -1443,6 +1551,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
 
         var original = await ReadLeasedFileAsync(pathLease).ConfigureAwait(true);
+        // The notification carrying a diff is not synchronized with the agent's own write, so the
+        // read above may already be the post-edit content. When it is, the diff's OldText is the
+        // authoritative original - null exactly when the agent created the file. Without this,
+        // Reject would write the edit back over itself, or refuse to delete a file the agent just
+        // created, and report success either way.
+        if (diff is not null && string.Equals(original, diff.NewText, StringComparison.Ordinal)) original = diff.OldText;
         var entry = new ChangedFileViewModel(pathLease.FullPath, original,
             file => OnUiAsync(() => AcceptChangeAsync(file)),
             file => OnUiAsync(() => RejectChangeAsync(file)));
@@ -1491,28 +1605,57 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         return Task.CompletedTask;
     }
 
+    // AsyncRelayCommand rethrows a faulted task onto the captured (UI) context, and the host's open
+    // genuinely fails for a file renamed or deleted after it was tracked - Reject deletes files.
+    private async Task OpenChangedFileAsync(ChangedFileViewModel? file)
+    {
+        if (file is null) return;
+        try
+        {
+            await _services.OpenDocumentAsync(file.FullPath, _lifetime.Token).ConfigureAwait(true);
+        }
+        catch (OperationCanceledException) when (_disposed) { }
+        catch (Exception ex)
+        {
+            if (!_disposed) StatusMessage = $"Could not open {file.Name}: {ex.Message}";
+        }
+    }
+
     private async Task RejectChangeAsync(ChangedFileViewModel file)
     {
         try
         {
-            if (file.OriginalText is null)
-            {
-                string fullPath;
-                using (var pathLease = WorkspacePathGuard.AcquireFile(_services.WorkspaceRoot, file.FullPath)) fullPath = pathLease.FullPath;
-                File.Delete(fullPath);
-            }
-            else
-            {
-                using var pathLease = WorkspacePathGuard.AcquireFile(_services.WorkspaceRoot, file.FullPath);
-                await WriteLeasedFileAsync(pathLease, file.OriginalText).ConfigureAwait(true);
-            }
-
-            UntrackChange(file);
+            await RevertChangeAsync(file).ConfigureAwait(true);
         }
         catch (Exception ex)
         {
             if (!_disposed) StatusMessage = $"Could not revert {file.Name}: {ex.Message}";
         }
+    }
+
+    // Every per-file failure would overwrite the previous one's status message, leaving the user
+    // with one filename and the (correct) rows of the others still in the panel. Report once.
+    private async Task RejectAllChangesAsync()
+    {
+        var files = ChangedFiles.ToList();
+        var failed = 0;
+        foreach (var file in files)
+        {
+            try { await RevertChangeAsync(file).ConfigureAwait(true); }
+            catch (Exception) { failed++; }
+        }
+
+        if (failed > 0 && !_disposed) StatusMessage = $"Could not revert {failed} of {files.Count} files.";
+    }
+
+    private async Task RevertChangeAsync(ChangedFileViewModel file)
+    {
+        // The lease is held across the whole operation: releasing it to delete by path unpins the
+        // ancestor chain and re-opens the reparse-point swap the lease type exists to prevent.
+        using var pathLease = WorkspacePathGuard.AcquireFile(_services.WorkspaceRoot, file.FullPath);
+        if (file.OriginalText is null) File.Delete(pathLease.FullPath);
+        else await WriteLeasedFileAsync(pathLease, file.OriginalText).ConfigureAwait(true);
+        UntrackChange(file);
     }
 
     private void UntrackChange(ChangedFileViewModel file)

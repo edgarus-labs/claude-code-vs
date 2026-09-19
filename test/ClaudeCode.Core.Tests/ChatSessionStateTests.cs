@@ -160,13 +160,15 @@ public sealed partial class ChatSessionStateTests
         Assert.Null(vm.SelectedMode);
     }
 
+    // The agent's response is authoritative for mode exactly as it is for model/effort: the stub
+    // deliberately answers with a mode that was not the one clicked.
     [Fact]
     public async Task SelectModeAsync_SendsConfigChange_AndUpdatesSelectionFromResponse()
     {
         var connection = new RecordingAcpAgentConnection
         {
             ConfigOptions = OptionsWithMode(),
-            ConfigHandler = (_, _, _) => Task.FromResult(OptionsWithMode("plan")),
+            ConfigHandler = (_, _, _) => Task.FromResult(OptionsWithMode("acceptEdits")),
         };
         using var vm = Create(connection);
         await vm.Initialization;
@@ -175,7 +177,7 @@ public sealed partial class ChatSessionStateTests
         await vm.SelectModeAsync(vm.AvailableModes[2]);
 
         Assert.Equal(("mode", "plan"), connection.ConfigChanges.Single());
-        Assert.Equal("plan", vm.SelectedMode!.Value);
+        Assert.Equal("acceptEdits", vm.SelectedMode!.Value);
     }
 
     [Fact]

@@ -47,12 +47,17 @@ public sealed class ChatViewModelTests
         }));
         Assert.Equal("Write tests", Assert.Single(vm.CurrentPlan!.Entries).Content);
 
+        // Agents emit a plan update per todo transition, so a collapsed Tasks list must stay
+        // collapsed across the swap - otherwise it pops back open several times per turn.
+        vm.CurrentPlan!.IsExpanded = false;
+
         // A later plan update replaces the prior one wholesale; it does not merge/append entries.
         connection.RaiseSessionUpdate(new SessionUpdate.Plan(new List<PlanEntry>
         {
             new PlanEntry { Content = "Ship feature", Status = PlanEntryStatus.InProgress },
         }));
         Assert.Equal("Ship feature", Assert.Single(vm.CurrentPlan!.Entries).Content);
+        Assert.False(vm.CurrentPlan.IsExpanded);
 
         connection.RaiseDisconnected();
         Assert.Null(vm.CurrentPlan);
@@ -85,6 +90,34 @@ public sealed class ChatViewModelTests
 
         Assert.Equal("reject-once", resultOptionId);
         Assert.Null(vm.PendingPermission);
+    }
+
+    // The permission prompt is the one place the user has to decide whether to let the agent act,
+    // and MCP tools reach it as a routing identifier (mcp__visual-studio__listAppWindows). Nobody
+    // can consent to that string, so both the prompt and the transcript card must read as English.
+    [Fact]
+    public async Task PermissionRequested_ForAnMcpTool_AsksInWordsRatherThanARoutingIdentifier()
+    {
+        var connection = new RecordingAcpAgentConnection();
+        using var vm = new ChatViewModel(new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService()));
+        await vm.InitializeAsync();
+
+        vm.InputText = "look at my windows";
+        await vm.SendAsync();
+
+        var call = new ToolCallUpdate
+        {
+            ToolCallId = "tc-mcp",
+            Title = "mcp__visual-studio__listAppWindows",
+            Status = ToolCallStatus.Pending,
+        };
+        connection.RaiseSessionUpdate(new SessionUpdate.ToolCall(call));
+        connection.RaisePermissionRequested(call,
+            [new PermissionOption { OptionId = "allow-once", Label = "Allow", Outcome = PermissionOutcome.AllowOnce }]);
+
+        Assert.Equal("Visual Studio: List app windows", vm.PendingPermission!.Title);
+        var card = Assert.Single(vm.Messages.SelectMany(message => message.ToolCalls), tool => tool.ToolCallId == "tc-mcp");
+        Assert.Equal("Visual Studio: List app windows", card.Title);
     }
 
     [Fact]
@@ -211,7 +244,7 @@ public sealed class ChatViewModelTests
     }
 
     [Fact]
-    public async Task AttentionRequested_FiresForFinishedTurn_PermissionAndPlanReview()
+    public async Task AttentionRequested_FiresForFinishedTurn_PermissionPlanReviewAndElicitation()
     {
         var connection = new RecordingAcpAgentConnection();
         using var vm = new ChatViewModel(new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService()));
@@ -229,11 +262,14 @@ public sealed class ChatViewModelTests
         connection.RaiseSessionUpdate(new SessionUpdate.TurnEnded("end_turn"));
         var (planCall, planOptions) = PlanApprovalRequest("# Plan");
         connection.RaisePermissionRequested(planCall, planOptions);
+        // A form blocks the turn exactly as a permission request does, so it needs the same nudge.
+        connection.RaiseElicitationRequested("Which environment?", [new ElicitationField("q0", null, null, ElicitationFieldKind.Text, [])]);
 
         Assert.Collection(raised,
             e => { Assert.Equal(ChatAttentionKind.PermissionNeeded, e.Kind); Assert.Equal("Edit Program.cs", e.Message); },
             e => { Assert.Equal(ChatAttentionKind.TurnCompleted, e.Kind); Assert.Equal("All done.", e.Message); },
-            e => Assert.Equal(ChatAttentionKind.PlanReview, e.Kind));
+            e => Assert.Equal(ChatAttentionKind.PlanReview, e.Kind),
+            e => { Assert.Equal(ChatAttentionKind.PermissionNeeded, e.Kind); Assert.Equal("Which environment?", e.Message); });
     }
 
     [Fact]
@@ -523,5 +559,136 @@ public sealed class ChatViewModelTests
         Assert.Null(vm.PendingElicitation);
         ElicitationAnswer answer = await requestArgs.Response.Task.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Equal(ElicitationAction.Cancel, answer.Action);
+    }
+
+    // The warning state machine is three interacting variables (threshold, dismissal, and the
+    // percent at which it was dismissed) and drives a banner in the composer area; a "<" vs "<="
+    // slip makes it either impossible to silence or impossible to re-raise.
+    [Fact]
+    public async Task UsageWarning_AppearsAtTheThreshold_StaysDismissedUntilUsageClimbs_AndClearsWhenItDrops()
+    {
+        var usageService = new CountingUsageService { Percent = 70 };
+        var connection = new RecordingAcpAgentConnection();
+        using var vm = new ChatViewModel(new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService(), usageService: usageService));
+        await vm.InitializeAsync();
+        await usageService.WaitForCallsAsync(1);
+        await WaitUntilAsync(() => vm.Usage is not null);
+        Assert.Null(vm.UsageWarning);
+
+        await PollUsageAsync(vm, usageService, 80);
+        Assert.NotNull(vm.UsageWarning);
+        Assert.Contains("80%", vm.UsageWarning!.Message, StringComparison.Ordinal);
+
+        vm.DismissUsageWarning();
+        Assert.Null(vm.UsageWarning);
+
+        // Same percent a poll later: a dismissal must not be undone by the very next fetch.
+        await PollUsageAsync(vm, usageService, 80);
+        Assert.Null(vm.UsageWarning);
+
+        await PollUsageAsync(vm, usageService, 85);
+        Assert.NotNull(vm.UsageWarning);
+
+        // Back under the threshold clears the banner and forgets the dismissal.
+        await PollUsageAsync(vm, usageService, 10);
+        Assert.Null(vm.UsageWarning);
+        await PollUsageAsync(vm, usageService, 80);
+        Assert.NotNull(vm.UsageWarning);
+    }
+
+    private static async Task PollUsageAsync(ChatViewModel vm, CountingUsageService usageService, int percent)
+    {
+        usageService.Percent = percent;
+        vm.IsUsagePanelOpen = false;
+        vm.IsUsagePanelOpen = true;
+        await WaitUntilAsync(() => vm.Usage!.Limits[0].Percent == percent);
+    }
+
+    [Fact]
+    public async Task NewSession_ResetsTheContextUsageOfThePreviousSession()
+    {
+        var connection = new RecordingAcpAgentConnection();
+        using var vm = new ChatViewModel(new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService()));
+        await vm.InitializeAsync();
+        vm.InputText = "hello";
+        var prompt = new TaskCompletionSource<bool>();
+        connection.PromptHandler = _ => prompt.Task;
+        var sending = vm.SendAsync();
+        connection.RaiseSessionUpdate(new SessionUpdate.UsageUpdate(150_000, 200_000, null, null));
+        Assert.Equal(75, vm.ContextUsagePercent);
+        prompt.SetResult(true);
+        await sending;
+
+        connection.NewSessionHandler = _ => Task.FromResult(new NewSessionResult("session-2", []));
+        await vm.NewSessionCommand.ExecuteAsync(null);
+
+        Assert.Null(vm.ContextUsagePercent);
+        Assert.Equal(0, vm.SessionUsedTokens);
+        Assert.Null(vm.ContextWindowSize);
+        Assert.Null(vm.TurnTokens);
+    }
+
+    // SessionSummary.Title is agent-reported and is bound straight into the single-row panel header
+    // plus its tooltip, so it gets the same first-line/80-char normalization as a locally derived
+    // title - the trusted source was capped and the untrusted one was not.
+    [Fact]
+    public async Task OpenSession_NormalizesTheAgentSuppliedTitle()
+    {
+        var connection = new RecordingAcpAgentConnection();
+        using var vm = new ChatViewModel(new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService(), "/workspace"));
+        await vm.InitializeAsync();
+
+        await vm.OpenSessionCommand.ExecuteAsync(new SessionSummary("s1", "/workspace", "  \n  first line  \nsecond line", null));
+        Assert.Equal("first line", vm.SessionTitle);
+
+        await vm.OpenSessionCommand.ExecuteAsync(new SessionSummary("s2", "/workspace", new string('x', 500), null));
+        Assert.Equal(80, vm.SessionTitle.Length);
+    }
+
+    // A superseded form can still be on screen in a host surface; submitting it must not wipe the
+    // form the user is actually looking at (whose slot would then never be answered).
+    [Fact]
+    public async Task SupersededElicitation_SubmittedLate_DoesNotClearTheCurrentForm()
+    {
+        var connection = new RecordingAcpAgentConnection();
+        using var vm = new ChatViewModel(new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService()));
+        await vm.InitializeAsync();
+        vm.InputText = "ask me twice";
+        await vm.SendAsync();
+
+        connection.RaiseElicitationRequested("First question", [new ElicitationField("q0", null, null, ElicitationFieldKind.Text, [])]);
+        var superseded = vm.PendingElicitation!;
+        var secondArgs = connection.RaiseElicitationRequested("Second question", [new ElicitationField("q1", null, null, ElicitationFieldKind.Text, [])]);
+        var current = vm.PendingElicitation!;
+        Assert.NotSame(superseded, current);
+
+        superseded.SubmitCommand.Execute(null);
+
+        Assert.Same(current, vm.PendingElicitation);
+        current.SubmitCommand.Execute(null);
+        Assert.Equal(ElicitationAction.Accept, (await secondArgs.Response.Task.WaitAsync(TimeSpan.FromSeconds(5))).Action);
+    }
+
+    // An abandoned plan keeps a live Proceed/Review in any still-open plan window; clicking Review
+    // there would overwrite the new session's composer draft and send the comments to it.
+    [Fact]
+    public async Task NewSession_ResolvesAnAbandonedPlan_SoItsCommandsGoDead()
+    {
+        var connection = new RecordingAcpAgentConnection();
+        using var vm = new ChatViewModel(new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService()));
+        await vm.InitializeAsync();
+        vm.InputText = "plan the feature";
+        await vm.SendAsync();
+        var (call, options) = PlanApprovalRequest("# Plan");
+        connection.RaisePermissionRequested(call, options);
+        var abandoned = vm.PendingPlan!;
+        Assert.False(abandoned.IsResolved);
+
+        connection.NewSessionHandler = _ => Task.FromResult(new NewSessionResult("session-2", []));
+        await vm.NewSessionCommand.ExecuteAsync(null);
+
+        Assert.True(abandoned.IsResolved);
+        Assert.False(abandoned.ProceedCommand.CanExecute(null));
+        Assert.False(abandoned.ReviewCommand.CanExecute("late comments"));
     }
 }

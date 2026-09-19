@@ -19,7 +19,6 @@ public sealed class ChangedFileViewModel : ObservableObject
         FullPath = fullPath ?? throw new ArgumentNullException(nameof(fullPath));
         OriginalText = originalText;
         Name = Path.GetFileName(fullPath);
-        Directory = Path.GetDirectoryName(fullPath) ?? string.Empty;
         AcceptCommand = new AsyncRelayCommand(() => accept(this));
         RejectCommand = new AsyncRelayCommand(() => reject(this));
     }
@@ -27,8 +26,6 @@ public sealed class ChangedFileViewModel : ObservableObject
     public string FullPath { get; }
 
     public string Name { get; }
-
-    public string Directory { get; }
 
     /// <summary>Content before the agent's first write, or null when the agent created the file.</summary>
     public string? OriginalText { get; }
@@ -59,7 +56,7 @@ public sealed class ChangedFileViewModel : ObservableObject
     }
 
     // Multiset line diff: cheap, order-insensitive, and good enough for a "+12 −3" badge.
-    internal static (int Added, int Removed) CountLineChanges(string? originalText, string currentText)
+    private static (int Added, int Removed) CountLineChanges(string? originalText, string currentText)
     {
         var remaining = new Dictionary<string, int>(StringComparer.Ordinal);
         if (originalText is not null)
@@ -69,7 +66,7 @@ public sealed class ChangedFileViewModel : ObservableObject
         }
 
         var added = 0;
-        foreach (var line in SplitLines(currentText ?? string.Empty))
+        foreach (var line in SplitLines(currentText))
         {
             if (remaining.TryGetValue(line, out var count) && count > 0) remaining[line] = count - 1;
             else added++;
@@ -81,9 +78,9 @@ public sealed class ChangedFileViewModel : ObservableObject
     }
 
     // An empty file has no lines at all; string.Split would report one empty line and inflate the badge.
-    private static IEnumerable<string> SplitLines(string? text)
+    private static IEnumerable<string> SplitLines(string text)
     {
-        if (text is null || text.Length == 0) yield break;
+        if (text.Length == 0) yield break;
 
         foreach (var line in text.Split('\n')) yield return line.TrimEnd('\r');
     }

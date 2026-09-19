@@ -46,10 +46,14 @@ internal sealed class StubChatSessionServices : IChatSessionServices
 
     public List<string> OpenedDocumentPaths { get; } = new();
 
+    /// <summary>Injects a failure for the real host's <c>VS.Documents.OpenAsync</c>, which can fail
+    /// for a deleted, renamed or locked document.</summary>
+    public Func<string, CancellationToken, Task>? OpenDocumentHandler { get; set; }
+
     public Task OpenDocumentAsync(string path, CancellationToken cancellationToken)
     {
         OpenedDocumentPaths.Add(path);
-        return Task.CompletedTask;
+        return OpenDocumentHandler?.Invoke(path, cancellationToken) ?? Task.CompletedTask;
     }
 
     public Func<string, CancellationToken, Task<string?>>? ReadOpenDocumentHandler { get; set; }

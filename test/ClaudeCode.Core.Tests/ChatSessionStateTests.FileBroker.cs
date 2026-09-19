@@ -372,4 +372,39 @@ public sealed partial class ChatSessionStateTests
         var text = await request.Response.Task;
         Assert.Equal("line2", text);
     }
+
+    // A partial read re-emits each line's own terminator: picking one terminator for the whole
+    // slice from a whole-file scan rewrites the interior separators of a mixed-ending document, and
+    // the agent then uses that text as the old_text of its follow-up Edit.
+    [Fact]
+    public async Task FileReadRequest_PartialRangeOfMixedEndingFile_KeepsEachLinesOwnTerminator()
+    {
+        using var workspace = new TempWorkspace();
+        var targetPath = workspace.PathUnder("mixed.txt");
+        File.WriteAllText(targetPath, "a\nb\r\nc\n", new UTF8Encoding(false));
+        var (vm, connection, _) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+
+        var text = await connection.RaiseFileReadRequested(targetPath, line: 1, limit: 2).Response.Task;
+
+        Assert.Equal("a\nb", text);
+    }
+
+    // The requested window is clamped to the file: a limit past EOF returns what is there, a line
+    // past the last line returns nothing, and an empty file has no lines at all.
+    [Fact]
+    public async Task FileReadRequest_PartialRangeOutsideTheFile_ClampsInsteadOfOverreading()
+    {
+        using var workspace = new TempWorkspace();
+        var targetPath = workspace.PathUnder("crlf.txt");
+        File.WriteAllText(targetPath, "line1\r\nline2\r\nline3", new UTF8Encoding(false));
+        var emptyPath = workspace.PathUnder("empty.txt");
+        File.WriteAllText(emptyPath, string.Empty, new UTF8Encoding(false));
+        var (vm, connection, _) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+
+        Assert.Equal("line3", await connection.RaiseFileReadRequested(targetPath, line: 3, limit: 10).Response.Task);
+        Assert.Equal(string.Empty, await connection.RaiseFileReadRequested(targetPath, line: 9, limit: 1).Response.Task);
+        Assert.Equal(string.Empty, await connection.RaiseFileReadRequested(emptyPath, line: 1, limit: 5).Response.Task);
+    }
 }

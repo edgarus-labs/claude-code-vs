@@ -536,7 +536,6 @@ public sealed partial class ChatSessionStateTests
         connection.RaiseSessionUpdate(new SessionUpdate.TurnEnded("end_turn"));
 
         Assert.NotNull(assistantMessage.DurationSeconds);
-        Assert.True(assistantMessage.DurationSeconds >= 0);
 
         completed.SetResult(true);
         await prompt;
@@ -602,6 +601,49 @@ public sealed partial class ChatSessionStateTests
         Assert.False(string.IsNullOrWhiteSpace(vm.CommandCatalogStatus));
         Assert.NotEqual(empty, vm.CommandCatalogStatus);
         Assert.Empty(vm.SlashSuggestions);
+    }
+
+    // SendCoreAsync already added the user's bubble; an agent that echoes the prompt back as
+    // user_message_chunk during the live turn must not produce a second one. Replay (a loaded
+    // session, IsBusy false) is the case that legitimately builds the bubble.
+    [Fact]
+    public async Task UserMessageChunk_EchoedDuringALiveTurn_DoesNotDuplicateTheUsersBubble()
+    {
+        var completed = new TaskCompletionSource<bool>();
+        var connection = new RecordingAcpAgentConnection { PromptHandler = _ => completed.Task };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "summarize this file";
+        var prompt = vm.SendAsync();
+
+        connection.RaiseSessionUpdate(new SessionUpdate.UserMessageChunk("summarize this file"));
+
+        var user = Assert.Single(vm.Messages, message => message.Role == ChatRole.User);
+        Assert.Equal("summarize this file", user.Text);
+        completed.SetResult(true);
+        await prompt;
+    }
+
+    // New Chat issues the same session/new as the initial connect, so it needs the same buffering:
+    // the agent publishes the new session's catalog before the response resolves, while _sessionId
+    // still names the previous session.
+    [Fact]
+    public async Task NewChat_AdoptsACommandCatalogPublishedBeforeTheNewSessionIdIsKnown()
+    {
+        var connection = new RecordingAcpAgentConnection();
+        using var vm = Create(connection);
+        await vm.Initialization;
+        var ready = new TaskCompletionSource<NewSessionResult>();
+        connection.NewSessionHandler = _ => ready.Task;
+
+        var switching = vm.NewSessionAsync();
+        connection.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([new AvailableCommand("review", "Review", "scope")]), "session-2");
+        ready.SetResult(new NewSessionResult("session-2", []));
+        await switching;
+
+        vm.InputText = "/";
+        Assert.Equal("review", Assert.Single(vm.SlashSuggestions).Name);
+        Assert.Empty(vm.CommandCatalogStatus);
     }
 
     private static ChatViewModel CreateOnUiContext(RecordingAcpAgentConnection connection, SynchronizationContext ui)

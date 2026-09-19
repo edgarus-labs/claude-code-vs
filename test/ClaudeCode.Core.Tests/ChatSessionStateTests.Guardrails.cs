@@ -2,6 +2,7 @@ using ClaudeCode.Contracts;
 using ClaudeCode.Core.ViewModels;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
@@ -188,6 +189,9 @@ public sealed partial class ChatSessionStateTests
         await vm.OpenSessionAsync(new SessionSummary("session-never-loaded", "/workspace", "Older chat", null));
 
         Assert.Contains("Could not open session", vm.StatusMessage!, StringComparison.Ordinal);
+        // The presented state must roll back with the id: the panel must not be left titled after a
+        // session the agent never loaded while every prompt still goes to the previous one.
+        Assert.Equal("Untitled", vm.SessionTitle);
 
         // Updates tagged with the session that failed to load must not be adopted as the transcript.
         connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("ghost text"), "session-never-loaded");
@@ -200,5 +204,75 @@ public sealed partial class ChatSessionStateTests
         vm.InputText = "carry on";
         await vm.SendAsync();
         Assert.Single(connection.Prompts);
+    }
+
+    [Fact]
+    public async Task OpenSession_LoadFails_RestoresTheTranscriptItClearedBeforeTheLoad()
+    {
+        var connection = new RecordingAcpAgentConnection
+        {
+            LoadSessionHandler = (_, _, _, _) =>
+                Task.FromException<NewSessionResult>(new InvalidOperationException("Agent restarted")),
+        };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "what does this do?";
+        await vm.SendAsync();
+        connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("it does this"));
+        var before = vm.Messages.ToList();
+        Assert.Equal(2, before.Count);
+
+        await vm.OpenSessionAsync(new SessionSummary("session-2", "/workspace", "Older chat", null));
+
+        Assert.Equal(before, vm.Messages);
+        Assert.Equal("what does this do?", vm.SessionTitle);
+    }
+
+    // C-D3 (CRITICAL, agent-supplied cwd): SessionSummary.Cwd is copied verbatim out of the agent's
+    // session/list reply and, passed to session/load, becomes the WorkspacePathGuard root of every
+    // VS-control tool for the resumed session. Resuming must use the client's own workspace root.
+    [Fact]
+    public async Task OpenSession_ResumesWithTheClientsWorkspaceRoot_NotTheAgentReportedCwd()
+    {
+        var connection = new RecordingAcpAgentConnection();
+        using var vm = new ChatViewModel(new StubChatSessionServices(
+            new SingleConnectionFactory(connection), new AlwaysSignedInAuthService(), @"C:\trusted\workspace"));
+        await vm.Initialization;
+
+        await vm.OpenSessionAsync(new SessionSummary("session-2", @"C:\", "Hostile", null));
+
+        var loaded = Assert.Single(connection.LoadedSessions);
+        Assert.Equal("session-2", loaded.SessionId);
+        Assert.Equal(@"C:\trusted\workspace", loaded.Cwd);
+    }
+
+    // A prompt accepted while session/new or session/load is still in flight is sent to the *old*
+    // session and then wiped by ResetTranscriptState, so the switch must gate the composer.
+    [Fact]
+    public async Task SessionSwitchInFlight_BlocksTheComposerAndASecondSwitch()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        var pending = new TaskCompletionSource<NewSessionResult>();
+        connection.NewSessionHandler = _ => pending.Task;
+
+        var switching = vm.NewSessionAsync();
+        vm.InputText = "typed while switching";
+        Assert.False(vm.SendCommand.CanExecute(null));
+        Assert.False(vm.NewSessionCommand.CanExecute(null));
+        Assert.False(vm.ShowHistoryCommand.CanExecute(null));
+        await vm.SendAsync();
+        Assert.Empty(connection.Prompts);
+        Assert.Empty(vm.Messages);
+
+        pending.SetResult(new NewSessionResult("session-2", Options()));
+        await switching;
+
+        Assert.Equal("typed while switching", vm.InputText);
+        Assert.True(vm.SendCommand.CanExecute(null));
+        await vm.SendAsync();
+        Assert.Single(connection.Prompts);
+        Assert.Single(vm.Messages);
     }
 }
