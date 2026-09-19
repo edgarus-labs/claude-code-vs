@@ -64,6 +64,16 @@ tools (see `docs/VsControlProtocol.md` for the exact wire contract).
 - **Notifications:** when Visual Studio is in the background, a Windows notification appears when
   Claude finishes, needs a permission, or has a plan to review; click it to jump back. Disable it under
   **Tools > Options > Claude Code > Notify when Visual Studio is in the background**.
+- **Driving Visual Studio:** every session gets MCP tools that act on the live VS instance — open files,
+  read the active document/selection, add files to projects and projects to the solution, **build /
+  rebuild / clean** the solution or one project and read the **Error List** and any **Output** pane, and
+  a full **debugging loop**: set breakpoints, start the startup project under the debugger, wait for a
+  break, inspect the call stack, locals and arbitrary expressions, step, continue, stop. While the app
+  runs Claude can list its windows, read their UI Automation tree, click buttons, toggle checkboxes,
+  type into text boxes and take screenshots of them — only windows of the debugged process are reachable.
+  In **Manual** mode each of these calls asks for permission first; **Accept edits** / **Auto** run
+  them unprompted. See [docs/VsControlProtocol.md](docs/VsControlProtocol.md) for the full list and the
+  trust boundary.
 
 ## Installing and debugging
 
