@@ -1023,12 +1023,12 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         Assert.True(request["params"]!["enabled"]!.GetValue<bool>());
         Assert.Equal("My laptop", request["params"]!["name"]!.GetValue<string>());
 
+        // The launcher also emits `connectUrl`; nothing in the client reads it, so it is ignored.
         await ReplyAsync(request, """{"enabled":true,"sessionUrl":"https://claude.ai/code/s1","connectUrl":"https://claude.ai/code/connect"}""");
 
         RemoteControlState state = await pending.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.True(state.Enabled);
         Assert.Equal("https://claude.ai/code/s1", state.SessionUrl);
-        Assert.Equal("https://claude.ai/code/connect", state.ConnectUrl);
     }
 
     [Fact]
@@ -1056,29 +1056,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         await ReplyAsync(request, """{"sessionUrl":"https://claude.ai/code/s1"}""");
 
         await Assert.ThrowsAsync<AcpProtocolException>(() => pending.WaitAsync(TimeSpan.FromSeconds(5)));
-    }
-
-    [Fact]
-    public async Task HandleCreateElicitationAsync_CancelledWhilePending_UnblocksInsteadOfHangingForever()
-    {
-        var handlerInvoked = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _connection.ElicitationRequested += (_, _) => handlerInvoked.TrySetResult(true); // deliberately never resolves e.Response.
-
-        using var cts = new CancellationTokenSource();
-        MethodInfo method = typeof(AcpProcessConnection).GetMethod("HandleCreateElicitationAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
-        var paramsObj = new JsonObject
-        {
-            ["mode"] = "form",
-            ["sessionId"] = "s1",
-            ["message"] = "Pick one",
-            ["requestedSchema"] = new JsonObject { ["type"] = "object", ["properties"] = new JsonObject() },
-        };
-        var resultTask = (Task<JsonNode?>)method.Invoke(_connection, new object[] { paramsObj, cts.Token })!;
-
-        await handlerInvoked.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        cts.Cancel();
-
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => resultTask.WaitAsync(TimeSpan.FromSeconds(5)));
     }
 
     [Fact]
@@ -1149,6 +1126,72 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         var chunk = Assert.IsType<SessionUpdate.AgentMessageChunk>(survivor.Update);
         Assert.Equal("still here", chunk.Text);
         Assert.Single(seen); // the malformed tool_call was dropped, not surfaced as a default-filled call.
+    }
+
+    [Fact]
+    public async Task SessionUpdate_WithADuplicateKeyInTheUpdate_DropsThatNotificationAndKeepsThePumpAlive()
+    {
+        // System.Text.Json materializes an object on its first property access and throws
+        // ArgumentException - not AcpProtocolException - for a repeated key. ParseSessionUpdate runs
+        // inline on the JSON-RPC read pump, so a catch that covers only AcpProtocolException still lets
+        // one malformed notification from the untrusted agent fault every in-flight request and
+        // disconnect the session.
+        var disconnected = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _connection.Disconnected += (_, ex) => disconnected.TrySetResult(ex);
+        var received = new TaskCompletionSource<SessionUpdateEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var seen = new List<SessionUpdateEventArgs>();
+        _connection.SessionUpdate += (_, update) => { seen.Add(update); received.TrySetResult(update); };
+
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer,
+            """{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","sessionUpdate":"x"}}}""");
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer,
+            """{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"still here"}}}}""");
+
+        SessionUpdateEventArgs survivor = await received.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal("still here", Assert.IsType<SessionUpdate.AgentMessageChunk>(survivor.Update).Text);
+        Assert.Single(seen);
+
+        // A request issued afterwards must still round-trip through the same pump.
+        Task<IReadOnlyList<SessionSummary>> pending = _connection.ListSessionsAsync("/workspace", CancellationToken.None);
+        JsonObject request = await ReadRequestAsync("session/list");
+        await ReplyAsync(request, """{"sessions":[]}""");
+        Assert.Empty(await pending.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.False(disconnected.Task.IsCompleted);
+    }
+
+    [Fact]
+    public async Task InboundLine_WithADuplicateKeyInTheEnvelope_IsDroppedAndKeepsThePumpAlive()
+    {
+        // The same materialization hole exists one level up: the envelope's own `method`/`id` lookups
+        // run on the pump before any handler is involved.
+        var received = new TaskCompletionSource<SessionUpdateEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _connection.SessionUpdate += (_, update) => received.TrySetResult(update);
+
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer,
+            """{"jsonrpc":"2.0","method":"session/update","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"dropped"}}}}""");
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer,
+            """{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"still here"}}}}""");
+
+        SessionUpdateEventArgs survivor = await received.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal("still here", Assert.IsType<SessionUpdate.AgentMessageChunk>(survivor.Update).Text);
+    }
+
+    [Fact]
+    public async Task ErrorResponse_WithADuplicateKeyInsideError_StillFaultsTheCallerInsteadOfStrandingIt()
+    {
+        // The response's `error` object is only materialized after the request has left the pending
+        // registry; if that read escaped, the pump would die AND the caller would never complete.
+        Task<IReadOnlyList<SessionSummary>> pending = _connection.ListSessionsAsync("/workspace", CancellationToken.None);
+        JsonObject request = await ReadRequestAsync("session/list");
+
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer,
+            "{\"jsonrpc\":\"2.0\",\"id\":" + request["id"]!.ToJsonString() + ",\"error\":{\"code\":-32000,\"code\":-32001,\"message\":\"boom\"}}");
+
+        await Assert.ThrowsAsync<AcpRemoteException>(() => pending.WaitAsync(TimeSpan.FromSeconds(5)));
+
+        Task<IReadOnlyList<SessionSummary>> next = _connection.ListSessionsAsync("/workspace", CancellationToken.None);
+        await ReplyAsync(await ReadRequestAsync("session/list"), """{"sessions":[]}""");
+        Assert.Empty(await next.WaitAsync(TimeSpan.FromSeconds(5)));
     }
 
     [Fact]

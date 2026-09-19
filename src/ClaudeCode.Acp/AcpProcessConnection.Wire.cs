@@ -344,23 +344,27 @@ public sealed partial class AcpProcessConnection
             return;
         }
 
-        string? sessionId = GetOptionalString(obj, "sessionId");
-        if (sessionId is null || obj["update"] is not JsonObject updateNode)
-        {
-            return;
-        }
-
+        string? sessionId;
         SessionUpdate? update;
         try
         {
+            sessionId = GetOptionalString(obj, "sessionId");
+            if (sessionId is null || obj["update"] is not JsonObject updateNode)
+            {
+                return;
+            }
+
             update = ParseSessionUpdate(updateNode);
         }
-        catch (AcpProtocolException)
+        catch (Exception)
         {
             // Parsing runs inline on the JSON-RPC read pump, and an escaping exception ends the read
-            // loop and faults every in-flight request. A tool_call without `toolCallId`, or a
-            // malformed config_option_update/available_commands_update, degrades to a dropped
-            // notification instead - the same treatment usage_update and session/list rows get.
+            // loop and faults every in-flight request. A tool_call without `toolCallId`, a malformed
+            // config_option_update/available_commands_update, or an object System.Text.Json refuses
+            // to materialize (a repeated key throws ArgumentException on the first property read)
+            // degrades to a dropped notification instead - the same treatment usage_update and
+            // session/list rows get. Only the parse is covered: a throwing SessionUpdate subscriber
+            // is a client bug and still surfaces through Disconnected.
             return;
         }
 

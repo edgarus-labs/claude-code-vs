@@ -214,23 +214,27 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
 
     private void DispatchLine(string line)
     {
-        JsonNode? node;
+        JsonObject obj;
+        JsonNode? methodNode;
+        JsonNode? idNode;
         try
         {
-            node = JsonNode.Parse(line);
+            if (JsonNode.Parse(line) is not JsonObject parsed)
+            {
+                return;
+            }
+
+            obj = parsed;
+            // A JsonObject is materialized by its first property lookup, so a repeated key in the
+            // envelope surfaces here (as ArgumentException), not from Parse.
+            obj.TryGetPropertyValue("method", out methodNode);
+            obj.TryGetPropertyValue("id", out idNode);
         }
         catch (Exception)
         {
             return; // malformed line on the wire; nothing sane to do but drop it and keep reading.
         }
 
-        if (node is not JsonObject obj)
-        {
-            return;
-        }
-
-        obj.TryGetPropertyValue("method", out var methodNode);
-        obj.TryGetPropertyValue("id", out var idNode);
         string? method = methodNode is JsonValue methodValue && methodValue.TryGetValue<string>(out var methodStr) ? methodStr : null;
         bool hasId = idNode is not null;
 
@@ -269,15 +273,29 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
 
         if (obj.TryGetPropertyValue("error", out var errorNode) && errorNode is JsonObject errorObj)
         {
-            string message = errorObj.TryGetPropertyValue("message", out var m) && m is JsonValue mv && mv.TryGetValue<string>(out var ms) ? ms : "JSON-RPC error";
-            int code = errorObj.TryGetPropertyValue("code", out var c) && c is JsonValue cv && cv.TryGetValue<int>(out var ci) ? ci : 0;
-            errorObj.TryGetPropertyValue("data", out var dataNode);
-            tcs.TrySetException(new AcpRemoteException(code, message, dataNode));
+            tcs.TrySetException(ReadRemoteError(errorObj));
         }
         else
         {
             obj.TryGetPropertyValue("result", out var resultNode);
             tcs.TrySetResult(resultNode);
+        }
+    }
+
+    // `error` and `error.data` are peer-supplied objects whose own repeated keys surface only when
+    // read here; the request has already left _pending, so it must be completed either way.
+    private static AcpRemoteException ReadRemoteError(JsonObject errorObj)
+    {
+        try
+        {
+            string message = errorObj.TryGetPropertyValue("message", out var m) && m is JsonValue mv && mv.TryGetValue<string>(out var ms) ? ms : "JSON-RPC error";
+            int code = errorObj.TryGetPropertyValue("code", out var c) && c is JsonValue cv && cv.TryGetValue<int>(out var ci) ? ci : 0;
+            errorObj.TryGetPropertyValue("data", out var dataNode);
+            return new AcpRemoteException(code, message, dataNode);
+        }
+        catch (Exception)
+        {
+            return new AcpRemoteException(0, "JSON-RPC error");
         }
     }
 

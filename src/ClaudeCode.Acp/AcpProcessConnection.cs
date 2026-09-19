@@ -266,7 +266,7 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
             throw new AcpProtocolException("_vs/remoteControl response did not report the resulting 'enabled' state.");
         }
 
-        return new RemoteControlState(resultEnabled, GetOptionalString(obj, "sessionUrl"), GetOptionalString(obj, "connectUrl"));
+        return new RemoteControlState(resultEnabled, GetOptionalString(obj, "sessionUrl"));
     }
 
     public async Task<IReadOnlyList<SessionSummary>> ListSessionsAsync(string? cwd, CancellationToken cancellationToken)

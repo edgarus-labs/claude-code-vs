@@ -74,7 +74,7 @@ internal sealed class RecordingAcpAgentConnection : IAcpAgentConnection
     {
         RemoteControlCalls.Add((sessionId, enabled, name));
         return RemoteControlHandler?.Invoke(enabled)
-            ?? Task.FromResult(new RemoteControlState(enabled, enabled ? "https://claude.ai/code/session/test" : null, null));
+            ?? Task.FromResult(new RemoteControlState(enabled, enabled ? "https://claude.ai/code/session/test" : null));
     }
 
     public event EventHandler<SessionUpdateEventArgs>? SessionUpdate;
