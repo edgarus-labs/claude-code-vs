@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Text;
 
 namespace ClaudeCode.Core.ViewModels;
@@ -17,40 +18,109 @@ public static class ToolDisplayName
     private const string McpSeparator = "__";
 
     /// <summary>
+    /// The bound on the returned string, matching the one the notification path already applies to
+    /// the same text (<c>ChatViewModel.Truncate(message, 160)</c>).
+    /// </summary>
+    private const int MaxDisplayLength = 160;
+
+    /// <summary>
     /// Formats <paramref name="title"/> for display. MCP identifiers become
     /// "<c>Visual Studio: List app windows</c>"; anything else is already human-authored
-    /// (<c>Read</c>, <c>Bash</c>, <c>Find "**/*.sln"</c>) and is returned untouched.
+    /// (<c>Read</c>, <c>Bash</c>, <c>Find "**/*.sln"</c>) and keeps its wording. Either way the
+    /// result is one bounded line with control and bidi characters removed: the permission card
+    /// wraps this string in an auto-sized row above the Allow/Deny buttons, so an unbounded one
+    /// would push the user's only way to answer the prompt out of the panel.
     /// </summary>
     public static string Describe(string? title)
     {
-        if (string.IsNullOrWhiteSpace(title))
+        string value = Normalize(title);
+        if (value.Length == 0)
         {
             return string.Empty;
         }
 
-        string value = title!.Trim();
         if (!value.StartsWith(McpPrefix, StringComparison.Ordinal))
         {
-            return value;
+            return Cap(value);
         }
 
         int separator = value.IndexOf(McpSeparator, McpPrefix.Length, StringComparison.Ordinal);
         if (separator < 0)
         {
-            return value;
+            return Cap(value);
         }
 
         string server = value.Substring(McpPrefix.Length, separator - McpPrefix.Length);
         string tool = value.Substring(separator + McpSeparator.Length);
         if (server.Length == 0 || tool.Length == 0)
         {
-            return value;
+            return Cap(value);
         }
 
         string serverLabel = TitleCase(server);
         string toolLabel = SentenceCase(tool);
-        return serverLabel.Length == 0 ? toolLabel : $"{serverLabel}: {toolLabel}";
+
+        // A segment built only from separators ("mcp__.__editDocument") has no words to label, so it
+        // joins the malformed branches above and keeps its routing identifier. Dropping an empty
+        // server label instead would render an MCP call as a built-in - "Edit document" reaches the
+        // transcript as a first-party file edit - losing the one invariant this function exists to
+        // establish; an empty tool label would leave a subjectless "Visual Studio: ".
+        if (serverLabel.Length == 0 || toolLabel.Length == 0)
+        {
+            return Cap(value);
+        }
+
+        return Cap($"{serverLabel}: {toolLabel}");
     }
+
+    /// <summary>
+    /// Reduces an agent-authored title to its first non-empty line and drops control and bidi
+    /// formatting characters, which can hide or reverse part of the name the user is approving.
+    /// Runs before the MCP marker is matched, so a leading control character cannot conceal it.
+    /// </summary>
+    private static string Normalize(string? title)
+    {
+        if (string.IsNullOrEmpty(title))
+        {
+            return string.Empty;
+        }
+
+        var builder = new StringBuilder(Math.Min(title!.Length, MaxDisplayLength));
+        bool hasContent = false;
+        foreach (char c in title!)
+        {
+            if (c == '\n' || c == '\r')
+            {
+                if (hasContent)
+                {
+                    break;
+                }
+
+                // Nothing but whitespace so far, so this was a blank leading line.
+                builder.Clear();
+                continue;
+            }
+
+            if (char.IsControl(c) || char.GetUnicodeCategory(c) == UnicodeCategory.Format)
+            {
+                // A tab still separates words; the rest carry no meaning worth displaying.
+                if (char.IsWhiteSpace(c))
+                {
+                    builder.Append(' ');
+                }
+
+                continue;
+            }
+
+            hasContent |= !char.IsWhiteSpace(c);
+            builder.Append(c);
+        }
+
+        return builder.ToString().Trim();
+    }
+
+    private static string Cap(string value) =>
+        value.Length <= MaxDisplayLength ? value : value.Substring(0, MaxDisplayLength - 1) + "…";
 
     /// <summary>"visual-studio" -> "Visual Studio".</summary>
     private static string TitleCase(string slug)
