@@ -24,6 +24,22 @@ public static class TranscriptHostProtocol
     public const double MaxFontSize = 28d;
 
     /// <summary>
+    /// How long the host may keep collapsing a burst of transcript changes into one repaint.
+    /// Session resume replays every past message as its own change notification and a streaming
+    /// turn raises one per chunk; repainting each is O(n^2) work for an n-message history.
+    /// </summary>
+    public static readonly TimeSpan RenderCoalesceWindow = TimeSpan.FromMilliseconds(60);
+
+    /// <summary>
+    /// The longest the transcript may stay stale while changes keep arriving. Coalescing alone is
+    /// not enough: chunks that arrive closer together than <see cref="RenderCoalesceWindow"/>
+    /// restart the window before it can elapse, so a turn driven from claude.ai/code - which never
+    /// sets <c>IsBusy</c> and therefore never starts the host's one-second activity timer - would
+    /// otherwise show nothing at all until the stream went quiet.
+    /// </summary>
+    public static readonly TimeSpan MaxRenderInterval = TimeSpan.FromMilliseconds(250);
+
+    /// <summary>
     /// True only for the transcript page's own origin. Used both to cancel navigation away from the
     /// page and to reject web messages from any other document: the host pushes the entire
     /// conversation into whatever document occupies the frame, so a foreign one must never become
@@ -49,6 +65,24 @@ public static class TranscriptHostProtocol
     public static double ClampFontSize(double size) => Math.Max(MinFontSize, Math.Min(MaxFontSize, size));
 
     /// <summary>
+    /// True when a transcript change must be painted now instead of joining the coalescing window,
+    /// because the page has already been stale for <see cref="MaxRenderInterval"/>.
+    /// </summary>
+    public static bool ShouldPaintImmediately(TimeSpan sinceLastPaint) => sinceLastPaint >= MaxRenderInterval;
+
+    /// <summary>
+    /// The absolute URI the host may hand to the user's browser for the agent-reported Remote
+    /// Control session link, or <see langword="null"/> when the agent supplied anything else. The
+    /// URL crosses the untrusted boundary and ends up at <c>ShellExecute</c>, so only absolute
+    /// https qualifies: http would let a hostile agent point the pill at a plaintext endpoint, and
+    /// a non-web scheme would hand an arbitrary shell verb to the OS.
+    /// </summary>
+    public static string? NormalizeRemoteControlLink(string? url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out Uri parsed) && parsed.Scheme == Uri.UriSchemeHttps
+            ? parsed.AbsoluteUri
+            : null;
+
+    /// <summary>
     /// True when a <see cref="ChatMessageViewModel"/> or <see cref="ToolCallCardViewModel"/> property
     /// change alters what the transcript page displays, so the host must repaint. Streamed turns
     /// mutate these view models in place without touching <c>ChatViewModel.Messages</c>, and a turn
@@ -61,6 +95,7 @@ public static class TranscriptHostProtocol
         nameof(ChatMessageViewModel.Text) or
         nameof(ChatMessageViewModel.DurationSeconds) or
         nameof(ChatMessageViewModel.TokensUsed) or
+        nameof(ChatMessageViewModel.Images) or
         nameof(ToolCallCardViewModel.Title) or
         nameof(ToolCallCardViewModel.Status);
 }

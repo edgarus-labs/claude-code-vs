@@ -35,6 +35,9 @@ public partial class ChatPanelView : UserControl, IDisposable
     private const int MaxImages = 5;
     internal const double DefaultChatTextFontSize = 13d;
     private const int CopyFeedbackDisplayMilliseconds = 4000;
+    private const string TranscriptLostMessage =
+        "The transcript display stopped updating after a Microsoft Edge WebView2 process failure " +
+        "and could not be restored.";
 
     public static readonly DependencyProperty ChatTextFontSizeProperty = DependencyProperty.Register(
         nameof(ChatTextFontSize), typeof(double), typeof(ChatPanelView),
@@ -54,6 +57,13 @@ public partial class ChatPanelView : UserControl, IDisposable
     private string? _messagesJson;
     private string? _activityJson;
     private bool _messagesJsonStale = true;
+    private DateTimeOffset _lastRenderAt = DateTimeOffset.MinValue;
+    // Set when NavigationStarting cancels an off-origin navigation, so the NavigationCompleted
+    // failure that cancel produces is not mistaken for the transcript itself failing to load.
+    private ulong? _cancelledNavigationId;
+    // One reload per successful load: if the reload we issued is itself what just failed, stop
+    // rather than spinning navigate -> fail -> navigate on the UI thread.
+    private bool _transcriptReloadAttempted;
 
     public ChatPanelView()
     {
@@ -81,11 +91,13 @@ public partial class ChatPanelView : UserControl, IDisposable
         _transcriptRenderTimer.Tick += OnTranscriptActivityTick;
         // Session-resume replays every past message as its own Messages.Add, and a streaming turn
         // raises one change per chunk - rendering synchronously on each is O(n^2) work for an
-        // n-message history and was visibly slow. Debounce instead: a burst arriving within one tick
-        // collapses into a single render once it goes quiet.
+        // n-message history and was visibly slow. Coalesce instead: a burst arriving within one
+        // tick collapses into a single render once it goes quiet. ScheduleTranscriptRender caps how
+        // long that can defer a paint, because restarting this timer per chunk means a stream that
+        // never goes quiet would otherwise never fire it at all.
         _transcriptRenderDebounceTimer = new DispatcherTimer(DispatcherPriority.Background, Dispatcher)
         {
-            Interval = TimeSpan.FromMilliseconds(60)
+            Interval = TranscriptHostProtocol.RenderCoalesceWindow
         };
         _transcriptRenderDebounceTimer.Tick += OnTranscriptRenderDebounceTick;
         _viewModel.Messages.CollectionChanged += OnMessagesCollectionChanged;
@@ -215,11 +227,48 @@ public partial class ChatPanelView : UserControl, IDisposable
     private void OnTranscriptNewWindowRequested(object? sender, CoreWebView2NewWindowRequestedEventArgs e) =>
         e.Handled = true;
 
-    private void OnTranscriptNavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e) =>
-        e.Cancel = !TranscriptHostProtocol.IsTranscriptOrigin(e.Uri);
+    private void OnTranscriptNavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)
+    {
+        if (TranscriptHostProtocol.IsTranscriptOrigin(e.Uri))
+        {
+            return;
+        }
 
-    private void OnTranscriptProcessFailed(object? sender, CoreWebView2ProcessFailedEventArgs e) =>
-        InvalidateTranscriptPage();
+        // Cancelling leaves the transcript document exactly where it was - the point is that it is
+        // never replaced. Remember the id: the cancel still raises NavigationCompleted with
+        // IsSuccess=false, and treating that as "the transcript failed to load" turned the origin
+        // guard doing its job into a permanently blank panel.
+        e.Cancel = true;
+        _cancelledNavigationId = e.NavigationId;
+    }
+
+    // ProcessFailed covers far more than a fatal crash: GpuProcessExited (a display-driver TDR or
+    // an Edge Evergreen update under a running devenv), RenderProcessUnresponsive (a long
+    // highlight pass, which this page does by design), utility and audio process exits. WebView2
+    // recovers from all of those itself and the document survives, so dropping the ready latch for
+    // them froze the transcript for the rest of the session while the agent kept answering into
+    // it. Only the renderer actually dying loses the document - and that one is recoverable.
+    private void OnTranscriptProcessFailed(object? sender, CoreWebView2ProcessFailedEventArgs e)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        switch (e.ProcessFailedKind)
+        {
+            case CoreWebView2ProcessFailedKind.RenderProcessExited:
+                ReloadTranscriptPage();
+                break;
+            case CoreWebView2ProcessFailedKind.BrowserProcessExited:
+                // The whole CoreWebView2 is gone: Navigate would throw and there is no document to
+                // reload into. Fail closed so nothing pushes into a dead COM object, and say so
+                // rather than letting the user type into a page that will never update again.
+                InvalidateTranscriptPage();
+                ShowCopyFeedback(TranscriptLostMessage);
+                break;
+        }
+    }
 
     private void OnTranscriptNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
     {
@@ -230,11 +279,21 @@ public partial class ChatPanelView : UserControl, IDisposable
 
         if (!e.IsSuccess)
         {
-            // Never leave a stale "ready" latch behind a failed reload.
-            InvalidateTranscriptPage();
+            if (e.NavigationId == _cancelledNavigationId)
+            {
+                // Our own origin guard cancelled this one; the transcript is still live.
+                _cancelledNavigationId = null;
+                return;
+            }
+
+            // Never leave a stale "ready" latch behind a failed load - and never leave the panel
+            // dead either: this is the only place _transcriptReady is ever re-latched.
+            ReloadTranscriptPage();
             return;
         }
 
+        _cancelledNavigationId = null;
+        _transcriptReloadAttempted = false;
         _transcriptReady = true;
         PushTheme();
         PushFontSize();
@@ -322,6 +381,18 @@ public partial class ChatPanelView : UserControl, IDisposable
     {
         _messagesJsonStale = true;
         _transcriptRenderDebounceTimer.Stop();
+
+        // A streamed turn raises a change per chunk, far faster than the coalescing window, so
+        // restarting the timer alone would keep deferring the paint for as long as the stream
+        // lasts. A local turn has the one-second activity timer as a backstop; a turn driven from
+        // claude.ai/code never sets IsBusy and so has none. Paint outright once the page has been
+        // stale for MaxRenderInterval, which bounds that wait for both.
+        if (TranscriptHostProtocol.ShouldPaintImmediately(DateTimeOffset.UtcNow - _lastRenderAt))
+        {
+            RenderTranscript();
+            return;
+        }
+
         _transcriptRenderDebounceTimer.Start();
     }
 
@@ -367,13 +438,13 @@ public partial class ChatPanelView : UserControl, IDisposable
             return;
         }
 
+        // Records the paint that gates ScheduleTranscriptRender's maximum wait.
+        _lastRenderAt = DateTimeOffset.UtcNow;
+
         // The page keeps a per-message signature and reuses unchanged DOM, so re-sending an
         // identical payload is pure waste - and the messages array carries every attached image's
         // full base64 payload (up to 5 x 5 MB per message, ~33 MB encoded). Serialize the messages
-        // only when a change notification says they moved, and skip the script entirely when
-        // neither they nor the tiny activity block differ from what the page already has.
-        // (Deferred: a dedicated setActivity() entry point in transcript.js would let the
-        // once-a-second activity tick carry no messages at all; that is TranscriptWeb's file.)
+        // only when a change notification says they moved.
         bool mustPush = _messagesJsonStale || _messagesJson is null;
         if (mustPush)
         {
@@ -399,8 +470,22 @@ public partial class ChatPanelView : UserControl, IDisposable
                 tokens = _viewModel.TurnTokens,
             }
             : null);
-        if (!mustPush && activityJson == _activityJson)
+        if (!mustPush)
         {
+            if (activityJson == _activityJson)
+            {
+                return;
+            }
+
+            // The activity block's elapsed-seconds counter changes once a second for the whole
+            // turn. Re-posting render() for it would re-transmit _messagesJson - every attachment's
+            // base64 included - as a fresh string plus its BSTR marshal on the UI thread, once a
+            // second. setActivity() touches only the indicator and leaves the messages DOM alone.
+            if (PostToTranscript($"window.claudeTranscript.setActivity({activityJson});"))
+            {
+                _activityJson = activityJson;
+            }
+
             return;
         }
 
@@ -416,8 +501,8 @@ public partial class ChatPanelView : UserControl, IDisposable
     // CoreWebView2, after which ExecuteScriptAsync throws at the COM boundary. Two of the three
     // callers run from a DispatcherTimer tick and from a DependencyProperty callback, where an
     // escaping exception is an unhandled dispatcher exception - a devenv crash, not a blank panel.
-    // Fail closed instead: drop the ready latch and let ProcessFailed / the next successful
-    // navigation restore it.
+    // Fail closed instead: drop the ready latch. ProcessFailed decides whether the document is
+    // recoverable and re-navigates if it is; that navigation completing is what re-latches it.
     private bool PostToTranscript(string script)
     {
         if (!_transcriptReady || _disposed || TranscriptView.CoreWebView2 is null)
@@ -445,6 +530,30 @@ public partial class ChatPanelView : UserControl, IDisposable
         _messagesJson = null;
         _activityJson = null;
         _messagesJsonStale = true;
+    }
+
+    // Recovery for the one failure that actually loses the document: navigate back to the page.
+    // NavigationCompleted then re-latches _transcriptReady and re-pushes everything, because
+    // InvalidateTranscriptPage has already dropped the payload caches.
+    private void ReloadTranscriptPage()
+    {
+        InvalidateTranscriptPage();
+        if (_transcriptReloadAttempted || TranscriptView.CoreWebView2 is not CoreWebView2 core)
+        {
+            ShowCopyFeedback(TranscriptLostMessage);
+            return;
+        }
+
+        _transcriptReloadAttempted = true;
+        try
+        {
+            core.Navigate(TranscriptHostProtocol.PageUrl);
+        }
+        catch (Exception exception) when (exception is COMException || exception is InvalidOperationException ||
+                                          exception is ObjectDisposedException)
+        {
+            ShowCopyFeedback(TranscriptLostMessage);
+        }
     }
 
     private static object BuildPartPayload(ChatMessagePart part)
@@ -1024,10 +1133,9 @@ public partial class ChatPanelView : UserControl, IDisposable
         // would let a hostile agent point this at a plaintext endpoint. OpenTranscriptLink owns the
         // rest - IsNavigableLink, disposing the Process, a filtered catch, and telling the user when
         // the launch fails (the tooltip only ever showed the URL, never the failure).
-        if (Uri.TryCreate(_viewModel.RemoteControlUrl, UriKind.Absolute, out Uri? uri) &&
-            uri.Scheme == Uri.UriSchemeHttps)
+        if (TranscriptHostProtocol.NormalizeRemoteControlLink(_viewModel.RemoteControlUrl) is string link)
         {
-            OpenTranscriptLink(uri.AbsoluteUri);
+            OpenTranscriptLink(link);
             return;
         }
 

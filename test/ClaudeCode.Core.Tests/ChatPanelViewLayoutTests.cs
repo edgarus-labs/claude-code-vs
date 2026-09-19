@@ -25,15 +25,13 @@ public sealed class ChatPanelViewLayoutTests
     /// <summary>Controls that must stay usable while the agent is working.</summary>
     private static readonly string[] AlwaysEnabled = ["ModeButton", "ModelButton", "RemoteControlButton"];
 
+    /// <summary>Draft-composition controls that must stay disabled while the agent is working.</summary>
+    private static readonly string[] AlwaysGated = ["AttachButton"];
+
     [Fact]
     public void ConfigurationPillsAreNotInsideTheSubtreeDisabledWhileTheAgentWorks()
     {
-        XDocument view = XDocument.Load(ViewPath());
-
-        XElement[] draftGatedRoots = view
-            .Descendants()
-            .Where(element => (string?)element.Attribute("Style") == "{StaticResource DraftControlStyle}")
-            .ToArray();
+        XElement[] draftGatedRoots = DraftGatedRoots(XDocument.Load(ViewPath()));
 
         Assert.True(
             draftGatedRoots.Length > 0,
@@ -60,6 +58,30 @@ public sealed class ChatPanelViewLayoutTests
         }
     }
 
+    // The counterpart ratchet. Without it, lifting AttachButton out of the wrapper - re-enabling
+    // "attach the active document while a turn is in flight", the exact hazard the gate exists for
+    // - passes the test above, the analyzers and the build. Failing this list is also how a rename
+    // or removal of DraftControlStyle shows up here: the gated set goes empty.
+    [Fact]
+    public void DraftCompositionControlsStayInsideTheSubtreeDisabledWhileTheAgentWorks()
+    {
+        string[] gated = DraftGatedRoots(XDocument.Load(ViewPath()))
+            .SelectMany(root => root.Descendants())
+            .Select(element => (string?)element.Attribute(X + "Name"))
+            .Where(name => name is not null)
+            .Select(name => name!)
+            .ToArray();
+
+        foreach (string name in AlwaysGated)
+        {
+            Assert.True(
+                gated.Contains(name),
+                $"{name} is no longer inside an element styled with DraftControlStyle, so it stays clickable "
+                    + "while a turn is streaming. Attaching the active document mid-turn is the hazard that "
+                    + "gate exists for. Put it back inside the wrapper rather than relaxing this test.");
+        }
+    }
+
     [Fact]
     public void ConfigurationPillsStillGateOnCanConfigure()
     {
@@ -71,10 +93,24 @@ public sealed class ChatPanelViewLayoutTests
                 view.Descendants(Xaml + "Button"),
                 element => (string?)element.Attribute(X + "Name") == name);
 
-
-            Assert.Equal("{Binding CanConfigure}", (string?)button.Attribute("IsEnabled"));
+            // Deliberately not an exact-string comparison: {Binding Path=CanConfigure} and
+            // {Binding CanConfigure, Mode=OneWay} are behaviourally identical, and a test that
+            // rejects them gets "fixed" by editing the assertion instead of the markup.
+            string? isEnabled = (string?)button.Attribute("IsEnabled");
+            Assert.NotNull(isEnabled);
+            Assert.StartsWith("{Binding", isEnabled);
+            Assert.Contains("CanConfigure", isEnabled);
         }
     }
+
+    // Matches only the literal Style="{StaticResource DraftControlStyle}" attribute form: the style
+    // applied through a <X.Style> property element, or inherited from a parent Setter, would slip
+    // past. Acceptable because every caller asserts the returned set is non-empty, so the day the
+    // markup stops using this form the tests fail rather than silently passing on nothing.
+    private static XElement[] DraftGatedRoots(XDocument view) => view
+        .Descendants()
+        .Where(element => (string?)element.Attribute("Style") == "{StaticResource DraftControlStyle}")
+        .ToArray();
 
     private static string ViewPath([CallerFilePath] string testFilePath = "") =>
         Path.GetFullPath(

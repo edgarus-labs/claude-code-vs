@@ -488,8 +488,16 @@
               BorderBrush="{DynamicResource ChatAccentBrush}" BorderThickness="1" CornerRadius="12"
               Margin="12,6,12,0" Padding="12,10">
         <StackPanel>
-          <TextBlock Text="{Binding Title}" TextWrapping="Wrap" FontWeight="SemiBold"
-                     Foreground="{DynamicResource ChatForegroundBrush}" Margin="0,0,0,6" />
+          <!-- Title is agent-controlled (the tool name and its arguments), so it is bounded here as
+               well as at ToolDisplayName.Describe: row 3 is Auto, and an Auto row takes its full
+               desired height by collapsing the transcript's star row and pushing the composer past
+               the panel's bottom edge. A ScrollViewer rather than TextTrimming - this is a consent
+               surface, so the user must still be able to read every character of what they approve. -->
+          <ScrollViewer MaxHeight="120" VerticalScrollBarVisibility="Auto"
+                        HorizontalScrollBarVisibility="Disabled" Margin="0,0,0,6">
+            <TextBlock Text="{Binding Title}" TextWrapping="Wrap" FontWeight="SemiBold"
+                       Foreground="{DynamicResource ChatForegroundBrush}" />
+          </ScrollViewer>
           <ItemsControl ItemsSource="{Binding Options}">
             <ItemsControl.ItemsPanel>
               <ItemsPanelTemplate>
@@ -761,43 +769,43 @@
                      or model matters. CanConfigure deliberately ignores IsBusy for the same reason. -->
                 <ContentControl Style="{StaticResource DraftControlStyle}" Focusable="False">
                   <StackPanel Orientation="Horizontal">
-                <Button x:Name="AttachButton" Width="32" Height="32" Command="{Binding AttachActiveDocumentCommand}"
-                        Style="{StaticResource LinkButtonStyle}" ToolTipService.ShowOnDisabled="True"
-                        AutomationProperties.Name="Attach active Visual Studio document"
-                        AutomationProperties.HelpText="Captures the current editor text now. Attach documents from multiple tabs before sending.">
-                  <Button.ToolTip>
-                    <ToolTip>
-                      <TextBlock>
-                        <TextBlock.Style>
-                          <Style TargetType="TextBlock">
-                            <Setter Property="Text" Value="Attach active Visual Studio document (including unsaved edits)" />
-                            <Style.Triggers>
-                              <DataTrigger Binding="{Binding HasActiveDocument}" Value="False">
-                                <Setter Property="Text" Value="Open a text document in the editor to attach it" />
-                              </DataTrigger>
-                            </Style.Triggers>
-                          </Style>
-                        </TextBlock.Style>
-                      </TextBlock>
-                    </ToolTip>
-                  </Button.ToolTip>
-                  <Path Data="M 0,6 L 12,6 M 6,0 L 6,12" StrokeThickness="1.5"
-                        Style="{StaticResource ButtonIconStrokeStyle}" />
-                </Button>
-                <Button Width="32" Height="32" Click="SlashButton_Click"
-                        Style="{StaticResource LinkButtonStyle}" ToolTip="Session commands (/)"
-                        AutomationProperties.Name="Session commands">
-                  <Border Width="15" Height="15" CornerRadius="3" BorderThickness="1.2"
-                          BorderBrush="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}">
-                    <Path Data="M 4,11 L 8,2" StrokeThickness="1.3" Style="{StaticResource ButtonIconStrokeStyle}"
-                          HorizontalAlignment="Center" VerticalAlignment="Center" />
-                  </Border>
-                </Button>
-                <Button Width="32" Height="32" Click="AttachImageButton_Click"
-                        Style="{StaticResource LinkButtonStyle}" ToolTip="Attach an image file (or paste with Ctrl+V)"
-                        AutomationProperties.Name="Attach image file">
-                  <TextBlock Text="&#xE91B;" FontFamily="Segoe MDL2 Assets" />
-                </Button>
+                    <Button x:Name="AttachButton" Width="32" Height="32" Command="{Binding AttachActiveDocumentCommand}"
+                            Style="{StaticResource LinkButtonStyle}" ToolTipService.ShowOnDisabled="True"
+                            AutomationProperties.Name="Attach active Visual Studio document"
+                            AutomationProperties.HelpText="Captures the current editor text now. Attach documents from multiple tabs before sending.">
+                      <Button.ToolTip>
+                        <ToolTip>
+                          <TextBlock>
+                            <TextBlock.Style>
+                              <Style TargetType="TextBlock">
+                                <Setter Property="Text" Value="Attach active Visual Studio document (including unsaved edits)" />
+                                <Style.Triggers>
+                                  <DataTrigger Binding="{Binding HasActiveDocument}" Value="False">
+                                    <Setter Property="Text" Value="Open a text document in the editor to attach it" />
+                                  </DataTrigger>
+                                </Style.Triggers>
+                              </Style>
+                            </TextBlock.Style>
+                          </TextBlock>
+                        </ToolTip>
+                      </Button.ToolTip>
+                      <Path Data="M 0,6 L 12,6 M 6,0 L 6,12" StrokeThickness="1.5"
+                            Style="{StaticResource ButtonIconStrokeStyle}" />
+                    </Button>
+                    <Button Width="32" Height="32" Click="SlashButton_Click"
+                            Style="{StaticResource LinkButtonStyle}" ToolTip="Session commands (/)"
+                            AutomationProperties.Name="Session commands">
+                      <Border Width="15" Height="15" CornerRadius="3" BorderThickness="1.2"
+                              BorderBrush="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}">
+                        <Path Data="M 4,11 L 8,2" StrokeThickness="1.3" Style="{StaticResource ButtonIconStrokeStyle}"
+                              HorizontalAlignment="Center" VerticalAlignment="Center" />
+                      </Border>
+                    </Button>
+                    <Button Width="32" Height="32" Click="AttachImageButton_Click"
+                            Style="{StaticResource LinkButtonStyle}" ToolTip="Attach an image file (or paste with Ctrl+V)"
+                            AutomationProperties.Name="Attach image file">
+                      <TextBlock Text="&#xE91B;" FontFamily="Segoe MDL2 Assets" />
+                    </Button>
                   </StackPanel>
                 </ContentControl>
                 <Button x:Name="ModeButton" Margin="4,0,0,0" MaxWidth="180" Padding="6,5"

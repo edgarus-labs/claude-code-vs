@@ -1,4 +1,6 @@
 using ClaudeCode.Core.ViewModels;
+using System;
+using System.Collections.Generic;
 using Xunit;
 
 namespace ClaudeCode.Core.Tests;
@@ -27,6 +29,10 @@ public sealed class TranscriptHostProtocolTests
     [InlineData("about:blank")]
     [InlineData("index.html")]
     [InlineData("")]
+    // A trailing-dot host is the fully-qualified spelling of the same name but a *different* string
+    // to Chromium, so it can address a document this host never served. .NET keeps the dot in
+    // Uri.Host, so the ordinal equality below rejects it - pin that, it is load-bearing hardening.
+    [InlineData("https://claudecode.transcript./index.html")]
     [InlineData(null)]
     public void IsTranscriptOrigin_AnythingButTheTranscriptOrigin_IsRejected(string? uri)
     {
@@ -76,6 +82,7 @@ public sealed class TranscriptHostProtocolTests
     [InlineData(nameof(ChatMessageViewModel.DurationSeconds))]
     [InlineData(nameof(ChatMessageViewModel.TokensUsed))]
     [InlineData(nameof(ToolCallCardViewModel.Title))]
+    [InlineData(nameof(ChatMessageViewModel.Images))]
     [InlineData(nameof(ToolCallCardViewModel.Status))]
     public void AffectsTranscript_PropertyCarriedByThePayload_RequiresRepaint(string propertyName)
     {
@@ -92,5 +99,98 @@ public sealed class TranscriptHostProtocolTests
     public void AffectsTranscript_PropertyNotCarriedByThePayload_RequiresNoRepaint(string? propertyName)
     {
         Assert.False(TranscriptHostProtocol.AffectsTranscript(propertyName));
+    }
+
+    // RemoteControlUrl is agent-reported, so it crosses the untrusted boundary and is then handed
+    // to ShellExecute. Anything but an absolute https URL must be refused: http would let a hostile
+    // agent point the Remote Control pill at a plaintext endpoint, and a non-web scheme would hand
+    // an arbitrary shell verb to the OS.
+    [Theory]
+    [InlineData("http://claude.ai/code/abc")]
+    [InlineData("file:///C:/Windows/System32/cmd.exe")]
+    [InlineData("javascript:alert(1)")]
+    [InlineData("ms-settings:windowsupdate")]
+    [InlineData("/code/abc")]
+    [InlineData("")]
+    [InlineData(null)]
+    public void NormalizeRemoteControlLink_AnythingButAbsoluteHttps_IsRefused(string? url)
+    {
+        Assert.Null(TranscriptHostProtocol.NormalizeRemoteControlLink(url));
+    }
+
+    [Fact]
+    public void NormalizeRemoteControlLink_AbsoluteHttps_IsReturnedAsAnAbsoluteUri()
+    {
+        Assert.Equal(
+            "https://claude.ai/code/abc",
+            TranscriptHostProtocol.NormalizeRemoteControlLink("https://claude.ai/code/abc"));
+    }
+
+    // If the maximum wait were not longer than the coalescing window, every streamed chunk would
+    // paint synchronously and the coalescing that exists to stop O(n^2) re-renders on session
+    // resume would never collapse anything.
+    [Fact]
+    public void RenderCoalesceWindow_IsShorterThanTheMaximumWait()
+    {
+        Assert.True(TranscriptHostProtocol.RenderCoalesceWindow < TranscriptHostProtocol.MaxRenderInterval);
+    }
+
+    // A turn driven from claude.ai/code never sets IsBusy, so the host's one-second activity timer
+    // never starts and this scheduling rule is the only thing that can repaint it. Chunks arrive far
+    // closer together than the coalescing window, so a pure restart-debounce is restarted before it
+    // can ever fire and the page stays stale for the whole turn. This drives the same rule
+    // ChatPanelView.ScheduleTranscriptRender applies, over a virtual clock (no wall-clock waiting),
+    // and pins what the user actually feels: how long the transcript may stay stale mid-stream.
+    [Fact]
+    public void CoalescingPolicy_StreamFasterThanTheCoalescingWindow_KeepsPainting()
+    {
+        TimeSpan chunkInterval = TimeSpan.FromMilliseconds(10);
+        var start = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        DateTimeOffset lastPaint = start - TranscriptHostProtocol.MaxRenderInterval;
+        DateTimeOffset coalesceDue = default;
+        bool coalescing = false;
+        var paints = new List<DateTimeOffset>();
+
+        for (DateTimeOffset now = start; now <= start + TimeSpan.FromSeconds(10); now += chunkInterval)
+        {
+            if (coalescing && coalesceDue <= now)
+            {
+                coalescing = false;
+                lastPaint = coalesceDue;
+                paints.Add(coalesceDue);
+            }
+
+            if (TranscriptHostProtocol.ShouldPaintImmediately(now - lastPaint))
+            {
+                coalescing = false;
+                lastPaint = now;
+                paints.Add(now);
+            }
+            else
+            {
+                coalesceDue = now + TranscriptHostProtocol.RenderCoalesceWindow;
+                coalescing = true;
+            }
+        }
+
+        Assert.NotEmpty(paints);
+
+        TimeSpan worstGap = TimeSpan.Zero;
+        DateTimeOffset previous = start;
+        foreach (DateTimeOffset paint in paints)
+        {
+            if (paint - previous > worstGap)
+            {
+                worstGap = paint - previous;
+            }
+
+            previous = paint;
+        }
+
+        TimeSpan bound = TranscriptHostProtocol.MaxRenderInterval + chunkInterval;
+        Assert.True(
+            worstGap <= bound,
+            $"a continuously streaming turn went {worstGap.TotalMilliseconds} ms without a repaint; "
+                + $"the bound is {bound.TotalMilliseconds} ms.");
     }
 }
