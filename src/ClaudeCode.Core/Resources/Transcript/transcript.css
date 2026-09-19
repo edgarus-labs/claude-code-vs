@@ -171,6 +171,8 @@ html, body {
   background: var(--chat-input-bg);
   border-radius: 8px;
   margin: 4px 0 0 0;
+  overflow: hidden;
+  min-width: 0;
 }
 
 .tool-card .tool-header {
@@ -302,8 +304,15 @@ html, body {
   user-select: text;
 }
 
+/* Source listings keep their lines unwrapped and scroll sideways inside the card instead of
+   spilling past its edge. */
 .tool-card .src-line {
   white-space: pre;
+}
+
+.tool-card pre {
+  overflow-x: auto;
+  max-width: 100%;
 }
 
 .tool-card .src-gutter {

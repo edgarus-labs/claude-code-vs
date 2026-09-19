@@ -200,13 +200,20 @@
     header.className = "tool-header";
     header.setAttribute("role", "button");
     header.tabIndex = 0;
-    header.addEventListener("click", function () {
+    function toggle() {
       card.classList.toggle("collapsed");
-    });
+      // Truncation needs real layout, which a collapsed (display:none) body never had at render time.
+      if (!card.classList.contains("collapsed")) {
+        var body = card.querySelector(":scope > .tool-body-wrapper > .body");
+        if (body) applyTruncation(body);
+      }
+    }
+
+    header.addEventListener("click", toggle);
     header.addEventListener("keydown", function (e) {
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
-        card.classList.toggle("collapsed");
+        toggle();
       }
     });
 
@@ -324,44 +331,48 @@
 
     requestAnimationFrame(function () {
       for (var i = 0; i < items.length; i++) {
-        // let (not var): each iteration must capture its own body/gradient/toggleButton in the
-        // click closure below. var here would share one binding across every card in this batch,
-        // so clicking "Show more" on any card would always toggle whichever card was processed
-        // last (the loop variable's final value by the time you actually click, long after the
-        // loop itself finished).
-        let body = items[i];
-        if (!body.isConnected || body.scrollHeight <= truncateMaxHeight + 4) {
-          continue;
-        }
-
-        body.classList.add("truncated");
-        body.style.maxHeight = truncateMaxHeight + "px";
-
-        let gradient = document.createElement("div");
-        gradient.className = "truncate-gradient";
-        body.parentNode.insertBefore(gradient, body.nextSibling);
-
-        let toggleButton = document.createElement("button");
-        toggleButton.type = "button";
-        toggleButton.className = "expand-button";
-        toggleButton.textContent = "Show more";
-        toggleButton.addEventListener("click", function () {
-          var expanded = !body.classList.contains("truncated");
-          if (expanded) {
-            body.classList.add("truncated");
-            body.style.maxHeight = truncateMaxHeight + "px";
-            gradient.style.display = "";
-            toggleButton.textContent = "Show more";
-          } else {
-            body.classList.remove("truncated");
-            body.style.maxHeight = "";
-            gradient.style.display = "none";
-            toggleButton.textContent = "Show less";
-          }
-        });
-        gradient.parentNode.parentNode.insertBefore(toggleButton, gradient.parentNode.nextSibling);
+        applyTruncation(items[i]);
       }
     });
+  }
+
+  // Idempotent: measures once the body has layout (a collapsed card is measured when expanded).
+  function applyTruncation(body) {
+    if (body.dataset.truncateChecked === "1" || !body.isConnected || body.scrollHeight === 0) {
+      return;
+    }
+
+    body.dataset.truncateChecked = "1";
+    if (body.scrollHeight <= truncateMaxHeight + 4) {
+      return;
+    }
+
+    body.classList.add("truncated");
+    body.style.maxHeight = truncateMaxHeight + "px";
+
+    var gradient = document.createElement("div");
+    gradient.className = "truncate-gradient";
+    body.parentNode.insertBefore(gradient, body.nextSibling);
+
+    var toggleButton = document.createElement("button");
+    toggleButton.type = "button";
+    toggleButton.className = "expand-button";
+    toggleButton.textContent = "Show more";
+    toggleButton.addEventListener("click", function () {
+      var expanded = !body.classList.contains("truncated");
+      if (expanded) {
+        body.classList.add("truncated");
+        body.style.maxHeight = truncateMaxHeight + "px";
+        gradient.style.display = "";
+        toggleButton.textContent = "Show more";
+      } else {
+        body.classList.remove("truncated");
+        body.style.maxHeight = "";
+        gradient.style.display = "none";
+        toggleButton.textContent = "Show less";
+      }
+    });
+    gradient.parentNode.parentNode.insertBefore(toggleButton, gradient.parentNode.nextSibling);
   }
 
   function buildMessage(message) {
