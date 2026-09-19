@@ -866,13 +866,11 @@ internal sealed partial class VsControlPipeServer
     /// The content is the debuggee's, unbounded and attacker-influenced: WPF reports a TextBlock's
     /// whole text as its UIA name, so one log control would otherwise push the response past the
     /// sidecar's line ceiling and hand the agent a tree cut mid-JSON. Every successful
-    /// invoke/setValue response echoes the same fields of the control it touched.
+    /// invoke/setValue response echoes the same fields of the control it touched. The cut never
+    /// strands a high surrogate (see <see cref="VsDebuggerChannelRules.TruncateDebuggeeValue"/>).
     /// </summary>
-    private static string CapValue(string? value)
-    {
-        var text = value ?? string.Empty;
-        return text.Length > _maxElementValueChars ? text.Substring(0, _maxElementValueChars) + "…" : text;
-    }
+    private static string CapValue(string? value) =>
+        VsDebuggerChannelRules.TruncateDebuggeeValue(value, _maxElementValueChars);
 
     private static JObject RectToJson(System.Windows.Rect rect) => rect.IsEmpty
         ? new JObject()
