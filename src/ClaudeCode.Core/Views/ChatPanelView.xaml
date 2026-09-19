@@ -465,8 +465,21 @@
                     <Run Text="{Binding AddedLines, Mode=OneWay, StringFormat='+{0}'}" Foreground="{DynamicResource ChatDiffAddedForegroundBrush}" />
                     <Run Text="{Binding RemovedLines, Mode=OneWay, StringFormat='−{0}'}" Foreground="{DynamicResource ChatDiffRemovedForegroundBrush}" />
                   </TextBlock>
-                  <Button Grid.Column="2" Width="24" Height="24" Style="{StaticResource LinkButtonStyle}" ToolTip="Reject (restore original)"
-                          Command="{Binding RejectCommand}" AutomationProperties.Name="{Binding Name, StringFormat='Reject changes to {0}'}">
+                  <Button Grid.Column="2" Width="24" Height="24"
+                          Command="{Binding RejectCommand}" AutomationProperties.Name="{Binding Name, StringFormat='Reject changes to {0}'}"
+                          ToolTipService.ShowOnDisabled="True">
+                    <!-- A row whose pre-edit content is unknown keeps a disabled reject button; its tooltip
+                         must say why rather than promise a restore that cannot happen. -->
+                    <Button.Style>
+                      <Style TargetType="Button" BasedOn="{StaticResource LinkButtonStyle}">
+                        <Setter Property="ToolTip" Value="Reject (restore original)" />
+                        <Style.Triggers>
+                          <DataTrigger Binding="{Binding CanRevert}" Value="False">
+                            <Setter Property="ToolTip" Value="Reject unavailable: the content from before the edit is not known" />
+                          </DataTrigger>
+                        </Style.Triggers>
+                      </Style>
+                    </Button.Style>
                     <Path Data="M 0,0 L 8,8 M 0,8 L 8,0" StrokeThickness="1.4" Style="{StaticResource ButtonIconStrokeStyle}" />
                   </Button>
                   <Button Grid.Column="3" Width="24" Height="24" Style="{StaticResource LinkButtonStyle}" ToolTip="Accept (keep)"
