@@ -258,8 +258,10 @@ public sealed class McpServer : IDisposable
             return null;
         }
 
-        string? mimeType = imageObject["mimeType"]?.GetValue<string>();
-        string? data = imageObject["data"]?.GetValue<string>();
+        // A malformed _image (non-string children) must degrade to the plain text result, never throw:
+        // CreateToolResult runs outside the tools/call try/catch, so an exception here kills the sidecar.
+        string? mimeType = TryGetString(imageObject, "mimeType");
+        string? data = TryGetString(imageObject, "data");
         root.Remove(_imagePropertyName);
         text = root.ToJsonString();
         if (string.IsNullOrEmpty(mimeType) || string.IsNullOrEmpty(data))
@@ -269,6 +271,9 @@ public sealed class McpServer : IDisposable
 
         return new JsonObject { ["type"] = "image", ["mimeType"] = mimeType, ["data"] = data };
     }
+
+    private static string? TryGetString(JsonObject owner, string propertyName)
+        => owner[propertyName] is JsonValue value && value.TryGetValue(out string? text) ? text : null;
 
     private static JsonObject CreateTextToolResult(bool isError, string text)
     {

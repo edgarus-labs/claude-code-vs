@@ -15,6 +15,7 @@ public sealed class VsControlPipeClient : IAsyncDisposable
 {
     private const string _handshakeTokenEnvironmentVariable = "CLAUDECODE_VSCONTROL_TOKEN";
     private const string _buildSolutionMethod = "buildSolution";
+    private const string _buildProjectMethod = "buildProject";
 
     private static readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly UTF8Encoding _utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
@@ -109,7 +110,10 @@ public sealed class VsControlPipeClient : IAsyncDisposable
             throw;
         }
 
-        var timeout = string.Equals(request.Method, _buildSolutionMethod, StringComparison.Ordinal) ? _buildTimeout : _requestTimeout;
+        // Both build methods run a full MSBuild compile in the VS host, so both get the build budget.
+        bool isBuild = string.Equals(request.Method, _buildSolutionMethod, StringComparison.Ordinal)
+            || string.Equals(request.Method, _buildProjectMethod, StringComparison.Ordinal);
+        var timeout = isBuild ? _buildTimeout : _requestTimeout;
         using var timeoutCts = new CancellationTokenSource(timeout);
         await using var timeoutRegistration = timeoutCts.Token.Register(static state => ((TaskCompletionSource<VsControlResponse>)state!).TrySetCanceled(), tcs);
         await using var registration = operationToken.Register(static state => ((TaskCompletionSource<VsControlResponse>)state!).TrySetCanceled(), tcs);
@@ -244,9 +248,37 @@ public sealed class VsControlPipeClient : IAsyncDisposable
             }
         }
 
-        if (ReferenceEquals(_pipe, pipe))
+        if (!ReferenceEquals(_pipe, pipe))
         {
-            DisposeConnectionState();
+            return;
+        }
+
+        // Tear down under the write gate. Disposing _writer while SendAsync is still inside
+        // WriteLineAsync/FlushAsync makes StreamWriter.Dispose throw InvalidOperationException
+        // ("the stream is currently in use by a previous operation"), which escapes DisposeQuietly's
+        // filter, faults this task and resurfaces from DisposeAsync's await. DisposeAsync cancels
+        // the lifetime before it takes the same gate and keeps it through disposal, so a canceled
+        // lifetime means disposal already owns teardown: stand down instead of waiting on a gate
+        // that is never released.
+        try
+        {
+            await _writeLock.WaitAsync(_lifetimeToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+
+        try
+        {
+            if (ReferenceEquals(_pipe, pipe))
+            {
+                DisposeConnectionState();
+            }
+        }
+        finally
+        {
+            _writeLock.Release();
         }
     }
 

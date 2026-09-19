@@ -266,6 +266,39 @@ public sealed class McpServerTests
     }
 
     [Theory]
+    [InlineData("""{"hwnd":1234,"_image":{"mimeType":"image/png","data":1234}}""")]
+    [InlineData("""{"hwnd":1234,"_image":{"mimeType":17,"data":"abc"}}""")]
+    [InlineData("""{"hwnd":1234,"_image":{"mimeType":"image/png","data":{"nested":true}}}""")]
+    [InlineData("""{"hwnd":1234,"_image":{"mimeType":["image/png"],"data":["abc"]}}""")]
+    [InlineData("""{"hwnd":1234,"_image":{"mimeType":true,"data":false}}""")]
+    public async Task ToolsCall_ResultWithNonStringImagePayload_ReturnsTextToolResultInsteadOfCrashing(string resultJson)
+    {
+        string pipeName = $"vscontrol-badimage-{Guid.NewGuid():N}";
+        using var pipe = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+        Task serve = Task.Run(async () =>
+        {
+            await pipe.WaitForConnectionAsync();
+            using var reader = new StreamReader(pipe, new UTF8Encoding(false), false, 1024, leaveOpen: true);
+            using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 1024, leaveOpen: true) { AutoFlush = true };
+            _ = await reader.ReadLineAsync();
+            var request = JsonSerializer.Deserialize<VsControlRequest>((await reader.ReadLineAsync())!, _wireOptions)!;
+            await writer.WriteLineAsync(JsonSerializer.Serialize(new VsControlResponse { Id = request.Id, ResultJson = resultJson }, _wireOptions));
+        });
+        await using var client = new VsControlPipeClient(pipeName, handshakeToken: "token");
+
+        JsonObject response = await RunSingleRequestAsync(client,
+            """{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"captureWindow","arguments":{"hwnd":1234}}}""");
+        await serve;
+
+        var result = Assert.IsType<JsonObject>(response["result"]);
+        Assert.False(result["isError"]!.GetValue<bool>());
+        var content = Assert.IsType<JsonArray>(result["content"]);
+        var text = Assert.Single(content.OfType<JsonObject>(), c => c["type"]!.GetValue<string>() == "text");
+        Assert.Contains("\"hwnd\":1234", text["text"]!.GetValue<string>());
+        Assert.DoesNotContain(content.OfType<JsonObject>(), c => c["type"]!.GetValue<string>() == "image");
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task ToolsCall_RejectedHandshakeOrDroppedRequest_ReturnsToolError(bool dropAfterRequest)
