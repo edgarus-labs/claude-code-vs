@@ -23,10 +23,14 @@ namespace ClaudeCode.Vsix.VsControl;
 /// experimental instance an F5 on a VSIX project launches - is rejected too: driving a full IDE would
 /// hand the agent File > Open and the Command Window.
 /// <para>
-/// Screenshots never return pixels that are not provably the window's own. <c>PrintWindow</c> asks the
-/// app to render itself and is unaffected by what is on top of it; the desktop-reading fallback is
-/// allowed only while the window is visible, restored, entirely on screen, unmoved and uncovered, and
-/// refuses with <c>captured: false</c> otherwise.
+/// Screenshots take one of two routes. <c>PrintWindow</c> asks the app to render itself, so it is
+/// unaffected by what is on top of it and needs no gate. The desktop-reading fallback - the only route
+/// while the app is stopped at a breakpoint - does read the screen, and is allowed only while the
+/// window provably owns every pixel it would copy: a top-level window that is visible, restored, not
+/// DWM-cloaked, neither layered nor region-shaped, entirely on screen, no larger than the desktop,
+/// uncovered, and unmoved across the blit. It copies the DWM frame rather than the window rectangle,
+/// whose invisible resize border and rounded corners belong to the window below. Anything less refuses
+/// with <c>captured: false</c> and a reason, carrying no image and no dimensions.
 /// </para>
 /// </summary>
 internal sealed partial class VsControlPipeServer
@@ -42,6 +46,11 @@ internal sealed partial class VsControlPipeServer
     // keep the two equal so every payload this server can produce is one the sidecar will forward.
     private const int _maxCaptureBytes = 4 * 1024 * 1024;
     private const int _maxCaptureEncodeAttempts = 3;
+
+    // A PrintWindow body the deadline abandons keeps its bitmap and HDC until WM_PRINT returns, which
+    // a debuggee blocked in its paint handler never does. Declining the route once a few bodies are
+    // outstanding turns an unbounded leak into a bounded one.
+    private const int _maxOutstandingPrintWindows = 3;
     private const int _uiActionTimeoutMs = 5_000;
     private const uint _pumpProbeTimeoutMs = 1_000;
     private const int _maxZOrderWindows = 1_000;
@@ -52,6 +61,11 @@ internal sealed partial class VsControlPipeServer
     private const uint _wmNull = 0x0;
     private const uint _smtoAbortIfHung = 0x2;
     private const int _dwmwaCloaked = 14;
+    private const int _dwmwaExtendedFrameBounds = 9;
+    private const int _gwlExStyle = -20;
+    private const int _wsExTransparent = 0x20;
+    private const int _wsExLayered = 0x80000;
+    private const int _rgnError = 0;
     private const int _smXVirtualScreen = 76;
     private const int _smYVirtualScreen = 77;
     private const int _smCxVirtualScreen = 78;
@@ -238,34 +252,66 @@ internal sealed partial class VsControlPipeServer
         var stoppedAtBreak = debugger.CurrentMode == EnvDTE.dbgDebugMode.dbgBreakMode;
 
         // The window can be destroyed between the IsWindow check and this read; GetWindowRect leaves
-        // the struct zeroed on failure, which would otherwise be captured as a 1x1 "screenshot" of the
-        // top-left pixel of the primary monitor and reported as a success.
+        // the struct zeroed on failure, which would otherwise be read as a real rectangle.
         if (!NativeMethods.GetWindowRect(hwnd, out var rect))
         {
             throw new InvalidOperationException("The window no longer exists; use listAppWindows.");
         }
 
-        var width = Math.Max(1, rect.Right - rect.Left);
-        var height = Math.Max(1, rect.Bottom - rect.Top);
+        // Both routes allocate a surface the size of the window's own rectangle before any downscale
+        // applies, so the rectangle has to be a sane one first.
+        var window = ToScreenRect(rect);
+        if (!WindowCaptureRules.HasCapturableSize(window, VirtualScreenRect()))
+        {
+            return CaptureRefused(hwnd, "offscreen", "The window has no area, or is larger than the whole desktop, so there is nothing to capture; resize it and retry.");
+        }
 
         // PrintWindow sends WM_PRINT synchronously and returns only once the target's message pump
         // answers it. An app stopped at a breakpoint - the normal case for this tool - never will, so
         // calling it on the VS UI thread freezes devenv outright. Skip it at break mode, and run it
         // off the UI thread with a deadline everywhere else.
-        var printed = stoppedAtBreak ? null : await PrintWindowCaptureAsync(hwnd, width, height, cancellationToken);
+        var printed = stoppedAtBreak ? null : await PrintWindowCaptureAsync(hwnd, window, cancellationToken);
 
         // Everything below is pixel work - a GDI blit, a bicubic resample, PNG compression, base64 -
         // hundreds of milliseconds for a 4K window, and none of it needs the UI thread.
-        return printed ?? await Task.Run(() => CopyFromScreenCapture(hwnd, rect, width, height));
+        return printed ?? await Task.Run(() => CopyFromScreenCapture(hwnd, window));
     }
+
+    // Process-wide, like the GDI object quota and the address space it guards.
+    private static int _outstandingPrintWindows;
 
     /// <summary>Runs <c>PrintWindow</c> on a background thread and gives up after
     /// <see cref="_uiActionTimeoutMs"/>. The abandoned thread keeps sole ownership of its bitmap and
-    /// device context - no caller may touch GDI objects a stuck WM_PRINT is still drawing into - which
-    /// is exactly why <see cref="PrintWindowCapture"/> proves the target answers messages before it
-    /// allocates anything.</summary>
-    private static Task<JObject?> PrintWindowCaptureAsync(IntPtr hwnd, int width, int height, CancellationToken cancellationToken) =>
-        RunWithDeadlineAsync(() => PrintWindowCapture(hwnd, width, height), cancellationToken);
+    /// device context - no caller may touch GDI objects a stuck WM_PRINT is still drawing into - so the
+    /// number of bodies still running is what bounds the damage. <see cref="PrintWindowCapture"/> proves
+    /// the target answers messages before it allocates anything, and once
+    /// <see cref="_maxOutstandingPrintWindows"/> bodies are outstanding this route is declined outright
+    /// and the caller falls through to the gated screen read, so a debuggee that blocks in its paint
+    /// handler can strand at most that many bitmaps for the life of devenv.exe.</summary>
+    private static Task<JObject?> PrintWindowCaptureAsync(IntPtr hwnd, ScreenRect window, CancellationToken cancellationToken)
+    {
+        if (Interlocked.Increment(ref _outstandingPrintWindows) > _maxOutstandingPrintWindows)
+        {
+            _ = Interlocked.Decrement(ref _outstandingPrintWindows);
+            return Task.FromResult<JObject?>(null);
+        }
+
+        // The decrement belongs to the body rather than to this call: the deadline abandons the body
+        // while it still holds the bitmap, which is released only when WM_PRINT finally returns.
+        return RunWithDeadlineAsync(
+            () =>
+            {
+                try
+                {
+                    return PrintWindowCapture(hwnd, window.Width, window.Height);
+                }
+                finally
+                {
+                    _ = Interlocked.Decrement(ref _outstandingPrintWindows);
+                }
+            },
+            cancellationToken);
+    }
 
     /// <summary>Returns <c>null</c> when the window cannot render itself: either its message pump does
     /// not answer, or <c>PrintWindow</c> declines.</summary>
@@ -306,42 +352,56 @@ internal sealed partial class VsControlPipeServer
     }
 
     /// <summary>
-    /// Reads the desktop at the window's rectangle. Those pixels are the window's own only while
-    /// nothing covers it, so the exposure gate runs immediately before and immediately after the blit;
-    /// on any doubt the call returns <c>captured: false</c> rather than another application's picture.
+    /// Reads the desktop at the window's frame. Those pixels are the window's own only while it paints
+    /// them and nothing covers it, so the exposure gate runs immediately before and immediately after
+    /// the blit; on any doubt the call returns <c>captured: false</c> rather than another application's
+    /// picture.
     /// </summary>
-    private static JObject CopyFromScreenCapture(IntPtr hwnd, NativeMethods.RECT rect, int width, int height)
+    private static JObject CopyFromScreenCapture(IntPtr hwnd, ScreenRect window)
     {
-        var refusal = RefuseUnlessExposed(hwnd, rect);
+        var refusal = RefuseUnlessExposed(hwnd, window);
         if (refusal is not null)
         {
             return refusal;
         }
 
-        using var bitmap = new Bitmap(width, height, PixelFormat.Format24bppRgb);
+        // The window rectangle is larger than the pixels the window owns: the invisible resize border
+        // lies outside the DWM frame and is transparent, and rounded corners leave the corner pixels to
+        // the window below. Classify the window rectangle - the conservative one for occlusion - and
+        // copy only the frame.
+        var painted = WindowCaptureRules.PaintedBounds(window, ExtendedFrameBounds(hwnd));
+        using var bitmap = new Bitmap(painted.Width, painted.Height, PixelFormat.Format24bppRgb);
         using (var graphics = Graphics.FromImage(bitmap))
         {
-            graphics.CopyFromScreen(rect.Left, rect.Top, 0, 0, new Size(width, height));
+            graphics.CopyFromScreen(painted.Left, painted.Top, 0, 0, new Size(painted.Width, painted.Height));
         }
 
         // A window raised, or the target moved, while the blit ran would already be in the bitmap.
-        return RefuseUnlessExposed(hwnd, rect) ?? EncodeCapture(hwnd, bitmap);
+        return RefuseUnlessExposed(hwnd, window) ?? EncodeCapture(hwnd, bitmap);
     }
 
     /// <summary>
-    /// Returns <c>null</c> when every pixel at <paramref name="rect"/> is provably the window's own,
+    /// Returns <c>null</c> when every pixel at <paramref name="window"/> is provably the window's own,
     /// and the refusal to send back otherwise. The reason never names the covering window: its title
     /// would disclose what the user has open to the agent.
     /// </summary>
-    private static JObject? RefuseUnlessExposed(IntPtr hwnd, NativeMethods.RECT rect)
+    private static JObject? RefuseUnlessExposed(IntPtr hwnd, ScreenRect window)
     {
-        if (!NativeMethods.GetWindowRect(hwnd, out var current) || !SameRect(current, rect))
+        if (!NativeMethods.GetWindowRect(hwnd, out var current) || ToScreenRect(current) != window)
         {
             return CaptureRefused(hwnd, "moved", "The window moved or closed while it was being read; retry the capture.");
         }
 
-        var root = NativeMethods.GetAncestor(hwnd, _gaRoot);
-        var above = WindowsAbove(root == IntPtr.Zero ? hwnd : root);
+        // The gate's premise - one window owns the whole rectangle - holds only for a top-level window:
+        // GW_HWNDPREV from a child walks its siblings inside the app, so a later sibling drawn over the
+        // target (an overlapping child of a hosted browser control, owned by another process) would
+        // never be enumerated. listAppWindows only ever hands out top-level handles.
+        if (NativeMethods.GetAncestor(hwnd, _gaRoot) != hwnd)
+        {
+            return CaptureRefused(hwnd, "child", "This is a child window, and the pixels at a child's rectangle cannot be proven to be its own; capture the top-level window listAppWindows reports.");
+        }
+
+        var above = WindowsAbove(hwnd);
         if (above is null)
         {
             return CaptureRefused(hwnd, "occluded", "The desktop has too many windows to prove this one is uncovered; close some windows and retry.");
@@ -349,8 +409,10 @@ internal sealed partial class VsControlPipeServer
 
         var exposure = WindowCaptureRules.Classify(
             NativeMethods.IsWindowVisible(hwnd),
-            NativeMethods.IsIconic(root == IntPtr.Zero ? hwnd : root),
-            ToScreenRect(rect),
+            NativeMethods.IsIconic(hwnd),
+            IsCloaked(hwnd, whenUnknown: true),
+            PaintsWholeRectangle(hwnd),
+            window,
             VirtualScreenRect(),
             above);
 
@@ -359,6 +421,8 @@ internal sealed partial class VsControlPipeServer
             WindowCaptureExposure.Exposed => null,
             WindowCaptureExposure.Hidden => CaptureRefused(hwnd, "hidden", "The window is not visible, so the desktop shows other applications at its rectangle; show it and retry."),
             WindowCaptureExposure.Minimized => CaptureRefused(hwnd, "minimized", "The window is minimized and paints nothing; restore it and retry."),
+            WindowCaptureExposure.Cloaked => CaptureRefused(hwnd, "cloaked", "The window is parked on another virtual desktop, or suspended, so it paints nothing where it claims to be and the screen there belongs to other applications; switch to the desktop it is on and retry."),
+            WindowCaptureExposure.Translucent => CaptureRefused(hwnd, "translucent", "The window is translucent, or its shape is not its rectangle, so the screen there holds the windows behind it as well; continue execution so the app can render itself instead."),
             WindowCaptureExposure.OffScreen => CaptureRefused(hwnd, "offscreen", "The window is empty or reaches outside the desktop, where nothing is painted; move it fully on screen and retry."),
             _ => CaptureRefused(hwnd, "occluded", "Another window is drawn over it, so reading the screen would return that application's pixels instead. While the app is stopped at a breakpoint Visual Studio itself is normally on top: continue execution and capture again, or bring the app to the front."),
         };
@@ -390,7 +454,8 @@ internal sealed partial class VsControlPipeServer
                 return null;
             }
 
-            if (!NativeMethods.IsWindowVisible(current) || NativeMethods.IsIconic(current) || IsCloaked(current))
+            // An unanswered cloak query keeps the window in the above-list, which can only refuse.
+            if (!NativeMethods.IsWindowVisible(current) || NativeMethods.IsIconic(current) || IsCloaked(current, whenUnknown: false))
             {
                 continue;
             }
@@ -404,9 +469,37 @@ internal sealed partial class VsControlPipeServer
         return above;
     }
 
-    /// <summary>A failed query counts the window as drawn, which only ever refuses a capture.</summary>
-    private static bool IsCloaked(IntPtr hwnd) =>
-        NativeMethods.DwmGetWindowAttribute(hwnd, _dwmwaCloaked, out var cloaked, sizeof(int)) == 0 && cloaked != 0;
+    /// <summary>
+    /// The window's DWM cloak state. The two callers need opposite defaults for a query DWM does not
+    /// answer, and both defaults have to be the refusing one: a window in the above-list counts as
+    /// drawn (so it keeps occluding), and the capture target counts as cloaked (so it is not blitted).
+    /// </summary>
+    private static bool IsCloaked(IntPtr hwnd, bool whenUnknown) =>
+        NativeMethods.DwmGetWindowAttribute(hwnd, _dwmwaCloaked, out int cloaked, sizeof(int)) == 0
+            ? cloaked != 0
+            : whenUnknown;
+
+    /// <summary>
+    /// True when the window composites its whole rectangle itself. A layered window is blended with
+    /// whatever is behind it, and a region-shaped one leaves the pixels outside its region to the
+    /// windows below, so in neither case is the screen at that rectangle the window's alone.
+    /// <c>GetWindowRgnBox</c> answers the region question without a scratch HRGN to leak. Neither call
+    /// can report its own failure apart from its legitimate "plain window" answer - <c>RGN_ERROR</c>
+    /// and an ex-style of zero - but both only fail for a handle the rectangle re-check above has
+    /// already excluded.
+    /// </summary>
+    private static bool PaintsWholeRectangle(IntPtr hwnd) =>
+        ((NativeMethods.GetWindowLong(hwnd, _gwlExStyle) & (_wsExLayered | _wsExTransparent)) == 0)
+        && (NativeMethods.GetWindowRgnBox(hwnd, out _) == _rgnError);
+
+    /// <summary>
+    /// The pixels DWM composites for the window, or an empty rectangle when the attribute is
+    /// unavailable - on which <see cref="WindowCaptureRules.PaintedBounds"/> keeps the window rectangle.
+    /// </summary>
+    private static ScreenRect ExtendedFrameBounds(IntPtr hwnd) =>
+        NativeMethods.DwmGetWindowAttribute(hwnd, _dwmwaExtendedFrameBounds, out NativeMethods.RECT frame, Marshal.SizeOf<NativeMethods.RECT>()) == 0
+            ? ToScreenRect(frame)
+            : default;
 
     private static ScreenRect VirtualScreenRect()
     {
@@ -420,8 +513,6 @@ internal sealed partial class VsControlPipeServer
     }
 
     private static ScreenRect ToScreenRect(NativeMethods.RECT rect) => new ScreenRect(rect.Left, rect.Top, rect.Right, rect.Bottom);
-
-    private static bool SameRect(NativeMethods.RECT left, NativeMethods.RECT right) => ToScreenRect(left) == ToScreenRect(right);
 
     private static JObject EncodeCapture(IntPtr hwnd, Bitmap bitmap)
     {
@@ -529,13 +620,29 @@ internal sealed partial class VsControlPipeServer
     private static HashSet<int> GetDrivableProcessIds(EnvDTE.Debugger debugger)
     {
         ThreadHelper.ThrowIfNotOnUIThread();
-        var ids = GetDebuggedProcessIds(debugger);
-        foreach (EnvDTE.Process process in debugger.DebuggedProcesses)
+
+        // One enumeration, filtering as it goes. Collecting first and subtracting Visual Studio
+        // afterwards read the live COM collection twice, and a devenv.exe present in the first read and
+        // gone from the second stayed in the set - while its process was still very much alive.
+        var ids = new HashSet<int>();
+        try
         {
-            if (IsVisualStudioImage(process.Name))
+            foreach (EnvDTE.Process process in debugger.DebuggedProcesses)
             {
-                _ = ids.Remove(process.ProcessID);
+                if (!IsVisualStudioImage(process.Name))
+                {
+                    _ = ids.Add(process.ProcessID);
+                }
             }
+        }
+        catch (COMException)
+        {
+            // A debugged process finished exiting mid-enumeration. A partial pass can only ever yield
+            // a subset of the drivable ids, so the check it feeds stays fail-closed.
+        }
+        catch (InvalidComObjectException)
+        {
+            // The debugger RCW itself has already been released.
         }
 
         return ids;
@@ -566,8 +673,12 @@ internal sealed partial class VsControlPipeServer
         }
         else
         {
-            var property = !string.IsNullOrEmpty(automationId) ? AutomationElement.AutomationIdProperty : AutomationElement.NameProperty;
-            element = root.FindFirst(TreeScope.Element | TreeScope.Descendants, new PropertyCondition(property, automationId ?? name));
+            // Both the property and the value come from the same test: an empty automationId next to a
+            // real name would otherwise search NameProperty for the empty string, which matches the
+            // first unnamed container in the window - and that is what then gets invoked or written to.
+            var byAutomationId = !string.IsNullOrEmpty(automationId);
+            var property = byAutomationId ? AutomationElement.AutomationIdProperty : AutomationElement.NameProperty;
+            element = root.FindFirst(TreeScope.Element | TreeScope.Descendants, new PropertyCondition(property, byAutomationId ? automationId : name));
         }
 
         return element ?? throw new InvalidOperationException("No matching element; use getWindowElements to see what the window contains.");
@@ -579,7 +690,7 @@ internal sealed partial class VsControlPipeServer
         var walker = TreeWalker.ControlViewWalker;
         var stack = new Stack<AutomationElement>();
         stack.Push(root);
-        while (stack.Count > 0 && budget-- > 0)
+        while (stack.Count > 0)
         {
             var element = stack.Pop();
             if (string.Equals(FormatRuntimeId(element.GetRuntimeId()), runtimeId, StringComparison.Ordinal))
@@ -587,8 +698,12 @@ internal sealed partial class VsControlPipeServer
                 return element;
             }
 
-            for (var child = walker.GetFirstChild(element); child is not null; child = walker.GetNextSibling(child))
+            // The budget is charged per sibling pushed rather than per element popped: one data-bound
+            // list with a hundred thousand children would otherwise run that many cross-process
+            // GetNextSibling calls, and grow the stack to match, before a single unit was spent.
+            for (var child = walker.GetFirstChild(element); child is not null && budget > 0; child = walker.GetNextSibling(child))
             {
+                budget--;
                 stack.Push(child);
             }
         }
@@ -605,32 +720,6 @@ internal sealed partial class VsControlPipeServer
 
         var supported = string.Join(", ", element.GetSupportedPatterns().Select(p => p.ProgrammaticName.Replace("PatternIdentifiers.Pattern", string.Empty)));
         throw new InvalidOperationException($"The element does not support '{action}'. Supported patterns: {(supported.Length == 0 ? "none" : supported)}.");
-    }
-
-    /// <summary>
-    /// The node budget for one <see cref="ElementToJson"/> walk. <see cref="Truncated"/> records that a
-    /// child was actually left out, which an exhausted budget alone does not prove: a tree that fits in
-    /// exactly <c>maxNodes</c> nodes ends at zero with nothing dropped.
-    /// </summary>
-    private sealed class ElementBudget
-    {
-        public ElementBudget(int nodes) => Remaining = nodes;
-
-        public int Remaining { get; private set; }
-
-        public bool Truncated { get; private set; }
-
-        public bool TryTake()
-        {
-            if (Remaining <= 0)
-            {
-                Truncated = true;
-                return false;
-            }
-
-            Remaining--;
-            return true;
-        }
     }
 
     // Live (Current) reads rather than a CacheRequest: TreeWalker.GetFirstChild/GetNextSibling do not
@@ -674,28 +763,41 @@ internal sealed partial class VsControlPipeServer
         if (element.TryGetCurrentPattern(ValuePattern.Pattern, out var value))
         {
             actions.Add("setValue");
-            var text = ((ValuePattern)value).Current.Value ?? string.Empty;
-            node["value"] = text.Length > _maxElementValueChars ? text.Substring(0, _maxElementValueChars) + "…" : text;
+            node["value"] = CapValue(((ValuePattern)value).Current.Value);
         }
 
         if (current.IsKeyboardFocusable) actions.Add("focus");
         node["actions"] = actions;
 
-        if (depth < maxDepth)
+        var walker = TreeWalker.ControlViewWalker;
+        if (depth >= maxDepth)
         {
-            var children = new JArray();
-            var walker = TreeWalker.ControlViewWalker;
-            for (var child = walker.GetFirstChild(element); child is not null; child = walker.GetNextSibling(child))
+            // truncated:false is the agent's only proof that the tree is complete, so children the
+            // depth clamp drops have to be recorded as plainly as budget-dropped ones; otherwise a
+            // window deeper than maxDepth reports a complete tree missing every deeper control. The
+            // flag is monotonic, so once it is set the cross-process probe is pure cost.
+            if (!budget.Truncated && walker.GetFirstChild(element) is not null)
             {
-                if (!budget.TryTake())
-                {
-                    break;
-                }
-
-                children.Add(ElementToJson(child, depth + 1, maxDepth, budget));
+                budget.MarkTruncated();
             }
 
-            if (children.Count > 0) node["children"] = children;
+            return node;
+        }
+
+        var children = new JArray();
+        for (var child = walker.GetFirstChild(element); child is not null; child = walker.GetNextSibling(child))
+        {
+            if (!budget.TryTake())
+            {
+                break;
+            }
+
+            children.Add(ElementToJson(child, depth + 1, maxDepth, budget));
+        }
+
+        if (children.Count > 0)
+        {
+            node["children"] = children;
         }
 
         return node;
@@ -714,7 +816,7 @@ internal sealed partial class VsControlPipeServer
         };
 
         if (element.TryGetCurrentPattern(TogglePattern.Pattern, out var toggle)) json["toggleState"] = ((TogglePattern)toggle).Current.ToggleState.ToString();
-        if (element.TryGetCurrentPattern(ValuePattern.Pattern, out var value)) json["value"] = ((ValuePattern)value).Current.Value;
+        if (element.TryGetCurrentPattern(ValuePattern.Pattern, out var value)) json["value"] = CapValue(((ValuePattern)value).Current.Value);
         if (element.TryGetCurrentPattern(SelectionItemPattern.Pattern, out var selection)) json["isSelected"] = ((SelectionItemPattern)selection).Current.IsSelected;
         if (element.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out var expand)) json["expandCollapseState"] = ((ExpandCollapsePattern)expand).Current.ExpandCollapseState.ToString();
         return json;
@@ -726,6 +828,17 @@ internal sealed partial class VsControlPipeServer
         controlType?.ProgrammaticName.Replace("ControlType.", string.Empty) ?? "Unknown";
 
     private static JValue NullIfEmpty(string? value) => string.IsNullOrEmpty(value) ? JValue.CreateNull() : new JValue(value);
+
+    /// <summary>
+    /// Bounds an element's value before it goes on the wire. The content is the debuggee's - unbounded
+    /// and attacker-influenced - and every successful invoke/setValue response echoes the value of the
+    /// control it touched.
+    /// </summary>
+    private static string CapValue(string? value)
+    {
+        var text = value ?? string.Empty;
+        return text.Length > _maxElementValueChars ? text.Substring(0, _maxElementValueChars) + "…" : text;
+    }
 
     private static JObject RectToJson(System.Windows.Rect rect) => rect.IsEmpty
         ? new JObject()
@@ -820,5 +933,19 @@ internal sealed partial class VsControlPipeServer
 
         [DllImport("dwmapi.dll")]
         public static extern int DwmGetWindowAttribute(IntPtr hWnd, int attribute, out int value, int size);
+
+        /// <summary>The RECT-valued attributes; <c>DWMWA_EXTENDED_FRAME_BOUNDS</c> is the only one read.</summary>
+        [DllImport("dwmapi.dll")]
+        public static extern int DwmGetWindowAttribute(IntPtr hWnd, int attribute, out RECT value, int size);
+
+        /// <summary>GetWindowLongW, not GetWindowLongPtrW: GWL_EXSTYLE is a 32-bit value on both
+        /// architectures, and only the pointer-sized indices need the Ptr entry point.</summary>
+        [DllImport("user32.dll", EntryPoint = "GetWindowLongW")]
+        public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+        /// <summary>Returns the region type - <c>RGN_ERROR</c> when the window has no region - without
+        /// the scratch HRGN <c>GetWindowRgn</c> would need.</summary>
+        [DllImport("user32.dll")]
+        public static extern int GetWindowRgnBox(IntPtr hWnd, out RECT lprc);
     }
 }
