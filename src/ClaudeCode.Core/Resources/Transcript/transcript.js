@@ -1,45 +1,28 @@
 // Renders the chat transcript inside the WebView2 host. Message content (model output, tool
-// output) is untrusted: markdown-it never emits raw HTML (html:false) and everything still goes
-// through DOMPurify before it touches the DOM. No inline event handlers are ever used - all
-// interaction is wired via addEventListener in this file so CSP's script-src 'self' is enough.
+// output) is untrusted: markdown-it never emits raw HTML (html:false) and every markup string
+// goes through DOMPurify before it touches the DOM. No inline event handlers are ever used - all
+// interaction is wired via addEventListener so CSP's script-src 'self' is enough. Sanitizing,
+// highlighting, theming and link handling are shared with plan.js via transcript-common.js.
 (function () {
   "use strict";
 
+  var common = window.claudeTranscriptCommon;
   var md = window.markdownit({ html: false, linkify: true, breaks: false });
   var root = document.getElementById("transcript");
-
-  function notifyHost(type, data) {
-    if (window.chrome && window.chrome.webview) {
-      window.chrome.webview.postMessage(Object.assign({ type: type }, data || {}));
-    }
-  }
 
   function isAtBottom() {
     var doc = document.scrollingElement || document.documentElement;
     return doc.scrollTop + window.innerHeight >= doc.scrollHeight - 4;
   }
 
-  function highlightWithin(container) {
-    var blocks = container.querySelectorAll("pre code");
-    for (var i = 0; i < blocks.length; i++) {
-      try {
-        window.hljs.highlightElement(blocks[i]);
-      } catch (err) {
-        // Best-effort: a highlight failure must never block the transcript from rendering.
-      }
-    }
-  }
-
   function renderMarkdown(text) {
-    var raw = md.render(text || "");
-    // DOMPurify.sanitize() has already run (default allow-list: strips <script>, on*, javascript:
-    // URLs, etc.) - this innerHTML assignment is exactly DOMPurify's documented usage pattern, not
-    // a raw/unsanitized write.
-    var clean = window.DOMPurify.sanitize(raw, { ADD_ATTR: [] });
     var div = document.createElement("div");
     div.className = "content";
-    div.innerHTML = clean;
-    highlightWithin(div);
+    // DOMPurify (html profile, no data attributes) is the last thing this markup passes through
+    // before the innerHTML assignment - markdown-it already ran with html:false, so this is the
+    // second layer rather than the only one. Exactly DOMPurify's documented usage pattern.
+    div.innerHTML = window.DOMPurify.sanitize(md.render(text || ""), common.purifyConfig);
+    common.highlightWithin(div);
     return div;
   }
 
@@ -68,12 +51,19 @@
 
   // Auto-detection is resolved once per diff instead of once per line: highlightAuto() runs every
   // candidate grammar, so detecting per line costs orders of magnitude more on a large diff and
-  // can even settle on a different language for each line.
+  // can even settle on a different language for each line. The sample is bounded in characters as
+  // well as lines because highlightAuto()'s cost is quadratic in the length of a *single* line
+  // (see maxHighlightChars in transcript-common.js) and diff text is untrusted agent output - a
+  // 40-line cap alone does not stop one minified/base64 line from hanging the renderer.
+  var maxDetectChars = 3000;
+
   function detectDiffLanguage(lines) {
     var sample = [];
-    for (var i = 0; i < lines.length && sample.length < 40; i++) {
+    var budget = maxDetectChars;
+    for (var i = 0; i < lines.length && sample.length < 40 && budget > 0; i++) {
       if (lines[i].kind !== "Hunk" && lines[i].text) {
-        sample.push(lines[i].text);
+        sample.push(lines[i].text.slice(0, budget));
+        budget -= lines[i].text.length;
       }
     }
 
@@ -120,7 +110,7 @@
           // result still goes through DOMPurify - same trust boundary as buildPlainBody - so a
           // grammar escaping flaw can't turn untrusted diff text into DOM injection.
           codeEl.innerHTML = window.DOMPurify.sanitize(
-            window.hljs.highlight(text, { language: language, ignoreIllegals: true }).value, { ADD_ATTR: [] });
+            window.hljs.highlight(text, { language: language, ignoreIllegals: true }).value, common.purifyConfig);
         } catch (err) {
           codeEl.textContent = text;
         }
@@ -169,7 +159,7 @@
         // hljs escapes the source itself before wrapping tokens (see buildDiffBody); the result is
         // still passed through DOMPurify so only its <span class="hljs-*"> markup can reach the DOM.
         codeEl.innerHTML = window.DOMPurify.sanitize(
-          window.hljs.highlight(source, { language: language, ignoreIllegals: true }).value, { ADD_ATTR: [] });
+          window.hljs.highlight(source, { language: language, ignoreIllegals: true }).value, common.purifyConfig);
       } catch (err) {
         codeEl.textContent = source;
       }
@@ -239,9 +229,11 @@
     var header = document.createElement("div");
     header.className = "tool-header";
     header.setAttribute("role", "button");
+    header.setAttribute("aria-expanded", String(!card.classList.contains("collapsed")));
     header.tabIndex = 0;
     function toggle() {
       card.classList.toggle("collapsed");
+      header.setAttribute("aria-expanded", String(!card.classList.contains("collapsed")));
       if (toolId) {
         if (card.classList.contains("collapsed")) delete expandedToolCalls[toolId];
         else expandedToolCalls[toolId] = true;
@@ -429,6 +421,12 @@
     var wrap = document.createElement("div");
     var isUser = message.role === "User" || message.role === "user";
     wrap.className = "msg " + (isUser ? "msg-user" : "msg-assistant");
+    // #transcript is a polite live region, and the incremental renderer replaces the in-flight
+    // message node wholesale ~5x/s - a removal plus an addition, which makes assistive technology
+    // restart the announcement of the whole growing message on every tick. An unfinished message
+    // opts out; the rebuild that carries durationSeconds opts back in, so it is announced once,
+    // complete. User messages have no duration and never need announcing - the user wrote them.
+    wrap.setAttribute("aria-live", typeof message.durationSeconds === "number" ? "polite" : "off");
     var parts = message.parts || [];
 
     if (isUser) {
@@ -688,15 +686,6 @@
     }
   }
 
-  function applyTheme(vars) {
-    var style = document.documentElement.style;
-    for (var key in vars) {
-      if (Object.prototype.hasOwnProperty.call(vars, key)) {
-        style.setProperty(key, vars[key]);
-      }
-    }
-  }
-
   function setFontSize(px) {
     document.documentElement.style.setProperty("--chat-font-size", px + "px");
   }
@@ -709,77 +698,17 @@
     function (e) {
       if (e.ctrlKey) {
         e.preventDefault();
-        notifyHost("zoom", { delta: e.deltaY });
+        common.notifyHost("zoom", { delta: e.deltaY });
       }
     },
     { passive: false }
   );
 
-  // An in-document fragment ("[Jump](#architecture)") has to be handled here: preventDefault()
-  // already suppressed native anchor navigation, and the host rejects a non-absolute URI, so
-  // forwarding it would silently drop the click. markdown-it emits no heading ids, hence the
-  // slug fallback over the rendered headings.
-  function scrollToFragment(href) {
-    var raw = href.slice(1);
-    if (!raw) {
-      window.scrollTo(0, 0);
-      return;
-    }
-
-    var id = raw;
-    try {
-      id = decodeURIComponent(raw);
-    } catch (err) {
-      // Malformed escape - match against the literal fragment instead.
-    }
-
-    var target = document.getElementById(id) || headingForSlug(id);
-    if (target) {
-      target.scrollIntoView({ block: "start" });
-    }
-  }
-
-  // GitHub-style heading slug: lowercase, drop punctuation, one hyphen per whitespace character
-  // (so "Design & Rollout" is "#design--rollout", the anchor an agent will have written).
-  function slugify(text) {
-    return text.toLowerCase().trim().replace(/[^\w\- ]+/g, "").replace(/\s/g, "-");
-  }
-
-  function headingForSlug(slug) {
-    var wanted = slugify(slug);
-    var headings = root.querySelectorAll("h1, h2, h3, h4, h5, h6");
-    for (var i = 0; i < headings.length; i++) {
-      if (slugify(headings[i].textContent || "") === wanted) {
-        return headings[i];
-      }
-    }
-
-    return null;
-  }
-
-  document.addEventListener("click", function (e) {
-    var anchor = e.target && e.target.closest ? e.target.closest("a") : null;
-    if (!anchor) {
-      return;
-    }
-
-    e.preventDefault();
-    var href = anchor.getAttribute("href");
-    if (!href) {
-      return;
-    }
-
-    if (href.charAt(0) === "#") {
-      scrollToFragment(href);
-      return;
-    }
-
-    notifyHost("openLink", { url: href });
-  });
+  common.installLinkHandler(root);
 
   window.claudeTranscript = {
     render: render,
-    applyTheme: applyTheme,
+    applyTheme: common.applyTheme,
     setFontSize: setFontSize,
   };
 })();

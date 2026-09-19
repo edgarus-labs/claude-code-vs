@@ -4,15 +4,17 @@
 <meta charset="utf-8" />
 <!-- Implementation-plan document: local page only, same CSP/sanitizing rules as index.html. -->
 <meta http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src data:; connect-src 'none';" />
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none';" />
 <link rel="stylesheet" href="transcript.css" />
 <link rel="stylesheet" href="plan.css" />
 </head>
 <body>
 <article id="plan" class="plan-doc"></article>
+<!-- Vendored, pinned: markdown-it 14.3.2, DOMPurify 3.4.15, highlight.js 11.10.0 (see index.html). -->
 <script src="vendor/markdown-it.min.js"></script>
 <script src="vendor/purify.min.js"></script>
 <script src="vendor/highlight.min.js"></script>
+<script src="transcript-common.js"></script>
 <script src="plan.js"></script>
 </body>
 </html>
