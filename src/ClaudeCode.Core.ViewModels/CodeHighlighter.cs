@@ -36,13 +36,29 @@ public readonly struct CodeToken
 /// </summary>
 public static class CodeHighlighter
 {
-    // Ordered so string/comment matches win over a keyword that happens to appear inside one.
-    private static readonly Regex _tokenPattern = new Regex(
-        @"(?<comment>//.*$|#.*$|--.*$)" +
+    // Everything after the (language-specific) comment alternative. Ordered so string/comment
+    // matches win over a keyword that happens to appear inside one.
+    private const string NonCommentAlternatives =
         @"|(?<string>""(?:[^""\\\r\n]|\\.)*""|'(?:[^'\\\r\n]|\\.)*'|`(?:[^`\\\r\n]|\\.)*`)" +
         @"|(?<number>\b0[xX][0-9a-fA-F]+\b|\b\d+(?:\.\d+)?\b)" +
-        @"|(?<word>[A-Za-z_][A-Za-z0-9_]*)",
-        RegexOptions.Compiled | RegexOptions.Multiline);
+        @"|(?<word>[A-Za-z_][A-Za-z0-9_]*)";
+
+    // TokenizeLine runs synchronously on the UI thread over model output up to
+    // MarkdownSafetyLimits.MaxMarkdownLength characters; a pathological line must hit a deadline
+    // instead of stalling the IDE.
+    private static readonly TimeSpan _matchTimeout = TimeSpan.FromSeconds(1);
+
+    // One pattern per line-comment marker: a marker that is not this language's comment (C#'s
+    // "x--", bash's "--flag", CSS's "--var") must not match at all, because a rejected match would
+    // still have consumed the rest of the line and dropped every token after it.
+    private static readonly Regex _slashCommentPattern = CreateTokenPattern("//");
+    private static readonly Regex _hashCommentPattern = CreateTokenPattern("#");
+    private static readonly Regex _dashCommentPattern = CreateTokenPattern("--");
+
+    private static Regex CreateTokenPattern(string commentPrefix) => new Regex(
+        @"(?<comment>" + Regex.Escape(commentPrefix) + ".*$)" + NonCommentAlternatives,
+        RegexOptions.Compiled | RegexOptions.Multiline,
+        _matchTimeout);
 
     private static readonly Dictionary<string, string> _lineCommentByLanguage = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
     {
@@ -74,55 +90,52 @@ public static class CodeHighlighter
             return Array.Empty<CodeToken>();
         }
 
-        string? commentPrefix = language is not null && _lineCommentByLanguage.TryGetValue(language.Trim(), out var prefix)
-            ? prefix
-            : null;
-
         var tokens = new List<CodeToken>();
         int cursor = 0;
-        foreach (Match match in _tokenPattern.Matches(line))
+        try
         {
-            if (match.Groups["comment"].Success && !IsRecognizedComment(match.Groups["comment"].Value, commentPrefix))
+            foreach (Match match in PatternFor(language).Matches(line))
             {
-                // Only trust a comment match for a language whose comment marker we actually know
-                // (or, unlabeled, when it starts with a marker any supported language uses) -
-                // otherwise "//" inside e.g. a URL in plain text would wrongly grey out the rest of the line.
-                continue;
-            }
+                if (match.Index > cursor)
+                {
+                    tokens.Add(new CodeToken(line.Substring(cursor, match.Index - cursor), CodeTokenKind.Plain));
+                }
 
-            if (match.Index > cursor)
-            {
-                tokens.Add(new CodeToken(line.Substring(cursor, match.Index - cursor), CodeTokenKind.Plain));
-            }
+                if (match.Groups["comment"].Success)
+                {
+                    tokens.Add(new CodeToken(match.Value, CodeTokenKind.Comment));
+                }
+                else if (match.Groups["string"].Success)
+                {
+                    tokens.Add(new CodeToken(match.Value, CodeTokenKind.String));
+                }
+                else if (match.Groups["number"].Success)
+                {
+                    tokens.Add(new CodeToken(match.Value, CodeTokenKind.Number));
+                }
+                else if (match.Groups["word"].Success && IsKeyword(match.Value))
+                {
+                    tokens.Add(new CodeToken(match.Value, CodeTokenKind.Keyword));
+                }
+                else
+                {
+                    tokens.Add(new CodeToken(match.Value, CodeTokenKind.Plain));
+                }
 
-            if (match.Groups["comment"].Success)
-            {
-                tokens.Add(new CodeToken(match.Value, CodeTokenKind.Comment));
-            }
-            else if (match.Groups["string"].Success)
-            {
-                tokens.Add(new CodeToken(match.Value, CodeTokenKind.String));
-            }
-            else if (match.Groups["number"].Success)
-            {
-                tokens.Add(new CodeToken(match.Value, CodeTokenKind.Number));
-            }
-            else if (match.Groups["word"].Success && IsKeyword(match.Value))
-            {
-                tokens.Add(new CodeToken(match.Value, CodeTokenKind.Keyword));
-            }
-            else
-            {
-                tokens.Add(new CodeToken(match.Value, CodeTokenKind.Plain));
-            }
+                cursor = match.Index + match.Length;
 
-            cursor = match.Index + match.Length;
-
-            // A line comment consumes the rest of the line; nothing after it needs tokenizing.
-            if (match.Groups["comment"].Success)
-            {
-                break;
+                // A line comment consumes the rest of the line; nothing after it needs tokenizing.
+                if (match.Groups["comment"].Success)
+                {
+                    break;
+                }
             }
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            // Highlighting is cosmetic: past the deadline show the line unhighlighted rather than
+            // keep the UI thread busy on a pathological line.
+            return new[] { new CodeToken(line, CodeTokenKind.Plain) };
         }
 
         if (cursor < line.Length)
@@ -133,16 +146,21 @@ public static class CodeHighlighter
         return tokens;
     }
 
-    private static bool IsRecognizedComment(string commentText, string? knownPrefix)
+    private static Regex PatternFor(string? language)
     {
-        if (knownPrefix is not null)
-        {
-            return commentText.StartsWith(knownPrefix, StringComparison.Ordinal);
-        }
-
         // Unlabeled fence: still honor "//" since it is unambiguous and used by the most common
         // languages pasted into chat (JS/TS/C#/Java/Go/Rust/...).
-        return commentText.StartsWith("//", StringComparison.Ordinal);
+        if (language is null || !_lineCommentByLanguage.TryGetValue(language.Trim(), out var prefix))
+        {
+            return _slashCommentPattern;
+        }
+
+        return prefix switch
+        {
+            "#" => _hashCommentPattern,
+            "--" => _dashCommentPattern,
+            _ => _slashCommentPattern,
+        };
     }
 
     private static bool IsKeyword(string word)

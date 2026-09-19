@@ -21,7 +21,7 @@ public static class MarkdownSafetyLimits
     /// </summary>
     public static string LimitMarkdownLength(string markdown, int maxLength = MaxMarkdownLength)
     {
-        if (markdown.Length <= maxLength)
+        if (string.IsNullOrEmpty(markdown) || markdown.Length <= maxLength)
         {
             return markdown;
         }
@@ -57,9 +57,26 @@ public static class MarkdownSafetyLimits
             {
                 depth++;
                 markerEnd++;
-                if (markerEnd < line.Length && line[markerEnd] == ' ')
+
+                // CommonMark: one optional space directly after '>' belongs to the marker, and a
+                // nested '>' may then be indented by up to three more spaces (four or more would
+                // open an indented code block instead, ending the marker run). Counting only the
+                // single marker space let ">  >  >  ..." report depth 1 and hand Markdig unbounded
+                // nesting, which overflows its recursive parser and kills the process.
+                if (markerEnd < line.Length && (line[markerEnd] == ' ' || line[markerEnd] == '\t'))
                 {
                     markerEnd++;
+                }
+
+                var next = markerEnd;
+                for (var extra = 0; extra < 3 && next < line.Length && (line[next] == ' ' || line[next] == '\t'); extra++)
+                {
+                    next++;
+                }
+
+                if (next < line.Length && line[next] == '>')
+                {
+                    markerEnd = next;
                 }
             }
 
@@ -134,11 +151,13 @@ public static class MarkdownSafetyLimits
 
     /// <summary>
     /// True only for absolute http/https links whose host is neither loopback nor an unspecified
-    /// IP address. IPv4-mapped IPv6 addresses are checked as IPv4 destinations.
+    /// IP address. IPv4-mapped IPv6 addresses are checked as IPv4 destinations. A null or relative
+    /// URI (Markdig hands one over for links like "docs/page.md") is never navigable.
     /// </summary>
-    public static bool IsNavigableLink(Uri uri)
+    public static bool IsNavigableLink(Uri? uri)
     {
-        if ((uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp) ||
+        if (uri is null || !uri.IsAbsoluteUri ||
+            (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp) ||
             string.IsNullOrEmpty(uri.Host) || uri.IsLoopback)
         {
             return false;

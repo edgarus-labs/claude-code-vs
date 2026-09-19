@@ -1,5 +1,6 @@
 using ClaudeCode.Core.ViewModels;
 using System;
+using System.Linq;
 using Xunit;
 
 namespace ClaudeCode.Core.Tests;
@@ -29,6 +30,14 @@ public sealed class MarkdownSafetyLimitsTests
     }
 
     [Fact]
+    public void LimitMarkdownLength_NullMarkdown_ReturnsNull()
+    {
+        // Consistent with LimitBlockquoteNesting/EnsureBlankLineBeforeFences, which pass null
+        // through instead of throwing: all three run back-to-back over the same text.
+        Assert.Null(MarkdownSafetyLimits.LimitMarkdownLength(null!));
+    }
+
+    [Fact]
     public void LimitBlockquoteNesting_AtMaxDepth_ReturnsUnchanged()
     {
         var markdown = new string('>', MarkdownSafetyLimits.MaxBlockquoteDepth) + " text";
@@ -49,6 +58,25 @@ public sealed class MarkdownSafetyLimitsTests
         Assert.EndsWith("text", result, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData(">  ")]
+    [InlineData(">   ")]
+    [InlineData(">    ")]
+    [InlineData(">\t")]
+    public void LimitBlockquoteNesting_MarkersSeparatedByExtraIndent_StillCappedAtMaxDepth(string level)
+    {
+        // CommonMark allows the marker's own space plus up to three more spaces of indentation
+        // before each nested '>', so every one of these nests one level per marker in Markdig. The
+        // cap has to count them the same way, or a deep line sails past it and overflows the
+        // parser's stack (an uncatchable StackOverflowException that kills devenv.exe).
+        var markdown = string.Concat(Enumerable.Repeat(level, MarkdownSafetyLimits.MaxBlockquoteDepth * 5)) + "text";
+
+        var result = MarkdownSafetyLimits.LimitBlockquoteNesting(markdown);
+
+        Assert.Equal(MarkdownSafetyLimits.MaxBlockquoteDepth, CountCommonMarkBlockquoteDepth(result));
+        Assert.EndsWith("text", result, StringComparison.Ordinal);
+    }
+
     // Mirrors the marker-counting rule under test: each level is '>' optionally followed by one
     // space, exactly as LimitBlockquoteNesting itself parses and re-emits markers.
     private static int CountBlockquoteDepth(string line)
@@ -62,6 +90,37 @@ public sealed class MarkdownSafetyLimitsTests
             if (position < line.Length && line[position] == ' ')
             {
                 position++;
+            }
+        }
+
+        return depth;
+    }
+
+    // CommonMark's real nesting rule, i.e. the depth Markdig will actually build: each level is
+    // '>', an optional single space belonging to the marker, then up to three spaces/tabs of
+    // indentation before the next '>' (four or more opens an indented code block instead).
+    private static int CountCommonMarkBlockquoteDepth(string line)
+    {
+        var depth = 0;
+        var position = 0;
+        while (position < line.Length && line[position] == '>')
+        {
+            depth++;
+            position++;
+            if (position < line.Length && (line[position] == ' ' || line[position] == '\t'))
+            {
+                position++;
+            }
+
+            var next = position;
+            for (var indent = 0; indent < 3 && next < line.Length && (line[next] == ' ' || line[next] == '\t'); indent++)
+            {
+                next++;
+            }
+
+            if (next < line.Length && line[next] == '>')
+            {
+                position = next;
             }
         }
 
@@ -104,6 +163,20 @@ public sealed class MarkdownSafetyLimitsTests
     public void IsNavigableLink_AcceptsRemoteIpDestinations(string target)
     {
         Assert.True(MarkdownSafetyLimits.IsNavigableLink(new Uri(target)));
+    }
+
+    [Fact]
+    public void IsNavigableLink_NullUri_ReturnsFalse()
+    {
+        Assert.False(MarkdownSafetyLimits.IsNavigableLink(null!));
+    }
+
+    [Theory]
+    [InlineData("docs/page.md")]
+    [InlineData("/etc/passwd")]
+    public void IsNavigableLink_RelativeUri_ReturnsFalse(string target)
+    {
+        Assert.False(MarkdownSafetyLimits.IsNavigableLink(new Uri(target, UriKind.Relative)));
     }
 
     [Theory]
