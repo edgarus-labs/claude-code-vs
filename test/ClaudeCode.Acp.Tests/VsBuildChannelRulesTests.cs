@@ -1,4 +1,5 @@
 using ClaudeCode.Contracts;
+using System;
 using Xunit;
 
 namespace ClaudeCode.Acp.Tests;
@@ -102,5 +103,22 @@ public sealed class VsBuildChannelRulesTests
     {
         Assert.Equal(string.Empty, VsBuildChannelRules.TakeOutputTail(null, 20));
         Assert.Equal(string.Empty, VsBuildChannelRules.TakeOutputTail(string.Empty, 20));
+    }
+
+    [Fact]
+    public void WellKnownOutputPaneGuid_TheThreeDocumentedAliases_ResolveRegardlessOfTheUiLanguage()
+    {
+        // Visual Studio localizes the built-in pane names (Debug is "Debugowanie" on a Polish VS), so
+        // the documented aliases have to reach the pane through its GUID.
+        Assert.Equal(new Guid("1BD8A850-02D1-11D1-BEE7-00A0C913D1F8"), VsBuildChannelRules.WellKnownOutputPaneGuid("Build"));
+        Assert.Equal(new Guid("FC076020-078A-11D1-A7DF-00A0C9110051"), VsBuildChannelRules.WellKnownOutputPaneGuid("debug"));
+        Assert.Equal(new Guid("3C24D581-5591-4884-A571-9FE89915CD64"), VsBuildChannelRules.WellKnownOutputPaneGuid("GENERAL"));
+    }
+
+    [Fact]
+    public void WellKnownOutputPaneGuid_AnyOtherPane_IsMatchedByNameOnly()
+    {
+        Assert.Null(VsBuildChannelRules.WellKnownOutputPaneGuid("Git"));
+        Assert.Null(VsBuildChannelRules.WellKnownOutputPaneGuid("Debugowanie"));
     }
 }

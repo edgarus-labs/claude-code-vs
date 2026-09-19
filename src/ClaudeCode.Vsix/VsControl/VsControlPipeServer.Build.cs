@@ -18,6 +18,7 @@ internal sealed partial class VsControlPipeServer
 {
     private const int _defaultOutputChars = 20_000;
     private const int _maxOutputChars = 200_000;
+    private const int _maxBuildErrorRows = 1_000;
 
     // The server-side backstop that keeps a build Visual Studio never reports completion for from
     // wedging the single sequential request loop for the rest of the session. It sits deliberately
@@ -166,12 +167,21 @@ internal sealed partial class VsControlPipeServer
         var items = await GetErrorListItemsAsync();
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
         var errors = new JArray();
+        var truncated = false;
         foreach (var item in items)
         {
             var severity = ErrorLevelToSeverity(item.ErrorLevel);
             if (!string.IsNullOrEmpty(severityFilter) && !string.Equals(severity, severityFilter, StringComparison.OrdinalIgnoreCase))
             {
                 continue;
+            }
+
+            // Every row costs several UI-thread COM reads and a slice of one response line; a
+            // 10 000-warning Error List is neither readable nor useful to the agent in one reply.
+            if (errors.Count >= _maxBuildErrorRows)
+            {
+                truncated = true;
+                break;
             }
 
             errors.Add(new JObject
@@ -185,7 +195,7 @@ internal sealed partial class VsControlPipeServer
             });
         }
 
-        return new JObject { ["errors"] = errors };
+        return new JObject { ["errors"] = errors, ["truncated"] = truncated };
     }
 
     /// <summary>Reads (or clears) one Output window pane. The Debug pane carries the debugged app's
@@ -197,6 +207,10 @@ internal sealed partial class VsControlPipeServer
         var clear = args["clear"]?.Value<bool?>() ?? false;
         var maxChars = VsBuildChannelRules.ClampOutputChars(args["maxChars"]?.Value<int?>(), _defaultOutputChars, _maxOutputChars);
 
+        // The three documented aliases also match by GUID: Visual Studio localizes the built-in pane
+        // names, so on a Polish or German install neither the default Debug pane nor `pane: "Build"`
+        // has the name the protocol documents.
+        var wellKnownGuid = VsBuildChannelRules.WellKnownOutputPaneGuid(paneName!);
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
         var dte = await VS.GetRequiredServiceAsync<DTE, DTE2>();
         var panes = dte.ToolWindows.OutputWindow.OutputWindowPanes;
@@ -205,7 +219,8 @@ internal sealed partial class VsControlPipeServer
         foreach (OutputWindowPane candidate in panes)
         {
             available.Add(candidate.Name);
-            if (string.Equals(candidate.Name, paneName, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(candidate.Name, paneName, StringComparison.OrdinalIgnoreCase)
+                || (wellKnownGuid.HasValue && Guid.TryParse(candidate.Guid, out var candidateGuid) && candidateGuid == wellKnownGuid.Value))
             {
                 pane = candidate;
             }

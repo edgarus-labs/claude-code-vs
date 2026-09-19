@@ -531,20 +531,25 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         {
             dte.ExecuteCommand(commandName, commandArgs);
         }
-        catch (COMException ex) when (ex.HResult == _rpcServerCallRetryLaterHResult)
+        catch (COMException ex)
         {
-            throw new InvalidOperationException("Visual Studio is busy, try again.");
-        }
-        catch (COMException)
-        {
-            // Swallow the raw COM/HRESULT text (e.g. "Exception from HRESULT: 0x80010001") - it is
-            // meaningless to the agent on the other end of the pipe and can leak host implementation
-            // detail; a flat, actionable message is all a tool caller needs.
-            throw new InvalidOperationException($"Command '{commandName}' could not be executed.");
+            throw ActionableDteError(ex, $"Command '{commandName}' could not be executed.");
         }
 
         return new JObject();
     }
+
+    /// <summary>
+    /// The error a failed synchronous DTE call is reported as. Raw COM/HRESULT text ("Exception from
+    /// HRESULT: 0x80010001") is meaningless to the agent on the other end of the pipe and can leak
+    /// host implementation detail, so it is replaced with a flat, actionable message; the one
+    /// HRESULT that is not a real failure - Visual Studio rejecting the call because it is busy with
+    /// another automation call or a modal dialog - is reported as a retry instead.
+    /// </summary>
+    private static InvalidOperationException ActionableDteError(COMException error, string failureMessage) =>
+        error.HResult == _rpcServerCallRetryLaterHResult
+            ? new InvalidOperationException("Visual Studio is busy, try again.")
+            : new InvalidOperationException(failureMessage);
 
     private async Task<JObject> AddFileToProjectAsync(JObject args)
     {
@@ -580,7 +585,16 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
             throw new InvalidOperationException("No solution is open.");
         }
 
-        var project = solution.AddFromFile(fullPath, Exclusive: false);
+        EnvDTE.Project? project;
+        try
+        {
+            project = solution.AddFromFile(fullPath, Exclusive: false);
+        }
+        catch (COMException ex)
+        {
+            throw ActionableDteError(ex, $"'{path}' could not be added to the solution; check that it is a project type this Visual Studio can load and that no dialog is open.");
+        }
+
         return new JObject { ["name"] = project?.Name, ["path"] = fullPath };
     }
 
@@ -607,12 +621,20 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
 
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
         var dte = await VS.GetRequiredServiceAsync<DTE, DTE2>();
-        if (dte.Solution.IsOpen)
+        try
         {
-            dte.Solution.Close(SaveFirst: true);
+            if (dte.Solution.IsOpen)
+            {
+                dte.Solution.Close(SaveFirst: true);
+            }
+
+            dte.Solution.Open(fullPath);
+        }
+        catch (COMException ex)
+        {
+            throw ActionableDteError(ex, $"'{path}' could not be opened; check that it is a solution this Visual Studio can load and that no dialog is open.");
         }
 
-        dte.Solution.Open(fullPath);
         return await GetSolutionInfoAsync();
     }
 

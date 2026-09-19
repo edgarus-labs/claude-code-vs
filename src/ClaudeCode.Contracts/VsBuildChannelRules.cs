@@ -13,6 +13,10 @@ namespace ClaudeCode.Contracts;
 public static class VsBuildChannelRules
 {
     private static readonly char[] _directorySeparators = { '\\', '/' };
+    // EnvDTE.OutputWindowPane.Guid for the built-in panes (VSConstants.OutputWindowPaneGuid.*).
+    private static readonly Guid _buildOutputPaneGuid = new Guid("1BD8A850-02D1-11D1-BEE7-00A0C913D1F8");
+    private static readonly Guid _debugOutputPaneGuid = new Guid("FC076020-078A-11D1-A7DF-00A0C9110051");
+    private static readonly Guid _generalOutputPaneGuid = new Guid("3C24D581-5591-4884-A571-9FE89915CD64");
 
     /// <summary>
     /// Whether an Error List item belongs to the project a <c>buildProject</c> request named.
@@ -64,6 +68,33 @@ public static class VsBuildChannelRules
     public static int ClampOutputChars(int? requestedMaxChars, int defaultChars, int maxChars)
     {
         return Math.Min(maxChars, Math.Max(1, requestedMaxChars ?? defaultChars));
+    }
+
+    /// <summary>
+    /// The GUID behind one of the three Output pane aliases <c>getOutput</c> documents (Build, Debug,
+    /// General), or null for any other pane. Visual Studio's built-in pane names are localized UI
+    /// resources, so on a non-English install the documented <c>pane: "Build"</c> and the default
+    /// Debug pane match no <c>OutputWindowPane.Name</c>; the GUIDs are fixed across languages and
+    /// versions. Every other pane - Git, an extension's log - is still matched by name.
+    /// </summary>
+    public static Guid? WellKnownOutputPaneGuid(string paneName)
+    {
+        if (string.Equals(paneName, "Build", StringComparison.OrdinalIgnoreCase))
+        {
+            return _buildOutputPaneGuid;
+        }
+
+        if (string.Equals(paneName, "Debug", StringComparison.OrdinalIgnoreCase))
+        {
+            return _debugOutputPaneGuid;
+        }
+
+        if (string.Equals(paneName, "General", StringComparison.OrdinalIgnoreCase))
+        {
+            return _generalOutputPaneGuid;
+        }
+
+        return null;
     }
 
     /// <summary>
