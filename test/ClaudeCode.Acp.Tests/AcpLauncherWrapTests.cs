@@ -7,7 +7,9 @@ namespace ClaudeCode.Acp.Tests;
 
 public sealed class AcpLauncherWrapTests : IDisposable
 {
-    private readonly string _root = Path.Combine(Path.GetTempPath(), "claude acp & %launcher% " + Guid.NewGuid().ToString("N"));
+    // A space in the path is the part that matters here; Wrap performs no shell quoting or
+    // environment expansion, so the name no longer implies coverage of either.
+    private readonly string _root = Path.Combine(Path.GetTempPath(), "claude acp launcher " + Guid.NewGuid().ToString("N"));
 
     [Theory]
     [InlineData(false)]

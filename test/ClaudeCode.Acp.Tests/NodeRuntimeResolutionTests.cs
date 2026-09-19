@@ -5,9 +5,18 @@ using Xunit;
 
 namespace ClaudeCode.Acp.Tests;
 
+/// <summary>Both classes in this collection call <see cref="Directory.SetCurrentDirectory(string)"/>,
+/// which is process-wide: xUnit's default one-collection-per-class parallelism would let one class
+/// capture another's temporary root as its "original" directory and restore it afterwards.</summary>
+[CollectionDefinition("Process current directory", DisableParallelization = true)]
+public sealed class ProcessCurrentDirectoryScope
+{
+}
+
 /// <summary>Covers <see cref="AcpExecutableResolver.FindNodeOnPath(string?)"/>, the single trusted
 /// PATH search for a Node runtime. It is shared by the ACP adapter launch and by the usage helper
 /// in ClaudeCode.Vsix, which previously carried its own untested copy of the same filter.</summary>
+[Collection("Process current directory")]
 public sealed class NodeRuntimeResolutionTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "claude node & %path% " + Guid.NewGuid().ToString("N"));

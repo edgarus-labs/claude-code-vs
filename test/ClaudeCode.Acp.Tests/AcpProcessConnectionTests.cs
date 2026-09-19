@@ -1,6 +1,7 @@
 using ClaudeCode.Contracts;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.IO.Pipelines;
 using System.Reflection;
 using System.Text.Json.Nodes;
@@ -298,6 +299,59 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         JsonObject response = await ReadResponseWithIdAsync(_toAgent.Reader, 22);
         Assert.Null(response["result"]);
         Assert.Equal(-32602, response["error"]!["code"]!.GetValue<int>());
+    }
+
+    [Fact]
+    public async Task InboundElicitationCreateRequest_RequestScopedForm_RespondsWithInvalidParamsNotInternalError()
+    {
+        // ACP's request scope (`requestId` instead of `sessionId`, for prompts raised before any
+        // session exists) is spec-valid; this client has no surface for it. -32602 names the
+        // unsupported scope so a conforming agent can fall back, where reporting a missing required
+        // field gives the agent a generic -32603 "Internal error" - "the client is broken".
+        _connection.ElicitationRequested += (_, e) =>
+            e.Response.TrySetResult(new ElicitationAnswer(ElicitationAction.Accept, new Dictionary<string, IReadOnlyList<string>>()));
+
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer, JsonNode.Parse("""
+            {"jsonrpc":"2.0","id":23,"method":"elicitation/create","params":{
+              "mode":"form","requestId":"r1","message":"Pick one",
+              "requestedSchema":{"type":"object","properties":{}}
+            }}
+            """)!.ToJsonString());
+
+        JsonObject response = await ReadResponseWithIdAsync(_toAgent.Reader, 23);
+        Assert.Null(response["result"]);
+        Assert.Equal(-32602, response["error"]!["code"]!.GetValue<int>());
+    }
+
+    [Fact]
+    public async Task InboundElicitationCreateRequest_NonStringTypedField_IsOmittedInsteadOfAnsweredWithAJsonString()
+    {
+        // ACP's ElicitationPropertySchema also covers boolean/number/integer. Those render as free
+        // text here, but answering {"type":"boolean"} with the JSON string "true" violates the very
+        // schema the agent published, so the field must come back unanswered.
+        var received = new TaskCompletionSource<ElicitationRequestEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _connection.ElicitationRequested += (_, e) => received.TrySetResult(e);
+
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer, JsonNode.Parse("""
+            {"jsonrpc":"2.0","id":24,"method":"elicitation/create","params":{
+              "mode":"form","sessionId":"s1","message":"Confirm",
+              "requestedSchema":{"type":"object","properties":{
+                "agree":{"type":"boolean","title":"Agree"},
+                "note":{"type":"string","title":"Note"}
+              }}
+            }}
+            """)!.ToJsonString());
+
+        ElicitationRequestEventArgs args = await received.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        args.Response.TrySetResult(new ElicitationAnswer(ElicitationAction.Accept, new Dictionary<string, IReadOnlyList<string>>
+        {
+            ["agree"] = new[] { "true" },
+            ["note"] = new[] { "looks good" },
+        }));
+
+        JsonObject response = await ReadResponseWithIdAsync(_toAgent.Reader, 24);
+        Assert.Null(response["result"]!["content"]!["agree"]);
+        Assert.Equal("looks good", response["result"]!["content"]!["note"]!.GetValue<string>());
     }
 
     [Fact]
@@ -1047,7 +1101,9 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         // The agent's stdout closes - the form can never be answered, so it must not stay open forever.
         _fromAgent.Writer.Complete();
 
-        await Assert.ThrowsAnyAsync<Exception>(() => captured!.Response.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        // A TimeoutException from WaitAsync would mean the form is still pending - the exact bug
+        // this covers - so the disconnect cause itself has to be the assertion.
+        await Assert.ThrowsAsync<IOException>(() => captured!.Response.Task.WaitAsync(TimeSpan.FromSeconds(5)));
     }
 
     [Fact]
@@ -1075,14 +1131,53 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
     }
 
     [Fact]
+    public async Task SessionUpdate_ToolCallWithoutAToolCallId_DropsThatNotificationAndKeepsThePumpAlive()
+    {
+        // ParseToolCallUpdate requires `toolCallId` and runs inline on the JSON-RPC read pump, so an
+        // escaping AcpProtocolException ends the read loop and faults every in-flight request - one
+        // malformed message from the untrusted agent would kill the whole session.
+        var received = new TaskCompletionSource<SessionUpdateEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var seen = new List<SessionUpdateEventArgs>();
+        _connection.SessionUpdate += (_, update) => { seen.Add(update); received.TrySetResult(update); };
+
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer,
+            """{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call","title":"Read a.cs"}}}""");
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer,
+            """{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"still here"}}}}""");
+
+        SessionUpdateEventArgs survivor = await received.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var chunk = Assert.IsType<SessionUpdate.AgentMessageChunk>(survivor.Update);
+        Assert.Equal("still here", chunk.Text);
+        Assert.Single(seen); // the malformed tool_call was dropped, not surfaced as a default-filled call.
+    }
+
+    [Fact]
+    public async Task SessionUpdate_UsageUpdateWithANonNumericUsed_DropsTheUpdateInsteadOfReportingZeroTokens()
+    {
+        // "unknown" is not "0 used": reporting zero would draw an empty context-window bar for a
+        // window that may be nearly full.
+        var received = new TaskCompletionSource<SessionUpdateEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var seen = new List<SessionUpdateEventArgs>();
+        _connection.SessionUpdate += (_, update) => { seen.Add(update); received.TrySetResult(update); };
+
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer,
+            """{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"usage_update","used":"lots","size":200000}}}""");
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer,
+            """{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"usage_update","used":42,"size":200000}}}""");
+
+        SessionUpdateEventArgs survivor = await received.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var usage = Assert.IsType<SessionUpdate.UsageUpdate>(survivor.Update);
+        Assert.Equal(42, usage.UsedTokens);
+        Assert.Single(seen);
+    }
+
+    [Fact]
     public async Task ListSessionsAsync_RowMissingRequiredFields_SkipsThatRowInsteadOfDiscardingTheHistory()
     {
         Task<IReadOnlyList<SessionSummary>> pending = _connection.ListSessionsAsync(null, CancellationToken.None);
         JsonObject request = await ReadRequestAsync("session/list");
-        // ACP's ListSessionsRequest declares cwd as ["string","null"] and required: an unfiltered
-        // list sends an explicit null rather than omitting the key.
-        Assert.True(request["params"]!.AsObject().ContainsKey("cwd"));
-        Assert.Null(request["params"]!["cwd"]);
+        // `cwd` is optional and nullable in ACP's ListSessionsRequest; sending an explicit null for
+        // an unfiltered list is equivalent to omitting the key, so neither form is asserted here.
 
         await ReplyAsync(request, """
             {

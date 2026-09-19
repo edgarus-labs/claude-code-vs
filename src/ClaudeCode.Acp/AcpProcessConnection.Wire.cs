@@ -110,7 +110,16 @@ public sealed partial class AcpProcessConnection
             throw new AcpRemoteException(-32603, "No client handler registered for elicitation/create.");
         }
 
-        string sessionId = GetRequiredString(@params, "sessionId");
+        // ACP also allows a request-scoped form (`requestId` in place of `sessionId`) for prompts
+        // raised before any session exists. This client has no surface for one, so refuse it the way
+        // an unadvertised mode is refused: -32602 names the limitation and lets a conforming agent
+        // fall back, where AcpProtocolException would claim the client malfunctioned (-32603).
+        string? sessionId = GetOptionalString(@params, "sessionId");
+        if (sessionId is null)
+        {
+            throw new AcpRemoteException(-32602, "Only session-scoped elicitation is supported; 'sessionId' is required.");
+        }
+
         string message = GetRequiredString(@params, "message");
         var schema = RequireObject(@params["requestedSchema"], "elicitation/create.requestedSchema");
         IReadOnlyList<ElicitationField> fields = ParseElicitationFields(schema);
@@ -121,7 +130,7 @@ public sealed partial class AcpProcessConnection
         {
             handler(this, args);
             ElicitationAnswer answer = await WaitWithCancellationAsync(args.Response.Task, cancellationToken).ConfigureAwait(false);
-            return BuildElicitationResponse(answer, fields);
+            return BuildElicitationResponse(answer, fields, schema);
         }
         finally
         {
@@ -239,7 +248,7 @@ public sealed partial class AcpProcessConnection
         return result;
     }
 
-    private static JsonObject BuildElicitationResponse(ElicitationAnswer answer, IReadOnlyList<ElicitationField> fields)
+    private static JsonObject BuildElicitationResponse(ElicitationAnswer answer, IReadOnlyList<ElicitationField> fields, JsonObject schema)
     {
         string action = answer.Action switch
         {
@@ -261,12 +270,28 @@ public sealed partial class AcpProcessConnection
                 continue; // left blank - omit, rather than sending an empty string/array answer.
             }
 
+            if (field.Kind != ElicitationFieldKind.MultiSelect && !IsStringTyped(schema, field.Key))
+            {
+                // ACP's ElicitationPropertySchema also covers boolean/number/integer, which render as
+                // free text above; answering one with a JSON string would violate the very schema the
+                // agent published, so leave it unanswered rather than sending "true" for a boolean.
+                continue;
+            }
+
             content[field.Key] = field.Kind == ElicitationFieldKind.MultiSelect
                 ? new JsonArray(values.Select(value => (JsonNode)value).ToArray())
                 : values[0];
         }
 
         return new JsonObject { ["action"] = action, ["content"] = content };
+    }
+
+    private static bool IsStringTyped(JsonObject schema, string key)
+    {
+        string? type = schema["properties"] is JsonObject properties && properties[key] is JsonObject property
+            ? GetOptionalString(property, "type")
+            : null;
+        return type is null || type == "string";
     }
 
     // Awaits `task`, but also completes (with an OperationCanceledException) as soon as
@@ -325,7 +350,20 @@ public sealed partial class AcpProcessConnection
             return;
         }
 
-        SessionUpdate? update = ParseSessionUpdate(updateNode);
+        SessionUpdate? update;
+        try
+        {
+            update = ParseSessionUpdate(updateNode);
+        }
+        catch (AcpProtocolException)
+        {
+            // Parsing runs inline on the JSON-RPC read pump, and an escaping exception ends the read
+            // loop and faults every in-flight request. A tool_call without `toolCallId`, or a
+            // malformed config_option_update/available_commands_update, degrades to a dropped
+            // notification instead - the same treatment usage_update and session/list rows get.
+            return;
+        }
+
         if (update is null)
         {
             return; // sessionUpdate discriminator has no ClaudeCode.Contracts.SessionUpdate subclass (yet).
