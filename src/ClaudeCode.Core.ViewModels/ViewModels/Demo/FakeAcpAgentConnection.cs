@@ -94,6 +94,9 @@ public sealed class FakeAcpAgentConnection : IAcpAgentConnection
         return Task.CompletedTask;
     }
 
+    public Task<RemoteControlState> SetRemoteControlAsync(string sessionId, bool enabled, string? name, CancellationToken cancellationToken) =>
+        Task.FromException<RemoteControlState>(new InvalidOperationException("Remote Control is not available in the demo connection."));
+
     public event EventHandler<SessionUpdateEventArgs>? SessionUpdate;
 
     // FakeAcpAgentConnection is a scripted demo/fallback double: it never asks the client to read or

@@ -520,6 +520,29 @@ public sealed partial class ChatSessionStateTests
     }
 
     [Fact]
+    public async Task TurnEnded_SetsDurationSecondsOnTheAssistantMessage_ButNotBeforeTheTurnEnds()
+    {
+        var completed = new TaskCompletionSource<bool>();
+        var connection = new RecordingAcpAgentConnection { PromptHandler = _ => completed.Task };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "question";
+        var prompt = vm.SendAsync();
+        connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("answer"));
+
+        var assistantMessage = Assert.Single(vm.Messages, message => message.Role == ChatRole.Assistant);
+        Assert.Null(assistantMessage.DurationSeconds);
+
+        connection.RaiseSessionUpdate(new SessionUpdate.TurnEnded("end_turn"));
+
+        Assert.NotNull(assistantMessage.DurationSeconds);
+        Assert.True(assistantMessage.DurationSeconds >= 0);
+
+        completed.SetResult(true);
+        await prompt;
+    }
+
+    [Fact]
     public async Task PendingPermission_OverridesThoughtResponseAndToolActivityUntilChoice()
     {
         var completed = new TaskCompletionSource<bool>();

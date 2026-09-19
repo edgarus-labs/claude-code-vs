@@ -82,6 +82,49 @@ public static class MarkdownSafetyLimits
     }
 
     /// <summary>
+    /// Inserts a blank line before any ``` or ~~~ fence that opens directly after a non-blank line.
+    /// CommonMark only starts a fenced code block there when it follows a blank line (or the start
+    /// of the document); otherwise it is "lazy continuation" of the preceding paragraph and renders
+    /// as literal text, including the fence markers themselves. Session-resume replay text (from the
+    /// external CLI, not this extension) sometimes omits that blank line before quoting tool output,
+    /// so this compensates rather than showing the raw ``` marker to the user.
+    /// </summary>
+    public static string EnsureBlankLineBeforeFences(string markdown)
+    {
+        if (string.IsNullOrEmpty(markdown) || markdown.IndexOf("```", StringComparison.Ordinal) < 0
+            && markdown.IndexOf("~~~", StringComparison.Ordinal) < 0)
+        {
+            return markdown;
+        }
+
+        var lines = markdown.Split('\n');
+        var result = new System.Collections.Generic.List<string>(lines.Length + 4);
+        var insideFence = false;
+        foreach (var line in lines)
+        {
+            if (IsFenceMarkerLine(line))
+            {
+                if (!insideFence && result.Count > 0 && result[result.Count - 1].Trim().Length > 0)
+                {
+                    result.Add(string.Empty);
+                }
+
+                insideFence = !insideFence;
+            }
+
+            result.Add(line);
+        }
+
+        return string.Join("\n", result);
+    }
+
+    private static bool IsFenceMarkerLine(string line)
+    {
+        var trimmed = line.TrimStart();
+        return trimmed.StartsWith("```", StringComparison.Ordinal) || trimmed.StartsWith("~~~", StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// Scales the streaming re-render throttle with the current text length: short messages stay
     /// snappy at 100ms, very long ones back off up to 1000ms so re-parsing large documents on every
     /// tick cannot starve the UI thread.

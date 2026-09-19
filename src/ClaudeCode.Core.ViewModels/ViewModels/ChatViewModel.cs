@@ -28,10 +28,21 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private SessionConfigValue? _selectedEffort;
     private SessionConfigValue? _selectedMode;
     private ChatMessageViewModel? _currentAssistantMessage;
+    private DateTimeOffset? _turnStartedAt;
     private ChatMessageViewModel? _currentUserMessage;
     private bool _isHistoryOpen;
     private bool _isHistoryLoading;
     private string? _historyError;
+    private string _historyFilter = string.Empty;
+    private List<SessionSummary> _allSessionHistory = new List<SessionSummary>();
+    private string _sessionTitle = UntitledSessionTitle;
+    private long _sessionUsedTokens;
+    private long _turnStartUsedTokens;
+    private long? _turnTokens;
+    private long? _contextWindowSize;
+    private string? _explicitSessionTitle;
+    private const string UntitledSessionTitle = "Untitled";
+    private const int MaxSessionTitleLength = 80;
     private IReadOnlyList<AvailableCommand> _availableCommands = Array.Empty<AvailableCommand>();
     private Dictionary<string, IReadOnlyList<AvailableCommand>>? _pendingCommandCatalogs;
     private AvailableCommand? _selectedSlashSuggestion;
@@ -55,9 +66,16 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private TaskCompletionSourceSlot<string>? _pendingPermissionResponse;
     private ElicitationRequestViewModel? _pendingElicitation;
     private TaskCompletionSourceSlot<ElicitationAnswer>? _pendingElicitationResponse;
+    private UsageSnapshot? _usage;
+    private UsageWarningViewModel? _usageWarning;
+    private bool _usageWarningDismissed;
+    private int _lastUsageWarningPercent = -1;
+    private bool _isUsagePanelOpen;
 
     private const long MaxImageAttachmentBytes = 5L * 1024 * 1024;
     private const long MaxDocumentAttachmentBytes = 1L * 1024 * 1024;
+    private const int UsageWarningThresholdPercent = 75;
+    private static readonly TimeSpan UsagePollInterval = TimeSpan.FromMinutes(5);
 
     private static readonly IReadOnlyDictionary<string, IReadOnlyList<string>> _emptyElicitationContent =
         new Dictionary<string, IReadOnlyList<string>>();
@@ -73,7 +91,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         NewSessionCommand = new AsyncRelayCommand(NewSessionAsync, () => CanEditDraft);
         ShowHistoryCommand = new AsyncRelayCommand(ShowHistoryAsync, () => CanEditDraft);
         OpenSessionCommand = new AsyncRelayCommand<SessionSummary>(OpenSessionAsync, session => CanEditDraft && session is not null);
-        AttachActiveDocumentCommand = new AsyncRelayCommand(AttachActiveDocumentAsync, () => CanEditDraft && !_isCapturingDocument);
+        AttachActiveDocumentCommand = new AsyncRelayCommand(AttachActiveDocumentAsync, () => CanEditDraft && !_isCapturingDocument && _services.HasActiveDocument);
+        _services.ActiveDocumentChanged += OnActiveDocumentChanged;
         ApplySlashSuggestionCommand = new RelayCommand<AvailableCommand>(ApplySlashSuggestion,
             command => CanEditDraft && AreSlashSuggestionsVisible && command is not null && SlashSuggestions.Contains(command));
         RemoveAttachmentCommand = new RelayCommand<ChatAttachmentViewModel>(attachment =>
@@ -84,9 +103,24 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             }
         }, _ => CanEditDraft);
         Attachments.CollectionChanged += (_, __) => SendCommand.NotifyCanExecuteChanged();
+        AcceptAllChangesCommand = new AsyncRelayCommand(() => OnUiAsync(async () =>
+        {
+            foreach (var file in ChangedFiles.ToList()) await AcceptChangeAsync(file).ConfigureAwait(true);
+        }));
+        RejectAllChangesCommand = new AsyncRelayCommand(() => OnUiAsync(async () =>
+        {
+            foreach (var file in ChangedFiles.ToList()) await RejectChangeAsync(file).ConfigureAwait(true);
+        }));
+        OpenChangedFileCommand = new AsyncRelayCommand<ChangedFileViewModel>(file =>
+            file is null ? Task.CompletedTask : _services.OpenDocumentAsync(file.FullPath, _lifetime.Token));
+        ToggleRemoteControlCommand = new AsyncRelayCommand(ToggleRemoteControlAsync, () => CanConfigure && !_isRemoteControlBusy);
+        OpenUsagePanelCommand = new RelayCommand(() => IsUsagePanelOpen = true);
+        CloseUsagePanelCommand = new RelayCommand(() => IsUsagePanelOpen = false);
+        DismissUsageWarningCommand = new RelayCommand(DismissUsageWarning);
         _services.AuthService.StateChanged += OnAuthStateChanged;
         ApplyAuthState(_services.AuthService.CurrentState);
         Initialization = InitializeAsync();
+        _ = UsagePollingLoopAsync();
     }
 
     public ObservableCollection<ChatMessageViewModel> Messages { get; } = new ObservableCollection<ChatMessageViewModel>();
@@ -96,6 +130,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     public ObservableCollection<SessionConfigValue> AvailableModes { get; } = new ObservableCollection<SessionConfigValue>();
     public ObservableCollection<AvailableCommand> SlashSuggestions { get; } = new ObservableCollection<AvailableCommand>();
     public ObservableCollection<SessionSummary> SessionHistory { get; } = new ObservableCollection<SessionSummary>();
+    public ObservableCollection<ChangedFileViewModel> ChangedFiles { get; } = new ObservableCollection<ChangedFileViewModel>();
+    public IAsyncRelayCommand AcceptAllChangesCommand { get; }
+    public IAsyncRelayCommand RejectAllChangesCommand { get; }
+    public IAsyncRelayCommand<ChangedFileViewModel> OpenChangedFileCommand { get; }
     public IAsyncRelayCommand SendCommand { get; }
     public IAsyncRelayCommand CancelCommand { get; }
     public IAsyncRelayCommand SignInCommand { get; }
@@ -105,6 +143,82 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     public IRelayCommand<ChatAttachmentViewModel> RemoveAttachmentCommand { get; }
     public IAsyncRelayCommand AttachActiveDocumentCommand { get; }
     public IRelayCommand<AvailableCommand> ApplySlashSuggestionCommand { get; }
+    public IAsyncRelayCommand ToggleRemoteControlCommand { get; }
+    public IRelayCommand OpenUsagePanelCommand { get; }
+
+    private bool _isRemoteControlEnabled;
+    private bool _isRemoteControlBusy;
+    private string? _remoteControlUrl;
+
+    /// <summary>True while the current session can be driven from claude.ai/code.</summary>
+    public bool IsRemoteControlEnabled
+    {
+        get => _isRemoteControlEnabled;
+        private set => SetProperty(ref _isRemoteControlEnabled, value);
+    }
+
+    public bool IsRemoteControlBusy
+    {
+        get => _isRemoteControlBusy;
+        private set
+        {
+            if (SetProperty(ref _isRemoteControlBusy, value)) ToggleRemoteControlCommand.NotifyCanExecuteChanged();
+        }
+    }
+
+    /// <summary>Link to this session on claude.ai/code while Remote Control is on.</summary>
+    public string? RemoteControlUrl
+    {
+        get => _remoteControlUrl;
+        private set => SetProperty(ref _remoteControlUrl, value);
+    }
+
+    public Task ToggleRemoteControlAsync() => OnUiAsync(() => SetRemoteControlAsync(!IsRemoteControlEnabled));
+
+    private async Task SetRemoteControlAsync(bool enabled)
+    {
+        var connection = _connection;
+        var sessionId = _sessionId;
+        if (connection is null || sessionId is null || _isRemoteControlBusy || _disposed) return;
+        IsRemoteControlBusy = true;
+        try
+        {
+            var state = await connection.SetRemoteControlAsync(sessionId, enabled, RemoteControlSessionName, _lifetime.Token).ConfigureAwait(true);
+            if (_disposed || !ReferenceEquals(connection, _connection) || sessionId != _sessionId) return;
+            IsRemoteControlEnabled = state.Enabled;
+            RemoteControlUrl = state.Enabled ? state.SessionUrl : null;
+            StatusMessage = null;
+        }
+        catch (OperationCanceledException) when (_disposed) { }
+        catch (Exception ex)
+        {
+            if (!_disposed) StatusMessage = $"Remote Control: {ex.Message}";
+        }
+        finally
+        {
+            IsRemoteControlBusy = false;
+        }
+    }
+
+    private string RemoteControlSessionName
+    {
+        get
+        {
+            var root = _services.WorkspaceRoot?.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var name = string.IsNullOrEmpty(root) ? null : Path.GetFileName(root);
+            return "Visual Studio · " + (string.IsNullOrEmpty(name) ? "workspace" : name);
+        }
+    }
+
+    // A new or resumed session starts with Remote Control off; the option turns it on right away.
+    private void OnSessionStarted()
+    {
+        IsRemoteControlEnabled = false;
+        RemoteControlUrl = null;
+        if (_services.RemoteControlAtStartup) _ = SetRemoteControlAsync(true);
+    }
+    public IRelayCommand CloseUsagePanelCommand { get; }
+    public IRelayCommand DismissUsageWarningCommand { get; }
     public Task Initialization { get; }
 
     public string InputText
@@ -152,11 +266,17 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     }
 
     private bool CanEditDraft => !_disposed && !NeedsAuthentication && !IsConnecting && !IsBusy && !IsConfigBusy;
-    public bool CanConfigure => CanEditDraft && !_isCapturingDocument && _sessionId is not null;
+    // Deliberately does not require !IsBusy: SetSessionConfigOptionAsync is its own ACP RPC call
+    // over the same JSON-RPC connection as an in-flight prompt, which already supports concurrent
+    // in-flight requests (matched by request id) - there's no protocol reason model/mode/effort
+    // can't change mid-turn, and other clients (the reference VS Code extension, the CLI) let you.
+    public bool CanConfigure => !_disposed && !NeedsAuthentication && !IsConnecting && !IsConfigBusy &&
+        !_isCapturingDocument && _sessionId is not null;
     public bool HasEffort => AvailableEfforts.Count > 0;
     public bool HasModes => AvailableModes.Count > 0;
     public string ActiveModelName => _selectedModel?.Name ?? "Model unavailable";
     public string ActiveEffortName => _selectedEffort?.Name ?? string.Empty;
+    public string ModelEffortLabel => HasEffort && ActiveEffortName.Length > 0 ? ActiveModelName + " · " + ActiveEffortName : ActiveModelName;
     public string ActiveModeName => _selectedMode?.Name ?? "Mode unavailable";
 
     public SessionConfigValue? SelectedModel
@@ -207,7 +327,180 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         private set => SetProperty(ref _historyError, value);
     }
 
+    public string SessionTitle
+    {
+        get => _sessionTitle;
+        private set => SetProperty(ref _sessionTitle, value);
+    }
+
+    /// <summary>Tokens consumed so far by the in-flight turn (delta of the agent's usage_update since
+    /// the prompt was sent), or null until the agent reports usage.</summary>
+    public long? TurnTokens
+    {
+        get => _turnTokens;
+        private set => SetProperty(ref _turnTokens, value);
+    }
+
+    public long SessionUsedTokens => _sessionUsedTokens;
+
+    public long? ContextWindowSize => _contextWindowSize;
+
+    /// <summary>How full the context window is, 0–100, or null until the agent reports both numbers.</summary>
+    public int? ContextUsagePercent => _contextWindowSize is long size && size > 0
+        ? (int)Math.Min(100, Math.Round(100.0 * _sessionUsedTokens / size))
+        : null;
+
+    public string ContextUsageLabel => _contextWindowSize is long size && size > 0
+        ? $"Context: {FormatTokens(_sessionUsedTokens)} / {FormatTokens(size)} ({ContextUsagePercent}%)"
+        : "Context usage unknown";
+
+    private static string FormatTokens(long count) =>
+        count < 1000 ? count.ToString(System.Globalization.CultureInfo.InvariantCulture)
+        : count < 1_000_000 ? (count / 1000.0).ToString(count < 10_000 ? "0.#" : "0", System.Globalization.CultureInfo.InvariantCulture) + "k"
+        : (count / 1_000_000.0).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + "M";
+
+    private void UpdateSessionTitleFromFirstUserMessage()
+    {
+        if (_explicitSessionTitle is not null || Messages.Count == 0 || Messages[0].Role != ChatRole.User) return;
+        var firstLine = Messages[0].Text.Split('\n').Select(line => line.Trim()).FirstOrDefault(line => line.Length > 0) ?? string.Empty;
+        if (firstLine.Length == 0) return;
+        SessionTitle = firstLine.Length > MaxSessionTitleLength ? firstLine.Substring(0, MaxSessionTitleLength - 1) + "…" : firstLine;
+    }
+
+    public string HistoryFilter
+    {
+        get => _historyFilter;
+        set
+        {
+            if (SetProperty(ref _historyFilter, value ?? string.Empty)) RefreshHistoryFilter();
+        }
+    }
+
     public void CloseHistory() => RunOnUi(() => IsHistoryOpen = false);
+
+    private void RefreshHistoryFilter()
+    {
+        var filter = _historyFilter.Trim();
+        SessionHistory.Clear();
+        foreach (var session in _allSessionHistory)
+        {
+            if (filter.Length == 0
+                || (session.Title?.IndexOf(filter, StringComparison.OrdinalIgnoreCase) ?? -1) >= 0
+                || session.SessionId.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                SessionHistory.Add(session);
+            }
+        }
+    }
+
+    private async Task UsagePollingLoopAsync()
+    {
+        while (!_lifetime.IsCancellationRequested)
+        {
+            try
+            {
+                UsageSnapshot? snapshot = await _services.UsageService.GetUsageAsync(_lifetime.Token).ConfigureAwait(false);
+                if (snapshot is not null)
+                {
+                    RunOnUi(() => ApplyUsageSnapshot(snapshot));
+                }
+            }
+            catch (OperationCanceledException) when (_disposed || _lifetime.IsCancellationRequested)
+            {
+                return;
+            }
+            catch
+            {
+                // Usage is best-effort presentation, never allowed to affect the chat session itself.
+            }
+
+            try
+            {
+                await Task.Delay(UsagePollInterval, _lifetime.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+        }
+    }
+
+    private void ApplyUsageSnapshot(UsageSnapshot snapshot)
+    {
+        Usage = snapshot;
+
+        UsageLimit? top = snapshot.Limits
+            .Where(limit => limit.Percent >= UsageWarningThresholdPercent)
+            .OrderByDescending(limit => limit.Percent)
+            .FirstOrDefault();
+        if (top is null)
+        {
+            UsageWarning = null;
+            _usageWarningDismissed = false;
+            _lastUsageWarningPercent = -1;
+            return;
+        }
+
+        // A dismissal stays in effect until usage climbs past where it was when dismissed -
+        // otherwise the very next poll (a few minutes later, same percent) would just reopen it.
+        if (_usageWarningDismissed && top.Percent <= _lastUsageWarningPercent)
+        {
+            return;
+        }
+
+        _usageWarningDismissed = false;
+        _lastUsageWarningPercent = top.Percent;
+        UsageWarning = new UsageWarningViewModel(FormatUsageWarningMessage(top));
+    }
+
+    public void DismissUsageWarning()
+    {
+        _usageWarningDismissed = true;
+        UsageWarning = null;
+    }
+
+    private UsageLimitDisplay? BuildUsageDisplay(string label, Func<UsageLimit, bool> matches)
+    {
+        UsageLimit? limit = _usage?.Limits.FirstOrDefault(matches);
+        if (limit is null)
+        {
+            return null;
+        }
+
+        string? resetText = limit.ResetsAt is DateTimeOffset resetsAt ? FormatResetsAtLabel(resetsAt) : null;
+        return new UsageLimitDisplay(label, limit.Percent, resetText, limit.Percent >= UsageWarningThresholdPercent);
+    }
+
+    private static string FormatUsageWarningMessage(UsageLimit limit)
+    {
+        string label = limit.Kind switch
+        {
+            "session" => "session limit",
+            "weekly_all" => "weekly limit",
+            "weekly_scoped" => limit.ScopeLabel is string scope ? $"weekly {scope} limit" : "weekly limit",
+            _ => "usage limit",
+        };
+        string reset = limit.ResetsAt is DateTimeOffset resetsAt ? $" · {FormatResetsInLabel(resetsAt)}" : "";
+        return $"You've used {limit.Percent}% of your {label}{reset}.";
+    }
+
+    private static string FormatResetsInLabel(DateTimeOffset resetsAt)
+    {
+        TimeSpan remaining = resetsAt - DateTimeOffset.UtcNow;
+        if (remaining <= TimeSpan.Zero) return "resets soon";
+        if (remaining.TotalDays >= 1) return $"resets in {(int)remaining.TotalDays}d";
+        if (remaining.TotalHours >= 1) return $"resets in {(int)remaining.TotalHours}h";
+        return $"resets in {Math.Max(1, (int)remaining.TotalMinutes)}m";
+    }
+
+    private static string FormatResetsAtLabel(DateTimeOffset resetsAt)
+    {
+        DateTimeOffset local = resetsAt.ToLocalTime();
+        TimeSpan remaining = resetsAt - DateTimeOffset.UtcNow;
+        return remaining < TimeSpan.FromHours(20)
+            ? $"Resets {local:h:mm tt}"
+            : $"Resets {local:dddd h:mm tt}";
+    }
 
     public string ActivityText
     {
@@ -253,6 +546,58 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     public bool IsElicitationOpen => _pendingElicitation is not null;
 
+    /// <summary>Raw snapshot; non-null once the first usage fetch succeeds. Drives the usage
+    /// toolbar button's visibility - there is nothing useful to show before that.</summary>
+    public UsageSnapshot? Usage
+    {
+        get => _usage;
+        private set
+        {
+            if (SetProperty(ref _usage, value))
+            {
+                OnPropertyChanged(nameof(SessionUsage));
+                OnPropertyChanged(nameof(WeeklyUsage));
+                OnPropertyChanged(nameof(FableUsage));
+            }
+        }
+    }
+
+    public UsageLimitDisplay? SessionUsage => BuildUsageDisplay("Current session", limit => limit.Kind == "session");
+
+    public UsageLimitDisplay? WeeklyUsage => BuildUsageDisplay("This week", limit => limit.Kind == "weekly_all");
+
+    public UsageLimitDisplay? FableUsage => BuildUsageDisplay(
+        (_usage?.Limits.FirstOrDefault(limit => limit.Kind == "weekly_scoped")?.ScopeLabel ?? "Fable") + " this week",
+        limit => limit.Kind == "weekly_scoped");
+
+    public UsageWarningViewModel? UsageWarning
+    {
+        get => _usageWarning;
+        private set => SetProperty(ref _usageWarning, value);
+    }
+
+    public bool IsUsagePanelOpen
+    {
+        get => _isUsagePanelOpen;
+        set
+        {
+            if (SetProperty(ref _isUsagePanelOpen, value) && value) _ = RefreshUsageAsync();
+        }
+    }
+
+    private async Task RefreshUsageAsync()
+    {
+        try
+        {
+            UsageSnapshot? snapshot = await _services.UsageService.GetUsageAsync(_lifetime.Token).ConfigureAwait(false);
+            if (snapshot is not null && !_disposed) RunOnUi(() => ApplyUsageSnapshot(snapshot));
+        }
+        catch
+        {
+            // Usage is best-effort presentation, never allowed to affect the chat session itself.
+        }
+    }
+
     public void AddImageAttachment(string name, string mimeType, string base64Data)
     {
         if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("An image name is required.", nameof(name));
@@ -273,6 +618,17 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     }
 
     private static long EstimateBase64ByteLength(string base64Data) => (long)base64Data.Length * 3 / 4;
+
+    private void OnActiveDocumentChanged(object? sender, EventArgs e) => RunOnUi(() =>
+    {
+        if (_disposed) return;
+        AttachActiveDocumentCommand.NotifyCanExecuteChanged();
+        OnPropertyChanged(nameof(HasActiveDocument));
+    });
+
+    public bool HasActiveDocument => _services.HasActiveDocument;
+
+    public void DismissAttachmentError() => RunOnUi(() => AttachmentError = null);
 
     private Task AttachActiveDocumentAsync(CancellationToken cancellationToken) =>
         OnUiAsync(() => AttachActiveDocumentCoreAsync(cancellationToken));
@@ -471,6 +827,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         if (!CanSend()) return;
         ActivityText = "Working…";
         IsBusy = true;
+        _turnStartedAt = DateTimeOffset.UtcNow;
+        _turnStartUsedTokens = _sessionUsedTokens;
+        TurnTokens = null;
         StatusMessage = null;
         try
         {
@@ -484,10 +843,16 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             foreach (var attachment in attachments)
                 content.Add(attachment.ToContentBlock());
 
+            // Images render as thumbnails on the bubble; only documents keep a text placeholder.
             var transcriptText = string.Join(Environment.NewLine, new[] { text }
-                .Where(part => part.Length > 0).Concat(attachments.Select(attachment =>
-                    (attachment.IsImage ? "[Image: " : "[Document: ") + attachment.Name + "]")));
-            Messages.Add(new ChatMessageViewModel(ChatRole.User, transcriptText));
+                .Where(part => part.Length > 0).Concat(attachments.Where(attachment => attachment.IsDocument)
+                    .Select(attachment => "[Document: " + attachment.Name + "]")));
+            Messages.Add(new ChatMessageViewModel(ChatRole.User, transcriptText)
+            {
+                Images = attachments.Where(attachment => attachment.IsImage)
+                    .Select(attachment => new ChatMessageImage(attachment.Name, attachment.MimeType, attachment.Base64Data)).ToList(),
+            });
+            UpdateSessionTitleFromFirstUserMessage();
             InputText = string.Empty;
             Attachments.Clear();
             AttachmentError = null;
@@ -506,6 +871,45 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             ActivityText = string.Empty;
             _currentAssistantMessage = null;
         }
+
+        SendPendingPlanReview();
+    }
+
+    private string? _pendingPlanReviewComments;
+    private PlanReviewViewModel? _pendingPlan;
+
+    /// <summary>The implementation plan currently awaiting Proceed/Review, kept (resolved) until the
+    /// next plan or session change so a plan document can keep showing it.</summary>
+    public PlanReviewViewModel? PendingPlan
+    {
+        get => _pendingPlan;
+        private set => SetProperty(ref _pendingPlan, value);
+    }
+
+    /// <summary>Raised when the agent asks for plan approval; hosts open the plan document on it.</summary>
+    public event EventHandler? PlanReviewRequested;
+
+    /// <summary>Raised when the conversation needs the user back (turn finished, permission or plan
+    /// review pending); hosts may show a system notification if the IDE is in the background.</summary>
+    public event EventHandler<ChatAttentionEventArgs>? AttentionRequested;
+
+    private void RaiseAttention(ChatAttentionKind kind, string title, string message) =>
+        AttentionRequested?.Invoke(this, new ChatAttentionEventArgs(kind, title, Truncate(message, 160)));
+
+    private static string Truncate(string text, int max)
+    {
+        var firstLine = (text ?? string.Empty).Split('\n').Select(line => line.Trim()).FirstOrDefault(line => line.Length > 0) ?? string.Empty;
+        return firstLine.Length <= max ? firstLine : firstLine.Substring(0, max - 1) + "…";
+    }
+
+    // Review comments are delivered as the next prompt once the rejected plan turn has finished.
+    private void SendPendingPlanReview()
+    {
+        var comments = _pendingPlanReviewComments;
+        if (comments is null || _disposed || !CanEditDraft) return;
+        _pendingPlanReviewComments = null;
+        InputText = "Review comments on the plan:\n" + comments;
+        if (CanSend()) _ = SendAsync();
     }
 
     public Task CancelAsync() => OnUiAsync(CancelCoreAsync);
@@ -539,6 +943,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             ResetTranscriptState();
             _sessionId = session.SessionId;
             ApplyConfigOptions(session.ConfigOptions);
+            OnSessionStarted();
             StatusMessage = null;
         }
         catch (OperationCanceledException) when (_disposed) { }
@@ -560,6 +965,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         IsHistoryOpen = true;
         IsHistoryLoading = true;
         HistoryError = null;
+        _historyFilter = string.Empty;
+        OnPropertyChanged(nameof(HistoryFilter));
         try
         {
             var (connection, _) = await EnsureConnectedAsync(_lifetime.Token).ConfigureAwait(true);
@@ -567,8 +974,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             var cwd = _services.WorkspaceRoot ?? Environment.CurrentDirectory;
             var sessions = await connection.ListSessionsAsync(cwd, _lifetime.Token).ConfigureAwait(true);
             if (_disposed || !ReferenceEquals(connection, _connection)) return;
-            SessionHistory.Clear();
-            foreach (var session in sessions) SessionHistory.Add(session);
+            _allSessionHistory = sessions.ToList();
+            RefreshHistoryFilter();
         }
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex)
@@ -593,6 +1000,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             var (connection, _) = await EnsureConnectedAsync(_lifetime.Token).ConfigureAwait(true);
             if (_disposed || !ReferenceEquals(connection, _connection)) return;
             ResetTranscriptState();
+            _explicitSessionTitle = string.IsNullOrWhiteSpace(session.Title) ? null : session.Title;
+            if (_explicitSessionTitle is not null) SessionTitle = _explicitSessionTitle;
             // Known upfront (unlike session/new): set it before the call below so replayed
             // session/update notifications, tagged with this id, are not dropped by OnSessionUpdate's
             // "belongs to the known session" check while the request is still in flight.
@@ -600,6 +1009,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             var result = await connection.LoadSessionAsync(session.SessionId, session.Cwd, null, _lifetime.Token).ConfigureAwait(true);
             if (_disposed || !ReferenceEquals(connection, _connection)) return;
             ApplyConfigOptions(result.ConfigOptions);
+            OnSessionStarted();
         }
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex)
@@ -615,6 +1025,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private void ResetTranscriptState()
     {
         Messages.Clear();
+        lock (_changedFilesByPath) _changedFilesByPath.Clear();
+        ChangedFiles.Clear();
+        PendingPlan = null;
+        _pendingPlanReviewComments = null;
+        _explicitSessionTitle = null;
+        SessionTitle = UntitledSessionTitle;
         _currentAssistantMessage = null;
         _currentUserMessage = null;
         CurrentPlan = null;
@@ -670,6 +1086,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 IsSignedIn = true;
                 NeedsAuthentication = false;
                 ApplyConfigOptions(session.ConfigOptions);
+            OnSessionStarted();
                 StatusMessage = null;
                 return (connection, session.SessionId);
             }
@@ -725,6 +1142,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(SelectedMode));
         OnPropertyChanged(nameof(ActiveModelName));
         OnPropertyChanged(nameof(ActiveEffortName));
+        OnPropertyChanged(nameof(ModelEffortLabel));
         OnPropertyChanged(nameof(ActiveModeName));
     }
 
@@ -753,6 +1171,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                     break;
                 case SessionUpdate.UserMessageChunk chunk:
                     EnsureUserMessage().AppendText(chunk.Text);
+                    UpdateSessionTitleFromFirstUserMessage();
                     break;
                 case SessionUpdate.AgentMessageChunk chunk:
                     EnsureAssistantMessage().AppendText(chunk.Text);
@@ -767,11 +1186,31 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 case SessionUpdate.Plan plan:
                     CurrentPlan = new PlanViewModel(plan.Entries);
                     break;
+                case SessionUpdate.UsageUpdate usage:
+                    _sessionUsedTokens = usage.UsedTokens;
+                    if (usage.ContextWindowSize is long windowSize) _contextWindowSize = windowSize;
+                    if (IsBusy) TurnTokens = Math.Max(0, usage.UsedTokens - _turnStartUsedTokens);
+                    OnPropertyChanged(nameof(SessionUsedTokens));
+                    OnPropertyChanged(nameof(ContextWindowSize));
+                    OnPropertyChanged(nameof(ContextUsagePercent));
+                    OnPropertyChanged(nameof(ContextUsageLabel));
+                    break;
                 case SessionUpdate.TurnEnded:
                     // The prompt task owns IsBusy, preventing a new send/config before it returns.
+                    if (_currentAssistantMessage is not null && _turnStartedAt is DateTimeOffset startedAt)
+                    {
+                        _currentAssistantMessage.DurationSeconds = Math.Max(0, (int)(DateTimeOffset.UtcNow - startedAt).TotalSeconds);
+                    }
+
+                    if (_currentAssistantMessage is not null && TurnTokens is long turnTokens) _currentAssistantMessage.TokensUsed = turnTokens;
+                    RaiseAttention(ChatAttentionKind.TurnCompleted, "Claude finished",
+                        _currentAssistantMessage?.Text is { Length: > 0 } reply ? reply : "The response is ready in Visual Studio.");
+
                     _currentAssistantMessage = null;
                     _currentUserMessage = null;
+                    _turnStartedAt = null;
                     UpdateActivity("Working…");
+                    _ = RefreshUsageAsync();
                     break;
             }
         });
@@ -779,13 +1218,22 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private void UpsertToolCall(ToolCallUpdate call)
     {
+        _ = TrackToolCallFileChangesAsync(call);
         var message = EnsureAssistantMessage();
         var existing = message.ToolCalls.FirstOrDefault(t => t.ToolCallId == call.ToolCallId);
-        if (existing is not null) existing.Apply(call);
-        else message.ToolCalls.Add(new ToolCallCardViewModel(call));
-        var title = existing?.Title ?? call.Title;
-        UpdateActivity((call.Status == ToolCallStatus.Pending || call.Status == ToolCallStatus.InProgress) &&
-            !string.IsNullOrWhiteSpace(title) ? title : "Working…");
+        if (existing is not null)
+        {
+            existing.Apply(call);
+        }
+        else
+        {
+            var card = new ToolCallCardViewModel(call);
+            message.ToolCalls.Add(card);
+            message.AppendToolCall(card);
+        }
+        // Deliberately not the tool's own title/command text here: the activity indicator is a
+        // generic "something is happening" status, not a live command echo.
+        UpdateActivity("Working…");
     }
 
     private ChatMessageViewModel EnsureAssistantMessage()
@@ -821,14 +1269,46 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             }
             _pendingPermissionResponse?.TrySetException(new OperationCanceledException("Superseded by a newer permission request."));
             _pendingPermissionResponse = e.Response;
-            PendingPermission = new PermissionRequestViewModel(e.Call.Title, e.Options, option =>
+            void Choose(PermissionOption option)
             {
                 e.Response.TrySetResult(option.OptionId);
                 _pendingPermissionResponse = null;
                 PendingPermission = null;
                 UpdateActivity("Working…");
-            });
+            }
+
+            PendingPermission = new PermissionRequestViewModel(e.Call.Title, e.Options, Choose);
             UpdateActivity("Waiting for permission…");
+
+            // ExitPlanMode arrives as a switch_mode tool call whose content is the plan markdown.
+            var planText = e.Call.Kind == "switch_mode"
+                ? string.Join("\n", e.Call.Content.Where(content => !content.IsDiff && !string.IsNullOrWhiteSpace(content.Text)).Select(content => content.Text))
+                : string.Empty;
+            if (planText.Length > 0)
+            {
+                PlanReviewViewModel? plan = null;
+                plan = new PlanReviewViewModel(planText, e.Options,
+                    option =>
+                    {
+                        Choose(option);
+                        plan!.MarkResolved("Plan accepted — implementing…");
+                    },
+                    comments =>
+                    {
+                        if (plan!.RejectOption is null) return;
+                        _pendingPlanReviewComments = comments;
+                        Choose(plan.RejectOption);
+                        plan.MarkResolved("Sent back for revision");
+                        if (!IsBusy) SendPendingPlanReview();
+                    });
+                PendingPlan = plan;
+                PlanReviewRequested?.Invoke(this, EventArgs.Empty);
+                RaiseAttention(ChatAttentionKind.PlanReview, "Claude has a plan for you", "Review or approve the implementation plan.");
+            }
+            else
+            {
+                RaiseAttention(ChatAttentionKind.PermissionNeeded, "Claude needs your permission", e.Call.Title);
+            }
         });
     }
 
@@ -884,21 +1364,137 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         try
         {
+            // Separate leases: ReadAllText hands its file handle to a FileStream, which disposes it,
+            // so a lease that has been read from cannot be written through afterwards.
+            var tracked = await TrackChangeBeforeWriteAsync(e.Path).ConfigureAwait(true);
             using var pathLease = WorkspacePathGuard.AcquireFile(_services.WorkspaceRoot, e.Path);
-            using (var document = pathLease.ProtectDocument())
-            {
-                if ((document is not null || !RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-                    && await _services.TryWriteOpenDocumentAsync(pathLease.FullPath, e.Content, _lifetime.Token).ConfigureAwait(true))
-                {
-                    e.Response.TrySetResult(true);
-                    return;
-                }
-            }
-
-            pathLease.WriteAllText(e.Content);
+            await WriteLeasedFileAsync(pathLease, e.Content).ConfigureAwait(true);
+            RunOnUi(() => tracked.UpdateCounts(e.Content));
             e.Response.TrySetResult(true);
         }
         catch (Exception ex) { e.Response.TrySetException(ex); }
+    }
+
+    private readonly Dictionary<string, ChangedFileViewModel> _changedFilesByPath = new Dictionary<string, ChangedFileViewModel>(StringComparer.OrdinalIgnoreCase);
+
+    // The agent process writes Edit/Write results to disk itself (the client fs is not used for
+    // them), so track those files from their tool-call diffs: snapshot the original while the call is
+    // still pending (before the file changes), refresh the +/- counts once it completes.
+    private async Task TrackToolCallFileChangesAsync(ToolCallUpdate call)
+    {
+        // Only live turns: a resumed session replays old, already-applied tool calls whose "original"
+        // would be the current file - nothing to revert, and 50 phantom rows in the panel.
+        if (!IsBusy) return;
+        try
+        {
+            foreach (var content in call.Content)
+            {
+                if (!content.IsDiff || string.IsNullOrWhiteSpace(content.Path)) continue;
+                ChangedFileViewModel tracked;
+                try { tracked = await TrackChangeBeforeWriteAsync(content.Path!).ConfigureAwait(true); }
+                catch (Exception) { continue; } // outside the workspace or unreadable: not ours to revert.
+
+                if (call.Status == ToolCallStatus.Completed)
+                {
+                    string? current;
+                    using (var pathLease = WorkspacePathGuard.AcquireFile(_services.WorkspaceRoot, tracked.FullPath))
+                        current = await ReadLeasedFileAsync(pathLease).ConfigureAwait(true);
+                    RunOnUi(() => tracked.UpdateCounts(current ?? string.Empty));
+                }
+            }
+        }
+        catch (Exception)
+        {
+            // Change tracking is presentation only; it must never break the transcript.
+        }
+    }
+
+    // Snapshot the pre-edit content on the agent's first write to a path, so Reject can restore it.
+    private async Task<ChangedFileViewModel> TrackChangeBeforeWriteAsync(string requestedPath)
+    {
+        using var pathLease = WorkspacePathGuard.AcquireFile(_services.WorkspaceRoot, requestedPath);
+        lock (_changedFilesByPath)
+        {
+            if (_changedFilesByPath.TryGetValue(pathLease.FullPath, out var existing)) return existing;
+        }
+
+        var original = await ReadLeasedFileAsync(pathLease).ConfigureAwait(true);
+        var entry = new ChangedFileViewModel(pathLease.FullPath, original,
+            file => OnUiAsync(() => AcceptChangeAsync(file)),
+            file => OnUiAsync(() => RejectChangeAsync(file)));
+        lock (_changedFilesByPath)
+        {
+            if (_changedFilesByPath.TryGetValue(pathLease.FullPath, out var raced)) return raced;
+            _changedFilesByPath[pathLease.FullPath] = entry;
+        }
+
+        RunOnUi(() => ChangedFiles.Add(entry));
+        return entry;
+    }
+
+    private async Task<string?> ReadLeasedFileAsync(WorkspacePathLease pathLease)
+    {
+        using (var document = pathLease.ProtectDocument())
+        {
+            if (document is not null || !RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                var liveText = await _services.TryReadOpenDocumentAsync(pathLease.FullPath, _lifetime.Token).ConfigureAwait(true);
+                if (liveText is not null) return liveText;
+            }
+        }
+
+        try { return pathLease.ReadAllText(); }
+        catch (FileNotFoundException) { return null; }
+    }
+
+    private async Task WriteLeasedFileAsync(WorkspacePathLease pathLease, string content)
+    {
+        using (var document = pathLease.ProtectDocument())
+        {
+            if ((document is not null || !RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                && await _services.TryWriteOpenDocumentAsync(pathLease.FullPath, content, _lifetime.Token).ConfigureAwait(true))
+            {
+                return;
+            }
+        }
+
+        pathLease.WriteAllText(content);
+    }
+
+    private Task AcceptChangeAsync(ChangedFileViewModel file)
+    {
+        UntrackChange(file);
+        return Task.CompletedTask;
+    }
+
+    private async Task RejectChangeAsync(ChangedFileViewModel file)
+    {
+        try
+        {
+            if (file.OriginalText is null)
+            {
+                string fullPath;
+                using (var pathLease = WorkspacePathGuard.AcquireFile(_services.WorkspaceRoot, file.FullPath)) fullPath = pathLease.FullPath;
+                File.Delete(fullPath);
+            }
+            else
+            {
+                using var pathLease = WorkspacePathGuard.AcquireFile(_services.WorkspaceRoot, file.FullPath);
+                await WriteLeasedFileAsync(pathLease, file.OriginalText).ConfigureAwait(true);
+            }
+
+            UntrackChange(file);
+        }
+        catch (Exception ex)
+        {
+            if (!_disposed) StatusMessage = $"Could not revert {file.Name}: {ex.Message}";
+        }
+    }
+
+    private void UntrackChange(ChangedFileViewModel file)
+    {
+        lock (_changedFilesByPath) _changedFilesByPath.Remove(file.FullPath);
+        ChangedFiles.Remove(file);
     }
 
     private void OnDisconnected(object? sender, Exception? ex)
@@ -925,6 +1521,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         PendingPermission = null;
         _pendingPermissionResponse = null;
         CurrentPlan = null;
+        IsRemoteControlEnabled = false;
+        RemoteControlUrl = null;
         ApplyConfigOptions(Array.Empty<SessionConfigOption>());
         if (connection is null) return;
         connection.SessionUpdate -= OnSessionUpdate;
@@ -969,6 +1567,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         NewSessionCommand.NotifyCanExecuteChanged();
         ShowHistoryCommand.NotifyCanExecuteChanged();
         OpenSessionCommand.NotifyCanExecuteChanged();
+        ToggleRemoteControlCommand.NotifyCanExecuteChanged();
         UpdateSlashPresentation();
     }
 
@@ -995,6 +1594,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         if (_disposed) return;
         _disposed = true;
         _services.AuthService.StateChanged -= OnAuthStateChanged;
+        _services.ActiveDocumentChanged -= OnActiveDocumentChanged;
         _lifetime.Cancel();
         RunOnUi(() => _ = DisposeCoreAsync());
     }

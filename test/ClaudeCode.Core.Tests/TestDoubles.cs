@@ -63,6 +63,16 @@ internal sealed class RecordingAcpAgentConnection : IAcpAgentConnection
         return Task.CompletedTask;
     }
 
+    public List<(string SessionId, bool Enabled, string? Name)> RemoteControlCalls { get; } = [];
+    public Func<bool, Task<RemoteControlState>>? RemoteControlHandler { get; set; }
+
+    public Task<RemoteControlState> SetRemoteControlAsync(string sessionId, bool enabled, string? name, CancellationToken cancellationToken)
+    {
+        RemoteControlCalls.Add((sessionId, enabled, name));
+        return RemoteControlHandler?.Invoke(enabled)
+            ?? Task.FromResult(new RemoteControlState(enabled, enabled ? "https://claude.ai/code/session/test" : null, null));
+    }
+
     public event EventHandler<SessionUpdateEventArgs>? SessionUpdate;
     public event EventHandler<PermissionRequestEventArgs>? PermissionRequested;
     public event EventHandler<ElicitationRequestEventArgs>? ElicitationRequested;

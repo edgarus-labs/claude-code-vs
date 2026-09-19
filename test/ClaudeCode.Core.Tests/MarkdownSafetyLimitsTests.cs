@@ -118,4 +118,56 @@ public sealed class MarkdownSafetyLimitsTests
 
         Assert.Equal(TimeSpan.FromMilliseconds(expectedMilliseconds), interval);
     }
+
+    [Fact]
+    public void EnsureBlankLineBeforeFences_FenceImmediatelyAfterText_InsertsBlankLine()
+    {
+        var markdown = "Here is the output:\n```console\nsome output\n```";
+
+        var result = MarkdownSafetyLimits.EnsureBlankLineBeforeFences(markdown);
+
+        Assert.Equal("Here is the output:\n\n```console\nsome output\n```", result);
+    }
+
+    [Fact]
+    public void EnsureBlankLineBeforeFences_FenceAlreadyPrecededByBlankLine_LeavesUnchanged()
+    {
+        var markdown = "Here is the output:\n\n```console\nsome output\n```";
+
+        var result = MarkdownSafetyLimits.EnsureBlankLineBeforeFences(markdown);
+
+        Assert.Equal(markdown, result);
+    }
+
+    [Fact]
+    public void EnsureBlankLineBeforeFences_FenceAtStartOfDocument_LeavesUnchanged()
+    {
+        var markdown = "```console\nsome output\n```\nAfter.";
+
+        var result = MarkdownSafetyLimits.EnsureBlankLineBeforeFences(markdown);
+
+        Assert.Equal(markdown, result);
+    }
+
+    [Fact]
+    public void EnsureBlankLineBeforeFences_ContentInsideFenceLookingLikeTextIsUntouched()
+    {
+        // A closing fence right after code content (not text) must not get a spurious blank line -
+        // only an *opening* fence directly after non-blank text does.
+        var markdown = "```console\nline one\nline two\n```\nAfter.";
+
+        var result = MarkdownSafetyLimits.EnsureBlankLineBeforeFences(markdown);
+
+        Assert.Equal(markdown, result);
+    }
+
+    [Fact]
+    public void EnsureBlankLineBeforeFences_NoFence_ReturnsSameInstance()
+    {
+        var markdown = "Just plain text, no code blocks here.";
+
+        var result = MarkdownSafetyLimits.EnsureBlankLineBeforeFences(markdown);
+
+        Assert.Same(markdown, result);
+    }
 }
