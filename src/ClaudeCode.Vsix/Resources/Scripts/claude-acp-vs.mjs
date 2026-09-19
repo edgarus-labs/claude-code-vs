@@ -111,7 +111,6 @@ async function handleRemoteControl(message) {
         enabled,
         sessionUrl: typeof result?.session_url === "string" ? result.session_url : null,
         connectUrl: typeof result?.connect_url === "string" ? result.connect_url : null,
-        bridgeSessionId: typeof result?.bridge_session_id === "string" ? result.bridge_session_id : null,
       },
     });
   } catch (error) {
@@ -122,6 +121,7 @@ async function handleRemoteControl(message) {
 }
 
 const lines = createInterface({ input: realStdin, crlfDelay: Infinity });
+let forwardingPaused = false;
 lines.on("line", (line) => {
   if (line.length === 0) {
     return;
@@ -139,7 +139,20 @@ lines.on("line", (line) => {
     return;
   }
 
-  filteredStdin.write(line + "\n");
+  if (!filteredStdin.write(line + "\n") && !forwardingPaused) {
+    // The PassThrough replaced the OS pipe whose backpressure used to hold Visual Studio back while
+    // the adapter was behind; without pausing, every further line would queue in this process's heap
+    // instead. A paused stdin is an inactive handle that no longer keeps the event loop alive, so
+    // hold the loop open with a timer until the adapter drains.
+    forwardingPaused = true;
+    lines.pause();
+    const keepAlive = setInterval(() => {}, 1000);
+    filteredStdin.once("drain", () => {
+      clearInterval(keepAlive);
+      forwardingPaused = false;
+      lines.resume();
+    });
+  }
 });
 lines.on("close", () => filteredStdin.end());
 

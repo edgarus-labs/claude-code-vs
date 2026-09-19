@@ -10,6 +10,7 @@ public static class AcpExecutableResolver
     private static readonly string[] _acpAdapterCandidateNames = _isWindows
         ? new[] { "claude-agent-acp.exe", "claude-agent-acp.cmd" }
         : new[] { "claude-agent-acp" };
+    private static readonly string _nodeExecutableName = _isWindows ? "node.exe" : "node";
 
     public static bool IsFullyQualifiedPath(string? path)
     {
@@ -109,11 +110,10 @@ public static class AcpExecutableResolver
             return new AcpExecutableSpec(fullPath, Array.Empty<string>());
         }
 
-        string nodeName = _isWindows ? "node.exe" : "node";
         string? nodePath = null;
         if (preferAdjacentNode)
         {
-            string adjacentNode = Path.Combine(directory, nodeName);
+            string adjacentNode = Path.Combine(directory, _nodeExecutableName);
             if (File.Exists(adjacentNode))
             {
                 nodePath = adjacentNode;
@@ -122,11 +122,17 @@ public static class AcpExecutableResolver
 
         if (nodePath is null)
         {
-            nodePath = FindOnPath(nodeName, searchPath);
+            nodePath = FindOnPath(_nodeExecutableName, searchPath);
         }
 
         return nodePath is null ? null : new AcpExecutableSpec(nodePath, new[] { Path.GetFullPath(scriptPath) });
     }
+
+    /// <summary>Finds a Node runtime on <paramref name="searchPath"/> using the same trusted filter
+    /// the adapter launch uses: only fully qualified entries (never the current drive or directory)
+    /// and never a package directory, whose content a workspace can plant. Returns null when no
+    /// trusted entry holds one.</summary>
+    public static string? FindNodeOnPath(string? searchPath) => FindOnPath(_nodeExecutableName, searchPath);
 
     private static bool IsDirectorySeparator(char value) =>
         value == Path.DirectorySeparatorChar || value == Path.AltDirectorySeparatorChar;

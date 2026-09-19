@@ -4,7 +4,6 @@ using Newtonsoft.Json.Linq;
 using System;
 using System.ComponentModel;
 using System.Diagnostics;
-using System.Globalization;
 using System.IO;
 using System.Text;
 using System.Threading;
@@ -53,7 +52,7 @@ internal sealed class ClaudeUsageService : IUsageService
             return null;
         }
 
-        string? nodePath = FindNodeOnPath();
+        string? nodePath = AcpExecutableResolver.FindNodeOnPath(Environment.GetEnvironmentVariable("PATH"));
         if (nodePath is null)
         {
             return null;
@@ -137,12 +136,23 @@ internal sealed class ClaudeUsageService : IUsageService
     {
         var buffer = new char[1024];
         var output = new StringBuilder();
+        bool exceededBound = false;
         int count;
         while ((count = await reader.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false)) != 0)
         {
+            if (exceededBound)
+            {
+                continue;
+            }
+
             if (output.Length + count > _maxOutputCharacters)
             {
-                break;
+                // Discard the oversize payload, but keep draining: stopping the read would leave the
+                // child blocked on a full stdout pipe, so it would never exit and the caller would
+                // wait out the whole process timeout before killing it.
+                exceededBound = true;
+                output.Clear();
+                continue;
             }
 
             output.Append(buffer, 0, count);
@@ -212,102 +222,8 @@ internal sealed class ClaudeUsageService : IUsageService
     }
 
     /// <summary>Reads a limit's reset timestamp. <see cref="JObject.Parse(string)"/> materializes a
-    /// well-formed ISO-8601 timestamp as <see cref="JTokenType.Date"/>, so the string path alone
-    /// never fires for the payload the helper script actually emits.</summary>
-    private static DateTimeOffset? ReadResetsAt(JToken? token)
-    {
-        if (token is JValue { Type: JTokenType.Date } dateValue)
-        {
-            try
-            {
-                return dateValue.Value switch
-                {
-                    DateTimeOffset value => value,
-                    DateTime value => new DateTimeOffset(value),
-                    _ => null,
-                };
-            }
-            catch (ArgumentException)
-            {
-                // A local-time value whose UTC equivalent falls outside DateTimeOffset's range.
-                return null;
-            }
-        }
-
-        string? raw = token?.Type == JTokenType.String ? token.Value<string>() : null;
-        return raw is not null && DateTimeOffset.TryParse(
-            raw, CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTimeOffset resetsAt)
-            ? resetsAt
-            : null;
-    }
-
-    private static string? FindNodeOnPath()
-    {
-        string nodeName = "node.exe";
-        string? searchPath = Environment.GetEnvironmentVariable("PATH");
-        if (string.IsNullOrEmpty(searchPath))
-        {
-            return null;
-        }
-
-        foreach (string entry in searchPath!.Split(Path.PathSeparator))
-        {
-            string directory = entry.Trim().Trim('"');
-            if (!AcpExecutableResolver.IsFullyQualifiedPath(directory))
-            {
-                // Only fully qualified entries are independent of the workspace/current drive.
-                continue;
-            }
-
-            try
-            {
-                directory = Path.GetFullPath(directory);
-            }
-            catch (Exception ex) when (ex is ArgumentException || ex is NotSupportedException || ex is PathTooLongException)
-            {
-                continue;
-            }
-
-            if (IsPackageDirectory(directory))
-            {
-                // Package content (node_modules\.bin and friends) is workspace-controlled and never
-                // a trusted source of a Node runtime.
-                continue;
-            }
-
-            string candidate = Path.Combine(directory, nodeName);
-            if (File.Exists(candidate))
-            {
-                return candidate;
-            }
-        }
-
-        return null;
-    }
-
-    private static bool IsDirectorySeparator(char value) =>
-        value == Path.DirectorySeparatorChar || value == Path.AltDirectorySeparatorChar;
-
-    private static bool IsPackageDirectory(string directory)
-    {
-        int segmentStart = 0;
-        for (int index = 0; index <= directory.Length; index++)
-        {
-            if (index != directory.Length && !IsDirectorySeparator(directory[index]))
-            {
-                continue;
-            }
-
-            int length = index - segmentStart;
-            if ((length == 12 && string.Compare(directory, segmentStart, "node_modules", 0, length, StringComparison.OrdinalIgnoreCase) == 0)
-                || (length == 4 && string.Compare(directory, segmentStart, ".bin", 0, length, StringComparison.OrdinalIgnoreCase) == 0))
-            {
-                return true;
-            }
-
-            segmentStart = index + 1;
-        }
-
-        return false;
-    }
+    /// well-formed ISO-8601 timestamp as <see cref="JTokenType.Date"/>, so the reader's own value -
+    /// not the token's string form - is what has to be normalized.</summary>
+    private static DateTimeOffset? ReadResetsAt(JToken? token) =>
+        UsageResetTimestamp.FromJsonValue((token as JValue)?.Value);
 }

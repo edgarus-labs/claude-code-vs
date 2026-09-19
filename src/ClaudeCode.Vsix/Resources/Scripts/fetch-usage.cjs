@@ -12,9 +12,22 @@ const os = require("os");
 const path = require("path");
 const https = require("https");
 
+// stdout is an asynchronous pipe when this runs as a child process, so exiting straight after a
+// write can discard the line: exit only once the write has been handed to the pipe. Also one-shot,
+// so a late timeout cannot append a second line to an already-emitted result.
+let emitted = false;
+function emit(payload, code) {
+  if (emitted) {
+    return;
+  }
+
+  emitted = true;
+  process.exitCode = code;
+  process.stdout.write(JSON.stringify(payload) + "\n", () => process.exit(code));
+}
+
 function fail(code) {
-  process.stdout.write(JSON.stringify({ error: code }) + "\n");
-  process.exit(1);
+  emit({ error: code }, 1);
 }
 
 function readAccessToken() {
@@ -50,11 +63,15 @@ function fetchUsage(token) {
       },
     },
     (res) => {
+      // Without an explicit encoding each Buffer is decoded on its own, so a UTF-8 sequence split
+      // across two chunks would reach the UI as replacement characters.
+      res.setEncoding("utf8");
       let body = "";
       res.on("data", (chunk) => {
         body += chunk;
         if (body.length > 1024 * 1024) {
           req.destroy();
+          fail("response_too_large");
         }
       });
       res.on("end", () => {
@@ -84,12 +101,15 @@ function fetchUsage(token) {
           isActive: limit.is_active === true,
         }));
 
-        process.stdout.write(JSON.stringify({ limits }) + "\n");
+        emit({ limits }, 0);
       });
     }
   );
 
-  req.on("timeout", () => req.destroy());
+  req.on("timeout", () => {
+    req.destroy();
+    fail("timeout");
+  });
   req.on("error", () => fail("network_error"));
   req.end();
 }

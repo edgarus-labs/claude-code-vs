@@ -44,8 +44,8 @@ tools (see `docs/VsControlProtocol.md` for the exact wire contract).
 - **Chat text size:** Ctrl+mouse wheel over the composer or assistant response changes the chat font
   size by one step, from 10 to 28 (default 13). This setting is local to the current chat UI session and
   does not change Visual Studio's editor zoom. Scrolling without Ctrl keeps its normal behavior.
-- **History:** the clock button lists this workspace's sessions; type to filter by title. The header
-  shows the current session's title (first prompt, or the saved title when resumed).
+- **History:** the clock button lists this workspace's sessions; type to filter by title or session id.
+  The header shows the current session's title (first prompt, or the saved title when resumed).
 - **Tasks and changed files:** the agent's task list (plan entries) and every file it edited this session
   appear as cards above the composer. Each changed file can be opened, accepted (kept) or rejected
   (restored to its pre-edit content); **Accept all** / **Reject all** apply to the whole list. The list is
