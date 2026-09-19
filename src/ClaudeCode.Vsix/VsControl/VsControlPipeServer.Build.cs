@@ -145,12 +145,25 @@ internal sealed partial class VsControlPipeServer
             return new JObject { ["pane"] = pane.Name, ["cleared"] = true };
         }
 
+        // Only the requested tail crosses the COM boundary. A long-running Build/Debug pane holds tens
+        // of megabytes; marshalling all of it into one managed string to keep the last few thousand
+        // characters stalls the UI thread and churns the large object heap.
         var document = pane.TextDocument;
-        var text = document.StartPoint.CreateEditPoint().GetText(document.EndPoint) ?? string.Empty;
-        var truncated = text.Length > maxChars;
+        var end = document.EndPoint;
+        var start = document.StartPoint;
+        var truncated = (end.AbsoluteCharOffset - start.AbsoluteCharOffset) > maxChars;
+        var cursor = truncated ? end.CreateEditPoint() : start.CreateEditPoint();
         if (truncated)
         {
+            cursor.CharLeft(maxChars);
+        }
+
+        var text = cursor.GetText(end) ?? string.Empty;
+        if (text.Length > maxChars)
+        {
+            // A line break counts as one character for CharLeft but two in the text it returns.
             text = text.Substring(text.Length - maxChars);
+            truncated = true;
         }
 
         return new JObject

@@ -8,6 +8,7 @@ using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Automation;
 
@@ -72,14 +73,28 @@ internal sealed partial class VsControlPipeServer
         var budget = Math.Min(_maxElementCount, Math.Max(1, args["maxNodes"]?.Value<int?>() ?? _defaultElementCount));
 
         // UIA calls are cross-process and can stall while the target's UI thread is busy or stopped
-        // at a breakpoint; none of them may run on the VS UI thread.
-        var (tree, remaining) = await Task.Run(() =>
+        // at a breakpoint; none of them may run on the VS UI thread, and awaiting the walk without a
+        // deadline wedges this pipe connection for as long as the target stays stopped.
+        var walk = Task.Run(() =>
         {
             var root = AutomationElement.FromHandle(hwnd);
             var json = ElementToJson(root, 0, maxDepth, ref budget);
             return (json, budget);
         });
 
+        var finished = await Task.WhenAny(walk, Task.Delay(_uiActionTimeoutMs));
+        if (finished != walk)
+        {
+            ObserveFault(walk);
+            return new JObject
+            {
+                ["hwnd"] = hwnd.ToInt64(),
+                ["pending"] = true,
+                ["note"] = "The app has not answered the UI Automation walk yet (it may be stopped at a breakpoint); use waitForBreak or getDebuggerState.",
+            };
+        }
+
+        var (tree, remaining) = await walk;
         return new JObject { ["hwnd"] = hwnd.ToInt64(), ["root"] = tree, ["truncated"] = remaining <= 0 };
     }
 
@@ -167,10 +182,41 @@ internal sealed partial class VsControlPipeServer
     private static async Task<JObject> CaptureWindowAsync(JObject args)
     {
         var hwnd = await ResolveDebuggedWindowAsync(args);
+        var debugger = await GetDebuggerAsync();
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(); // the analyzer needs the switch visible in this method
+        var stoppedAtBreak = debugger.CurrentMode == EnvDTE.dbgDebugMode.dbgBreakMode;
         var rect = GetWindowRect(hwnd);
         var width = Math.Max(1, rect.Right - rect.Left);
         var height = Math.Max(1, rect.Bottom - rect.Top);
 
+        // PrintWindow sends WM_PRINT synchronously and returns only once the target's message pump
+        // answers it. An app stopped at a breakpoint - the normal case for this tool - never will, so
+        // calling it on the VS UI thread freezes devenv outright. Skip it at break mode, and run it
+        // off the UI thread with a deadline everywhere else; the desktop copy is the fallback on both
+        // paths.
+        var printed = stoppedAtBreak ? null : await PrintWindowCaptureAsync(hwnd, width, height);
+        return printed ?? CopyFromScreenCapture(hwnd, rect, width, height);
+    }
+
+    /// <summary>Runs <c>PrintWindow</c> on a background thread and gives up after
+    /// <see cref="_uiActionTimeoutMs"/>. The abandoned thread keeps sole ownership of its bitmap and
+    /// device context, so no caller touches GDI objects a stuck WM_PRINT may still be drawing into.</summary>
+    private static async Task<JObject?> PrintWindowCaptureAsync(IntPtr hwnd, int width, int height)
+    {
+        var capture = Task.Run(() => PrintWindowCapture(hwnd, width, height));
+        var finished = await Task.WhenAny(capture, Task.Delay(_uiActionTimeoutMs));
+        if (finished != capture)
+        {
+            ObserveFault(capture);
+            return null;
+        }
+
+        return await capture; // rethrows the capture's own error
+    }
+
+    /// <summary>Returns <c>null</c> when <c>PrintWindow</c> declines to render the window.</summary>
+    private static JObject? PrintWindowCapture(IntPtr hwnd, int width, int height)
+    {
         using var bitmap = new Bitmap(width, height, PixelFormat.Format32bppArgb);
         using (var graphics = Graphics.FromImage(bitmap))
         {
@@ -187,12 +233,29 @@ internal sealed partial class VsControlPipeServer
 
             if (!printed)
             {
-                graphics.CopyFromScreen(rect.Left, rect.Top, 0, 0, new Size(width, height));
+                return null;
             }
         }
 
-        var scale = Math.Min(1.0, (double)_maxCaptureSide / Math.Max(width, height));
-        using var output = scale < 1.0 ? Downscale(bitmap, scale) : bitmap;
+        return EncodeCapture(hwnd, bitmap);
+    }
+
+    private static JObject CopyFromScreenCapture(IntPtr hwnd, NativeMethods.RECT rect, int width, int height)
+    {
+        using var bitmap = new Bitmap(width, height, PixelFormat.Format32bppArgb);
+        using (var graphics = Graphics.FromImage(bitmap))
+        {
+            graphics.CopyFromScreen(rect.Left, rect.Top, 0, 0, new Size(width, height));
+        }
+
+        return EncodeCapture(hwnd, bitmap);
+    }
+
+    private static JObject EncodeCapture(IntPtr hwnd, Bitmap bitmap)
+    {
+        var scale = Math.Min(1.0, (double)_maxCaptureSide / Math.Max(bitmap.Width, bitmap.Height));
+        using var scaled = scale < 1.0 ? Downscale(bitmap, scale) : null;
+        var output = scaled ?? bitmap;
         using var stream = new MemoryStream();
         output.Save(stream, ImageFormat.Png);
 
@@ -208,11 +271,25 @@ internal sealed partial class VsControlPipeServer
 
     private static Bitmap Downscale(Bitmap source, double scale)
     {
-        var scaled = new Bitmap((int)Math.Round(source.Width * scale), (int)Math.Round(source.Height * scale), PixelFormat.Format32bppArgb);
+        var scaled = new Bitmap(ScaleDimension(source.Width, scale), ScaleDimension(source.Height, scale), PixelFormat.Format32bppArgb);
         using var graphics = Graphics.FromImage(scaled);
         graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
         graphics.DrawImage(source, 0, 0, scaled.Width, scaled.Height);
         return scaled;
+    }
+
+    /// <summary>A window narrower than <c>1 / scale</c> pixels rounds down to zero, and
+    /// <c>new Bitmap(0, h)</c> throws, so every scaled side keeps at least one pixel.</summary>
+    private static int ScaleDimension(int value, double scale) => Math.Max(1, (int)Math.Round(value * scale));
+
+    /// <summary>Keeps an abandoned background call from surfacing as an unobserved task exception.</summary>
+    private static void ObserveFault(Task task)
+    {
+        _ = task.ContinueWith(
+            t => { _ = t.Exception; },
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     /// <summary>The trust check shared by every window-scoped method.</summary>

@@ -251,6 +251,8 @@ internal sealed partial class VsControlPipeServer
         }
 
         var waitForBreakMs = ReadWaitMs(args, "waitForBreakMs", _defaultWaitForBreakMs);
+        var deadline = DateTime.UtcNow.AddMilliseconds(waitForBreakMs);
+        var startedAt = BreakPositionToken(debugger);
         switch (step)
         {
             case DebuggerStep.Continue: debugger.Go(WaitForBreakOrEnd: false); break;
@@ -259,8 +261,26 @@ internal sealed partial class VsControlPipeServer
             case DebuggerStep.Out: debugger.StepOut(WaitForBreakOrEnd: false); break;
         }
 
-        var mode = await WaitForModeAsync(debugger, m => m != dbgDebugMode.dbgRunMode, waitForBreakMs, cancellationToken);
-        return DescribeDebugger(debugger, timedOut: mode == dbgDebugMode.dbgRunMode);
+        // The engine is still in break mode for a moment after the step is issued, so waiting only for
+        // "not running" is satisfied by the pre-step state on the first poll and reports the stale
+        // frame. Wait for this break to end first: the debugger either enters run mode or - for a step
+        // that finishes inside one poll interval - reports a different break position.
+        bool LeftTheBreak(dbgDebugMode observed)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            return observed != dbgDebugMode.dbgBreakMode || BreakPositionToken(debugger) != startedAt;
+        }
+
+        var mode = await WaitForModeAsync(debugger, LeftTheBreak, waitForBreakMs, cancellationToken);
+        var timedOut = !LeftTheBreak(mode);
+        if (!timedOut)
+        {
+            var remainingMs = (int)Math.Max(0, (deadline - DateTime.UtcNow).TotalMilliseconds);
+            mode = await WaitForModeAsync(debugger, m => m != dbgDebugMode.dbgRunMode, remainingMs, cancellationToken);
+            timedOut = mode == dbgDebugMode.dbgRunMode;
+        }
+
+        return DescribeDebugger(debugger, timedOut);
     }
 
     private static async Task<JObject> WaitForBreakAsync(JObject args, CancellationToken cancellationToken)
@@ -367,6 +387,29 @@ internal sealed partial class VsControlPipeServer
         if (debugger.CurrentMode != dbgDebugMode.dbgBreakMode)
         {
             throw new InvalidOperationException("The debugger is not in break mode; set a breakpoint and use waitForBreak first.");
+        }
+    }
+
+    /// <summary>Identifies the break the debugger is stopped at (reason, frame and line). A step that
+    /// completes between two polls is never observed as run mode, so <see cref="StepAsync"/> compares
+    /// this token to tell a finished step from one that has not started yet.</summary>
+    private static string BreakPositionToken(Debugger debugger)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        try
+        {
+            if (debugger.CurrentStackFrame is not StackFrame frame)
+            {
+                return string.Empty;
+            }
+
+            var line = frame is EnvDTE90a.StackFrame2 frame2 ? (long)frame2.LineNumber : 0L;
+            return $"{debugger.LastBreakReason}|{frame.FunctionName}|{line}";
+        }
+        catch (COMException)
+        {
+            // Mid-transition, or no managed frame (native/external code): the position is unknown.
+            return string.Empty;
         }
     }
 
