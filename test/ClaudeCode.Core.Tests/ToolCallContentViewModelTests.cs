@@ -76,16 +76,36 @@ public sealed class ToolCallContentViewModelTests
     }
 
     [Fact]
-    public void StripFenceWrapper_ContentContainsFenceMidPayload_LeavesUnchanged()
+    public void StripFenceWrapper_ContentContainsBackticksMidLine_StillStrips()
     {
-        // Deliberately conservative: an inner "```" may be the real close of the leading fence, so
-        // the wrapper is not provably the whole payload. Showing the markers beats deleting a line.
-        const string text = "```console\nprint('```')\n```";
+        // CommonMark only lets a line-leading backtick run close a fence, so "```" inside a line -
+        // a Read of a README whose numbered lines carry "5\t```bash" - cannot have closed the
+        // leading fence; the trailing fence is provably this block's close.
+        var result = ToolCallContentViewModel.StripFenceWrapper("```console\n5\t```bash\nprint('```')\n```");
 
+        Assert.Equal("5\t```bash\nprint('```')", result);
+    }
+
+    [Theory]
+    // A line-leading run at least as long as the opener closes it: the trailing fence belongs to
+    // something else, so the payload is left alone. Up to three spaces of indentation still count.
+    [InlineData("```console\nfoo\n```\nbar\n```")]
+    [InlineData("```console\nfoo\n   ```  \nbar\n```")]
+    [InlineData("```console\nfoo\n````\nbar\n```")]
+    public void StripFenceWrapper_LineLeadingClosingRunMidPayload_LeavesUnchanged(string text)
+    {
         var result = ToolCallContentViewModel.StripFenceWrapper(text);
 
         Assert.Same(text, result);
     }
+
+    [Theory]
+    // A shorter run, one followed by text, or one indented four spaces cannot close the opener.
+    [InlineData("````console\nfoo\n```\nbar\n````", "foo\n```\nbar")]
+    [InlineData("```console\nfoo\n```bash\nbar\n```", "foo\n```bash\nbar")]
+    [InlineData("```console\nfoo\n    ```\nbar\n```", "foo\n    ```\nbar")]
+    public void StripFenceWrapper_RunThatCannotCloseTheOpener_StillStrips(string text, string expected) =>
+        Assert.Equal(expected, ToolCallContentViewModel.StripFenceWrapper(text));
 
     [Fact]
     public void StripFenceWrapper_FourBacktickWrapper_StripsBothFences()

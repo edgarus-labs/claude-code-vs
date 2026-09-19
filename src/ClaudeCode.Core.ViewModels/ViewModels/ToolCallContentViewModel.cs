@@ -87,7 +87,7 @@ public sealed class ToolCallContentViewModel
         }
 
         var inner = trimmed.Substring(firstNewline + 1, closingFenceStart - (firstNewline + 1));
-        if (inner.IndexOf("```", StringComparison.Ordinal) >= 0)
+        if (ContainsClosingFenceLine(inner, openingFenceLength))
         {
             // An earlier fence may already have closed the leading one (two separate blocks), so the
             // trailing fence is not provably this block's close. Leave the payload alone.
@@ -104,5 +104,58 @@ public sealed class ToolCallContentViewModel
         }
 
         return inner;
+    }
+
+    /// <summary>CommonMark closes a backtick fence only with a line that, after at most three
+    /// spaces of indentation, is a run of at least the opening length of backticks and nothing but
+    /// blanks after it. Backticks anywhere else in a line - a numbered Read of a README carrying
+    /// "5\t```bash" - cannot have closed the opener, so they do not make the wrapper ambiguous.</summary>
+    private static bool ContainsClosingFenceLine(string inner, int openingFenceLength)
+    {
+        var lineStart = 0;
+        while (lineStart < inner.Length)
+        {
+            var lineEnd = inner.IndexOf('\n', lineStart);
+            if (lineEnd < 0)
+            {
+                lineEnd = inner.Length;
+            }
+
+            if (IsClosingFenceLine(inner, lineStart, lineEnd, openingFenceLength))
+            {
+                return true;
+            }
+
+            lineStart = lineEnd + 1;
+        }
+
+        return false;
+    }
+
+    private static bool IsClosingFenceLine(string text, int start, int end, int openingFenceLength)
+    {
+        var index = start;
+        while (index < end && index - start < 3 && text[index] == ' ')
+        {
+            index++;
+        }
+
+        var runStart = index;
+        while (index < end && text[index] == '`')
+        {
+            index++;
+        }
+
+        if (index - runStart < openingFenceLength)
+        {
+            return false;
+        }
+
+        while (index < end && (text[index] == ' ' || text[index] == '\t' || text[index] == '\r'))
+        {
+            index++;
+        }
+
+        return index == end;
     }
 }
