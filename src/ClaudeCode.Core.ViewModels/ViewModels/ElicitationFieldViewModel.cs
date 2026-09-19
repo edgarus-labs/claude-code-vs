@@ -10,16 +10,21 @@ namespace ClaudeCode.Core.ViewModels;
 /// invariant for its options: a single-select field never holds more than one selected option.</summary>
 public sealed class ElicitationFieldViewModel : ObservableObject
 {
-    public ElicitationFieldViewModel(ElicitationField field)
+    internal ElicitationFieldViewModel(ElicitationField field, ElicitationRequestViewModel.DisplayTextBudget budget)
     {
+        if (field is null)
+        {
+            throw new ArgumentNullException(nameof(field));
+        }
+
         Key = field.Key;
-        Title = ElicitationRequestViewModel.TruncateForDisplay(field.Title);
-        Description = ElicitationRequestViewModel.TruncateForDisplay(field.Description);
+        Title = budget.Truncate(field.Title);
+        Description = budget.Truncate(field.Description);
         Kind = field.Kind;
         IReadOnlyList<ElicitationOption> options = field.Options ?? Array.Empty<ElicitationOption>();
         Options = options
             .Take(ElicitationRequestViewModel.MaxOptionsPerField)
-            .Select(option => new ElicitationOptionViewModel(option, this))
+            .Select(option => new ElicitationOptionViewModel(option, this, budget))
             .ToList();
     }
 

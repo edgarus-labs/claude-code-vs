@@ -62,9 +62,11 @@
 
       <!-- Free text. UpdateSourceTrigger=PropertyChanged so Submit reads what is on screen even when
            the button is activated by keyboard without the box ever losing focus. MaxLength bounds
-           what the user can hand back to the agent. -->
+           what the user can hand back to the agent and is the view-model constant itself, so the two
+           cannot drift. -->
       <DataTemplate x:Key="ElicitationTextFieldTemplate" DataType="{x:Type vm:ElicitationFieldViewModel}">
-        <TextBox Text="{Binding TextValue, UpdateSourceTrigger=PropertyChanged}" MaxLength="4000"
+        <TextBox Text="{Binding TextValue, UpdateSourceTrigger=PropertyChanged}"
+                 MaxLength="{x:Static vm:ElicitationRequestViewModel.MaxDisplayTextLength}"
                  AcceptsReturn="False" TextWrapping="Wrap" Padding="6,4" FontSize="12"
                  Background="{DynamicResource ChatBackgroundBrush}" Foreground="{DynamicResource ChatForegroundBrush}"
                  CaretBrush="{DynamicResource ChatForegroundBrush}" BorderBrush="{DynamicResource ChatBorderBrush}"
@@ -77,8 +79,11 @@
         <ItemsControl ItemsSource="{Binding Options}">
           <ItemsControl.ItemTemplate>
             <DataTemplate DataType="{x:Type vm:ElicitationOptionViewModel}">
+              <!-- No ToolTip: the description is already rendered in full below, and a WPF ToolTip is
+                   an unwrapped Popup with no MaxWidth, so an agent-authored description would paint a
+                   screen-wide band. Same for the CheckBox in the multi-select template. -->
               <RadioButton IsChecked="{Binding IsSelected}" Margin="0,2" Foreground="{DynamicResource ChatForegroundBrush}"
-                           AutomationProperties.Name="{Binding Label}" ToolTip="{Binding Description}">
+                           AutomationProperties.Name="{Binding Label}">
                 <StackPanel>
                   <TextBlock Text="{Binding Label}" FontSize="12" TextWrapping="Wrap" />
                   <TextBlock Text="{Binding Description}" FontSize="11" TextWrapping="Wrap"
@@ -96,7 +101,7 @@
           <ItemsControl.ItemTemplate>
             <DataTemplate DataType="{x:Type vm:ElicitationOptionViewModel}">
               <CheckBox IsChecked="{Binding IsSelected}" Margin="0,2" Foreground="{DynamicResource ChatForegroundBrush}"
-                        AutomationProperties.Name="{Binding Label}" ToolTip="{Binding Description}">
+                        AutomationProperties.Name="{Binding Label}">
                 <StackPanel>
                   <TextBlock Text="{Binding Label}" FontSize="12" TextWrapping="Wrap" />
                   <TextBlock Text="{Binding Description}" FontSize="11" TextWrapping="Wrap"
@@ -145,15 +150,28 @@
           BorderBrush="{DynamicResource ChatAccentBrush}" BorderThickness="1" CornerRadius="12"
           Margin="12,6,12,0" Padding="12,10">
     <StackPanel>
-      <TextBlock Text="{Binding Message}" TextWrapping="Wrap" FontWeight="SemiBold"
-                 Foreground="{DynamicResource ChatForegroundBrush}" Margin="0,0,0,8"
-                 AutomationProperties.LiveSetting="Assertive" />
-
-      <!-- The form is agent-authored and bounded at up to ElicitationRequestViewModel.MaxFields
-           fields; scroll rather than push the composer off the panel. -->
+      <!-- Message and fields are all agent-authored, so the whole body sits inside one bounded scroll
+           region. The card lives in an Auto grid row whose only * sibling is the transcript, so
+           anything left unbounded here is granted its full desired height and shoves the button row
+           below it - and the composer - past the bottom edge of the tool window, where they are
+           clipped and the form becomes unanswerable. The answer buttons deliberately stay outside the
+           ScrollViewer so a long form cannot scroll them out of reach; ElicitationCardViewLayoutTests
+           pins both halves of that. -->
       <ScrollViewer MaxHeight="260" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-        <ItemsControl ItemsSource="{Binding Fields}" ItemTemplate="{StaticResource ElicitationFieldTemplate}" />
+        <StackPanel>
+          <TextBlock x:Name="MessageText" Text="{Binding Message}" TextWrapping="Wrap" FontWeight="SemiBold"
+                     Foreground="{DynamicResource ChatForegroundBrush}" Margin="0,0,0,8"
+                     AutomationProperties.LiveSetting="Assertive" />
+          <ItemsControl ItemsSource="{Binding Fields}" ItemTemplate="{StaticResource ElicitationFieldTemplate}" />
+        </StackPanel>
       </ScrollViewer>
+
+      <!-- Questions past MaxFields are dropped to bound the form; the agent is still told the form was
+           accepted, so say what was withheld - outside the scroll region, since a notice the user can
+           scroll away from is no notice at all. -->
+      <TextBlock Text="{Binding TruncationNotice}" TextWrapping="Wrap" FontSize="11" Margin="0,4,0,0"
+                 Foreground="{DynamicResource ChatSubtleForegroundBrush}"
+                 Visibility="{Binding TruncationNotice, Converter={StaticResource ElicitationNullToVisibilityConverter}}" />
 
       <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,2,0,0">
         <Button Content="Decline" Margin="0,0,6,0" Command="{Binding DeclineCommand}"

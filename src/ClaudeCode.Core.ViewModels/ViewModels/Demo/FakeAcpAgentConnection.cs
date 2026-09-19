@@ -100,8 +100,9 @@ public sealed class FakeAcpAgentConnection : IAcpAgentConnection
     public event EventHandler<SessionUpdateEventArgs>? SessionUpdate;
 
     // FakeAcpAgentConnection is a scripted demo/fallback double: it never asks the client to read or
-    // write files, never requests permission, and never disconnects unexpectedly. These four events
-    // are required by IAcpAgentConnection and legitimately unused here, not dead code.
+    // write files, never requests permission, never asks the user a question, and never disconnects
+    // unexpectedly. These five events are required by IAcpAgentConnection and legitimately unused
+    // here, not dead code.
 #pragma warning disable CS0067
     public event EventHandler<PermissionRequestEventArgs>? PermissionRequested;
 

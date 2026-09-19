@@ -11,12 +11,12 @@ public sealed class ElicitationOptionViewModel : ObservableObject
 {
     private readonly ElicitationFieldViewModel _owner;
 
-    internal ElicitationOptionViewModel(ElicitationOption option, ElicitationFieldViewModel owner)
+    internal ElicitationOptionViewModel(ElicitationOption option, ElicitationFieldViewModel owner, ElicitationRequestViewModel.DisplayTextBudget budget)
     {
         _owner = owner ?? throw new ArgumentNullException(nameof(owner));
         Value = option.Value;
-        Label = ElicitationRequestViewModel.TruncateForDisplay(option.Label) ?? string.Empty;
-        Description = ElicitationRequestViewModel.TruncateForDisplay(option.Description);
+        Label = budget.Truncate(option.Label) ?? string.Empty;
+        Description = budget.Truncate(option.Description);
     }
 
     /// <summary>The identifier sent back to the agent - never truncated for display.</summary>
