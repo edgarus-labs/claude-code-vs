@@ -24,6 +24,12 @@
          after Directory.Build.props, so it always reads empty here.) -->
     <IsUnderTestDirectory Condition="$(MSBuildProjectDirectory.Contains('\test\')) Or $(MSBuildProjectDirectory.Contains('/test/'))">true</IsUnderTestDirectory>
     <NoWarn Condition="'$(IsUnderTestDirectory)' == 'true'">$(NoWarn);CA1707;CA1861</NoWarn>
+    <!-- ContinuousIntegrationBuild turns on DeterministicSourcePaths, which rewrites [CallerFilePath]
+         to /_/... . The layout and transcript-asset tests locate the shipped XAML and web assets
+         from their own source path, so under that mapping every one of them failed on the runner
+         while passing locally. Test assemblies are never shipped, so the mapping buys them
+         nothing; keep it for the product assemblies only. -->
+    <DeterministicSourcePaths Condition="'$(IsUnderTestDirectory)' == 'true'">false</DeterministicSourcePaths>
   </PropertyGroup>
 
 </Project>
