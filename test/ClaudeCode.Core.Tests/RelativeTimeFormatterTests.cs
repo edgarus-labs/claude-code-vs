@@ -57,11 +57,24 @@ public sealed class RelativeTimeFormatterTests
     }
 
     [Fact]
-    public void Describe_NullCulture_FallsBackToTheCurrentCultureInsteadOfThrowing()
+    public void Describe_NullCulture_FallsBackToTheCurrentCultureNotToAHardCodedOne()
     {
+        // Pinned to a culture whose "MMM d" differs from the invariant one, so the assertion cannot
+        // be satisfied by an implementation that quietly formats with CultureInfo.InvariantCulture.
         DateTimeOffset timestamp = Now.AddDays(-30);
+        var pinned = new CultureInfo("fr-FR");
+        CultureInfo previous = CultureInfo.CurrentCulture;
+        CultureInfo.CurrentCulture = pinned;
+        try
+        {
+            string fallback = RelativeTimeFormatter.Describe(Now, timestamp, culture: null);
 
-        Assert.Equal(timestamp.ToLocalTime().ToString("MMM d", CultureInfo.CurrentCulture),
-            RelativeTimeFormatter.Describe(Now, timestamp, culture: null));
+            Assert.Equal(RelativeTimeFormatter.Describe(Now, timestamp, pinned), fallback);
+            Assert.NotEqual(RelativeTimeFormatter.Describe(Now, timestamp, CultureInfo.InvariantCulture), fallback);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = previous;
+        }
     }
 }

@@ -21,13 +21,10 @@ public sealed class PercentToDashArrayConverter : IValueConverter
             if (parts.Length > 1 && double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double parsedThickness)) thickness = parsedThickness;
         }
 
-        double percent = value switch
-        {
-            int i => i,
-            double d => d,
-            long l => l,
-            _ => 0,
-        };
+        // Both bindings supply an int (ChatViewModel.ContextUsagePercent, UsageLimitDisplay.Percent);
+        // anything else - including the unresolved-binding sentinel - draws nothing. Kept identical
+        // to the sibling PercentToStarWidthConverter so the two can never disagree.
+        double percent = value is int i ? i : 0;
         percent = Math.Max(0, Math.Min(100, percent));
         // Dash lengths are in multiples of the stroke thickness.
         double circumference = 2 * Math.PI * radius / thickness;

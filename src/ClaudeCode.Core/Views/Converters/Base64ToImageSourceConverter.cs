@@ -7,8 +7,9 @@ using System.Windows.Media.Imaging;
 namespace ClaudeCode.Core.Views.Converters;
 
 /// <summary>Decodes a base64 image payload into a small, frozen bitmap for attachment thumbnails.
-/// Wide sources are decoded at a capped width so a large pasted screenshot never costs full-size
-/// memory in the composer; narrow sources are decoded as-is rather than scaled up.</summary>
+/// Sources bigger than the thumbnail box are decoded with their longer side capped, so a large
+/// pasted screenshot never costs full-size memory in the composer; smaller sources are decoded
+/// as-is rather than scaled up.</summary>
 public sealed class Base64ToImageSourceConverter : IValueConverter
 {
     private const int ThumbnailDecodeWidth = 160;
@@ -25,13 +26,25 @@ public sealed class Base64ToImageSourceConverter : IValueConverter
             // PNG (a few KB on the wire) would ask WIC for a 160x800,000,000 frame on the UI thread.
             var probe = BitmapDecoder.Create(stream, BitmapCreateOptions.DelayCreation, BitmapCacheOption.None);
             if (probe.Frames.Count == 0) return null;
-            int sourceWidth = probe.Frames[0].PixelWidth;
+            BitmapFrame probeFrame = probe.Frames[0];
+            int sourceWidth = probeFrame.PixelWidth, sourceHeight = probeFrame.PixelHeight;
 
             stream.Position = 0;
             var image = new BitmapImage();
             image.BeginInit();
             image.CacheOption = BitmapCacheOption.OnLoad;
-            if (sourceWidth > ThumbnailDecodeWidth) image.DecodePixelWidth = ThumbnailDecodeWidth;
+            // Cap whichever side dominates and let WIC scale the other one with it. Capping width
+            // alone left the perpendicular dimension unbounded: a 100x200,000 PNG is inside the
+            // 20 MP admission limit in ChatPanelView.AddImage and would decode at full size.
+            if (sourceWidth >= sourceHeight)
+            {
+                if (sourceWidth > ThumbnailDecodeWidth) image.DecodePixelWidth = ThumbnailDecodeWidth;
+            }
+            else if (sourceHeight > ThumbnailDecodeWidth)
+            {
+                image.DecodePixelHeight = ThumbnailDecodeWidth;
+            }
+
             image.StreamSource = stream;
             image.EndInit();
             image.Freeze();

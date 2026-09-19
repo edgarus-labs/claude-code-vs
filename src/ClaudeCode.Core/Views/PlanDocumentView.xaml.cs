@@ -64,33 +64,73 @@ public partial class PlanDocumentView : UserControl, IDisposable
             var environment = await CoreWebView2Environment.CreateAsync(null, userDataFolder).ConfigureAwait(true);
             if (_disposed) return;
             await PlanView.EnsureCoreWebView2Async(environment).ConfigureAwait(true);
+            if (_disposed) return;
+
+            CoreWebView2 core = PlanView.CoreWebView2;
+            core.Settings.IsWebMessageEnabled = true;
+            core.Settings.AreDefaultContextMenusEnabled = false;
+            core.Settings.AreDevToolsEnabled = false;
+            core.Settings.IsStatusBarEnabled = false;
+            // Ctrl+S/Ctrl+P/Ctrl+F/F5 belong to the IDE, not to Chromium, inside a tool window.
+            core.Settings.AreBrowserAcceleratorKeysEnabled = false;
+            // Nothing is ever exposed via AddHostObjectToScript; don't leave the door that permits it open.
+            core.Settings.AreHostObjectsAllowed = false;
+            core.SetVirtualHostNameToFolderMapping("claudecode.plan", GetAssetsPath(), CoreWebView2HostResourceAccessKind.Deny);
+            core.WebMessageReceived += OnWebMessageReceived;
+            core.ProcessFailed += OnProcessFailed;
+            core.NewWindowRequested += (_, args) => args.Handled = true;
+            // Host-side backstop: the plan document may only ever sit on its own virtual host, so a
+            // future CSP relaxation in plan.html cannot turn agent markdown into a top-level navigation.
+            core.NavigationStarting += (_, args) =>
+                args.Cancel = !args.Uri.StartsWith(PlanDocumentUri, StringComparison.Ordinal);
+            core.NavigationCompleted += (_, args) =>
+            {
+                if (_disposed) return;
+                if (!args.IsSuccess)
+                {
+                    _ready = false; // never leave a stale "ready" latch behind a failed (re)navigation
+                    return;
+                }
+
+                _ready = true;
+                PushTheme();
+                Render();
+            };
+            PlanView.Source = new Uri(PlanDocumentUri);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            return; // No WebView2 runtime: the header actions still work, the body stays blank.
+            // Most likely causes: the WebView2 Runtime isn't installed, or the plan assets weren't
+            // deployed next to this assembly (SetVirtualHostNameToFolderMapping rejects the relative
+            // path GetAssetsPath falls back to). The header actions still work, but the body stays
+            // blank - say so instead of leaving the user staring at nothing, because this task is
+            // fire-and-forget and an escaping exception would be an unobserved, undiagnosable fault.
+            if (!_disposed)
+            {
+                ShowNotice("The plan could not be displayed. The Microsoft Edge WebView2 Runtime is required: " + ex.Message);
+            }
         }
+    }
 
+    // Only a dead renderer needs host action here: WebView2 restarts its GPU/utility processes by
+    // itself and "unresponsive" resolves on its own, so latching the window off for those kinds would
+    // blank a plan that was about to come back. Re-navigating is what restores the document, and
+    // NavigationCompleted re-pushes the theme and the plan body.
+    private void OnProcessFailed(object? sender, CoreWebView2ProcessFailedEventArgs e)
+    {
         if (_disposed) return;
-        CoreWebView2 core = PlanView.CoreWebView2;
-        core.Settings.IsWebMessageEnabled = true;
-        core.Settings.AreDefaultContextMenusEnabled = false;
-        core.Settings.AreDevToolsEnabled = false;
-        core.Settings.IsStatusBarEnabled = false;
-        core.SetVirtualHostNameToFolderMapping("claudecode.plan", GetAssetsPath(), CoreWebView2HostResourceAccessKind.Deny);
-        core.WebMessageReceived += OnWebMessageReceived;
-        core.NewWindowRequested += (_, args) => args.Handled = true;
-        // Host-side backstop: the plan document may only ever sit on its own virtual host, so a
-        // future CSP relaxation in plan.html cannot turn agent markdown into a top-level navigation.
-        core.NavigationStarting += (_, args) =>
-            args.Cancel = !args.Uri.StartsWith(PlanDocumentUri, StringComparison.Ordinal);
-        core.NavigationCompleted += (_, args) =>
+        switch (e.ProcessFailedKind)
         {
-            if (_disposed || !args.IsSuccess) return;
-            _ready = true;
-            PushTheme();
-            Render();
-        };
-        PlanView.Source = new Uri(PlanDocumentUri);
+            case CoreWebView2ProcessFailedKind.RenderProcessExited:
+                _ready = false;
+                PlanView.CoreWebView2.Reload();
+                break;
+            case CoreWebView2ProcessFailedKind.BrowserProcessExited:
+                // The whole CoreWebView2 is gone; there is nothing left on this control to re-navigate.
+                _ready = false;
+                ShowNotice("The plan viewer stopped working. Close this window and open the plan again.");
+                break;
+        }
     }
 
     private static string GetAssetsPath() => Path.Combine(
@@ -144,6 +184,10 @@ public partial class PlanDocumentView : UserControl, IDisposable
 
     private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
+        // The page renders untrusted agent-authored markdown, so the envelope is untrusted too - and
+        // only the plan document itself, never some future subframe, may drive the host.
+        if (_disposed || !e.Source.StartsWith(PlanDocumentUri, StringComparison.Ordinal)) return;
+
         string? url;
         try
         {
@@ -234,7 +278,12 @@ public partial class PlanDocumentView : UserControl, IDisposable
         _noticeTimer.Stop();
         _noticeTimer.Tick -= OnNoticeTimerTick;
         if (_plan is not null) _plan.PropertyChanged -= OnPlanPropertyChanged;
-        if (PlanView.CoreWebView2 is not null) PlanView.CoreWebView2.WebMessageReceived -= OnWebMessageReceived;
+        if (PlanView.CoreWebView2 is not null)
+        {
+            PlanView.CoreWebView2.WebMessageReceived -= OnWebMessageReceived;
+            PlanView.CoreWebView2.ProcessFailed -= OnProcessFailed;
+        }
+
         PlanView.Dispose();
         GC.SuppressFinalize(this);
     }

@@ -1,5 +1,6 @@
 using ClaudeCode.Contracts;
 using ClaudeCode.Core.ViewModels;
+using System;
 using System.Collections.Generic;
 using Xunit;
 
@@ -69,5 +70,20 @@ public sealed class PlanReviewViewModelTests
 
         Assert.False(plan.ReviewCommand.CanExecute("   "));
         Assert.False(plan.ReviewCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public void Markdown_BeyondTheRenderableLimit_IsBoundedBeforeThePlanWindowCanSerializeIt()
+    {
+        // PlanDocumentView.Render() serialises Markdown straight into an ExecuteScriptAsync payload,
+        // so the agent-sized plan has to be cut here or nowhere.
+        var oversized = new string('x', MarkdownSafetyLimits.MaxMarkdownLength + 1);
+
+        var plan = new PlanReviewViewModel(oversized, BothOptions, _ => { }, _ => { });
+
+        Assert.Equal(
+            MarkdownSafetyLimits.MaxMarkdownLength + MarkdownSafetyLimits.TruncationNotice.Length,
+            plan.Markdown.Length);
+        Assert.EndsWith(MarkdownSafetyLimits.TruncationNotice, plan.Markdown, StringComparison.Ordinal);
     }
 }
