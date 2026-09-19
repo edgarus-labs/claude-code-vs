@@ -4,6 +4,9 @@ using EnvDTE80;
 using Microsoft.VisualStudio.Shell;
 using Newtonsoft.Json.Linq;
 using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
 using OutputWindowPane = EnvDTE.OutputWindowPane;
 
@@ -15,6 +18,18 @@ internal sealed partial class VsControlPipeServer
     private const int _defaultOutputChars = 20_000;
     private const int _maxOutputChars = 200_000;
 
+    // The MCP client's own build budget is 5 minutes (VsControlPipeClient._buildTimeout). This is the
+    // server-side backstop that keeps a build Visual Studio never reports completion for from wedging
+    // the single sequential request loop for the rest of the session, so it sits above that budget.
+    private static readonly TimeSpan _buildTimeout = TimeSpan.FromMinutes(10);
+
+    private static readonly HashSet<string> _errorSeverities = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "error",
+        "warning",
+        "message",
+    };
+
     /// <summary>
     /// Builds, rebuilds or cleans the current solution and waits for completion.
     /// <c>errorCount</c>/<c>warningCount</c> reflect the Error List window's contents right after the
@@ -23,8 +38,12 @@ internal sealed partial class VsControlPipeServer
     /// without driving <c>IVsSolutionBuildManager</c> directly; the Error List is the diagnostic surface
     /// <see cref="Community.VisualStudio.Toolkit"/> already gives us.
     /// </summary>
-    private static async Task<JObject> BuildSolutionAsync(JObject args)
+    private static async Task<JObject> BuildSolutionAsync(JObject args, CancellationToken cancellationToken)
     {
+        // Validate before mutating: an unknown action must not leave the user's active solution
+        // configuration switched to something they never selected by a request we then reject.
+        var action = ParseBuildAction(args);
+
         // The optional `configuration` param only takes effect if it matches an existing solution
         // configuration name; a mismatched or omitted value simply builds whatever is active.
         var configurationName = args["configuration"]?.Value<string>();
@@ -33,25 +52,72 @@ internal sealed partial class VsControlPipeServer
             await TrySetActiveConfigurationAsync(configurationName!);
         }
 
-        var action = ParseBuildAction(args);
-        var succeeded = await VS.Build.BuildSolutionAsync(action);
+        var succeeded = await RunBuildAsync(() => VS.Build.BuildSolutionAsync(action), cancellationToken);
         return await DescribeBuildResultAsync(succeeded, action);
     }
 
-    private static async Task<JObject> BuildProjectAsync(JObject args)
+    /// <summary>Builds, rebuilds or cleans one loaded project. <c>errorCount</c>/<c>warningCount</c>
+    /// carry the same Error List caveat as <see cref="BuildSolutionAsync"/>, narrowed to this
+    /// project's own items so an unrelated broken project is not reported as this one's failure.</summary>
+    private static async Task<JObject> BuildProjectAsync(JObject args, CancellationToken cancellationToken)
     {
         var projectName = RequireString(args, "projectName");
         var project = await FindProjectAsync(projectName);
         var action = ParseBuildAction(args);
-        var succeeded = await VS.Build.BuildProjectAsync(project, action);
-        var result = await DescribeBuildResultAsync(succeeded, action);
+        var succeeded = await RunBuildAsync(() => VS.Build.BuildProjectAsync(project, action), cancellationToken);
+        var result = await DescribeBuildResultAsync(succeeded, action, project.Name);
         result["project"] = project.Name;
         return result;
     }
 
-    private static async Task<JObject> DescribeBuildResultAsync(bool succeeded, BuildAction action)
+    /// <summary>
+    /// Awaits one toolkit build under a bound and turns its two non-success exits into errors the
+    /// agent can act on. The toolkit signals completion from an <c>IVsUpdateSolutionEvents</c> sink,
+    /// so a build whose project Visual Studio never attempts - a dependency failed and it was
+    /// skipped - never signals at all. Requests are processed strictly one at a time, so an
+    /// unbounded await here would wedge the whole control channel for the rest of the session and
+    /// block disposal on the listen loop.
+    /// </summary>
+    private static async Task<bool> RunBuildAsync(Func<Task<bool>> startBuild, CancellationToken cancellationToken)
     {
-        var (errorCount, warningCount) = await CountBuildDiagnosticsAsync();
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        budget.CancelAfter(_buildTimeout);
+
+        var build = startBuild();
+        var expiry = Task.Delay(Timeout.Infinite, budget.Token);
+        if (await Task.WhenAny(build, expiry) != build)
+        {
+            // Observe the abandoned build so a later failure cannot surface as an unobserved task
+            // exception.
+            _ = build.ContinueWith(task => { _ = task.Exception; },
+                CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            cancellationToken.ThrowIfCancellationRequested();
+            throw new InvalidOperationException(
+                $"The build did not report completion within {_buildTimeout.TotalMinutes:0} minutes; Visual Studio may have skipped it because a dependency failed. Check the Build output pane.");
+        }
+
+        try
+        {
+            return await build;
+        }
+        catch (OperationCanceledException)
+        {
+            // The toolkit's solution-events sink cancels its completion source when the build is
+            // cancelled in the IDE. Raw "A task was canceled." is indistinguishable from a transport
+            // failure and invites the agent to restart a build the user just stopped.
+            throw new InvalidOperationException("The build was cancelled in Visual Studio.");
+        }
+        catch (COMException)
+        {
+            // StartSimpleUpdateSolutionConfiguration refuses with a bare HRESULT while another build
+            // is in flight; docs/VsControlProtocol.md promises an actionable error for that case.
+            throw new InvalidOperationException("Visual Studio could not start the build; another build may already be running.");
+        }
+    }
+
+    private static async Task<JObject> DescribeBuildResultAsync(bool succeeded, BuildAction action, string? projectName = null)
+    {
+        var (errorCount, warningCount) = await CountBuildDiagnosticsAsync(projectName);
         return new JObject
         {
             ["action"] = action.ToString().ToLowerInvariant(),
@@ -86,6 +152,13 @@ internal sealed partial class VsControlPipeServer
     private static async Task<JObject> GetBuildErrorsAsync(JObject args)
     {
         var severityFilter = args["severity"]?.Value<string>();
+        if (!string.IsNullOrEmpty(severityFilter) && !_errorSeverities.Contains(severityFilter!))
+        {
+            // An empty list is the same answer as "the build is clean", so a typo'd filter must not
+            // read to the agent as success.
+            throw new InvalidOperationException($"Unknown severity '{severityFilter}'; use error, warning or message.");
+        }
+
         var items = await GetErrorListItemsAsync();
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
         var errors = new JArray();
@@ -171,7 +244,9 @@ internal sealed partial class VsControlPipeServer
             ["pane"] = pane.Name,
             ["text"] = text,
             ["truncated"] = truncated,
-            ["totalChars"] = document.EndPoint.AbsoluteCharOffset,
+            // A character count, not EndPoint.AbsoluteCharOffset: that offset is 1-based, and the
+            // truncation decision above already measures the pane by the same difference.
+            ["totalChars"] = end.AbsoluteCharOffset - start.AbsoluteCharOffset,
         };
     }
 }

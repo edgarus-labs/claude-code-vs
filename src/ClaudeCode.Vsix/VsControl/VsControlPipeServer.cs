@@ -31,10 +31,13 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
     // (e.g. it is mid another automation call or a modal dialog is up); not a real failure.
     private const int _rpcServerCallRetryLaterHResult = unchecked((int)0x8001010A);
 
-    // Only commands that never execute code from the open solution/workspace are allow-listed here.
-    // Debug.Start, Debug.StartWithoutDebugging, Build.BuildSolution, and Build.RebuildSolution are
-    // deliberately excluded: an ACP agent (or anything impersonating one over this pipe) must not be
-    // able to trigger arbitrary code execution by driving the debugger or MSBuild.
+    // This allow-list is what keeps `runCommand` from becoming a generic "execute any DTE command by
+    // name" surface for an ACP agent (or anything impersonating one over this pipe): adding an entry
+    // here adds a capability. It is deliberately NOT a claim that this channel cannot execute code
+    // from the open solution - build and debug execution are exposed through the dedicated,
+    // individually documented `buildSolution`, `buildProject` and `startDebugging` methods below
+    // (see docs/VsControlProtocol.md), so the absence of Build.* / Debug.Start command names here
+    // does not remove that capability.
     private static readonly HashSet<string> _allowedCommands = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
         "Edit.FormatDocument",
@@ -47,6 +50,11 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
     // Matches the client's 5s connect timeout: a peer that has not sent its token by then is not a
     // legitimate client and must not keep the single retained pipe instance occupied.
     private static readonly TimeSpan _handshakeTimeout = TimeSpan.FromSeconds(5);
+
+    // The handshake token is a 32-byte RNG value base64-encoded by VsControlSessionRegistry - 44
+    // characters - so no longer line can ever authenticate. Capping the read keeps an
+    // unauthenticated peer from streaming newline-free bytes into this process for the whole window.
+    private const int _maxHandshakeLineChars = 512;
 
     private readonly string _pipeName;
     private readonly string? _workspaceRoot;
@@ -165,15 +173,17 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
     private async Task<bool> TryHandshakeAsync(StreamReader reader, CancellationToken cancellationToken)
     {
         // The sole server instance is retained across reconnects, so a peer that connects and then
-        // stays silent would hold the only listener forever. Bound the handshake read: on timeout or
-        // shutdown the caller drops the connection and goes back to accepting.
+        // stays silent would hold the only listener forever. Bound the handshake read twice over: by
+        // time (here) and by length (PipeHandshakeLineReader), because the pipe name is enumerable by
+        // any process running as this Windows user. On timeout or shutdown the caller drops the
+        // connection and goes back to accepting.
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(_handshakeTimeout);
 
         string? tokenLine;
         try
         {
-            var readTask = reader.ReadLineAsync();
+            var readTask = PipeHandshakeLineReader.ReadBoundedLineAsync(reader, _maxHandshakeLineChars);
             var timeoutTask = Task.Delay(Timeout.Infinite, timeoutCts.Token);
             if (await Task.WhenAny(readTask, timeoutTask).ConfigureAwait(false) != readTask)
             {
@@ -238,8 +248,8 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
             case "getSelection": return (await GetSelectionAsync()).ToString(Formatting.None);
             case "replaceSelection": return (await ReplaceSelectionAsync(args)).ToString(Formatting.None);
             case "saveAll": return (await SaveAllAsync()).ToString(Formatting.None);
-            case "buildSolution": return (await BuildSolutionAsync(args)).ToString(Formatting.None);
-            case "buildProject": return (await BuildProjectAsync(args)).ToString(Formatting.None);
+            case "buildSolution": return (await BuildSolutionAsync(args, cancellationToken)).ToString(Formatting.None);
+            case "buildProject": return (await BuildProjectAsync(args, cancellationToken)).ToString(Formatting.None);
             case "getBuildErrors": return (await GetBuildErrorsAsync(args)).ToString(Formatting.None);
             case "getOutput": return (await GetOutputAsync(args)).ToString(Formatting.None);
             case "getDiagnostics": return (await GetDiagnosticsAsync(args)).ToString(Formatting.None);
@@ -262,11 +272,11 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
             case "getCallStack": return (await GetCallStackAsync()).ToString(Formatting.None);
             case "getLocals": return (await GetLocalsAsync(args)).ToString(Formatting.None);
             case "evaluateExpression": return (await EvaluateExpressionAsync(args)).ToString(Formatting.None);
-            case "listAppWindows": return (await ListAppWindowsAsync()).ToString(Formatting.None);
-            case "getWindowElements": return (await GetWindowElementsAsync(args)).ToString(Formatting.None);
-            case "invokeElement": return (await InvokeElementAsync(args)).ToString(Formatting.None);
-            case "setElementValue": return (await SetElementValueAsync(args)).ToString(Formatting.None);
-            case "captureWindow": return (await CaptureWindowAsync(args)).ToString(Formatting.None);
+            case "listAppWindows": return (await ListAppWindowsAsync(cancellationToken)).ToString(Formatting.None);
+            case "getWindowElements": return (await GetWindowElementsAsync(args, cancellationToken)).ToString(Formatting.None);
+            case "invokeElement": return (await InvokeElementAsync(args, cancellationToken)).ToString(Formatting.None);
+            case "setElementValue": return (await SetElementValueAsync(args, cancellationToken)).ToString(Formatting.None);
+            case "captureWindow": return (await CaptureWindowAsync(args, cancellationToken)).ToString(Formatting.None);
             default: throw new InvalidOperationException($"Unknown VsControl method '{method}'.");
         }
     }
@@ -520,11 +530,6 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         var path = RequireString(args, "path");
         using var pathLease = WorkspacePathGuard.AcquireDocument(_workspaceRoot, path);
         var fullPath = pathLease.FullPath;
-        if (!File.Exists(fullPath))
-        {
-            throw new InvalidOperationException($"'{path}' does not exist; write the file first.");
-        }
-
         var project = await FindProjectAsync(projectName);
         await project.AddExistingFilesAsync(fullPath);
         return new JObject { ["project"] = project.Name, ["path"] = fullPath };
@@ -535,11 +540,6 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         var path = RequireString(args, "path");
         using var pathLease = WorkspacePathGuard.AcquireDocument(_workspaceRoot, path);
         var fullPath = pathLease.FullPath;
-        if (!File.Exists(fullPath))
-        {
-            throw new InvalidOperationException($"'{path}' does not exist.");
-        }
-
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
         var dte = await VS.GetRequiredServiceAsync<EnvDTE.DTE, EnvDTE80.DTE2>();
         var solution = dte.Solution;
@@ -561,13 +561,6 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         if (!string.Equals(extension, ".sln", StringComparison.OrdinalIgnoreCase) && !string.Equals(extension, ".slnx", StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException($"'{path}' is not a solution file (.sln/.slnx).");
-        }
-
-        // Validate before closing: Close(SaveFirst: true) would otherwise discard the user's open
-        // workspace for a path that cannot be opened afterwards.
-        if (!File.Exists(fullPath))
-        {
-            throw new InvalidOperationException($"'{path}' does not exist.");
         }
 
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
@@ -620,7 +613,9 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         return results;
     }
 
-    private static async Task<(int ErrorCount, int WarningCount)> CountBuildDiagnosticsAsync()
+    /// <summary>Counts Error List errors/warnings, optionally narrowed to one project so a
+    /// single-project build does not report unrelated projects' diagnostics as its own.</summary>
+    private static async Task<(int ErrorCount, int WarningCount)> CountBuildDiagnosticsAsync(string? projectName = null)
     {
         var items = await GetErrorListItemsAsync();
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
@@ -629,6 +624,11 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         var warningCount = 0;
         foreach (var item in items)
         {
+            if (projectName is not null && !MatchesProject(item.Project, projectName))
+            {
+                continue;
+            }
+
             if (item.ErrorLevel == vsBuildErrorLevel.vsBuildErrorLevelHigh)
             {
                 errorCount++;
@@ -640,6 +640,20 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         }
 
         return (errorCount, warningCount);
+    }
+
+    /// <summary>Matches an Error List item against a project name. <c>ErrorItem.Project</c> is the
+    /// project's unique name, which is the plain name for some project systems and a
+    /// solution-relative project file path for others; both forms must match.</summary>
+    private static bool MatchesProject(string? itemProject, string projectName)
+    {
+        if (string.IsNullOrEmpty(itemProject))
+        {
+            return false;
+        }
+
+        return string.Equals(itemProject, projectName, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(Path.GetFileNameWithoutExtension(itemProject), projectName, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string ErrorLevelToSeverity(vsBuildErrorLevel level) => level switch
