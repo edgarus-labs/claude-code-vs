@@ -245,7 +245,18 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         JsonNode? result = await _rpc.SendRequestAsync("session/new", @params, cancellationToken).ConfigureAwait(false);
         var obj = result as JsonObject ?? throw new AcpProtocolException("session/new response did not contain a result object.");
 
-        var sessionId = GetRequiredString(obj, "sessionId");
+        // A repeated key anywhere in the response body throws ArgumentException when the object is
+        // first materialized, before any field can be read; report it as a malformed response.
+        string sessionId;
+        try
+        {
+            sessionId = GetRequiredString(obj, "sessionId");
+        }
+        catch (ArgumentException)
+        {
+            throw new AcpProtocolException("session/new response did not contain a valid 'sessionId'.");
+        }
+
         return new NewSessionResult(sessionId, ParseConfigOptions(obj));
     }
 

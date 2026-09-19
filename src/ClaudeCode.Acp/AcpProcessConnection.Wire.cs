@@ -483,8 +483,17 @@ public sealed partial class AcpProcessConnection
 
     private static IReadOnlyList<SessionSummary> ParseSessionSummaries(JsonObject response)
     {
-        if (response["sessions"] is not JsonArray sessions)
+        JsonArray sessions;
+        try
         {
+            sessions = response["sessions"] as JsonArray
+                ?? throw new AcpProtocolException("Missing or invalid 'sessions' array.");
+        }
+        catch (ArgumentException)
+        {
+            // A repeated key anywhere in the response body surfaces when the object is first
+            // materialized; report it as the same malformed-response failure the missing-array case
+            // raises, so the caller's broad error handling answers "could not load history".
             throw new AcpProtocolException("Missing or invalid 'sessions' array.");
         }
 
@@ -504,19 +513,28 @@ public sealed partial class AcpProcessConnection
                 continue;
             }
 
-            string? sessionId = GetOptionalString(session, "sessionId");
-            string? cwd = GetOptionalString(session, "cwd");
-            if (sessionId is null || cwd is null)
+            try
             {
+                string? sessionId = GetOptionalString(session, "sessionId");
+                string? cwd = GetOptionalString(session, "cwd");
+                if (sessionId is null || cwd is null)
+                {
+                    continue;
+                }
+
+                string? updatedAtRaw = GetOptionalString(session, "updatedAt");
+                DateTimeOffset? updatedAt = updatedAtRaw is not null
+                    && DateTimeOffset.TryParse(updatedAtRaw, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out DateTimeOffset parsed)
+                        ? parsed
+                        : null;
+                result.Add(new SessionSummary(sessionId, cwd, GetOptionalString(session, "title"), updatedAt));
+            }
+            catch (ArgumentException)
+            {
+                // A repeated key in this row throws on its first property read; skip the row exactly
+                // like the other malformed-row cases above.
                 continue;
             }
-
-            string? updatedAtRaw = GetOptionalString(session, "updatedAt");
-            DateTimeOffset? updatedAt = updatedAtRaw is not null
-                && DateTimeOffset.TryParse(updatedAtRaw, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out DateTimeOffset parsed)
-                    ? parsed
-                    : null;
-            result.Add(new SessionSummary(sessionId, cwd, GetOptionalString(session, "title"), updatedAt));
         }
 
         return result;
@@ -714,13 +732,21 @@ public sealed partial class AcpProcessConnection
 
     private static IReadOnlyList<SessionConfigOption> ParseConfigOptions(JsonObject response, bool required = false)
     {
-        if (response["configOptions"] is null && !required)
+        JsonArray configOptions;
+        try
         {
-            return Array.Empty<SessionConfigOption>();
-        }
+            if (response["configOptions"] is null && !required)
+            {
+                return Array.Empty<SessionConfigOption>();
+            }
 
-        if (response["configOptions"] is not JsonArray configOptions)
+            configOptions = response["configOptions"] as JsonArray
+                ?? throw new AcpProtocolException("Missing or invalid 'configOptions' array.");
+        }
+        catch (ArgumentException)
         {
+            // A repeated key in the response body surfaces on first materialization; report it as the
+            // same malformed-response failure the missing-array case raises.
             throw new AcpProtocolException("Missing or invalid 'configOptions' array.");
         }
 
@@ -732,38 +758,47 @@ public sealed partial class AcpProcessConnection
                 throw new AcpProtocolException("Invalid session config option.");
             }
 
-            // This client advertises no boolean-config extension. Ignore future option types
-            // rather than interpreting their values as select strings.
-            if (GetOptionalString(option, "type") != "select")
+            try
             {
-                continue;
-            }
-
-            var id = GetRequiredString(option, "id");
-            var name = GetRequiredString(option, "name");
-            var currentValue = GetRequiredString(option, "currentValue");
-            if (option["options"] is not JsonArray values)
-            {
-                throw new AcpProtocolException("Missing or invalid session config option values.");
-            }
-
-            var choices = new List<SessionConfigValue>();
-            foreach (JsonNode? value in values)
-            {
-                if (value is JsonObject group && group["options"] is JsonArray groupedValues)
+                // This client advertises no boolean-config extension. Ignore future option types
+                // rather than interpreting their values as select strings.
+                if (GetOptionalString(option, "type") != "select")
                 {
-                    foreach (JsonNode? groupedValue in groupedValues)
+                    continue;
+                }
+
+                var id = GetRequiredString(option, "id");
+                var name = GetRequiredString(option, "name");
+                var currentValue = GetRequiredString(option, "currentValue");
+                if (option["options"] is not JsonArray values)
+                {
+                    throw new AcpProtocolException("Missing or invalid session config option values.");
+                }
+
+                var choices = new List<SessionConfigValue>();
+                foreach (JsonNode? value in values)
+                {
+                    if (value is JsonObject group && group["options"] is JsonArray groupedValues)
                     {
-                        choices.Add(ParseConfigValue(groupedValue));
+                        foreach (JsonNode? groupedValue in groupedValues)
+                        {
+                            choices.Add(ParseConfigValue(groupedValue));
+                        }
+                    }
+                    else
+                    {
+                        choices.Add(ParseConfigValue(value));
                     }
                 }
-                else
-                {
-                    choices.Add(ParseConfigValue(value));
-                }
-            }
 
-            result.Add(new SessionConfigOption(id, name, GetOptionalString(option, "category"), currentValue, choices));
+                result.Add(new SessionConfigOption(id, name, GetOptionalString(option, "category"), currentValue, choices));
+            }
+            catch (ArgumentException)
+            {
+                // A repeated key in this option throws on its first property read; skip the option so
+                // one malformed entry cannot hide the rest of the picker.
+                continue;
+            }
         }
 
         return result;

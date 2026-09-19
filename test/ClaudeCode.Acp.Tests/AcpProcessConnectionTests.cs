@@ -1238,6 +1238,64 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         Assert.Equal("s4", only.SessionId);
     }
 
+    [Fact]
+    public async Task ListSessionsAsync_RowWithADuplicateKey_SkipsThatRowInsteadOfDiscardingTheHistory()
+    {
+        // A repeated key inside one row makes the row's first property read throw ArgumentException
+        // (System.Text.Json materializes the object on first access). Like a row missing required
+        // fields, it must degrade that row only - not hide the rest of the history.
+        Task<IReadOnlyList<SessionSummary>> pending = _connection.ListSessionsAsync("/workspace", CancellationToken.None);
+        JsonObject request = await ReadRequestAsync("session/list");
+
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer,
+            "{\"jsonrpc\":\"2.0\",\"id\":" + request["id"]!.ToJsonString() + ",\"result\":{\"sessions\":[" +
+            "{\"sessionId\":\"dup\",\"sessionId\":\"also\",\"cwd\":\"/workspace\",\"title\":\"Dup row\"}," +
+            "{\"sessionId\":\"s2\",\"cwd\":\"/workspace\",\"title\":\"Good row\"}]}}");
+
+        IReadOnlyList<SessionSummary> result = await pending.WaitAsync(TimeSpan.FromSeconds(5));
+        SessionSummary only = Assert.Single(result);
+        Assert.Equal("s2", only.SessionId);
+    }
+
+    [Fact]
+    public async Task ListSessionsAsync_ResponseWithADuplicatedSessionsKey_FaultsAsMalformedAndKeepsThePumpAlive()
+    {
+        // A repeated top-level "sessions" key is a malformed response body, not one bad row: report
+        // it as the same AcpProtocolException the missing-array case raises, and leave the pump able
+        // to serve the next request.
+        Task<IReadOnlyList<SessionSummary>> pending = _connection.ListSessionsAsync("/workspace", CancellationToken.None);
+        JsonObject request = await ReadRequestAsync("session/list");
+
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer,
+            "{\"jsonrpc\":\"2.0\",\"id\":" + request["id"]!.ToJsonString() + ",\"result\":{\"sessions\":[],\"sessions\":[]}}");
+
+        await Assert.ThrowsAsync<AcpProtocolException>(() => pending.WaitAsync(TimeSpan.FromSeconds(5)));
+
+        Task<IReadOnlyList<SessionSummary>> next = _connection.ListSessionsAsync("/workspace", CancellationToken.None);
+        await ReplyAsync(await ReadRequestAsync("session/list"), """{"sessions":[]}""");
+        Assert.Empty(await next.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
+    public async Task NewSessionAsync_ConfigOptionWithADuplicateKey_SkipsThatOptionInsteadOfAborting()
+    {
+        // A repeated key in one config option must degrade that option only; the session id is still
+        // valid and the remaining options still reach the picker.
+        Task<NewSessionResult> pending = _connection.NewSessionAsync("/workspace", null, CancellationToken.None);
+        JsonObject request = await ReadRequestAsync("session/new");
+
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer,
+            "{\"jsonrpc\":\"2.0\",\"id\":" + request["id"]!.ToJsonString() + ",\"result\":{" +
+            "\"sessionId\":\"s1\",\"configOptions\":[" +
+            "{\"id\":\"dup\",\"id\":\"also\",\"name\":\"Bad\",\"type\":\"select\",\"currentValue\":\"x\",\"options\":[]}," +
+            "{\"id\":\"model\",\"name\":\"Model\",\"category\":\"model\",\"type\":\"select\",\"currentValue\":\"opus\",\"options\":[{\"value\":\"opus\",\"name\":\"Opus\"}]}]}}");
+
+        NewSessionResult result = await pending.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal("s1", result.SessionId);
+        SessionConfigOption only = Assert.Single(result.ConfigOptions);
+        Assert.Equal("model", only.Id);
+    }
+
     private async Task<JsonObject> ReadRequestAsync(string expectedMethod)
     {
         string line = await PipeTestHelpers.ReadLineAsync(_toAgent.Reader).WaitAsync(TimeSpan.FromSeconds(5));
