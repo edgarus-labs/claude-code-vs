@@ -153,7 +153,7 @@ public sealed class WorkspacePathLease : IDisposable
 
             if (_windows)
             {
-                if (!MoveFileExW(temporaryPath, FullPath, 1)) throw NativeIOException("Could not replace the workspace file.");
+                if (!MoveFileExW(WorkspacePathGuard.LongPathSafe(temporaryPath), WorkspacePathGuard.LongPathSafe(FullPath), 1)) throw NativeIOException("Could not replace the workspace file.");
             }
             else if (RenameAt(DirectoryHandle, WorkspacePathGuard.GetUnixPathBytes(temporary), DirectoryHandle, WorkspacePathGuard.GetUnixPathBytes(_leaf)) != 0)
             {
@@ -162,18 +162,27 @@ public sealed class WorkspacePathLease : IDisposable
         }
         catch (Exception operationError)
         {
-            if (created)
+            try
             {
-                try
+                if (created)
                 {
-                    if (_windows) File.Delete(temporaryPath);
+                    if (_windows) File.Delete(WorkspacePathGuard.LongPathSafe(temporaryPath));
                     else if (UnlinkAt(DirectoryHandle, WorkspacePathGuard.GetUnixPathBytes(temporary), 0) != 0)
                         throw NativeIOException("Could not remove the temporary workspace file.");
                 }
-                catch (Exception cleanupError)
+
+                // The replacement never committed, so the original entry is still in place: give
+                // later reads their handle back and a document lease the no-delete pin it must
+                // never live without, exactly as the success path does for the new entry.
+                _file = OpenLeaf(_document);
+                if (_document && _file is null)
                 {
-                    throw new AggregateException("The workspace write and temporary-file cleanup both failed.", operationError, cleanupError);
+                    throw new IOException("The workspace document could not be re-pinned.");
                 }
+            }
+            catch (Exception restoreError)
+            {
+                throw new AggregateException("The workspace write failed and the lease could not be restored.", operationError, restoreError);
             }
             throw;
         }
@@ -218,10 +227,13 @@ public sealed class WorkspacePathLease : IDisposable
     {
         if (_windows)
         {
+            // Every path here is already GetFullPath-normalized, so the un-normalized device form
+            // is safe and keeps the lease usable at any length the guard resolves.
+            string target = WorkspacePathGuard.LongPathSafe(fullPath);
             SafeFileHandle handle;
             if (securityDescriptor is null)
             {
-                handle = CreateFileW(fullPath, 0x40000000, 0, IntPtr.Zero, 1, OpenReparsePoint, IntPtr.Zero);
+                handle = CreateFileW(target, 0x40000000, 0, IntPtr.Zero, 1, OpenReparsePoint, IntPtr.Zero);
             }
             else
             {
@@ -236,7 +248,7 @@ public sealed class WorkspacePathLease : IDisposable
                         Descriptor = pinned.AddrOfPinnedObject(),
                         InheritHandle = false,
                     };
-                    handle = CreateFileWithSecurityW(fullPath, 0x40000000, 0, ref attributes, 1, OpenReparsePoint, IntPtr.Zero);
+                    handle = CreateFileWithSecurityW(target, 0x40000000, 0, ref attributes, 1, OpenReparsePoint, IntPtr.Zero);
                 }
                 finally
                 {
@@ -293,7 +305,7 @@ public sealed class WorkspacePathLease : IDisposable
 
     private static SafeFileHandle OpenWindowsDirectory(string path)
     {
-        var handle = CreateFileW(path, 0, 1, IntPtr.Zero, 3, BackupSemantics | OpenReparsePoint, IntPtr.Zero);
+        var handle = CreateFileW(WorkspacePathGuard.LongPathSafe(path), 0, 1, IntPtr.Zero, 3, BackupSemantics | OpenReparsePoint, IntPtr.Zero);
         return VerifyWindowsHandle(handle, directory: true);
     }
 
@@ -304,7 +316,7 @@ public sealed class WorkspacePathLease : IDisposable
             // A zero-access metadata handle cannot enforce the document's no-delete sharing.
             // A document lease shares read and write so the host editor can still open and save
             // the file, and withholds only FILE_SHARE_DELETE so the path cannot be replaced.
-            var handle = CreateFileW(FullPath, GenericRead, document ? FileShareReadWrite : FileShareReadWriteDelete, IntPtr.Zero, 3, OpenReparsePoint, IntPtr.Zero);
+            var handle = CreateFileW(WorkspacePathGuard.LongPathSafe(FullPath), GenericRead, document ? FileShareReadWrite : FileShareReadWriteDelete, IntPtr.Zero, 3, OpenReparsePoint, IntPtr.Zero);
             if (handle.IsInvalid && Marshal.GetLastWin32Error() == 2)
             {
                 handle.Dispose();

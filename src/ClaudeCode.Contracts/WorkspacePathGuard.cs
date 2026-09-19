@@ -179,16 +179,18 @@ public static class WorkspacePathGuard
     }
 
     /// <summary>
-    /// Renders a path for the raw Win32 entry points used here. Both bypass the System.IO
-    /// long-path shim, and without the <c>\\?\</c> prefix Win32 normalization rejects a path at or
-    /// beyond MAX_PATH with ERROR_PATH_NOT_FOUND — the very error an absent component reports —
-    /// unless the host happens to have LongPathsEnabled set. Addressing the object through the
-    /// device form removes that ambiguity on every host, so errors 2 and 3 always prove the
-    /// component really is missing and absence never has to be assumed. UNC candidates are refused
-    /// before they reach here and would need the <c>\\?\UNC\</c> spelling rather than a bare
-    /// prefix, so they are left untouched and keep failing closed.
+    /// Renders a normalized path for the raw Win32 entry points used here and by
+    /// <see cref="WorkspacePathLease"/>. Those bypass the System.IO long-path shim, and without
+    /// the <c>\\?\</c> prefix Win32 normalization rejects a path at or beyond MAX_PATH with
+    /// ERROR_PATH_NOT_FOUND — the very error an absent component reports — unless the host
+    /// happens to have LongPathsEnabled set and the process is longPathAware. Addressing the
+    /// object through the device form removes that ambiguity on every host, so errors 2 and 3
+    /// always prove the component really is missing, absence never has to be assumed, and a path
+    /// the guard resolved can always be pinned and replaced by the lease. UNC candidates are
+    /// refused before they reach here and would need the <c>\\?\UNC\</c> spelling rather than a
+    /// bare prefix, so they are left untouched and keep failing closed.
     /// </summary>
-    private static string LongPathSafe(string path) =>
+    internal static string LongPathSafe(string path) =>
         path.Length < MaxPath || path.StartsWith(@"\\", StringComparison.Ordinal) ? path : @"\\?\" + path;
 
     private static bool IsWindowsSeparator(char value) => value == '\\' || value == '/';

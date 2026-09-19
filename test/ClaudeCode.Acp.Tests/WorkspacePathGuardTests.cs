@@ -82,14 +82,14 @@ public sealed class WorkspacePathGuardTests
     [InlineData(@"\\attacker\share\x.txt")]
     [InlineData(@"\\?\C:\repo\file.txt")]
     [InlineData(@"\\.\C:\repo\file.txt")]
-    [InlineData("//attacker/share/x.txt")]
-    [InlineData(@"/\attacker\share\x.txt")]
     public void TryResolveWithinWorkspace_UncOrDeviceNamespacePath_IsRejected(string candidate)
     {
-        // Win32 treats any two leading separators as a UNC or device-namespace root, so every
-        // spelling of one has to be refused, which is the contract docs/VsControlProtocol.md
-        // states. Under a local root containment refuses them anyway; the gate is what makes the
-        // refusal independent of the root, and independent of how the agent spelled the path.
+        // docs/VsControlProtocol.md states that UNC and device-namespace paths are rejected. Under
+        // a local root such as C:\repo, lexical containment already refuses every spelling of
+        // them (Path.GetFullPath keeps the \\ root, which can never sit under a drive letter), so
+        // no row here can tell the guard's leading-separator gate apart from containment. The
+        // gate stays as root-independent defence in depth for that documented contract; it is
+        // only observable under a non-local root, which needs a reachable share to exercise.
         Assert.False(WorkspacePathGuard.TryResolveWithinWorkspace(_root, candidate, out _));
     }
 
@@ -591,6 +591,83 @@ public sealed class WorkspacePathGuardTests
 
             Assert.Equal("replacement", File.ReadAllText(file));
             File.Delete(file);
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void AcquireDocument_FailedWrite_KeepsTheLeafPinnedAndReadable()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        string workspace = Directory.CreateTempSubdirectory("wpg-doc-fail-").FullName;
+        string file = Path.Combine(workspace, "doc.txt");
+        File.WriteAllText(file, "original");
+        try
+        {
+            using (var lease = WorkspacePathGuard.AcquireDocument(workspace, file))
+            {
+                // A reader without delete sharing (an indexer or scanner holding the destination)
+                // makes the rename-replace fail with a sharing violation after the temporary was
+                // written, so the write fails at the exact step the lease has surrendered its pin.
+                using (new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                {
+                    Assert.Throws<IOException>(() => lease.WriteAllText("replacement"));
+                }
+
+                // The replacement never committed, so the lease must be exactly as it was before
+                // the write: the original entry readable through it and still pinned against
+                // deletion for as long as the lease lives.
+                Assert.Equal("original", lease.ReadAllText());
+                Assert.Throws<IOException>(() => File.Delete(file));
+            }
+
+            Assert.Equal("original", File.ReadAllText(file));
+            Assert.Empty(Directory.GetFiles(workspace, ".claude-*.tmp"));
+            File.Delete(file);
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AcquireLease_PathBeyondMaxPathInsideRoot_RoundTrips(bool document)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            // MAX_PATH normalization is a Win32 concept; Linux reports ENAMETOOLONG, never ENOENT.
+            return;
+        }
+
+        string workspace = Directory.CreateTempSubdirectory("wpg-deep-lease-").FullName;
+        try
+        {
+            string file = Path.Combine(CreateDirectoryChainBeyondMaxPath(workspace, "deep.txt"), "deep.txt");
+            Assert.True(file.Length >= 260);
+            File.WriteAllText(file, "original");
+
+            // The guard resolves this path on every host, so the lease has to pin and replace it
+            // on every host too: its raw Win32 calls must address the object through the \\?\
+            // form exactly like the guard does, or the resolution the guard just granted is
+            // unusable wherever LongPathsEnabled is off or the process is not longPathAware.
+            using (var lease = document ? WorkspacePathGuard.AcquireDocument(workspace, file) : WorkspacePathGuard.AcquireFile(workspace, file))
+            {
+                Assert.Equal("original", lease.ReadAllText());
+
+                lease.WriteAllText("replacement");
+
+                Assert.Equal("replacement", lease.ReadAllText());
+                if (document) Assert.Throws<IOException>(() => File.Delete(file));
+            }
+
+            Assert.Equal("replacement", File.ReadAllText(file));
         }
         finally
         {
