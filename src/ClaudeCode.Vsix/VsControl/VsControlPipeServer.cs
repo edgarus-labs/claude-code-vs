@@ -217,6 +217,8 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
             case "getDiagnostics": return (await GetDiagnosticsAsync(args)).ToString(Formatting.None);
             case "runCommand": return (await RunCommandAsync(args)).ToString(Formatting.None);
             case "getSolutionInfo": return (await GetSolutionInfoAsync()).ToString(Formatting.None);
+            case "addFileToProject": return (await AddFileToProjectAsync(args)).ToString(Formatting.None);
+            case "addProjectToSolution": return (await AddProjectToSolutionAsync(args)).ToString(Formatting.None);
             default: throw new InvalidOperationException($"Unknown VsControl method '{method}'.");
         }
     }
@@ -503,6 +505,58 @@ internal sealed class VsControlPipeServer : IAsyncDisposable
         }
 
         return new JObject();
+    }
+
+    private async Task<JObject> AddFileToProjectAsync(JObject args)
+    {
+        var projectName = RequireString(args, "projectName");
+        var path = RequireString(args, "path");
+        using var pathLease = WorkspacePathGuard.AcquireDocument(_workspaceRoot, path);
+        var fullPath = pathLease.FullPath;
+        if (!File.Exists(fullPath))
+        {
+            throw new InvalidOperationException($"'{path}' does not exist; write the file first.");
+        }
+
+        Community.VisualStudio.Toolkit.Project? project = null;
+        foreach (var candidate in await VS.Solutions.GetAllProjectsAsync())
+        {
+            if (string.Equals(candidate.Name, projectName, StringComparison.OrdinalIgnoreCase))
+            {
+                project = candidate;
+                break;
+            }
+        }
+
+        if (project is null)
+        {
+            throw new InvalidOperationException($"No project named '{projectName}' is loaded in the solution.");
+        }
+
+        await project.AddExistingFilesAsync(fullPath);
+        return new JObject { ["project"] = project.Name, ["path"] = fullPath };
+    }
+
+    private async Task<JObject> AddProjectToSolutionAsync(JObject args)
+    {
+        var path = RequireString(args, "path");
+        using var pathLease = WorkspacePathGuard.AcquireDocument(_workspaceRoot, path);
+        var fullPath = pathLease.FullPath;
+        if (!File.Exists(fullPath))
+        {
+            throw new InvalidOperationException($"'{path}' does not exist.");
+        }
+
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+        var dte = await VS.GetRequiredServiceAsync<EnvDTE.DTE, EnvDTE80.DTE2>();
+        var solution = dte.Solution;
+        if (solution is null || !solution.IsOpen)
+        {
+            throw new InvalidOperationException("No solution is open.");
+        }
+
+        var project = solution.AddFromFile(fullPath, Exclusive: false);
+        return new JObject { ["name"] = project?.Name, ["path"] = fullPath };
     }
 
     private static async Task<JObject> GetSolutionInfoAsync()

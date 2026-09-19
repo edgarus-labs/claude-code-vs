@@ -94,6 +94,11 @@ untrusted agent/model or another local process, not the VS host.
   allow-listed here; the dedicated `buildSolution` tool still executes the solution's MSBuild logic.
   Formatting commands operate on the focused editor; `File.SaveAll` is instance-wide.
 - `getSolutionInfo` → `{}` → `{ solutionPath, projects: [{ name, path }] }`
+- `addFileToProject` → `{ projectName, path }` → `{ project, path }` — includes an existing on-disk file in the
+  named project (`Project.AddExistingFilesAsync`); needed for non-SDK-style projects. `path` must resolve
+  inside the workspace root and already exist.
+- `addProjectToSolution` → `{ path }` → `{ name, path }` — adds an existing project file to the open solution
+  (`DTE.Solution.AddFromFile`). `path` must resolve inside the workspace root.
 
 Errors (file not found, ambiguous command, path outside the workspace, command not allow-listed, build
 already running, etc.) are returned via `VsControlResponse.error` and surfaced to the agent as an MCP tool

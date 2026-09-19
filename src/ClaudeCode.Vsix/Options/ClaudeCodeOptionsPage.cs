@@ -18,6 +18,16 @@ public sealed class ClaudeCodeOptionsPage : DialogPage
     [Editor(typeof(FileNameEditor), typeof(UITypeEditor))]
     public string CliExecutablePath { get; set; } = string.Empty;
 
+    [Category("Claude Code")]
+    [DisplayName("Notify when Visual Studio is in the background")]
+    [Description("Show a Windows notification when Claude finishes a response or needs your permission while another application has focus.")]
+    public bool NotifyWhenInBackground { get; set; } = true;
+
+    [Category("Claude Code")]
+    [DisplayName("Remote Control at startup")]
+    [Description("Turn on Remote Control for every new session so it can be driven from claude.ai/code (same as the CLI's remoteControlAtStartup setting).")]
+    public bool RemoteControlAtStartup { get; set; }
+
     protected override void OnApply(PageApplyEventArgs e)
     {
         if (!string.IsNullOrWhiteSpace(CliExecutablePath)

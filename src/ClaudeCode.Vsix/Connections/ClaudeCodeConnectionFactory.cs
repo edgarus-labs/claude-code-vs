@@ -4,6 +4,7 @@ using ClaudeCode.Vsix.Options;
 using ClaudeCode.Vsix.VsControl;
 using Microsoft.VisualStudio.Shell;
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -47,14 +48,40 @@ internal sealed class ClaudeCodeConnectionFactory : IAcpAgentConnectionFactory
 
         // The adapter and native SDK own credential discovery and refresh, including CLAUDE_CONFIG_DIR.
         var workingDirectory = _workingDirectoryProvider();
+        var (fileName, arguments, environment) = WrapWithVisualStudioLauncher(resolved);
 
         // Spawning the ACP adapter process must not run on the UI thread; hop to the thread pool first.
         var connection = await Task.Run(async () =>
         {
-            var inner = new AcpProcessConnectionFactory(resolved.FileName, resolved.Arguments, workingDirectory);
+            var inner = new AcpProcessConnectionFactory(fileName, arguments, workingDirectory, environment);
             return await inner.ConnectAsync(cancellationToken).ConfigureAwait(false);
         }, cancellationToken).ConfigureAwait(false);
 
         return new VsControlInjectingConnection(connection, _vsControlSessionRegistry);
+    }
+
+    /// <summary>When the adapter resolved to `node <pkg>/dist/index.js`, run our bundled launcher
+    /// (Resources\Scripts\claude-acp-vs.mjs) instead: it adds the Remote Control extension request on
+    /// top of the unchanged adapter. Any other executable shape (a custom wrapper, a native build) is
+    /// used as-is and simply has no Remote Control.</summary>
+    internal static (string FileName, IReadOnlyList<string>? Arguments, IReadOnlyDictionary<string, string>? Environment) WrapWithVisualStudioLauncher(AcpExecutableSpec resolved)
+    {
+        var entry = resolved.Arguments is { Count: 1 } ? resolved.Arguments[0] : null;
+        var normalized = entry?.Replace('\\', '/');
+        if (normalized is null || !normalized.EndsWith("/@agentclientprotocol/claude-agent-acp/dist/index.js", StringComparison.OrdinalIgnoreCase))
+        {
+            return (resolved.FileName, resolved.Arguments, null);
+        }
+
+        var launcher = System.IO.Path.Combine(
+            System.IO.Path.GetDirectoryName(typeof(ClaudeCodeConnectionFactory).Assembly.Location) ?? string.Empty,
+            "Resources", "Scripts", "claude-acp-vs.mjs");
+        if (!System.IO.File.Exists(launcher))
+        {
+            return (resolved.FileName, resolved.Arguments, null);
+        }
+
+        var packageDir = System.IO.Path.GetDirectoryName(System.IO.Path.GetDirectoryName(entry!))!;
+        return (resolved.FileName, new[] { launcher }, new Dictionary<string, string> { ["CLAUDE_ACP_ADAPTER_DIR"] = packageDir });
     }
 }

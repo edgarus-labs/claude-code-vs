@@ -84,5 +84,25 @@ public static class VsControlToolCatalog
             "getSolutionInfo",
             "Get the path of the currently open solution and the list of projects it contains.",
             """{"type":"object","properties":{},"additionalProperties":true}"""),
+
+        new(
+            "addFileToProject",
+            "Include an existing file from disk in a Visual Studio project (needed for non-SDK-style projects, " +
+            "where files are not picked up automatically). The file must already exist inside the workspace.",
+            """
+            {"type":"object","properties":{
+              "projectName":{"type":"string","description":"Name of the target project as listed by getSolutionInfo."},
+              "path":{"type":"string","description":"Absolute or solution-relative path of the file to include."}
+            },"required":["projectName","path"],"additionalProperties":true}
+            """),
+
+        new(
+            "addProjectToSolution",
+            "Add an existing project file (.csproj, .vbproj, .vcxproj, ...) from inside the workspace to the open solution.",
+            """
+            {"type":"object","properties":{
+              "path":{"type":"string","description":"Absolute or solution-relative path of the project file to add."}
+            },"required":["path"],"additionalProperties":true}
+            """),
     };
 }

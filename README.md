@@ -44,6 +44,26 @@ tools (see `docs/VsControlProtocol.md` for the exact wire contract).
 - **Chat text size:** Ctrl+mouse wheel over the composer or assistant response changes the chat font
   size by one step, from 10 to 28 (default 13). This setting is local to the current chat UI session and
   does not change Visual Studio's editor zoom. Scrolling without Ctrl keeps its normal behavior.
+- **History:** the clock button lists this workspace's sessions; type to filter by title. The header
+  shows the current session's title (first prompt, or the saved title when resumed).
+- **Tasks and changed files:** the agent's task list (plan entries) and every file it edited this session
+  appear as cards above the composer. Each changed file can be opened, accepted (kept) or rejected
+  (restored to its pre-edit content); **Accept all** / **Reject all** apply to the whole list. The list is
+  reset when you start or resume another session.
+- **Implementation plan:** in **Plan** mode, when Claude asks to approve its plan an **Implementation
+  Plan** document tab opens next to your code. **Proceed** approves it; **Review** sends your comments
+  back so Claude revises the plan before implementing.
+- **Status and usage:** while Claude works the transcript shows elapsed time, tokens consumed by the
+  turn and the current activity; the ring next to the model shows how full the context window is
+  (hover for numbers). The gauge button in the header opens the account's session/weekly limits.
+- **Remote Control:** the **Remote Control** pill turns on driving the session from
+  [claude.ai/code](https://claude.ai/code) (same bridge as the CLI's `--remote-control`); the link button
+  next to it opens this session there. **Tools > Options > Claude Code > Remote Control at startup**
+  turns it on for every new session. Requires the adapter installed via npm (the extension launches it
+  through its bundled `claude-acp-vs.mjs`, which adds this capability on top of the stock adapter).
+- **Notifications:** when Visual Studio is in the background, a Windows notification appears when
+  Claude finishes, needs a permission, or has a plan to review; click it to jump back. Disable it under
+  **Tools > Options > Claude Code > Notify when Visual Studio is in the background**.
 
 ## Installing and debugging
 

@@ -1,3 +1,4 @@
+using ClaudeCode.Core.ViewModels;
 using ClaudeCode.Core.Views;
 using Microsoft.VisualStudio.Imaging.Interop;
 using Microsoft.VisualStudio.PlatformUI;
@@ -31,7 +32,26 @@ public sealed class ChatToolWindowPane : ToolWindowPane
         ApplyTheme();
         LoadBrandImage();
         VSColorTheme.ThemeChanged += OnThemeChanged;
+        _view.PlanReviewRequested += OnPlanReviewRequested;
+        _notifier = new VsAttentionNotifier();
+        _view.AttentionRequested += OnAttentionRequested;
         Content = _view;
+    }
+
+    private readonly VsAttentionNotifier _notifier;
+
+    private void OnAttentionRequested(object? sender, ChatAttentionEventArgs e)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread(); // the view model raises this on its UI SynchronizationContext
+        if (_disposed || Package is not ClaudeCodePackage package || !package.GetOptions().NotifyWhenInBackground) return;
+        try
+        {
+            _notifier.Notify(e.Title, e.Message);
+        }
+        catch (Exception exception)
+        {
+            ActivityLog.TryLogError("Claude Code", "Could not show the notification: " + exception);
+        }
     }
 
     private void LoadBrandImage()
@@ -80,34 +100,19 @@ public sealed class ChatToolWindowPane : ToolWindowPane
             return;
         }
 
-        // Direct entries on the view override its merged standalone fallback dictionary.
-        SetBrush("ChatBackgroundBrush", EnvironmentColors.ToolWindowBackgroundColorKey);
-        SetBrush("ChatForegroundBrush", EnvironmentColors.ToolWindowTextColorKey);
-        SetBrush("ChatSubtleForegroundBrush", EnvironmentColors.SystemGrayTextColorKey);
-        SetBrush("ChatBorderBrush", EnvironmentColors.ComboBoxBorderColorKey);
-        SetBrush("ChatInputBackgroundBrush", EnvironmentColors.ComboBoxBackgroundColorKey);
-        SetBrush("ChatPopupBackgroundBrush", EnvironmentColors.CommandBarMenuBackgroundGradientBeginColorKey);
-        SetBrush("ChatHoverBrush", ThemedDialogColors.ListItemMouseOverColorKey);
-        SetBrush("ChatHoverForegroundBrush", ThemedDialogColors.ListItemMouseOverTextColorKey);
-        SetBrush("ChatSelectionBrush", ThemedDialogColors.SelectedItemActiveColorKey);
-        SetBrush("ChatSelectionForegroundBrush", ThemedDialogColors.SelectedItemActiveTextColorKey);
-        // Claude brand accent/focus colors are owned by Core, not the current VS accent.
-        SetBrush("ChatUserBubbleBackgroundBrush", ThemedDialogColors.SelectedItemInactiveColorKey);
-        SetBrush("ChatAssistantBubbleBackgroundBrush", EnvironmentColors.ToolWindowBackgroundColorKey);
-        SetBrush("ChatDiffAddedBackgroundBrush", ThemedDialogColors.SelectedItemInactiveColorKey);
-        SetBrush("ChatDiffAddedForegroundBrush", ThemedDialogColors.SelectedItemInactiveTextColorKey);
-        SetBrush("ChatDiffRemovedBackgroundBrush", EnvironmentColors.ToolWindowBackgroundColorKey);
-        SetBrush("ChatDiffRemovedForegroundBrush", EnvironmentColors.ToolWindowValidationErrorTextColorKey);
-        SetBrush("ChatErrorForegroundBrush", EnvironmentColors.ToolWindowValidationErrorTextColorKey);
-        SetBrush("ChatWarningBackgroundBrush", ThemedDialogColors.PromotionBoxBackgroundColorKey);
+        VsChatTheme.Apply(_view);
+        // The transcript's WebView2 page can't see WPF's DynamicResource updates above on its own.
+        _view.RefreshTranscriptTheme();
     }
 
-    private void SetBrush(string key, ThemeResourceKey themeKey)
+    private void OnPlanReviewRequested(object? sender, PlanReviewViewModel plan)
     {
-        var color = VSColorTheme.GetThemedColor(themeKey);
-        var brush = new SolidColorBrush(Color.FromArgb(color.A, color.R, color.G, color.B));
-        brush.Freeze();
-        _view.Resources[key] = brush;
+        if (_disposed || Package is not ClaudeCodePackage package) return;
+        package.JoinableTaskFactory.RunAsync(async () =>
+        {
+            try { await package.ShowPlanAsync(plan); }
+            catch (Exception exception) { ActivityLog.TryLogError("Claude Code", "Could not open the plan window: " + exception); }
+        }).FileAndForget("claudecode/showplan");
     }
 
     protected override void Dispose(bool disposing)
@@ -116,6 +121,9 @@ public sealed class ChatToolWindowPane : ToolWindowPane
         {
             _disposed = true;
             VSColorTheme.ThemeChanged -= OnThemeChanged;
+            _view.PlanReviewRequested -= OnPlanReviewRequested;
+            _view.AttentionRequested -= OnAttentionRequested;
+            _notifier.Dispose();
             _view.Dispose();
         }
 

@@ -24,6 +24,11 @@ internal sealed class ActiveEditorDocumentTracker : IDisposable
         _windowEvents.ActiveFrameChanged += OnActiveFrameChanged;
     }
 
+    /// <summary>Raised on the UI thread whenever the tracked document view changes.</summary>
+    public event EventHandler? ActiveDocumentChanged;
+
+    public bool HasActiveDocument => !_disposed && _lastDocumentView?.TextView is { IsClosed: false } && _lastDocumentView.TextBuffer is not null;
+
     public async Task InitializeAsync(CancellationToken cancellationToken)
     {
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
@@ -117,6 +122,8 @@ internal sealed class ActiveEditorDocumentTracker : IDisposable
         {
             current.Closed += OnTextViewClosed;
         }
+
+        ActiveDocumentChanged?.Invoke(this, EventArgs.Empty);
     }
 
     private void OnTextViewClosed(object? sender, EventArgs args)

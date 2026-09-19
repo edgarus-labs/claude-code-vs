@@ -1299,6 +1299,11 @@
         "resolved": "18.3.1108",
         "contentHash": "ol/XAbRAkpZmpswNL1pV+Ey2dqcEZNe1tYT74lkD/+ow5r0rqC0XLq72rVyiz4w/oCIN+480PO1xO+7/4hrqKw=="
       },
+      "Microsoft.Web.WebView2": {
+        "type": "Transitive",
+        "resolved": "1.0.3240.44",
+        "contentHash": "5NWh8SVJy8QOdT0p2CkZqmPHPxPdVr2SyiF+RWfNzCOb3oXoK8Y6Ze85Zw849PFMqyknU/gAgJbAiiHG+kVo6A=="
+      },
       "Microsoft.Win32.Registry": {
         "type": "Transitive",
         "resolved": "5.0.0",
@@ -1662,7 +1667,9 @@
         "dependencies": {
           "EdgarusLabs.ClaudeCode.Contracts": "[1.0.0, )",
           "EdgarusLabs.ClaudeCode.Core.ViewModels": "[1.0.0, )",
-          "Markdig.Wpf": "[0.5.0.1, )"
+          "Markdig.Wpf": "[0.5.0.1, )",
+          "Microsoft.Web.WebView2": "[1.0.3240.44, )",
+          "Newtonsoft.Json": "[13.0.3, )"
         }
       },
       "EdgarusLabs.ClaudeCode.Core.ViewModels": {

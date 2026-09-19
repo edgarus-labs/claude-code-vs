@@ -97,6 +97,9 @@ internal sealed class VsControlInjectingConnection : IAcpAgentConnection
     public Task CancelAsync(string sessionId, CancellationToken cancellationToken) =>
         _inner.CancelAsync(sessionId, cancellationToken);
 
+    public Task<RemoteControlState> SetRemoteControlAsync(string sessionId, bool enabled, string? name, CancellationToken cancellationToken) =>
+        _inner.SetRemoteControlAsync(sessionId, enabled, name, cancellationToken);
+
     public event EventHandler<SessionUpdateEventArgs>? SessionUpdate;
 
     public event EventHandler<PermissionRequestEventArgs>? PermissionRequested;
