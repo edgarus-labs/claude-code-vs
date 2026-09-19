@@ -118,12 +118,15 @@ untrusted agent/model or another local process, not the VS host.
 - `buildProject` → `{ projectName, action? }` → `{ project, action, succeeded, errorCount, warningCount }`. The
   counts are scoped to the built project (Error List rows whose project matches), still subject to the Error
   List's Build/IntelliSense scope filters.
-- `getBuildErrors` → `{ severity? }` → `{ errors: [{ file, line, column, message, project, severity }] }` — reads
+- `getBuildErrors` → `{ severity? }` → `{ errors: [{ file, line, column, message, project, severity }], truncated }` — reads
   the Error List; `severity` is `error` | `warning` | `message` and filters when given. An unrecognized value is
-  rejected rather than silently matching nothing.
+  rejected rather than silently matching nothing. At most 1 000 rows are returned; `truncated: true` means the Error
+  List has more (narrow with `severity`).
 - `getOutput` → `{ pane?, maxChars?, clear? }` → `{ pane, text, truncated, totalChars }` or `{ pane, cleared }` —
-  reads the tail (default 20 000 chars, max 200 000) of one Output window pane (`Debug` default; `Build`,
-  `General`, …) or clears it. Unknown pane names fail with the list of available panes.
+  reads the tail (default 20 000 chars, max 200 000) of one Output window pane or clears it. `pane` defaults to
+  `Debug`. The aliases `Build`, `Debug` and `General` resolve the built-in panes by GUID, so they work on a localized
+  Visual Studio whose pane names are translated; any other pane is matched by its displayed name (case-insensitive).
+  The result's `pane` carries the displayed name. Unknown pane names fail with the list of available panes.
 
 ### Debugger
 
@@ -140,7 +143,8 @@ timedOut? }` where `reason` is the last break reason (`breakpoint`, `step`, `exc
 `currentFrame` is `{ function, module, language, file?, line? }`.
 
 - `startDebugging` → `{ projectName?, configuration?, waitForBreakMs? }` → state — optionally activates a solution
-  configuration and makes `projectName` the startup project, **builds first** (a failed build returns an error
+  configuration (bare name, matched exactly as `buildSolution` does: an unrecognized name is ignored and the active
+  configuration is used) and makes `projectName` the startup project, **builds first** (a failed build returns an error
   instead of letting VS pop its modal "build errors, continue?" prompt), then `Debugger.Go()` and waits up to 60 s
   for the process to run, then up to `waitForBreakMs` (default 3 000) for a breakpoint. `timedOut: true` means the
   launch never happened (still design mode after 60 s); a program still running when `waitForBreakMs` expires is
@@ -163,10 +167,14 @@ timedOut? }` where `reason` is the last break reason (`breakpoint`, `step`, `exc
 - `waitForBreak` → `{ timeoutMs? }` → state (default 10 000 ms, max 45 000).
 - `getCallStack` → `{}` → `{ threadId, threadName, frames: [{ index, function, module, language, file?, line? }], truncated }` (≤ 100 frames).
 - `getLocals` → `{ frameIndex? }` → frame + `{ locals: [{ name, type, value, isValid }], truncated }` (≤ 200 locals, values cut at
-  1 000 chars). `truncated` is set when the result is partial: for `getCallStack` by the frame cap, for `getLocals` by
-  either the 200-item cap or the 5 s walk deadline - the flag does not say which.
-- `evaluateExpression` → `{ expression, timeoutMs? }` → `{ expression, name, type, value, isValid }` via
-  `Debugger.GetExpression` with auto-expand rules.
+  1 000 chars). `frameIndex` is numbered like `getCallStack`: 0 = innermost frame (default), 1 = its caller, and so on -
+  not the frame Visual Studio has selected, which Just My Code routinely leaves elsewhere. The frame is selected first, so
+  the result's `currentFrame` agrees with it. `truncated` is set when the result is partial: for `getCallStack` by the
+  frame cap, for `getLocals` by either the 200-item cap or the 5 s walk deadline - the flag does not say which.
+- `evaluateExpression` → `{ expression, frameIndex?, timeoutMs? }` → `{ expression, name, type, value, isValid }` via
+  `Debugger.GetExpression` with auto-expand rules. `frameIndex` is the optional stack frame to evaluate in, numbered like
+  `getCallStack`: 0 = innermost frame, 1 = its caller, and so on. The frame is selected first, so the result's
+  `currentFrame` agrees with it; omitted, the expression is evaluated in the frame Visual Studio has selected.
 
 ### Debugged application UI (UI Automation)
 
@@ -174,10 +182,14 @@ All UI Automation work runs on a background thread; the VS UI thread is never bl
 
 - `listAppWindows` → `{}` → `{ windows: [{ hwnd, processId, title, className, bounds, isVisible, ownerHwnd }] }` —
   visible top-level windows of the debugged processes only.
-- `getWindowElements` → `{ hwnd, maxDepth?, maxNodes? }` → `{ hwnd, root, truncated }` — control-view tree
-  (default depth 12, 500 nodes, max 5 000); each node is `{ runtimeId, controlType, name, automationId, className,
-  bounds, isEnabled, isOffscreen, actions[], value?, toggleState?, isSelected?, expandCollapseState?, children? }`.
-  `actions` lists what `invokeElement`/`setElementValue` can do.
+- `getWindowElements` → `{ hwnd, maxDepth?, maxNodes? }` → `{ hwnd, root, truncated }` or `{ hwnd, pending: true, note }`
+  — control-view tree (default depth 12, max 64; default 500 nodes, max 5 000); each node is `{ runtimeId, controlType,
+  name, automationId, className, bounds, isEnabled, isOffscreen, actions[], value?, toggleState?, isSelected?,
+  expandCollapseState?, children? }`. `name`, `automationId`, `className` and `value` are each cut at 200 characters
+  (marked with `…`), here and in the `element` that `invokeElement`/`setElementValue` return. `actions` lists what
+  `invokeElement`/`setElementValue` can do. The walk runs under the same 5 s
+  deadline as the actions below; when the app has not answered by then - normal for an app stopped at a breakpoint -
+  the result is the `pending` shape with no `root`.
 - `invokeElement` → `{ hwnd, runtimeId? | automationId? | name?, action? }` → `{ action, element }` or
   `{ action, pending: true, note }` — exactly one selector (the tool schema states this as a `oneOf`); `action` is
   `invoke` (default), `toggle`, `select`, `expand`, `collapse` or `focus`, executed through the matching UIA pattern
@@ -204,11 +216,12 @@ All UI Automation work runs on a background thread; the VS UI thread is never bl
   region-shaped, so the rectangle blends with or shows through to what is below) or `occluded` (another window
   overlaps it, or the z-order is too long to prove it does not). `note` says what to do about it; the `reason`
   never names the covering window, whose title would itself disclose to the agent what the user has open. The
-  rectangle read is the DWM extended frame bounds where available rather than the raw window rect, which would
-  include the invisible resize border and the rounded-corner cutouts that the window below shows through. In break
-  mode Visual Studio is normally in front, so `occluded` is the expected answer there - read UI state with
-  `getWindowElements` while stopped. `_image` is present only when `captured` is true and is lifted out by the MCP
-  server into an `image` content block (see below).
+  rectangle read is the DWM extended frame bounds where available rather than the raw window rect: that drops the
+  invisible resize border, but on Windows 11 the few blended pixels of each rounded corner still show what lies
+  beneath the window. A stopped app cannot answer UI Automation or paint itself: while it is at a breakpoint,
+  `getWindowElements` returns `{ hwnd, pending: true, note }` and `captureWindow` refuses (`occluded`/`translucent`).
+  Continue execution (`continueDebugging`) first, then capture or walk the window. `_image` is present only when
+  `captured` is true and is lifted out by the MCP server into an `image` content block (see below).
 
 ### Solution, editor and commands
 

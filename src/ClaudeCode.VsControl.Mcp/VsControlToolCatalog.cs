@@ -68,7 +68,8 @@ public static class VsControlToolCatalog
 
         new(
             "getBuildErrors",
-            "Read the Visual Studio Error List: errors, warnings and messages, optionally filtered by severity.",
+            "Read the Visual Studio Error List: errors, warnings and messages, optionally filtered by severity. At most " +
+            "1000 rows are returned; truncated: true means the Error List has more (narrow with severity).",
             """
             {"type":"object","properties":{
               "severity":{"type":"string","enum":["error","warning","message"],"description":"Return only rows of this severity; default all."}
@@ -81,8 +82,8 @@ public static class VsControlToolCatalog
             "capture only fresh log lines, and read the Debug pane while debugging to see the app's Debug.WriteLine/Console output.",
             """
             {"type":"object","properties":{
-              "pane":{"type":"string","description":"Pane name; default Debug."},
-              "maxChars":{"type":"integer","description":"Return at most this many trailing characters; default 20000."},
+              "pane":{"type":"string","description":"Pane name; default Debug. Build, Debug and General resolve the built-in panes even on a localized Visual Studio; any other pane is matched by its displayed name (case-insensitive)."},
+              "maxChars":{"type":"integer","description":"Return at most this many trailing characters; default 20000, capped at 200000."},
               "clear":{"type":"boolean","description":"Clear the pane instead of reading it."}
             },"additionalProperties":true}
             """),
@@ -94,7 +95,7 @@ public static class VsControlToolCatalog
             """
             {"type":"object","properties":{
               "projectName":{"type":"string","description":"Optional project to make the startup project first."},
-              "configuration":{"type":"string","description":"Optional solution configuration to activate first, e.g. Debug."},
+              "configuration":{"type":"string","description":"Optional solution configuration to activate first. Use the bare name as listed in the solution - Debug, not Debug|Any CPU. An unrecognized name is ignored and the build and launch use whatever configuration was already active."},
               "waitForBreakMs":{"type":"integer","maximum":45000,"description":"How long to wait for a breakpoint hit after start; default 3000, capped at 45000."}
             },"additionalProperties":true}
             """),
@@ -181,18 +182,19 @@ public static class VsControlToolCatalog
             "Get the local variables (name, type, value) of a stack frame while in break mode.",
             """
             {"type":"object","properties":{
-              "frameIndex":{"type":"integer","description":"0 = current frame (default), 1 = caller, ..."}
+              "frameIndex":{"type":"integer","description":"Stack frame to read, numbered like getCallStack: 0 = innermost frame (default), 1 = its caller, and so on. The frame is selected first, so the result's currentFrame agrees with it."}
             },"additionalProperties":true}
             """),
 
         new(
             "evaluateExpression",
-            "Evaluate an expression in the current stack frame while in break mode (like the Watch window). " +
+            "Evaluate an expression in a stack frame while in break mode (like the Watch window). " +
             "Evaluation runs code inside the debugged process: property getters and method calls in the " +
             "expression really execute and can have side effects.",
             """
             {"type":"object","properties":{
               "expression":{"type":"string"},
+              "frameIndex":{"type":"integer","description":"Optional stack frame to evaluate in, numbered like getCallStack: 0 = innermost frame, 1 = its caller, and so on. The frame is selected first, so the result's currentFrame agrees with it; omitted, the expression is evaluated in the frame Visual Studio has selected."},
               "timeoutMs":{"type":"integer","maximum":5000,"description":"Evaluation timeout; default 3000, capped at 5000."}
             },"required":["expression"],"additionalProperties":true}
             """),
@@ -205,12 +207,13 @@ public static class VsControlToolCatalog
         new(
             "getWindowElements",
             "Get the UI Automation element tree of a debugged app window: control types, names, automation ids, values, " +
-            "bounds and supported actions. Use it to find what to click or type into.",
+            "bounds and supported actions. Use it to find what to click or type into. If the app has not answered the " +
+            "walk within 5 s - normal for an app stopped at a breakpoint - the result is {hwnd, pending: true, note} with no root.",
             """
             {"type":"object","properties":{
               "hwnd":{"type":"integer","description":"Window handle from listAppWindows."},
-              "maxDepth":{"type":"integer","description":"Tree depth limit; default 12."},
-              "maxNodes":{"type":"integer","description":"Node count limit; default 500."}
+              "maxDepth":{"type":"integer","description":"Tree depth limit; default 12, capped at 64."},
+              "maxNodes":{"type":"integer","description":"Node count limit; default 500, capped at 5000."}
             },"required":["hwnd"],"additionalProperties":true}
             """),
 
@@ -248,8 +251,9 @@ public static class VsControlToolCatalog
             "render - at a breakpoint, or if the render is declined - the desktop is read at the window's rectangle " +
             "instead, and only that path can refuse: it answers {hwnd, captured:false, reason, note} with a reason of " +
             "moved, child, offscreen, hidden, minimized, cloaked, translucent or occluded rather than return pixels it " +
-            "cannot prove are the window's own. In break mode Visual Studio is normally in front, so occluded is the " +
-            "usual answer there: use getWindowElements to read UI state while stopped.",
+            "cannot prove are the window's own. A stopped app cannot paint itself or answer UI Automation: at a " +
+            "breakpoint this refuses (occluded/translucent) and getWindowElements reports pending, so continue execution " +
+            "(continueDebugging) first, then capture or walk the window.",
             """
             {"type":"object","properties":{
               "hwnd":{"type":"integer","description":"Window handle from listAppWindows."}
