@@ -28,12 +28,14 @@ public interface IChatSessionServices
     Task<EditorDocumentSnapshot?> CaptureActiveDocumentAsync(CancellationToken cancellationToken);
 
     /// <summary>
-    /// Opens (or activates) <paramref name="path"/> in the host editor. Faults when the host cannot
-    /// open it (deleted, locked, or not a document the host can display); the returned task carries
-    /// that failure, so a caller that surfaces the command to the user must observe it rather than
-    /// let an <c>AsyncRelayCommand</c> rethrow it onto the UI thread.
+    /// Opens (or activates) <paramref name="path"/> in the host editor and, when
+    /// <paramref name="line"/> is supplied, moves the caret to that 1-based line. Faults when the
+    /// host cannot open it (deleted, locked, or not a document the host can display); the returned
+    /// task carries that failure, so a caller that surfaces the command to the user must observe it
+    /// rather than let an <c>AsyncRelayCommand</c> rethrow it onto the UI thread. A line the
+    /// document does not have is clamped, never an error: the file is still what the user asked for.
     /// </summary>
-    Task OpenDocumentAsync(string path, CancellationToken cancellationToken);
+    Task OpenDocumentAsync(string path, int? line, CancellationToken cancellationToken);
 
     /// <summary>
     /// Attempts to read the live, unsaved contents of an editor buffer currently open in the host for

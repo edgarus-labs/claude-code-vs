@@ -320,7 +320,7 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         var line = args["line"]?.Value<int?>();
         if (line.HasValue && view.TextView is not null && view.TextBuffer is not null)
         {
-            MoveCaretToLine(view.TextView, view.TextBuffer, line.Value);
+            EditorCaret.MoveToLine(view.TextView, view.TextBuffer, line.Value);
         }
 
         return new JObject();
@@ -715,15 +715,6 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
 
     private static string ErrorTypeToSeverity(string errorType) =>
         errorType.IndexOf("warning", StringComparison.OrdinalIgnoreCase) >= 0 ? "warning" : "error";
-
-    private static void MoveCaretToLine(IWpfTextView textView, Microsoft.VisualStudio.Text.ITextBuffer textBuffer, int line)
-    {
-        var snapshot = textBuffer.CurrentSnapshot;
-        var lineNumber = Math.Max(0, Math.Min(line - 1, snapshot.LineCount - 1));
-        var textLine = snapshot.GetLineFromLineNumber(lineNumber);
-        textView.Caret.MoveTo(textLine.Start);
-        textView.ViewScroller.EnsureSpanVisible(new Microsoft.VisualStudio.Text.SnapshotSpan(textLine.Start, 0));
-    }
 
     private static string RequireString(JObject args, string propertyName)
     {

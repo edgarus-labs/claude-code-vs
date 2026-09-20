@@ -606,7 +606,7 @@ public partial class ChatPanelView : UserControl, IDisposable
     {
         if (part is ChatTextPart textPart)
         {
-            return new { type = "text", text = textPart.Text };
+            return new { type = "text", text = ChatFileReference.LinkifyFileReferences(textPart.Text) };
         }
 
         var call = ((ChatToolCallPart)part).Card;
@@ -712,6 +712,13 @@ public partial class ChatPanelView : UserControl, IDisposable
         {
             case "openLink":
                 OpenTranscriptLink(ReadString(message, "url"));
+                break;
+            case "openFile":
+                // OpenFileReferenceAsync never faults (see its doc comment) - it re-parses and
+                // re-validates href itself via ChatFileReference.TryParseLink rather than trusting
+                // this message, and reports failure through StatusMessage instead of throwing, so
+                // a bare discard cannot leak an unobserved exception onto this COM callback thread.
+                _ = _viewModel.OpenFileReferenceAsync(ReadString(message, "href"));
                 break;
             case "zoom":
                 // DOM deltaY>0 is "scroll down" (zoom out); WPF's Ctrl+wheel convention is the

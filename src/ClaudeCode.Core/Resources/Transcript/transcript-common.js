@@ -26,6 +26,13 @@
   // markdown-it or DOMPurify bug reaches, to buy back one piece of table formatting.
   var alignmentClasses = { left: "align-left", center: "align-center", right: "align-right" };
 
+  // Href prefix transcript.js's own markdown emits for a file-reference link (see
+  // ChatFileReference.LinkPrefix in ChatFileReference.cs - kept in one place so the two sides
+  // cannot drift out of sync). installLinkHandler below forwards a match verbatim; the host
+  // re-parses and re-validates it via ChatFileReference.TryParseLink rather than trusting this
+  // renderer's own split.
+  var fileReferenceLinkPrefix = "/__claudecode/open?";
+
   window.DOMPurify.addHook("beforeSanitizeAttributes", function (node) {
     if (!node.tagName || (node.tagName !== "TH" && node.tagName !== "TD")) {
       return;
@@ -187,6 +194,16 @@
 
       if (href.charAt(0) === "#") {
         scrollToFragment(root, href);
+        return;
+      }
+
+      // A file reference this renderer's own markdown emitted (see
+      // ChatFileReference.LinkifyFileReferences on the C# side) - forwarded to the host verbatim.
+      // The host re-parses and re-validates the href itself via ChatFileReference.TryParseLink
+      // rather than trusting any pre-split path/line fields, since this handler runs over
+      // agent-authored markdown.
+      if (href.indexOf(fileReferenceLinkPrefix) === 0) {
+        notifyHost("openFile", { href: href });
         return;
       }
 

@@ -22,6 +22,6 @@ public sealed class NullChatSessionServicesTests
         var services = new NullChatSessionServices();
 
         await Assert.ThrowsAsync<InvalidOperationException>(
-            () => services.OpenDocumentAsync("C:/some/file.cs", CancellationToken.None));
+            () => services.OpenDocumentAsync("C:/some/file.cs", null, CancellationToken.None));
     }
 }

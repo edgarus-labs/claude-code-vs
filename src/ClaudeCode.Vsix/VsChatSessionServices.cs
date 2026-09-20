@@ -47,10 +47,14 @@ internal sealed class VsChatSessionServices : IChatSessionServices
     public Task<EditorDocumentSnapshot?> CaptureActiveDocumentAsync(CancellationToken cancellationToken) =>
         _editorDocumentTracker.CaptureActiveDocumentAsync(cancellationToken);
 
-    public async Task OpenDocumentAsync(string path, CancellationToken cancellationToken)
+    public async Task OpenDocumentAsync(string path, int? line, CancellationToken cancellationToken)
     {
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
-        await VS.Documents.OpenAsync(path);
+        var view = await VS.Documents.OpenAsync(path);
+        if (line.HasValue && view?.TextView is not null && view.TextBuffer is not null)
+        {
+            EditorCaret.MoveToLine(view.TextView, view.TextBuffer, line.Value);
+        }
     }
 
     public async Task<string?> TryReadOpenDocumentAsync(string path, CancellationToken cancellationToken)
