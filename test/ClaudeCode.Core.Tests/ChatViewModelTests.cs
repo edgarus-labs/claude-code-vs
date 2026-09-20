@@ -210,6 +210,41 @@ public sealed class ChatViewModelTests
         Assert.Equal("/solution-b", Assert.Single(second.NewSessionCwds));
     }
 
+    // Tearing down project A's agent is not instant. While it runs, the old transcript is still on
+    // screen, so an enabled composer invites a prompt that ResetTranscriptState then erases while it
+    // is already in flight against a freshly spawned session - the same mid-switch prompt loss
+    // NewSessionCoreAsync and OpenSessionCoreAsync guard against.
+    [Fact]
+    public async Task WorkspaceRootChanged_WhileTheOutgoingAgentIsStillClosing_RefusesNewPrompts()
+    {
+        var first = new RecordingAcpAgentConnection();
+        var second = new RecordingAcpAgentConnection();
+        var factory = new SingleConnectionFactory(first);
+        var services = new StubChatSessionServices(factory, new AlwaysSignedInAuthService(), "/solution-a");
+        using var vm = new ChatViewModel(services);
+        await vm.InitializeAsync();
+
+        vm.InputText = "what does this project do?";
+        await vm.SendAsync();
+        first.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("It builds A."));
+
+        var teardown = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        first.DisposeHandler = () => teardown.Task;
+        factory.ConnectHandler = _ => Task.FromResult<IAcpAgentConnection>(second);
+
+        services.SetWorkspaceRoot("/solution-b");
+        await WaitUntilAsync(() => first.DisposeCount == 1);
+
+        vm.InputText = "type-ahead into a dying session";
+        Assert.False(vm.SendCommand.CanExecute(null));
+        await vm.SendAsync();
+        Assert.Empty(second.Prompts);
+
+        teardown.SetResult(true);
+        await WaitUntilAsync(() => vm.Messages.Count == 0 && second.NewSessionCwds.Count == 1);
+        Assert.True(vm.SendCommand.CanExecute(null));
+    }
+
     [Fact]
     public async Task ShowHistoryCommand_PopulatesSessionHistory_ScopedToWorkspaceRoot()
     {

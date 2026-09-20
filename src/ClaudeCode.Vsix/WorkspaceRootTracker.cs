@@ -7,7 +7,12 @@ namespace ClaudeCode.Vsix;
 /// <c>GetWorkspaceRoot()</c> never has to block on the UI thread.</summary>
 internal sealed class WorkspaceRootTracker
 {
-    public string? Root { get; private set; }
+    // Written on the UI thread from the solution events, but read from background threads: the
+    // connection factory resolves the agent's working directory off the UI thread at connect time,
+    // and a stale read there spawns the agent in the previous project's directory.
+    private volatile string? _root;
+
+    public string? Root => _root;
 
     /// <summary>Raised on the UI thread after <see cref="Root"/> is updated. Deliberately fires for
     /// every solution event, including one that reopens the same root: only the subscriber knows
@@ -16,7 +21,7 @@ internal sealed class WorkspaceRootTracker
 
     public void Update(string? root)
     {
-        Root = root;
+        _root = root;
         Changed?.Invoke(this, EventArgs.Empty);
     }
 }

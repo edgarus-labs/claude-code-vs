@@ -714,20 +714,33 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     /// connection would leave the new project talking to the old project's process.</summary>
     private async Task SwitchWorkspaceAsync()
     {
+        // Tearing the outgoing agent down is an await, and the old transcript stays on screen for
+        // its duration. Without this flag the composer is live over it, and a prompt accepted there
+        // is sent to a session ResetTranscriptState is about to erase - the hazard documented on
+        // CanEditDraft and already guarded by NewSessionCoreAsync and OpenSessionCoreAsync.
+        _isSwitchingSession = true;
+        NotifyStateChanged();
         try
         {
             await ReleaseConnectionAsync().ConfigureAwait(true);
             if (_disposed) return;
             ResetTranscriptState();
             StatusMessage = null;
-            NotifyStateChanged();
             await InitializeCoreAsync(_lifetime.Token).ConfigureAwait(true);
         }
         catch (OperationCanceledException) when (_disposed || _lifetime.IsCancellationRequested) { }
         catch (Exception ex)
         {
-            // Nothing awaits this handler, so an escaping exception would be unobserved on the UI thread.
+            // Nothing awaits this handler, so an escaping exception would be unobserved on the UI
+            // thread. The cached root was advanced before the work started; drop it so the next
+            // event for the same root retries instead of being suppressed as a duplicate.
+            _workspaceRoot = null;
             if (!_disposed) StatusMessage = $"Could not switch to the new workspace: {ex.Message}";
+        }
+        finally
+        {
+            _isSwitchingSession = false;
+            NotifyStateChanged();
         }
     }
 
