@@ -408,6 +408,51 @@ public sealed partial class ChatSessionStateTests
         ui.Drain();
     }
 
+    // A brand-new file's *pending* notification can itself already be racing the agent's own write,
+    // not only its completed one (contrast ToolCallDiff_WriteUpdateFirstSeenAfterTheWriteLanded_
+    // RestoresTheReportedOriginalFile above): the read behind that pending update finds the file
+    // already created and pins a non-null snapshot equal to the new content on the row. A second
+    // notification for the same path returns that already-tracked row without ever re-reading the
+    // file, so the completed update's oldText - the one signal that could still correct it - was
+    // discarded, leaving a newly created file showing "+0 -0" instead of its real additions.
+    [Fact]
+    public async Task ToolCallDiff_NewFilePendingSnapshotTakenAfterTheWriteLanded_ShowsItsRealAdditions()
+    {
+        using var workspace = new TempWorkspace();
+        var targetPath = workspace.PathUnder("Created.cs");
+        var (vm, connection, _) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+        var turn = new TaskCompletionSource<bool>();
+        connection.PromptHandler = _ => turn.Task;
+        vm.InputText = "create it";
+        var sending = vm.SendAsync();
+
+        File.WriteAllText(targetPath, "brand new\nfile\n"); // the write lands before any notification
+        var pending = new ClaudeCode.Contracts.ToolCallUpdate
+        {
+            ToolCallId = "write-1", Title = "Write Created.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
+            Content = [new ClaudeCode.Contracts.ToolCallContent { Path = targetPath, OldText = null, NewText = "brand new\nfile\n" }],
+        };
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(pending));
+        await WaitUntilAsync(() => vm.ChangedFiles.Count == 1);
+
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
+        {
+            ToolCallId = "write-1", Title = "Write Created.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
+            // The structured patch was empty (src/diff.ts): oldText = originalFile, which is "" for a
+            // file that did not exist before this write.
+            Content = [new ClaudeCode.Contracts.ToolCallContent { Path = targetPath, OldText = "", NewText = "brand new\nfile\n" }],
+        }));
+        await WaitUntilAsync(() => vm.ChangedFiles[0].AddedLines == 2);
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.TurnEnded("end_turn"));
+        turn.SetResult(true);
+        await sending;
+
+        var file = Assert.Single(vm.ChangedFiles);
+        Assert.Equal(2, file.AddedLines);
+        Assert.Equal(0, file.RemovedLines);
+    }
+
     // The client cannot tell "the agent created this file" from "the agent rewrote an existing file
     // and omitted oldText": both arrive as an absent oldText over content that already matches the
     // disk. Creation is therefore decided by the client's own read, and a write that landed before

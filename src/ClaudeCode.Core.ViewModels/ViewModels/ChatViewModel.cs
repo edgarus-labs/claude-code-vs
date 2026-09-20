@@ -1691,7 +1691,19 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         using var pathLease = WorkspacePathGuard.AcquireFile(_services.WorkspaceRoot, requestedPath);
         lock (_changedFilesByPath)
         {
-            if (_changedFilesByPath.TryGetValue(pathLease.FullPath, out var existing)) return (existing, false);
+            if (_changedFilesByPath.TryGetValue(pathLease.FullPath, out var existing))
+            {
+                // The row's snapshot came from an earlier - possibly pending - notification, which
+                // can itself already have raced the agent's write and pinned a wrong snapshot (see
+                // TryGetRaceCorrectedSnapshot). This is the only remaining chance to correct it: a
+                // later call for the same path returns this same row without ever re-reading the file.
+                if (TryGetRaceCorrectedSnapshot(existing.OriginalText, status, diff, out var corrected))
+                {
+                    RunOnUi(() => existing.CorrectOriginalSnapshot(corrected));
+                }
+
+                return (existing, false);
+            }
         }
 
         // Whether the agent created this file is decided here and only here, by the client's own
@@ -1700,17 +1712,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         // omit it routinely - and inferring creation from it made Reject delete pre-existing files
         // whose content already matched the reported newText.
         var original = await ReadLeasedFileAsync(pathLease).ConfigureAwait(true);
-        // The notification carrying a diff is not synchronized with the agent's own write, so the
-        // read above may already be the post-edit content. When a completed call's diff carries the
-        // whole file (claude-agent-acp's Write update with an empty structured patch, src/diff.ts:
-        // oldText = originalFile), its OldText is the authoritative pre-write content to restore.
-        // Only a completed call: on a pending or failed one the diff is the model's own input, and
-        // adopting it would let a denied Edit choose what Reject writes into the file. It only ever
-        // corrects the content, never the existence.
-        if (status == ToolCallStatus.Completed && original is not null && diff?.OldText is { } preEditText
-            && string.Equals(original, diff.NewText, StringComparison.Ordinal))
+        if (TryGetRaceCorrectedSnapshot(original, status, diff, out var correctedOriginal))
         {
-            original = preEditText;
+            original = correctedOriginal;
         }
 
         var entry = new ChangedFileViewModel(pathLease.FullPath, original,
@@ -1736,6 +1740,28 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             if (live) ChangedFiles.Add(entry);
         });
         return (entry, true);
+    }
+
+    // The notification carrying a diff is not synchronized with the agent's own write, so a snapshot
+    // - whether just read from disk or already sitting on a tracked row - can equal the post-edit
+    // content instead of the true original. When a completed call's diff carries the whole file
+    // (claude-agent-acp's Write update with an empty structured patch, src/diff.ts: oldText =
+    // originalFile), its OldText is the authoritative pre-write content to restore. Only a completed
+    // call: on a pending or failed one the diff is the model's own input, and adopting it would let a
+    // denied Edit choose what Reject writes into the file. It only ever corrects the content, never
+    // the existence.
+    private static bool TryGetRaceCorrectedSnapshot(
+        string? snapshot, ToolCallStatus status, ToolCallContent? diff, out string corrected)
+    {
+        if (status == ToolCallStatus.Completed && snapshot is not null && diff?.OldText is { } preEditText &&
+            string.Equals(snapshot, diff.NewText, StringComparison.Ordinal))
+        {
+            corrected = preEditText;
+            return true;
+        }
+
+        corrected = string.Empty;
+        return false;
     }
 
     // The file's line endings are its own and the diff's are the model's: compare with both folded.

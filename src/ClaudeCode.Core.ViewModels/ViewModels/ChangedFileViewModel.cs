@@ -29,9 +29,16 @@ public sealed class ChangedFileViewModel : ObservableObject
     public string Name { get; }
 
     /// <summary>Content before the agent's first write, or null when the agent created the file.</summary>
-    public string? OriginalText { get; }
+    public string? OriginalText { get; private set; }
 
     public bool IsNew => OriginalText is null;
+
+    /// <summary>Corrects a snapshot taken after the agent's own write already landed (see
+    /// ChatViewModel.TrackChangeBeforeWriteAsync): the row already existed by the time the diff that
+    /// could prove that arrived, so the wrong snapshot was never replaced. Must run before the next
+    /// <see cref="UpdateCounts"/> call, or the stale snapshot leaves a "+0 -0" badge on a file that
+    /// has real changes.</summary>
+    internal void CorrectOriginalSnapshot(string original) => OriginalText = original;
 
     /// <summary>False once <see cref="OriginalText"/> is known not to be the pre-edit content (the
     /// snapshot raced the agent's own write): a revert would only write the edit back over itself
