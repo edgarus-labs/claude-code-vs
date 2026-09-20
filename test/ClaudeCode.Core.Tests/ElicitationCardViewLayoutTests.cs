@@ -122,6 +122,7 @@ public sealed class ElicitationCardViewLayoutTests
 
             HashSet<string> selected = TriggerEffects(template, "IsChecked");
             HashSet<string> hovered = TriggerEffects(template, "IsMouseOver");
+            Assert.NotEmpty(selected);
             Assert.NotEmpty(TriggerEffects(template, "IsKeyboardFocused"));
             Assert.True(
                 selected.Except(hovered).Any(),
@@ -129,12 +130,13 @@ public sealed class ElicitationCardViewLayoutTests
                     + "paint on hover, so the answered option cannot be told from the one under the "
                     + "pointer.");
 
-            // Trigger precedence: a later trigger wins on the same property. An unconditional hover
-            // trigger therefore repainted the background of an ALREADY ANSWERED row with the neutral
-            // hover tint - it kept its outline and check mark but lost the accent fill, so in a
-            // multi-select question the chosen rows looked different depending on where the pointer
-            // rested. Hover must be conditioned on the row not being the answer.
-            Assert.Empty(UnconditionalHoverTriggers(template));
+            // The defect, not its syntax: hover must not repaint the fill of a row that IS the
+            // answer. A hover trigger that does not say "and not checked" wins on Background over
+            // the checked trigger by precedence, so an answered row kept its outline and check mark
+            // but lost the accent fill - in a multi-select question the chosen rows then painted
+            // differently depending on where the pointer rested. Any trigger shape is fine as long
+            // as it cannot fire while checked.
+            Assert.Empty(HoverTriggersThatRepaintAChosenRow(template));
         }
     }
 
@@ -155,10 +157,14 @@ public sealed class ElicitationCardViewLayoutTests
                 $"The {option.Name.LocalName} option carries no Style, so WPF draws the default "
                     + "radio/checkbox chrome the card is supposed to replace.");
 
+        var seen = new HashSet<string>();
         while (reference is not null)
         {
             Match key = Regex.Match(reference, @"^\{(?:Static|Dynamic)Resource (?<key>[^}\s]+)\}$");
             Assert.True(key.Success, $"Unexpected option style reference: {reference}");
+            // A DynamicResource BasedOn cycle is expressible (the reference resolves lazily), and an
+            // unbounded walk would hang the whole test process instead of failing with a message.
+            Assert.True(seen.Add(key.Groups["key"].Value), $"Cyclic BasedOn chain at {key.Groups["key"].Value}.");
             XElement style = Assert.Single(
                 view.Descendants(Xaml + "Style"),
                 element => (string?)element.Attribute(
@@ -173,32 +179,35 @@ public sealed class ElicitationCardViewLayoutTests
 
     /// <summary>What every trigger keyed on <paramref name="property"/> being true paints, as
     /// target/property/value triples. Covers <c>MultiTrigger</c>, since a state that must not fire
-    /// unconditionally is expressed as one condition among several.</summary>
-    private static HashSet<string> TriggerEffects(XElement template, string property)
-    {
-        bool FiresOn(XElement trigger) =>
-            ((string?)trigger.Attribute("Property") == property && (string?)trigger.Attribute("Value") == "True")
-                || trigger.Descendants(Xaml + "Condition").Any(
-                    condition => (string?)condition.Attribute("Property") == property
-                        && (string?)condition.Attribute("Value") == "True");
+    /// unconditionally is expressed as one condition among several. A pure query: callers assert on
+    /// what they actually require, so a row that deliberately drops one of these states fails only
+    /// the facts that care.</summary>
+    private static HashSet<string> TriggerEffects(XElement template, string property) =>
+        new(template
+            .Descendants()
+            .Where(trigger => (trigger.Name == Xaml + "Trigger" || trigger.Name == Xaml + "MultiTrigger")
+                && FiresOn(trigger, property))
+            .SelectMany(trigger => trigger.Elements(Xaml + "Setter"))
+            .Select(setter => SetterKey(setter.Attribute("TargetName"), setter.Attribute("Property"), setter.Attribute("Value"))));
 
-        var effects = new HashSet<string>(
-            template
-                .Descendants()
-                .Where(trigger => (trigger.Name == Xaml + "Trigger" || trigger.Name == Xaml + "MultiTrigger") && FiresOn(trigger))
-                .SelectMany(trigger => trigger.Elements(Xaml + "Setter"))
-                .Select(setter => SetterKey(setter.Attribute("TargetName"), setter.Attribute("Property"), setter.Attribute("Value"))));
+    private static bool FiresOn(XElement trigger, string property) =>
+        ((string?)trigger.Attribute("Property") == property && (string?)trigger.Attribute("Value") == "True")
+            || trigger.Descendants(Xaml + "Condition").Any(
+                condition => (string?)condition.Attribute("Property") == property
+                    && (string?)condition.Attribute("Value") == "True");
 
-        Assert.NotEmpty(effects);
-        return effects;
-    }
-
-    /// <summary>Every trigger that fires on hover regardless of whether the row is the answer.</summary>
-    private static XElement[] UnconditionalHoverTriggers(XElement template) =>
+    /// <summary>Hover triggers that repaint the row's fill without excluding the answered state,
+    /// whatever shape they take.</summary>
+    private static XElement[] HoverTriggersThatRepaintAChosenRow(XElement template) =>
         template
-            .Descendants(Xaml + "Trigger")
-            .Where(trigger => (string?)trigger.Attribute("Property") == "IsMouseOver"
-                && (string?)trigger.Attribute("Value") == "True")
+            .Descendants()
+            .Where(trigger => (trigger.Name == Xaml + "Trigger" || trigger.Name == Xaml + "MultiTrigger")
+                && FiresOn(trigger, "IsMouseOver")
+                && trigger.Elements(Xaml + "Setter").Any(
+                    setter => (string?)setter.Attribute("Property") == "Background")
+                && !trigger.Descendants(Xaml + "Condition").Any(
+                    condition => (string?)condition.Attribute("Property") == "IsChecked"
+                        && (string?)condition.Attribute("Value") == "False"))
             .ToArray();
 
     private static string SetterKey(params XAttribute?[] parts) =>

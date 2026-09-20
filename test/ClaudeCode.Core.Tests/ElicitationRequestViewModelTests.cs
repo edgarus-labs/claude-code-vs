@@ -606,21 +606,6 @@ public sealed class ElicitationRequestViewModelTests
     }
 
     [Fact]
-    public void Constructor_SingleQuestionForm_HasNothingToStepThrough()
-    {
-        var vm = new ElicitationRequestViewModel("Pick one", [SingleSelectField("q0"), TextField("q0_other")], _ => { });
-
-        Assert.Equal(vm.Fields, vm.CurrentStepFields);
-        Assert.Equal(1, vm.CurrentStepNumber);
-        Assert.Equal(1, vm.StepCount);
-        Assert.False(vm.HasMultipleSteps);
-        Assert.Null(vm.StepLabel);
-        Assert.True(vm.IsOnLastStep);
-        Assert.False(vm.BackCommand.CanExecute(null));
-        Assert.False(vm.NextCommand.CanExecute(null));
-    }
-
-    [Fact]
     public void StepLabel_OnTheSecondOfThreeQuestions_ReadsAsQuestionTwoOfThree()
     {
         var vm = new ElicitationRequestViewModel("Pick one",

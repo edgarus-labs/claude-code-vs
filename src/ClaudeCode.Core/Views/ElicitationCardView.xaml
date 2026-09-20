@@ -145,6 +145,12 @@
                     <Condition Property="IsChecked" Value="False" />
                   </MultiTrigger.Conditions>
                   <Setter TargetName="RowBorder" Property="Background" Value="{DynamicResource ChatHoverBrush}" />
+                  <!-- Paired with the fill, as every other hover surface in the panel does: under
+                       the VS themes ChatHoverBrush is the themed list-mouse-over colour, which is
+                       only guaranteed legible against its own ChatHoverForegroundBrush. The option
+                       description sets its own subtle brush, so it cannot inherit this and follows
+                       through a trigger of its own. -->
+                  <Setter Property="Foreground" Value="{DynamicResource ChatHoverForegroundBrush}" />
                 </MultiTrigger>
                 <Trigger Property="IsKeyboardFocused" Value="True">
                   <Setter TargetName="RowBorder" Property="BorderBrush" Value="{DynamicResource ChatFocusBrush}" />
@@ -153,6 +159,24 @@
             </ControlTemplate>
           </Setter.Value>
         </Setter>
+      </Style>
+
+      <!-- The option's description cannot inherit the row's hover foreground: it sets its own
+           subtle brush, which outranks inheritance. It therefore follows the same pair explicitly,
+           and only while the row is hovered AND unanswered - exactly the states in which the row
+           paints the themed hover fill. This mirrors the ConfigValueTemplate rows in
+           ChatPanelView.xaml, which solve the same problem the same way. -->
+      <Style x:Key="ElicitationOptionDescriptionStyle" TargetType="TextBlock">
+        <Setter Property="Foreground" Value="{DynamicResource ChatSubtleForegroundBrush}" />
+        <Style.Triggers>
+          <MultiDataTrigger>
+            <MultiDataTrigger.Conditions>
+              <Condition Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Value="True" />
+              <Condition Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Value="False" />
+            </MultiDataTrigger.Conditions>
+            <Setter Property="Foreground" Value="{DynamicResource ChatHoverForegroundBrush}" />
+          </MultiDataTrigger>
+        </Style.Triggers>
       </Style>
 
       <!-- Free text. UpdateSourceTrigger=PropertyChanged so Submit reads what is on screen even when
@@ -185,7 +209,7 @@
                              FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType={x:Type views:ChatPanelView}}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}" />
                   <TextBlock Text="{Binding Description}" TextWrapping="Wrap" Margin="0,3,0,0"
                              FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType={x:Type views:ChatPanelView}}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=11}"
-                             Foreground="{DynamicResource ChatSubtleForegroundBrush}"
+                             Style="{StaticResource ElicitationOptionDescriptionStyle}"
                              Visibility="{Binding Description, Converter={StaticResource ElicitationNullToVisibilityConverter}}" />
                 </StackPanel>
               </RadioButton>
@@ -205,7 +229,7 @@
                              FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType={x:Type views:ChatPanelView}}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}" />
                   <TextBlock Text="{Binding Description}" TextWrapping="Wrap" Margin="0,3,0,0"
                              FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType={x:Type views:ChatPanelView}}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=11}"
-                             Foreground="{DynamicResource ChatSubtleForegroundBrush}"
+                             Style="{StaticResource ElicitationOptionDescriptionStyle}"
                              Visibility="{Binding Description, Converter={StaticResource ElicitationNullToVisibilityConverter}}" />
                 </StackPanel>
               </CheckBox>
@@ -304,15 +328,18 @@
           <ColumnDefinition Width="Auto" />
         </Grid.ColumnDefinitions>
 
-        <!-- Left of the buttons so it never crowds them. No AutomationProperties.Name: a TextBlock
+        <!-- Left of the buttons so it never crowds them, and trimmed rather than hard-clipped: the
+             Auto column of buttons is measured first, so a narrow docked tool window (or a raised
+             chat font) leaves this label the remainder. No AutomationProperties.Name: a TextBlock
              already exposes its own text as its name, and overriding it with a fixed string would
-             hide which step the user is on. LiveSetting announces the move instead, since stepping
-             replaces the whole card body and this label is the only cue that it did. -->
+             hide which step the user is on. No LiveSetting either - WPF never raises the UIA
+             LiveRegionChanged event on its own, so declaring a politeness here would announce
+             nothing; stepping is user-initiated, so there is no unannounced surprise to cover. -->
         <TextBlock Grid.Column="0" Text="{Binding StepLabel}" VerticalAlignment="Center"
-                   HorizontalAlignment="Left" Margin="0,0,8,0" TextWrapping="NoWrap"
+                   HorizontalAlignment="Left" Margin="0,0,8,0"
+                   TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
                    FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType={x:Type views:ChatPanelView}}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=11}"
                    Foreground="{DynamicResource ChatSubtleForegroundBrush}"
-                   AutomationProperties.LiveSetting="Polite"
                    ToolTip="Use Back and Next to move between the questions in this form"
                    Visibility="{Binding StepLabel, Converter={StaticResource ElicitationNullToVisibilityConverter}}" />
 
