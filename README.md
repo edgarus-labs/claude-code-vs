@@ -1,12 +1,69 @@
 # Claude Code for Visual Studio
 
-Independent native integration of [Claude Code](https://marketplace.visualstudio.com/items?itemName=anthropic.claude-code)
-for Visual Studio 2022/2026, as a real sidebar tool window (WPF, docked like Solution Explorer) — not a
-terminal wrapper or a copy of Anthropic's VS Code extension. The agent runs out-of-process as
-`claude-agent-acp`, speaking the [Agent Client Protocol](https://agentclientprotocol.com)
-(JSON-RPC 2.0 over stdio). The extension streams responses, renders diffs and tool calls, brokers file
-reads/writes, and answers permission prompts natively in VS UI. Features depend on the adapter's
-advertised capabilities; this is not a claim of feature parity with the official extension.
+**A native Claude Code sidebar for Visual Studio 2022/2026** — a real docked tool window (WPF, sits
+next to Solution Explorer), not a terminal wrapper and not a port of Anthropic's VS Code extension.
+Chat, review diffs, approve plans, and let Claude build, debug and drive the IDE itself, all without
+leaving Visual Studio.
+
+[![CI](https://github.com/edgarus-labs/claude-code-vs/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/edgarus-labs/claude-code-vs/actions/workflows/ci.yml)
+[![CD](https://github.com/edgarus-labs/claude-code-vs/actions/workflows/cd.yml/badge.svg)](https://github.com/edgarus-labs/claude-code-vs/actions/workflows/cd.yml)
+[![Latest release](https://img.shields.io/github/v/release/edgarus-labs/claude-code-vs?label=release)](https://github.com/edgarus-labs/claude-code-vs/releases/latest)
+[![Visual Studio](https://img.shields.io/badge/Visual%20Studio-2022%20%7C%202026-5C2D91?logo=visualstudio&logoColor=white)](https://visualstudio.microsoft.com/)
+[![.NET](https://img.shields.io/badge/.NET-8-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/)
+[![Agent Client Protocol](https://img.shields.io/badge/protocol-ACP-blue)](https://agentclientprotocol.com)
+
+## Why this exists
+
+Anthropic ships an official Claude Code extension for VS Code, but not for Visual Studio. This project
+fills that gap with a first-class WPF sidebar built around the same open
+[Agent Client Protocol](https://agentclientprotocol.com) (JSON-RPC 2.0 over stdio) the official
+extensions use, rather than shelling out to a terminal. The agent (`claude-agent-acp`) runs
+out-of-process; the extension streams its responses, renders diffs and tool calls, brokers file
+reads/writes, and answers permission prompts natively in the Visual Studio UI. Features depend on the
+adapter's advertised capabilities — this is not a claim of feature parity with the official extension.
+
+## Features at a glance
+
+- **Native chat sidebar** — streaming Markdown, live diffs, session history, and Manual / Accept Edits
+  / Plan / Auto modes.
+- **Plan mode** — review an Implementation Plan as a document tab, approve it or send comments back
+  before Claude implements anything.
+- **Changed Files tracking** — per-file or bulk accept/reject for everything Claude edits in a session.
+- **Visual Studio automation** — Claude can open/activate documents, add files to projects, and build,
+  rebuild or clean the solution or a single project.
+- **Interactive debugging** — breakpoints, stepping, call stack, locals, expression evaluation, and UI
+  Automation of the running app (click buttons, type into fields, screenshot windows).
+- **Remote Control** — drive the same session from [claude.ai/code](https://claude.ai/code).
+- **Reuses your existing Claude Code login** — no separate sign-in flow, no credentials touched inside
+  the Visual Studio process.
+
+## Table of contents
+
+- [Requirements](#requirements)
+- [Getting started](#getting-started)
+- [Using the sidebar](#using-the-sidebar)
+- [Installing and debugging](#installing-and-debugging)
+- [Solution layout](#solution-layout)
+- [Building](#building)
+- [CI/CD](#cicd)
+- [Security](#security)
+- [Contributing](#contributing)
+- [License](#license)
+
+## Requirements
+
+- Visual Studio 2022 or 2026, with the **.NET 8.0 Runtime (Long Term Support)** individual component
+  installed (see [Installing and debugging](#installing-and-debugging)).
+- [Node.js](https://nodejs.org) 22 or newer.
+- The [Claude Code CLI](https://docs.claude.com/en/docs/claude-code) signed in (`claude auth login`).
+
+## Getting started
+
+Install the adapter Claude Code speaks to over ACP:
+
+```powershell
+npm install -g @agentclientprotocol/claude-agent-acp
+```
 
 Authentication reuses the Claude Code CLI's native configuration and credentials, including
 `CLAUDE_CONFIG_DIR`. The extension does not launch its own login flow and never touches credentials
@@ -15,10 +72,8 @@ lookup) does so in a short-lived subprocess, and only the trimmed JSON it prints
 needed, run `claude auth login` in a terminal, then use **Check CLI sign-in** in the sidebar.
 Restart Visual Studio after changing environment variables.
 
-Install Node.js 22 or newer and the current adapter with
-`npm install -g @agentclientprotocol/claude-agent-acp`. The adapter advertises the available models and
-model-specific effort levels before the first message. Permission requests remain interactive; choosing
-**Yes** approves only that request.
+The adapter advertises the available models and model-specific effort levels before the first message.
+Permission requests remain interactive; choosing **Yes** approves only that request.
 
 Claude can also *drive Visual Studio itself*: every chat session injects a client-side MCP server
 (`ClaudeCode.VsControl.Mcp`) exposing VS automation — open/activate documents, read/replace the selection, run a
@@ -132,3 +187,20 @@ instance described above.
   assembly metadata (`-p:Version=X.Y.Z`), rebuilds, re-runs tests, and creates a **draft** GitHub Release with the
   built `.vsix` and its `SHA256SUMS` attached. A maintainer reviews the generated notes and the assets, then
   publishes the release by hand.
+
+## Security
+
+The extension handles prompts, attached documents/images, editor contents (including unsaved edits),
+file paths and tool results — potentially sensitive data that is passed to the ACP agent and its
+configured model provider. See [SECURITY.md](SECURITY.md) for the full scope and how to report a
+vulnerability.
+
+## Contributing
+
+Issues and pull requests are welcome. For anything beyond a small fix, please open an issue first to
+discuss the change. See [AGENTS.md](AGENTS.md) for the engineering conventions this repository is held
+to (TDD, SOLID, Occam's razor, and Conventional Commits).
+
+## License
+
+See [LICENSE.txt](LICENSE.txt).
