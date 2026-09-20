@@ -24,9 +24,10 @@
     <ResourceDictionary>
       <conv:NullToVisibilityConverter x:Key="ElicitationNullToVisibilityConverter" />
       <conv:FractionOfConverter x:Key="ElicitationFractionOfConverter" />
-      <!-- A local copy, not a StaticResource lookup into ChatPanelView.Resources: this card is still
-           unparented while its own InitializeComponent runs, so that ancestor chain does not exist
-           yet at the point a StaticResource reference here would need to resolve it. -->
+      <!-- A local copy, not a StaticResource lookup into ChatPanelView.Resources: unlike the
+           DynamicResource brushes above, a StaticResource only searches the resource chain of the
+           XAML it sits in (this control, then its parents here, then app resources), never another
+           UserControl's Resources, so the host's dictionary is out of reach by scope, not by timing. -->
       <views:ChatTextFontSizeConverter x:Key="ChatTextFontSizeConverter" />
 
       <Style x:Key="ElicitationButtonStyle" TargetType="Button">

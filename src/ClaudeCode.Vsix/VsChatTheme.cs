@@ -18,9 +18,12 @@ internal static class VsChatTheme
         // Derived from the tool window text color (not ComboBoxBorder/SystemGrayText): those keys
         // can be near-invisible against the input background, and VS renders some of them differently
         // while the main window is inactive - the composer frame and placeholder then vanished.
-        // 0xCC (80% alpha) rather than the previous 0x99 (60%): timestamps, placeholders and
-        // attachment names read as this brush too, and 60% fell below readable contrast on several
-        // VS themes, especially on a 4K display.
+        // 0xCC (80% alpha) rather than the previous 0x99 (60%): 60% fell below readable contrast on
+        // several VS themes, especially on a 4K display. The key reaches further than that text:
+        // besides timestamps, placeholders and the attachment/status lines it is LinkButtonStyle's
+        // Foreground - which ButtonIconStrokeStyle binds to, so every link-button glyph stroke and
+        // the Tasks chevron darken with it - and it is published to the WebView2 transcript as the
+        // --chat-subtle-fg CSS variable.
         SetDerivedBrush(view, "ChatSubtleForegroundBrush", EnvironmentColors.ToolWindowTextColorKey, 0xCC);
         SetDerivedBrush(view, "ChatBorderBrush", EnvironmentColors.ToolWindowTextColorKey, 0x48);
         SetBrush(view, "ChatInputBackgroundBrush", EnvironmentColors.ComboBoxBackgroundColorKey);

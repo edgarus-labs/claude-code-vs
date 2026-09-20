@@ -36,8 +36,12 @@ html, body {
   padding: 12px;
 }
 
+/* The gap grows with the text: a fixed 28px is 2.15 lines at the 13px default but barely one at
+   the 28px maximum, which re-crowds the stack exactly at the largest size. calc against the
+   custom property (rather than em) keeps the ratio independent of any inherited font-size and
+   lands on exactly 28px at the default. */
 .msg {
-  margin: 0 4px 28px 4px;
+  margin: 0 4px calc(var(--chat-font-size) * 28 / 13) 4px;
 }
 
 .msg-user {
@@ -176,8 +180,12 @@ html, body {
   overflow-wrap: break-word;
 }
 
+/* Same reasoning as .msg above, one level down: these are the gaps that keep an answer's own
+   blocks apart, so they are scaled off --chat-font-size too. Left fixed, 8px is 0.41 of a line
+   at the 13px default but 0.21 of one at 28px - the paragraphs of a long answer run together
+   exactly at the size the reader chose to make it easier to read. */
 .msg-assistant .content p {
-  margin: 0 0 8px 0;
+  margin: 0 0 calc(var(--chat-font-size) * 8 / 13) 0;
 }
 
 .msg-assistant .content > *:last-child {
@@ -202,7 +210,7 @@ html, body {
   border-radius: 6px;
   padding: 10px;
   overflow-x: auto;
-  margin: 4px 0 10px 0;
+  margin: calc(var(--chat-font-size) * 4 / 13) 0 calc(var(--chat-font-size) * 10 / 13) 0;
 }
 
 .msg-assistant .content code {
@@ -218,14 +226,14 @@ html, body {
 
 .msg-assistant .content blockquote {
   border-left: 3px solid var(--chat-border);
-  margin: 4px 0 8px 0;
+  margin: calc(var(--chat-font-size) * 4 / 13) 0 calc(var(--chat-font-size) * 8 / 13) 0;
   padding: 0 0 0 10px;
   color: var(--chat-subtle-fg);
 }
 
 .msg-assistant .content table {
   border-collapse: collapse;
-  margin: 4px 0 10px 0;
+  margin: calc(var(--chat-font-size) * 4 / 13) 0 calc(var(--chat-font-size) * 10 / 13) 0;
 }
 
 .msg-assistant .content th,
@@ -266,15 +274,16 @@ html, body {
   border: 1px solid var(--chat-border);
   background: var(--chat-input-bg);
   border-radius: 8px;
-  /* A response is mostly a stack of these cards; 4px read as one crowded block (#22). */
-  margin: 10px 0 0 0;
+  /* A response is mostly a stack of these cards; 4px read as one crowded block (#22). Scaled
+     off --chat-font-size so the gap holds its 10px-at-13px weight at every font size. */
+  margin: calc(var(--chat-font-size) * 10 / 13) 0 0 0;
   overflow: hidden;
   min-width: 0;
 }
 
 /* Text that follows a card gets the same breathing room a card gets after text. */
 .msg-assistant .tool-card + .content {
-  margin-top: 10px;
+  margin-top: calc(var(--chat-font-size) * 10 / 13);
 }
 
 .tool-card .tool-header {

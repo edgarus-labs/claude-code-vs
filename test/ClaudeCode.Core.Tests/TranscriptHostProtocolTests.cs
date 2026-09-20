@@ -74,6 +74,24 @@ public sealed class TranscriptHostProtocolTests
         Assert.Equal(13d, TranscriptHostProtocol.StepFontSize(13d, 0d));
     }
 
+    // Every FontSize/Width/Height in the chat views was authored against DefaultFontSize and is now
+    // bound through this scale, so the default must be an exact identity - a design value that drifts
+    // to 11.99 at the untouched default would repaint the whole panel off-spec.
+    [Fact]
+    public void ScaleFontSize_AtTheDefault_ReturnsTheDesignValueUnchanged()
+    {
+        Assert.Equal(12d, TranscriptHostProtocol.ScaleFontSize(TranscriptHostProtocol.DefaultFontSize, 12d));
+        Assert.Equal(24d, TranscriptHostProtocol.ScaleFontSize(TranscriptHostProtocol.DefaultFontSize, 24d));
+    }
+
+    [Fact]
+    public void ScaleFontSize_AwayFromTheDefault_KeepsTheDesignProportion()
+    {
+        Assert.Equal(24d, TranscriptHostProtocol.ScaleFontSize(26d, 12d));
+        Assert.Equal(10d / 13d * TranscriptHostProtocol.MinFontSize,
+            TranscriptHostProtocol.ScaleFontSize(TranscriptHostProtocol.MinFontSize, 10d));
+    }
+
     // Streamed text and tool-call progress mutate these view models in place; a turn driven from
     // claude.ai/code never sets IsBusy, so these are the only signals that it changed.
     [Theory]

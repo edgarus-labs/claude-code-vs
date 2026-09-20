@@ -23,6 +23,10 @@ public static class TranscriptHostProtocol
     /// <summary>Largest transcript/composer base font size Ctrl+wheel and page zoom can reach.</summary>
     public const double MaxFontSize = 28d;
 
+    /// <summary>Base font size the transcript and composer start at, and the size every hardcoded
+    /// design value in the views was authored against.</summary>
+    public const double DefaultFontSize = 13d;
+
     /// <summary>
     /// How long the host may keep collapsing a burst of transcript changes into one repaint.
     /// Session resume replays every past message as its own change notification and a streaming
@@ -63,6 +67,14 @@ public static class TranscriptHostProtocol
 
     /// <summary>Clamps a base font size to the supported range.</summary>
     public static double ClampFontSize(double size) => Math.Max(MinFontSize, Math.Min(MaxFontSize, size));
+
+    /// <summary>
+    /// Scales a value authored against <see cref="DefaultFontSize"/> so it keeps its proportion as
+    /// the base text size changes: <paramref name="designValue"/> is the size (or width/height) the
+    /// view was drawn with at the default, <paramref name="baseSize"/> the current base size.
+    /// </summary>
+    public static double ScaleFontSize(double baseSize, double designValue) =>
+        baseSize * designValue / DefaultFontSize;
 
     /// <summary>
     /// True when a transcript change must be painted now instead of joining the coalescing window,
