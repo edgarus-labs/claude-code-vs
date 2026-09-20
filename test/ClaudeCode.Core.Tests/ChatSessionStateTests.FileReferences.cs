@@ -76,6 +76,43 @@ public sealed partial class ChatSessionStateTests
         Assert.Contains("secrets.txt", vm.StatusMessage!, StringComparison.Ordinal);
     }
 
+    // The rooted branch of the candidate anchoring hands the reference to the guard untouched, so
+    // it - not the relative branch above - is what stands between agent markdown naming
+    // C:\Users\me\.ssh\id_rsa and the host opening it.
+    [Fact]
+    public async Task OpenFileReference_AbsolutePathOutsideTheWorkspace_IsRefusedAndReported()
+    {
+        using var workspace = new TempWorkspace();
+        using var outside = new TempWorkspace();
+        var secret = outside.PathUnder("secrets.txt");
+        File.WriteAllText(secret, "top secret");
+        var (vm, _, services) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+
+        await vm.OpenFileReferenceAsync(Href(secret));
+
+        Assert.Empty(services.OpenedDocumentPaths);
+        Assert.Contains("secrets.txt", vm.StatusMessage!, StringComparison.Ordinal);
+    }
+
+    // In the VSIX, WorkspaceRoot is a live callback into solution state that throws while a
+    // solution is closing or reloading. The only caller discards this task on the WebView2
+    // callback thread, so the "never faults" contract has to cover that read too.
+    [Fact]
+    public async Task OpenFileReference_WhenTheHostCannotReportTheWorkspaceRoot_ReportsWithoutFaulting()
+    {
+        using var workspace = new TempWorkspace();
+        File.WriteAllText(workspace.PathUnder("Program.cs"), "x");
+        var (vm, _, services) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+        services.WorkspaceRootHandler = () => throw new InvalidOperationException("The solution is closing.");
+
+        await vm.OpenFileReferenceAsync(Href("Program.cs"));
+
+        Assert.Empty(services.OpenedDocumentPaths);
+        Assert.Contains("Program.cs", vm.StatusMessage!, StringComparison.Ordinal);
+    }
+
     // AC: an invalid reference must not break the chat. Nothing may fault out of the call, and the
     // reason has to reach the user instead of disappearing.
     [Fact]

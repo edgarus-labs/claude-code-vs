@@ -50,8 +50,13 @@ internal sealed class VsChatSessionServices : IChatSessionServices
     public async Task OpenDocumentAsync(string path, int? line, CancellationToken cancellationToken)
     {
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
-        var view = await VS.Documents.OpenAsync(path);
-        if (line.HasValue && view?.TextView is not null && view.TextBuffer is not null)
+        // A null view means the shell did not open the document (deleted, locked, or not something
+        // it can display). Returning normally there would report success for a click that did
+        // nothing; the contract on IChatSessionServices.OpenDocumentAsync is to fault so the
+        // caller can tell the user, which is what VsControlPipeServer.OpenDocumentAsync does too.
+        var view = await VS.Documents.OpenAsync(path) ??
+            throw new InvalidOperationException($"'{path}' could not be opened.");
+        if (line.HasValue && view.TextView is not null && view.TextBuffer is not null)
         {
             EditorCaret.MoveToLine(view.TextView, view.TextBuffer, line.Value);
         }

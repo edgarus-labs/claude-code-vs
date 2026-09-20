@@ -1,3 +1,6 @@
+using System;
+using System.Diagnostics;
+using System.Text;
 using ClaudeCode.Core.ViewModels;
 using Xunit;
 
@@ -8,6 +11,34 @@ public sealed class ChatFileReferenceTests
     private static string Link(string path) => ChatFileReference.LinkPrefix + "path=" + path;
 
     private static string Link(string path, int line) => ChatFileReference.LinkPrefix + "path=" + path + "&line=" + line;
+
+    private static string Repeat(string unit, int totalLength)
+    {
+        var builder = new StringBuilder(totalLength + unit.Length);
+        while (builder.Length < totalLength)
+        {
+            builder.Append(unit);
+        }
+
+        return builder.ToString();
+    }
+
+    private static TimeSpan FastestScan(string markdown)
+    {
+        var fastest = TimeSpan.MaxValue;
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            var stopwatch = Stopwatch.StartNew();
+            ChatFileReference.LinkifyFileReferences(markdown);
+            stopwatch.Stop();
+            if (stopwatch.Elapsed < fastest)
+            {
+                fastest = stopwatch.Elapsed;
+            }
+        }
+
+        return fastest;
+    }
 
     [Fact]
     public void Linkify_PathInProse_BecomesALink() =>
@@ -80,6 +111,37 @@ public sealed class ChatFileReferenceTests
             @"Edit [src\\Foo.cs](" + Link("src%5CFoo.cs") + ").",
             ChatFileReference.LinkifyFileReferences(@"Edit src\Foo.cs."));
 
+    // Square brackets are link-text delimiters, so a path carrying one breaks the emitted link:
+    // "docs/a].md" ends the text at the "]" and markdown-it renders the rest - including the raw
+    // "/__claudecode/open?..." destination - as visible text in the answer.
+    [Theory]
+    [InlineData("docs/a].md", @"docs/a\].md", "docs%2Fa%5D.md")]
+    [InlineData("docs/[a].md", @"docs/\[a\].md", "docs%2F%5Ba%5D.md")]
+    public void Linkify_PathWithBracketsInProse_EscapesThemInTheLinkText(
+        string path, string expectedText, string encodedPath) =>
+        Assert.Equal(
+            "Open [" + expectedText + "](" + Link(encodedPath) + ").",
+            ChatFileReference.LinkifyFileReferences("Open " + path + "."));
+
+    // Uri.EscapeDataString is not stable across target frameworks: on net472/net48 - what the
+    // extension actually ships on - it follows RFC 2396 and leaves the marks !*'() unescaped,
+    // while the net10.0 test host follows RFC 3986 and escapes them. The parentheses are what
+    // corrupts output: markdown-it ends a destination at the first unbalanced ")", leaking the
+    // remainder of the href as text. The emitted markdown must not depend on the framework.
+    [Fact]
+    public void Linkify_PathWithRfc2396Marks_PercentEncodesThemAndStillRoundTrips()
+    {
+        var markdown = ChatFileReference.LinkifyFileReferences("Open src/a(1)!'*.cs:7.");
+
+        Assert.Equal("Open [src/a(1)!'*.cs:7](" + Link("src%2Fa%281%29%21%27%2A.cs", 7) + ").", markdown);
+
+        var start = markdown.IndexOf(ChatFileReference.LinkPrefix, StringComparison.Ordinal);
+        var href = markdown.Substring(start, markdown.Length - start - 2);
+        Assert.True(ChatFileReference.TryParseLink(href, out var path, out var line));
+        Assert.Equal("src/a(1)!'*.cs", path);
+        Assert.Equal(7, line);
+    }
+
     // Sentence punctuation is not part of the reference; swallowing it produces a path that can
     // never resolve.
     [Fact]
@@ -98,6 +160,27 @@ public sealed class ChatFileReferenceTests
             ChatFileReference.LinkifyFileReferences(markdown));
     }
 
+    // markdown-it fences with "~~~" as well as "```", and accepts up to three leading spaces -
+    // exactly what an agent emits for a code block nested in a bullet. Miss either shape and every
+    // line of the block is rewritten, so the reader sees a raw href inside code.
+    [Theory]
+    [InlineData("~~~", "")]
+    [InlineData("```", "   ")]
+    [InlineData("~~~", "   ")]
+    public void Linkify_FenceMarkerVariants_LeaveTheBlockAloneAndStillClose(string fence, string indent) =>
+        Assert.Equal(
+            indent + fence + "\nusing src/Foo.cs;\n" + indent + fence + "\nsee [src/A.cs](" + Link("src%2FA.cs") + ")",
+            ChatFileReference.LinkifyFileReferences(
+                indent + fence + "\nusing src/Foo.cs;\n" + indent + fence + "\nsee src/A.cs"));
+
+    // A stray "```" inside a "~~~" block must not close it: the fence state would invert and every
+    // line after it in the message would be classified backwards.
+    [Fact]
+    public void Linkify_ForeignFenceMarkerInsideAFence_DoesNotCloseIt() =>
+        Assert.Equal(
+            "~~~\n```\nusing src/Foo.cs;\n~~~\nsee [src/A.cs](" + Link("src%2FA.cs") + ")",
+            ChatFileReference.LinkifyFileReferences("~~~\n```\nusing src/Foo.cs;\n~~~\nsee src/A.cs"));
+
     // Four leading spaces is an indented code block to markdown-it; the same mangling applies.
     [Fact]
     public void Linkify_IndentedCodeBlock_IsLeftAlone() =>
@@ -111,6 +194,19 @@ public sealed class ChatFileReferenceTests
     [InlineData("![diagram](docs/diagram.png)")]
     public void Linkify_ExistingMarkdownLink_IsLeftAlone(string markdown) =>
         Assert.Equal(markdown, ChatFileReference.LinkifyFileReferences(markdown));
+
+    // A destination too long for the scan bound has to be copied through verbatim rather than
+    // handed back to the prose path: prose would rewrite the path-shaped tail of the destination
+    // and nest a link inside a link, which is visible the moment the link also carries a title.
+    // The reference after it still linkifies, so the scan resumes in the right place.
+    [Fact]
+    public void Linkify_LinkWithAnOverlongDestination_IsCopiedThroughVerbatim()
+    {
+        var destination = new string('a', 600) + "/b.md";
+        Assert.Equal(
+            "[text](" + destination + " \"T\") and [src/A.cs](" + Link("src%2FA.cs") + ")",
+            ChatFileReference.LinkifyFileReferences("[text](" + destination + " \"T\") and src/A.cs"));
+    }
 
     // linkify already turns these into anchors the host opens in a browser; claiming them as
     // workspace files would break real navigation.
@@ -129,6 +225,74 @@ public sealed class ChatFileReferenceTests
     [InlineData("Call `list.Add` twice.")]
     public void Linkify_CodeSpanThatIsNotAPath_IsLeftAlone(string markdown) =>
         Assert.Equal(markdown, ChatFileReference.LinkifyFileReferences(markdown));
+
+    // The code-span branch has to refuse what the prose branch refuses, or the two diverge: a URL's
+    // last segment ("guide.html") is not a workspace file, and neither a CLI flag nor a config
+    // assignment is a path - linking them hands the host something no editor can open.
+    [Theory]
+    [InlineData("See `https://example.com/docs/guide.html` for more.")]
+    [InlineData("See `http://example.com/docs/guide.html` for more.")]
+    [InlineData("Pass `--out=foo.json` to it.")]
+    [InlineData("Set `key=value.yml` there.")]
+    public void Linkify_CodeSpanThatIsAUrlOrAnAssignment_IsLeftAlone(string markdown) =>
+        Assert.Equal(markdown, ChatFileReference.LinkifyFileReferences(markdown));
+
+    // The allow-list is the whole gate on "looks like a file", so a missing entry is a silent
+    // no-link: this repo's own solution file is ClaudeCodeVS.slnx.
+    [Theory]
+    [InlineData("ClaudeCodeVS.slnx")]
+    [InlineData("Native.vcxproj")]
+    [InlineData("rows.csv")]
+    [InlineData("build.log")]
+    [InlineData("chat.proto")]
+    public void Linkify_RecognizedExtension_InACodeSpanBecomesALink(string path) =>
+        Assert.Equal(
+            "Open [`" + path + "`](" + Link(path) + ").",
+            ChatFileReference.LinkifyFileReferences("Open `" + path + "`."));
+
+    // Every debounced transcript repaint re-runs this scan on the WPF UI thread over a message
+    // capped at MaxMarkdownLength. A "[" or "<" that never closes must not make the lookahead for
+    // its closing delimiter rescan the rest of the line from every token: on a capped line that is
+    // ~10^10 character comparisons - the same class of defect as the 13 s quadratic diff-header
+    // regex this repo already fixed once (net472's scalar IndexOf makes it seconds in production;
+    // the net10.0 test host's vectorized IndexOf only hides the factor, it does not remove it).
+    // The bound is relative to plain text of the same size so it measures the growth rate rather
+    // than the speed of whatever machine runs it.
+    [Theory]
+    [InlineData("[ ")]
+    [InlineData("< ")]
+    public void Linkify_UnclosedDelimiterAtEveryToken_CostsAboutTheSameAsPlainText(string unit)
+    {
+        var unclosed = Repeat(unit, MarkdownSafetyLimits.MaxMarkdownLength);
+        var plainCost = FastestScan(Repeat("a ", MarkdownSafetyLimits.MaxMarkdownLength));
+        var unclosedCost = FastestScan(unclosed);
+
+        Assert.Equal(unclosed, ChatFileReference.LinkifyFileReferences(unclosed));
+        Assert.True(
+            unclosedCost.Ticks < plainCost.Ticks * 4,
+            "plain text: " + plainCost + ", unclosed \"" + unit.Trim() + "\": " + unclosedCost);
+    }
+
+    // The other half of the same defect: an unbalanced "(" in a link destination made the scan for
+    // the matching ")" run to the end of the line from every "[" on it. Measured on this scanner
+    // before the destination lookahead was bounded: 14.2 s for "[]( " and 11.0 s for "[](( "
+    // repeated to the message cap, against 9 ms for plain text. A bounded lookahead cannot be as
+    // cheap as plain text, only a small constant multiple of it - the nested row matters because a
+    // fix that only bails when the line has no ")" at all still leaves "[](( " quadratic.
+    [Theory]
+    [InlineData("[]( ")]
+    [InlineData("[](( ")]
+    public void Linkify_UnclosedLinkDestinationAtEveryToken_StaysBounded(string unit)
+    {
+        var unclosed = Repeat(unit, MarkdownSafetyLimits.MaxMarkdownLength);
+        var plainCost = FastestScan(Repeat("a ", MarkdownSafetyLimits.MaxMarkdownLength));
+        var unclosedCost = FastestScan(unclosed);
+
+        Assert.Equal(unclosed, ChatFileReference.LinkifyFileReferences(unclosed));
+        Assert.True(
+            unclosedCost.Ticks < plainCost.Ticks * 20,
+            "plain text: " + plainCost + ", unclosed \"" + unit.Trim() + "\": " + unclosedCost);
+    }
 
     [Theory]
     [InlineData(null, "")]

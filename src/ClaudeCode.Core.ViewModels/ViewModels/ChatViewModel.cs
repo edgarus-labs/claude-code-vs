@@ -1924,9 +1924,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         if (!ChatFileReference.TryParseLink(href, out var reference, out var line)) return;
 
-        var workspaceRoot = _services.WorkspaceRoot;
         try
         {
+            // Inside the try on purpose: in the VSIX this property is a live callback into
+            // solution state, which throws while a solution is closing or reloading. The only
+            // caller discards this task on the WebView2 callback thread, so a fault here would be
+            // an unobserved exception rather than the message the summary above promises.
+            var workspaceRoot = _services.WorkspaceRoot;
             if (string.IsNullOrEmpty(workspaceRoot))
                 throw new InvalidOperationException("no folder or solution is open.");
 

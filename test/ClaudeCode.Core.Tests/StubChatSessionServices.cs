@@ -13,9 +13,11 @@ internal sealed class StubChatSessionServices : IChatSessionServices
     {
         ConnectionFactory = connectionFactory;
         AuthService = authService;
-        WorkspaceRoot = workspaceRoot;
+        _workspaceRoot = workspaceRoot;
         UsageService = usageService ?? new ClaudeCode.Core.ViewModels.Demo.NullUsageService();
     }
+
+    private readonly string? _workspaceRoot;
 
     public IAcpAgentConnectionFactory ConnectionFactory { get; }
 
@@ -23,7 +25,11 @@ internal sealed class StubChatSessionServices : IChatSessionServices
 
     public IUsageService UsageService { get; }
 
-    public string? WorkspaceRoot { get; }
+    /// <summary>Injects a failure for the VSIX host's <c>WorkspaceRoot</c>, which is a live
+    /// callback into solution state and throws while a solution is closing or reloading.</summary>
+    public Func<string?>? WorkspaceRootHandler { get; set; }
+
+    public string? WorkspaceRoot => WorkspaceRootHandler is null ? _workspaceRoot : WorkspaceRootHandler();
 
     public bool HasActiveDocument { get; private set; } = true;
 
