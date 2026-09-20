@@ -101,6 +101,86 @@ public sealed class ElicitationCardViewLayoutTests
             attribute => attribute.Value.StartsWith("{StaticResource Chat", System.StringComparison.Ordinal));
     }
 
+    // The options were drawn with the stock WPF RadioButton/CheckBox chrome: a system-sized circle
+    // or box next to chat-styled text, inside a card whose every other surface is a rounded,
+    // theme-brushed row (issue #23). The replacement templates the whole row like the model and mode
+    // pickers in ChatPanelView. RadioButton and CheckBox are both ToggleButtons, so one row style
+    // serves single- and multi-select; these facts pin that the default chrome is gone, that the row
+    // is the control surface, and that checked, hover and keyboard-focus states each still have a
+    // visual of their own.
+    [Fact]
+    public void OptionsAreChatStyledRowsInsteadOfDefaultToggleChrome()
+    {
+        XDocument view = XDocument.Load(ViewPath());
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+
+        XElement[] options = view
+            .Descendants()
+            .Where(element => element.Name == Xaml + "RadioButton" || element.Name == Xaml + "CheckBox")
+            .ToArray();
+        Assert.Equal(2, options.Length);
+
+        foreach (XElement option in options)
+        {
+            string style = (string?)option.Attribute("Style")
+                ?? throw new Xunit.Sdk.XunitException(
+                    $"The {option.Name.LocalName} option carries no Style, so WPF draws the default "
+                        + "radio/checkbox chrome the card is supposed to replace.");
+            Match key = Regex.Match(style, @"^\{StaticResource (?<key>[A-Za-z0-9_]+)\}$");
+            Assert.True(key.Success, $"Unexpected option style reference: {style}");
+
+            XElement rowStyle = Assert.Single(
+                view.Descendants(Xaml + "Style"),
+                element => (string?)element.Attribute(x + "Key") == key.Groups["key"].Value);
+            Assert.Equal("ToggleButton", (string?)rowStyle.Attribute("TargetType"));
+            Assert.Contains(
+                rowStyle.Elements(Xaml + "Setter"),
+                setter => (string?)setter.Attribute("Property") == "HorizontalContentAlignment"
+                    && (string?)setter.Attribute("Value") == "Stretch");
+
+            XElement template = Assert.Single(rowStyle.Descendants(Xaml + "ControlTemplate"));
+
+            // The label, the description and the selection glyph all sit inside one templated
+            // border: that border is what the user clicks and what paints every state, so the hit
+            // target is the row rather than a glyph beside it.
+            XElement content = Assert.Single(template.Descendants(Xaml + "ContentPresenter"));
+            Assert.Contains(content.Ancestors(Xaml + "Border"), border => border.Parent == template);
+
+            foreach (string state in new[] { "IsChecked", "IsMouseOver", "IsKeyboardFocused" })
+            {
+                XElement trigger = Assert.Single(
+                    template.Descendants(Xaml + "Trigger"),
+                    element => (string?)element.Attribute("Property") == state);
+                Assert.NotEmpty(trigger.Elements(Xaml + "Setter"));
+            }
+        }
+    }
+
+    // Ctrl+wheel scaling drives ChatPanelView.ChatTextFontSize; a row that hard-codes a size stays
+    // put while the text around it grows, which is the scaling half of issue #23.
+    [Fact]
+    public void OptionRowTextScalesWithTheChatFontSize()
+    {
+        XDocument view = XDocument.Load(ViewPath());
+
+        XElement[] optionTexts = view
+            .Descendants()
+            .Where(element => element.Name == Xaml + "RadioButton" || element.Name == Xaml + "CheckBox")
+            .SelectMany(option => option.Descendants(Xaml + "TextBlock"))
+            .ToArray();
+        Assert.NotEmpty(optionTexts);
+
+        foreach (XElement text in optionTexts)
+        {
+            string fontSize = (string?)text.Attribute("FontSize")
+                ?? throw new Xunit.Sdk.XunitException(
+                    $"Option text {(string?)text.Attribute("Text")} has no FontSize, so it keeps the "
+                        + "inherited default and ignores Ctrl+wheel scaling.");
+            Assert.Contains("ChatTextFontSize", fontSize);
+            Assert.Contains("ChatTextFontSizeConverter", fontSize);
+        }
+    }
+
     private static string ViewPath([CallerFilePath] string testFilePath = "") =>
         Path.GetFullPath(
             Path.Combine(

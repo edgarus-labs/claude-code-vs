@@ -68,6 +68,70 @@
         <Setter Property="BorderBrush" Value="{DynamicResource ChatBorderBrush}" />
       </Style>
 
+      <!-- One option row, shared by the single- and multi-select templates below: RadioButton and
+           CheckBox are both ToggleButtons, so one style templates both and the two question kinds
+           cannot drift apart visually. The stock chrome (a system-sized circle or box beside
+           chat-styled text) matched nothing else in the panel, so the row itself is the control: the
+           same rounded, theme-brushed row the model and mode pickers use in ChatPanelView, with an
+           accent check mark for the chosen option. Templated here rather than shared with those
+           pickers because a StaticResource cannot reach another UserControl's Resources (see the
+           note on ChatTextFontSizeConverter above) and a merged dictionary would shadow the host's
+           themed brushes. Every brush stays a DynamicResource, which resolves against the templated
+           element's tree - the host's palette - not this dictionary.
+
+           The control keeps its ToggleButton identity: IsChecked still drives the view model and
+           mutual exclusion still lives in ElicitationFieldViewModel, so Space/Tab and the exposed
+           radio/checkbox automation peers behave exactly as before the retemplate. -->
+      <Style x:Key="ElicitationOptionRowStyle" TargetType="ToggleButton">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{DynamicResource ChatForegroundBrush}" />
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="Padding" Value="9,7" />
+        <Setter Property="Margin" Value="0,1" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="ToggleButton">
+              <Border x:Name="RowBorder" Background="{TemplateBinding Background}" CornerRadius="7"
+                      BorderBrush="Transparent" BorderThickness="1" Padding="{TemplateBinding Padding}">
+                <Grid>
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <!-- Reserved whether or not the check mark is drawn, so selecting an option does
+                         not re-wrap the label next to it. -->
+                    <ColumnDefinition Width="22" />
+                  </Grid.ColumnDefinitions>
+                  <ContentPresenter Grid.Column="0" HorizontalAlignment="Stretch" VerticalAlignment="Center" />
+                  <Path x:Name="SelectedGlyph" Grid.Column="1" Visibility="Collapsed"
+                        Data="M 1,6 L 5,10 L 12,2" StrokeThickness="1.6"
+                        Stroke="{DynamicResource ChatAccentBrush}"
+                        HorizontalAlignment="Right" VerticalAlignment="Center" />
+                </Grid>
+              </Border>
+              <ControlTemplate.Triggers>
+                <!-- Selection reads as an accent-outlined, tinted row plus the check mark; hover
+                     only tints the background and focus only draws the focus ring, so neither is
+                     mistaken for the chosen option. The tint is the hover brush rather than
+                     ChatSelectionBrush: under the VS themes that one is the strong list-selection
+                     colour, which is only legible against ChatSelectionForegroundBrush - and the
+                     option description sets its own subtle foreground, so it cannot follow. -->
+                <Trigger Property="IsChecked" Value="True">
+                  <Setter TargetName="SelectedGlyph" Property="Visibility" Value="Visible" />
+                  <Setter TargetName="RowBorder" Property="Background" Value="{DynamicResource ChatHoverBrush}" />
+                  <Setter TargetName="RowBorder" Property="BorderBrush" Value="{DynamicResource ChatAccentBrush}" />
+                </Trigger>
+                <Trigger Property="IsMouseOver" Value="True">
+                  <Setter TargetName="RowBorder" Property="Background" Value="{DynamicResource ChatHoverBrush}" />
+                </Trigger>
+                <Trigger Property="IsKeyboardFocused" Value="True">
+                  <Setter TargetName="RowBorder" Property="BorderBrush" Value="{DynamicResource ChatFocusBrush}" />
+                </Trigger>
+              </ControlTemplate.Triggers>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Style>
+
       <!-- Free text. UpdateSourceTrigger=PropertyChanged so Submit reads what is on screen even when
            the button is activated by keyboard without the box ever losing focus. MaxLength bounds
            what the user can hand back to the agent and is the view-model constant itself, so the two
@@ -91,12 +155,12 @@
               <!-- No ToolTip: the description is already rendered in full below, and a WPF ToolTip is
                    an unwrapped Popup with no MaxWidth, so an agent-authored description would paint a
                    screen-wide band. Same for the CheckBox in the multi-select template. -->
-              <RadioButton IsChecked="{Binding IsSelected}" Margin="0,2" Foreground="{DynamicResource ChatForegroundBrush}"
+              <RadioButton IsChecked="{Binding IsSelected}" Style="{StaticResource ElicitationOptionRowStyle}"
                            AutomationProperties.Name="{Binding Label}">
                 <StackPanel>
-                  <TextBlock Text="{Binding Label}" TextWrapping="Wrap"
+                  <TextBlock Text="{Binding Label}" TextWrapping="Wrap" FontWeight="SemiBold"
                              FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType={x:Type views:ChatPanelView}}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}" />
-                  <TextBlock Text="{Binding Description}" TextWrapping="Wrap"
+                  <TextBlock Text="{Binding Description}" TextWrapping="Wrap" Margin="0,3,0,0"
                              FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType={x:Type views:ChatPanelView}}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=11}"
                              Foreground="{DynamicResource ChatSubtleForegroundBrush}"
                              Visibility="{Binding Description, Converter={StaticResource ElicitationNullToVisibilityConverter}}" />
@@ -111,12 +175,12 @@
         <ItemsControl ItemsSource="{Binding Options}">
           <ItemsControl.ItemTemplate>
             <DataTemplate DataType="{x:Type vm:ElicitationOptionViewModel}">
-              <CheckBox IsChecked="{Binding IsSelected}" Margin="0,2" Foreground="{DynamicResource ChatForegroundBrush}"
+              <CheckBox IsChecked="{Binding IsSelected}" Style="{StaticResource ElicitationOptionRowStyle}"
                         AutomationProperties.Name="{Binding Label}">
                 <StackPanel>
-                  <TextBlock Text="{Binding Label}" TextWrapping="Wrap"
+                  <TextBlock Text="{Binding Label}" TextWrapping="Wrap" FontWeight="SemiBold"
                              FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType={x:Type views:ChatPanelView}}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}" />
-                  <TextBlock Text="{Binding Description}" TextWrapping="Wrap"
+                  <TextBlock Text="{Binding Description}" TextWrapping="Wrap" Margin="0,3,0,0"
                              FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType={x:Type views:ChatPanelView}}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=11}"
                              Foreground="{DynamicResource ChatSubtleForegroundBrush}"
                              Visibility="{Binding Description, Converter={StaticResource ElicitationNullToVisibilityConverter}}" />
