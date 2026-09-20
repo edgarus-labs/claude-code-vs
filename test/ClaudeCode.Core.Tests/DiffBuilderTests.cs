@@ -60,6 +60,19 @@ public sealed class DiffBuilderTests
     }
 
     [Fact]
+    public void Build_SideThatIsOnlyANewline_IsOneEmptyLine()
+    {
+        // "\n" is one (empty) terminated line, not nothing: a created file holding a lone newline
+        // must still show a line, and "\n" -> "\n\n" is one kept line plus one added.
+        var created = DiffBuilder.Build(string.Empty, "\n");
+        var appended = DiffBuilder.Build("\n", "\n\n");
+
+        var only = Assert.Single(created);
+        Assert.Equal((DiffLineKind.Added, string.Empty), (only.Kind, only.Text));
+        Assert.Equal(new[] { DiffLineKind.Context, DiffLineKind.Added }, appended.Select(line => line.Kind));
+    }
+
+    [Fact]
     public void Build_AboveAlignmentCellLimit_FallsBackToFullRemoveAdd()
     {
         // _maxAlignmentCells = 2_000_000: the O(n*m) LCS table is skipped once old-lines * new-lines

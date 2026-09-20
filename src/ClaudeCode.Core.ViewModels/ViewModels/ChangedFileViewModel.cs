@@ -15,10 +15,11 @@ public sealed class ChangedFileViewModel : ObservableObject
     private int _removedLines;
     private bool _canRevert = true;
 
-    public ChangedFileViewModel(string fullPath, string? originalText, Func<ChangedFileViewModel, Task> accept, Func<ChangedFileViewModel, Task> reject)
+    public ChangedFileViewModel(string fullPath, string? originalText, Func<ChangedFileViewModel, Task> accept, Func<ChangedFileViewModel, Task> reject, string? createdByToolCallId = null)
     {
         FullPath = fullPath ?? throw new ArgumentNullException(nameof(fullPath));
         OriginalText = originalText;
+        CreatedByToolCallId = createdByToolCallId;
         Name = Path.GetFileName(fullPath);
         AcceptCommand = new AsyncRelayCommand(() => accept(this));
         RejectCommand = new AsyncRelayCommand(() => reject(this), () => CanRevert);
@@ -33,11 +34,15 @@ public sealed class ChangedFileViewModel : ObservableObject
 
     public bool IsNew => OriginalText is null;
 
+    /// <summary>The tool call whose notification created this row, or null when a client-side file
+    /// write did. Only that call's later notifications may correct the snapshot it took.</summary>
+    internal string? CreatedByToolCallId { get; }
+
     /// <summary>Corrects a snapshot taken after the agent's own write already landed (see
     /// ChatViewModel.TrackChangeBeforeWriteAsync): the row already existed by the time the diff that
-    /// could prove that arrived, so the wrong snapshot was never replaced. Must run before the next
-    /// <see cref="UpdateCounts"/> call, or the stale snapshot leaves a "+0 -0" badge on a file that
-    /// has real changes.</summary>
+    /// could prove that arrived, so the wrong snapshot was never replaced. Plain assignment, no
+    /// change notification: nothing binds to the text itself, and the caller reads it back at once
+    /// to decide revertability, so it must not be posted.</summary>
     internal void CorrectOriginalSnapshot(string original) => OriginalText = original;
 
     /// <summary>False once <see cref="OriginalText"/> is known not to be the pre-edit content (the

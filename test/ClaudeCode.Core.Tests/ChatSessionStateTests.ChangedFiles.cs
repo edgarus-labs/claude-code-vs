@@ -561,6 +561,83 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("line one\n", File.ReadAllText(edited));
     }
 
+    private static ClaudeCode.Contracts.SessionUpdate.ToolCall EditCall(string id, string path, ClaudeCode.Contracts.ToolCallStatus status, string? oldText, string? newText) =>
+        new(new ClaudeCode.Contracts.ToolCallUpdate
+        {
+            ToolCallId = id, Title = "Edit " + Path.GetFileName(path), Kind = "edit", Status = status,
+            Content = newText is null ? [] : [new ClaudeCode.Contracts.ToolCallContent { Path = path, OldText = oldText, NewText = newText }],
+        });
+
+    // The raced-snapshot correction must only touch the row its own call created. A later call that
+    // legitimately writes the file back to its true original (A -> B, then B -> A) satisfies the same
+    // "snapshot equals the new text" test, and rewriting the row's original to B would make Reject
+    // restore the agent's intermediate content over the user's real file.
+    [Fact]
+    public async Task ToolCallDiff_ALaterCallWritingTheOriginalBack_DoesNotRewriteTheRowsSnapshot()
+    {
+        using var workspace = new TempWorkspace();
+        var path = workspace.PathUnder("Round.txt");
+        File.WriteAllText(path, "A\n");
+        var (vm, connection, _) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+        var turn = new TaskCompletionSource<bool>();
+        connection.PromptHandler = _ => turn.Task;
+        vm.InputText = "round trip";
+        var sending = vm.SendAsync();
+
+        connection.RaiseSessionUpdate(EditCall("edit-1", path, ClaudeCode.Contracts.ToolCallStatus.Pending, "A", "B"));
+        await WaitUntilAsync(() => vm.ChangedFiles.Count == 1);
+        File.WriteAllText(path, "B\n");
+        connection.RaiseSessionUpdate(EditCall("edit-1", path, ClaudeCode.Contracts.ToolCallStatus.Pending, "A\n", "B\n"));
+        connection.RaiseSessionUpdate(EditCall("edit-1", path, ClaudeCode.Contracts.ToolCallStatus.Completed, null, null));
+        await WaitUntilAsync(() => vm.ChangedFiles[0].AddedLines == 1);
+
+        connection.RaiseSessionUpdate(EditCall("edit-2", path, ClaudeCode.Contracts.ToolCallStatus.Pending, "B", "A"));
+        File.WriteAllText(path, "A\n");
+        connection.RaiseSessionUpdate(EditCall("edit-2", path, ClaudeCode.Contracts.ToolCallStatus.Pending, "B\n", "A\n"));
+        connection.RaiseSessionUpdate(EditCall("edit-2", path, ClaudeCode.Contracts.ToolCallStatus.Completed, null, null));
+        await WaitUntilAsync(() => vm.ChangedFiles[0].AddedLines == 0);
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.TurnEnded("end_turn"));
+        turn.SetResult(true);
+        await sending;
+
+        var file = Assert.Single(vm.ChangedFiles);
+        Assert.Equal("A\n", file.OriginalText);
+        Assert.Equal(0, file.RemovedLines);
+    }
+
+    // A revertable row whose snapshot raced the write (the optimistic diff's old_string still occurs
+    // in the post-edit text, so IsPreEditSnapshot passes) is corrected by its completed update's
+    // whole-file diff. The revertability check must see that corrected snapshot: comparing the disk
+    // against the stale one marked the now-restorable row "not revertable" for good.
+    [Fact]
+    public async Task ToolCallDiff_CorrectedSnapshotOfARevertableRow_KeepsRejectAvailable()
+    {
+        using var workspace = new TempWorkspace();
+        var path = workspace.PathUnder("Insert.txt");
+        File.WriteAllText(path, "one\ninserted\ntwo\n"); // the write landed before any notification
+        var (vm, connection, _) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+        var turn = new TaskCompletionSource<bool>();
+        connection.PromptHandler = _ => turn.Task;
+        vm.InputText = "insert";
+        var sending = vm.SendAsync();
+
+        connection.RaiseSessionUpdate(EditCall("edit-1", path, ClaudeCode.Contracts.ToolCallStatus.Pending, "one", "one\ninserted"));
+        await WaitUntilAsync(() => vm.ChangedFiles.Count == 1);
+        connection.RaiseSessionUpdate(EditCall("edit-1", path, ClaudeCode.Contracts.ToolCallStatus.Pending, "one\ntwo\n", "one\ninserted\ntwo\n"));
+        connection.RaiseSessionUpdate(EditCall("edit-1", path, ClaudeCode.Contracts.ToolCallStatus.Completed, null, null));
+        await WaitUntilAsync(() => vm.ChangedFiles[0].AddedLines == 1);
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.TurnEnded("end_turn"));
+        turn.SetResult(true);
+        await sending;
+
+        var file = Assert.Single(vm.ChangedFiles);
+        Assert.True(file.CanRevert);
+        await file.RejectCommand.ExecuteAsync(null);
+        Assert.Equal("one\ntwo\n", File.ReadAllText(path));
+    }
+
     // The client cannot tell "the agent created this file" from "the agent rewrote an existing file
     // and omitted oldText": both arrive as an absent oldText over content that already matches the
     // disk. Creation is therefore decided by the client's own read, and a write that landed before

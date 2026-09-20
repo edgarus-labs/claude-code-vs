@@ -90,8 +90,10 @@ internal static class DiffBuilder
     private static string[] SplitLines(string text, bool stripTerminator)
     {
         if (string.IsNullOrEmpty(text)) return Array.Empty<string>();
-        text = text.Replace("\r\n", "\n");
-        if (stripTerminator && EndsWithNewline(text)) text = text.Substring(0, text.Length - 1);
-        return text.Length == 0 ? Array.Empty<string>() : text.Split('\n');
+        var lines = text.Replace("\r\n", "\n").Split('\n');
+        // The terminator's empty trailing segment is dropped from the split, not cut from the text:
+        // that avoids a whole-file copy, and "\n" correctly remains one empty line.
+        if (stripTerminator && lines.Length > 1 && lines[lines.Length - 1].Length == 0) Array.Resize(ref lines, lines.Length - 1);
+        return lines;
     }
 }

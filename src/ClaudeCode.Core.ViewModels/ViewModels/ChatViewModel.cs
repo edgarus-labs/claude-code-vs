@@ -1175,7 +1175,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         Messages.Clear();
         lock (_changedFilesByPath) _changedFilesByPath.Clear();
-        lock (_toolCallDiffsById) _toolCallDiffsById.Clear();
+        _toolCallDiffsById.Clear();
         ChangedFiles.Clear();
         ClearPendingRequests("The session was replaced.");
         _explicitSessionTitle = null;
@@ -1403,6 +1403,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                     _currentAssistantMessage = null;
                     _currentUserMessage = null;
                     _turnStartedAt = null;
+                    _toolCallDiffsById.Clear(); // every call of the turn has reported its final update by now
                     UpdateActivity("Working…");
                     _ = RefreshUsageAsync();
                     break;
@@ -1416,7 +1417,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         // dispatcher. Eligibility is captured here, on the UI thread: only a live turn produces
         // changes to revert - a resumed session replays old, already-applied tool calls whose
         // "original" would be the current file, giving 50 phantom rows with nothing to revert.
-        if (IsBusy) _ = Task.Run(() => TrackToolCallFileChangesAsync(call));
+        if (IsBusy)
+        {
+            var diffs = ResolveToolCallDiffs(call);
+            if (diffs.Count > 0) _ = Task.Run(() => TrackToolCallFileChangesAsync(call, diffs));
+        }
         var message = EnsureAssistantMessage();
         var existing = message.ToolCalls.FirstOrDefault(t => t.ToolCallId == call.ToolCallId);
         if (existing is not null)
@@ -1647,28 +1652,34 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // diff and no status (parsed as Pending), and a status=completed/failed tool_call_update whose
     // content is empty - toolUpdateFromToolResult returns {} for Edit and Write. The final update
     // therefore names nothing to count on its own; the diff to count is the last one it reported.
-    private readonly Dictionary<string, IReadOnlyList<ToolCallContent>> _toolCallDiffsById = new Dictionary<string, IReadOnlyList<ToolCallContent>>(StringComparer.Ordinal);
+    // UI thread only (UpsertToolCall and ResetTranscriptState), where notifications are serialized.
+    private readonly Dictionary<string, List<ToolCallContent>> _toolCallDiffsById = new Dictionary<string, List<ToolCallContent>>(StringComparer.Ordinal);
+
+    // Resolves, in notification order, the diffs a tool-call notification should be tracked against:
+    // its own when it carries any, otherwise - for the content-less final update - the last ones it
+    // reported. Deciding this here rather than inside the per-notification background task keeps a
+    // completed update from overtaking the hook update that carried its diff.
+    private List<ToolCallContent> ResolveToolCallDiffs(ToolCallUpdate call)
+    {
+        var finished = call.Status is ToolCallStatus.Completed or ToolCallStatus.Failed;
+        var diffs = call.Content.Where(content => content.IsDiff && !string.IsNullOrWhiteSpace(content.Path)).ToList();
+        if (diffs.Count > 0) _toolCallDiffsById[call.ToolCallId] = diffs;
+        else if (finished && _toolCallDiffsById.TryGetValue(call.ToolCallId, out var reported)) diffs = reported;
+        if (finished) _toolCallDiffsById.Remove(call.ToolCallId);
+        return diffs;
+    }
 
     // The agent process writes Edit/Write results to disk itself (the client fs is not used for
     // them), so track those files from their tool-call diffs: snapshot the original while the call is
     // still pending (before the file changes), refresh the +/- counts once it completes.
-    private async Task TrackToolCallFileChangesAsync(ToolCallUpdate call)
+    private async Task TrackToolCallFileChangesAsync(ToolCallUpdate call, List<ToolCallContent> diffs)
     {
         try
         {
-            var finished = call.Status is ToolCallStatus.Completed or ToolCallStatus.Failed;
-            var diffs = call.Content.Where(content => content.IsDiff && !string.IsNullOrWhiteSpace(content.Path)).ToList();
-            lock (_toolCallDiffsById)
-            {
-                if (diffs.Count > 0) _toolCallDiffsById[call.ToolCallId] = diffs;
-                else if (finished && _toolCallDiffsById.TryGetValue(call.ToolCallId, out var reported)) diffs = reported.ToList();
-                if (finished) _toolCallDiffsById.Remove(call.ToolCallId);
-            }
-
             foreach (var content in diffs)
             {
                 ChangedFileViewModel tracked;
-                try { (tracked, _) = await TrackChangeBeforeWriteAsync(content.Path!, content, call.Status).ConfigureAwait(true); }
+                try { (tracked, _) = await TrackChangeBeforeWriteAsync(content.Path!, content, call.Status, call.ToolCallId).ConfigureAwait(true); }
                 catch (Exception) { continue; } // outside the workspace or unreadable: not ours to revert.
 
                 if (call.Status is not (ToolCallStatus.Completed or ToolCallStatus.Failed)) continue;
@@ -1703,20 +1714,25 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // Snapshot the pre-edit content on the agent's first write to a path, so Reject can restore it.
     // Also reports whether this call created the row, so a write that then fails can take it back.
     private async Task<(ChangedFileViewModel Entry, bool Created)> TrackChangeBeforeWriteAsync(
-        string requestedPath, ToolCallContent? diff = null, ToolCallStatus status = ToolCallStatus.Completed)
+        string requestedPath, ToolCallContent? diff = null, ToolCallStatus status = ToolCallStatus.Completed, string? toolCallId = null)
     {
         using var pathLease = WorkspacePathGuard.AcquireFile(_services.WorkspaceRoot, requestedPath);
         lock (_changedFilesByPath)
         {
             if (_changedFilesByPath.TryGetValue(pathLease.FullPath, out var existing))
             {
-                // The row's snapshot came from an earlier - possibly pending - notification, which
+                // The row's snapshot came from this call's earlier - pending - notification, which
                 // can itself already have raced the agent's write and pinned a wrong snapshot (see
                 // TryGetRaceCorrectedSnapshot). This is the only remaining chance to correct it: a
-                // later call for the same path returns this same row without ever re-reading the file.
-                if (TryGetRaceCorrectedSnapshot(existing.OriginalText, status, diff, out var corrected))
+                // later notification for the same path returns this same row without re-reading the
+                // file. Only the creating call may do so: a later call that writes the file back to
+                // its original satisfies the same equality, and would replace a correct original
+                // with the agent's intermediate content. Applied synchronously so the caller's
+                // revertability check reads the corrected snapshot, not the one it replaces.
+                if (toolCallId is not null && existing.CreatedByToolCallId == toolCallId
+                    && TryGetRaceCorrectedSnapshot(existing.OriginalText, status, diff, out var corrected))
                 {
-                    RunOnUi(() => existing.CorrectOriginalSnapshot(corrected));
+                    existing.CorrectOriginalSnapshot(corrected);
                 }
 
                 return (existing, false);
@@ -1736,7 +1752,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
         var entry = new ChangedFileViewModel(pathLease.FullPath, original,
             file => OnUiAsync(() => AcceptChangeAsync(file)),
-            file => OnUiAsync(() => RejectChangeAsync(file)));
+            file => OnUiAsync(() => RejectChangeAsync(file)),
+            toolCallId);
         // An Edit's diff is the model's old_string/new_string (src/tools.ts) and never the whole
         // file, so a post-edit snapshot cannot be recognised by equality - it is recognised by what
         // it lacks, the text the edit replaced. Such a row offers no revert: writing the snapshot

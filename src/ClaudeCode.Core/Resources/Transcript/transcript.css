@@ -288,8 +288,12 @@ html, body {
   color: var(--chat-subtle-fg);
 }
 
+/* The resting colour is now 80% of the text colour, so the colour step alone barely reads as
+   hover feedback; a tint of the text colour behind the row carries it instead (same device as
+   the selection highlight further down: color-mix keeps it theme-relative). */
 .tool-card .tool-header:hover {
   color: var(--chat-fg);
+  background: color-mix(in srgb, var(--chat-fg) 8%, transparent);
 }
 
 .tool-card .tool-header .chevron {
