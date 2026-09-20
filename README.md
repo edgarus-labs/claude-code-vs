@@ -11,6 +11,7 @@ leaving Visual Studio.
 [![Visual Studio](https://img.shields.io/badge/Visual%20Studio-2022%20%7C%202026-5C2D91?logo=visualstudio&logoColor=white)](https://visualstudio.microsoft.com/)
 [![.NET](https://img.shields.io/badge/.NET-8-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/)
 [![Agent Client Protocol](https://img.shields.io/badge/protocol-ACP-blue)](https://agentclientprotocol.com)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.txt)
 
 ## Why this exists
 
@@ -203,4 +204,4 @@ to (TDD, SOLID, Occam's razor, and Conventional Commits).
 
 ## License
 
-See [LICENSE.txt](LICENSE.txt).
+MIT — see [LICENSE.txt](LICENSE.txt).
