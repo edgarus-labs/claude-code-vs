@@ -266,9 +266,15 @@ html, body {
   border: 1px solid var(--chat-border);
   background: var(--chat-input-bg);
   border-radius: 8px;
-  margin: 4px 0 0 0;
+  /* A response is mostly a stack of these cards; 4px read as one crowded block (#22). */
+  margin: 10px 0 0 0;
   overflow: hidden;
   min-width: 0;
+}
+
+/* Text that follows a card gets the same breathing room a card gets after text. */
+.msg-assistant .tool-card + .content {
+  margin-top: 10px;
 }
 
 .tool-card .tool-header {

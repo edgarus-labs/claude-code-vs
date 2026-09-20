@@ -450,6 +450,7 @@
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                   </Grid.ColumnDefinitions>
                   <Button Grid.Column="0" Style="{StaticResource LinkButtonStyle}" HorizontalContentAlignment="Left" Padding="4,3"
                           Foreground="{DynamicResource ChatForegroundBrush}" ToolTip="{Binding FullPath}"
@@ -472,7 +473,7 @@
                     <Run Text="{Binding AddedLines, Mode=OneWay, StringFormat='+{0}'}" Foreground="{DynamicResource ChatDiffAddedForegroundBrush}" />
                     <Run Text="{Binding RemovedLines, Mode=OneWay, StringFormat='−{0}'}" Foreground="{DynamicResource ChatDiffRemovedForegroundBrush}" />
                   </TextBlock>
-                  <Button Grid.Column="2" Margin="0,0,10,0"
+                  <Button Grid.Column="2"
                           Width="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType=views:ChatPanelView}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=24}"
                           Height="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType=views:ChatPanelView}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=24}"
                           Command="{Binding RejectCommand}" AutomationProperties.Name="{Binding Name, StringFormat='Reject changes to {0}'}"
@@ -491,7 +492,11 @@
                     </Button.Style>
                     <Path Data="M 0,0 L 8,8 M 0,8 L 8,0" StrokeThickness="1.4" Style="{StaticResource ButtonIconStrokeStyle}" />
                   </Button>
-                  <Button Grid.Column="3" Style="{StaticResource LinkButtonStyle}" ToolTip="Accept (keep)"
+                  <!-- The gap between Reject and Accept scales with the buttons so an accidental click
+                       between them stays as unlikely at every zoom level (#22). -->
+                  <Border Grid.Column="3"
+                          Width="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType=views:ChatPanelView}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=10}" />
+                  <Button Grid.Column="4" Style="{StaticResource LinkButtonStyle}" ToolTip="Accept (keep)"
                           Width="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType=views:ChatPanelView}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=24}"
                           Height="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType=views:ChatPanelView}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=24}"
                           Foreground="{DynamicResource ChatAccentBrush}"
@@ -522,6 +527,7 @@
           <ScrollViewer MaxHeight="120" VerticalScrollBarVisibility="Auto"
                         HorizontalScrollBarVisibility="Disabled" Margin="0,0,0,6">
             <TextBlock Text="{Binding Title}" TextWrapping="Wrap" FontWeight="SemiBold"
+                       FontSize="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}"
                        Foreground="{DynamicResource ChatForegroundBrush}" />
           </ScrollViewer>
           <ItemsControl ItemsSource="{Binding Options}">
@@ -533,6 +539,7 @@
             <ItemsControl.ItemTemplate>
               <DataTemplate DataType="{x:Type contracts:PermissionOption}">
                 <Button Content="{Binding Label}" Margin="0,0,6,0" Style="{StaticResource ChatButtonStyle}"
+                        FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType=views:ChatPanelView}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}"
                         Command="{Binding DataContext.ChooseCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
                         CommandParameter="{Binding}" />
               </DataTemplate>
@@ -661,17 +668,15 @@
                   <Binding ElementName="ComposerBox" Path="FontFamily" />
                 </MultiBinding>
               </Grid.Height>
-              <Button Padding="0" VerticalAlignment="Center" Command="{Binding SendCommand}" Click="SendButton_Click"
-                      Width="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=28}"
-                      Height="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=28}"
+              <!-- Send/Stop keep a fixed size at every zoom level (owner decision on #22): their glyph
+                   is fixed-coordinate Path data, so a growing button only grows the empty frame. -->
+              <Button Width="28" Height="28" Padding="0" VerticalAlignment="Center" Command="{Binding SendCommand}" Click="SendButton_Click"
                       Style="{StaticResource ChatButtonStyle}" ToolTip="Send message (Enter)" AutomationProperties.Name="Send message"
                       Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibilityConverter}, ConverterParameter=Invert}">
                 <Path Data="M 6,12 L 6,0 M 1,5 L 6,0 L 11,5" StrokeThickness="1.8"
                       Style="{StaticResource ButtonIconStrokeStyle}" />
               </Button>
-              <Button Padding="0" VerticalAlignment="Center" Command="{Binding CancelCommand}"
-                      Width="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=28}"
-                      Height="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=28}"
+              <Button Width="28" Height="28" Padding="0" VerticalAlignment="Center" Command="{Binding CancelCommand}"
                       Style="{StaticResource ChatButtonStyle}" ToolTip="Stop response" AutomationProperties.Name="Stop response"
                       Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibilityConverter}}">
                 <Rectangle Width="10" Height="10" RadiusX="1.5" RadiusY="1.5"

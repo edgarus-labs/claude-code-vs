@@ -1175,6 +1175,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         Messages.Clear();
         lock (_changedFilesByPath) _changedFilesByPath.Clear();
+        lock (_toolCallDiffsById) _toolCallDiffsById.Clear();
         ChangedFiles.Clear();
         ClearPendingRequests("The session was replaced.");
         _explicitSessionTitle = null;
@@ -1640,6 +1641,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private readonly Dictionary<string, ChangedFileViewModel> _changedFilesByPath = new Dictionary<string, ChangedFileViewModel>(StringComparer.OrdinalIgnoreCase);
 
+    // The latest diff content reported for each tool call still in flight. claude-agent-acp reports
+    // an Edit/Write in three notifications (dist/acp-agent.js, dist/tools.js): the tool_call with the
+    // model's optimistic diff, a PostToolUse-hook tool_call_update with the real structuredPatch
+    // diff and no status (parsed as Pending), and a status=completed/failed tool_call_update whose
+    // content is empty - toolUpdateFromToolResult returns {} for Edit and Write. The final update
+    // therefore names nothing to count on its own; the diff to count is the last one it reported.
+    private readonly Dictionary<string, IReadOnlyList<ToolCallContent>> _toolCallDiffsById = new Dictionary<string, IReadOnlyList<ToolCallContent>>(StringComparer.Ordinal);
+
     // The agent process writes Edit/Write results to disk itself (the client fs is not used for
     // them), so track those files from their tool-call diffs: snapshot the original while the call is
     // still pending (before the file changes), refresh the +/- counts once it completes.
@@ -1647,9 +1656,17 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         try
         {
-            foreach (var content in call.Content)
+            var finished = call.Status is ToolCallStatus.Completed or ToolCallStatus.Failed;
+            var diffs = call.Content.Where(content => content.IsDiff && !string.IsNullOrWhiteSpace(content.Path)).ToList();
+            lock (_toolCallDiffsById)
             {
-                if (!content.IsDiff || string.IsNullOrWhiteSpace(content.Path)) continue;
+                if (diffs.Count > 0) _toolCallDiffsById[call.ToolCallId] = diffs;
+                else if (finished && _toolCallDiffsById.TryGetValue(call.ToolCallId, out var reported)) diffs = reported.ToList();
+                if (finished) _toolCallDiffsById.Remove(call.ToolCallId);
+            }
+
+            foreach (var content in diffs)
+            {
                 ChangedFileViewModel tracked;
                 try { (tracked, _) = await TrackChangeBeforeWriteAsync(content.Path!, content, call.Status).ConfigureAwait(true); }
                 catch (Exception) { continue; } // outside the workspace or unreadable: not ours to revert.

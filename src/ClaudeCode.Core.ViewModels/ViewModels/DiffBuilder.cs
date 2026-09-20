@@ -11,8 +11,12 @@ internal static class DiffBuilder
 
     private static List<DiffLineViewModel> BuildCore(string oldText, string newText)
     {
-        var oldLines = SplitLines(oldText);
-        var newLines = SplitLines(newText);
+        // A terminating "\n" ends the last line rather than starting an empty one - but only when
+        // both sides agree on it (or one side is empty): "one" vs "one\n" must still show the added
+        // newline as a real difference (see Build_TrailingNewlineDifference_IsVisible).
+        var stripTerminator = (oldText.Length == 0 || EndsWithNewline(oldText)) && (newText.Length == 0 || EndsWithNewline(newText));
+        var oldLines = SplitLines(oldText, stripTerminator);
+        var newLines = SplitLines(newText, stripTerminator);
         int n = oldLines.Length;
         int m = newLines.Length;
 
@@ -81,6 +85,13 @@ internal static class DiffBuilder
         return result;
     }
 
-    private static string[] SplitLines(string text) =>
-        string.IsNullOrEmpty(text) ? Array.Empty<string>() : text.Replace("\r\n", "\n").Split('\n');
+    private static bool EndsWithNewline(string text) => text.Length > 0 && text[text.Length - 1] == '\n';
+
+    private static string[] SplitLines(string text, bool stripTerminator)
+    {
+        if (string.IsNullOrEmpty(text)) return Array.Empty<string>();
+        text = text.Replace("\r\n", "\n");
+        if (stripTerminator && EndsWithNewline(text)) text = text.Substring(0, text.Length - 1);
+        return text.Length == 0 ? Array.Empty<string>() : text.Split('\n');
+    }
 }

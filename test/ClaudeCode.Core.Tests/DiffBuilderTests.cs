@@ -39,6 +39,27 @@ public sealed class DiffBuilderTests
     }
 
     [Fact]
+    public void Build_CreatedFileEndingInNewline_CountsOnlyItsRealLines()
+    {
+        // A file's terminating "\n" ends its last line; it is not a fifth, empty line. The card
+        // badge for "Wrote Created.txt" read "+5" for a four-line file (#22, DoD: statistics for
+        // newly created files).
+        var lines = DiffBuilder.Build(string.Empty, "alpha\nbeta\ngamma\ndelta\n");
+
+        Assert.All(lines, line => Assert.Equal(DiffLineKind.Added, line.Kind));
+        Assert.Equal(new[] { "alpha", "beta", "gamma", "delta" }, lines.Select(line => line.Text));
+    }
+
+    [Fact]
+    public void Build_BothSidesEndingInNewline_DoesNotDiffThePhantomLastSegment()
+    {
+        var lines = DiffBuilder.Build("one\n", "one\ntwo\n");
+
+        Assert.Equal(new[] { DiffLineKind.Context, DiffLineKind.Added }, lines.Select(line => line.Kind));
+        Assert.Equal(new[] { "one", "two" }, lines.Select(line => line.Text));
+    }
+
+    [Fact]
     public void Build_AboveAlignmentCellLimit_FallsBackToFullRemoveAdd()
     {
         // _maxAlignmentCells = 2_000_000: the O(n*m) LCS table is skipped once old-lines * new-lines
@@ -73,7 +94,7 @@ public sealed class DiffBuilderTests
         var lines = DiffBuilder.Build(emptyOld ? string.Empty : text, emptyOld ? text : string.Empty);
         var emptyAllocation = GC.GetAllocatedBytesForCurrentThread() - beforeEmpty;
 
-        Assert.Equal(100_001, lines.Count);
+        Assert.Equal(100_000, lines.Count); // the last "\n" terminates line 100_000; it is not a 100_001st
         Assert.All(lines, line =>
         {
             Assert.Equal(emptyOld ? DiffLineKind.Added : DiffLineKind.Removed, line.Kind);

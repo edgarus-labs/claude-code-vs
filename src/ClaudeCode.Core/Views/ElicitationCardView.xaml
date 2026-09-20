@@ -36,6 +36,7 @@
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="12,6" />
         <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="FontSize" Value="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType={x:Type views:ChatPanelView}}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}" />
         <Setter Property="Template">
           <Setter.Value>
             <ControlTemplate TargetType="Button">
@@ -184,6 +185,7 @@
                                         ConverterParameter=0.8}">
         <StackPanel>
           <TextBlock x:Name="MessageText" Text="{Binding Message}" TextWrapping="Wrap" FontWeight="SemiBold"
+                     FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType={x:Type views:ChatPanelView}}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}"
                      Foreground="{DynamicResource ChatForegroundBrush}" Margin="0,0,0,8"
                      AutomationProperties.LiveSetting="Assertive" />
           <ItemsControl ItemsSource="{Binding Fields}" ItemTemplate="{StaticResource ElicitationFieldTemplate}" />

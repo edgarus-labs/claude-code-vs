@@ -453,6 +453,114 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(0, file.RemovedLines);
     }
 
+    // claude-agent-acp reports an Edit/Write in three notifications (dist/acp-agent.js, dist/tools.js):
+    // the tool_call with the model's optimistic diff, a PostToolUse-hook tool_call_update carrying the
+    // real structuredPatch diff but no status (parsed as Pending), and a final status=completed
+    // tool_call_update whose content is EMPTY (toolUpdateFromToolResult returns {} for Edit/Write).
+    // Counting only ran inside the loop over the completed update's content, so it never ran at
+    // all: every row stayed at "+0 -0" (issue #22 item 6, reproduced live in the VS Exp instance).
+    [Fact]
+    public async Task ToolCallDiff_CompletedUpdateWithoutContent_StillCountsTheDiffReportedEarlier()
+    {
+        using var workspace = new TempWorkspace();
+        var created = workspace.PathUnder("Created.txt");
+        var edited = workspace.PathUnder("Modify.txt");
+        File.WriteAllText(edited, "line one\nline two\nline three\n");
+        var (vm, connection, _) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+        var turn = new TaskCompletionSource<bool>();
+        connection.PromptHandler = _ => turn.Task;
+        vm.InputText = "change files";
+        var sending = vm.SendAsync();
+
+        // Write: optimistic tool_call (oldText null), agent writes, hook diff (no status), completed (no content).
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
+        {
+            ToolCallId = "write-1", Title = "Write Created.txt", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
+            Content = [new ClaudeCode.Contracts.ToolCallContent { Path = created, OldText = null, NewText = "alpha\nbeta\ngamma\ndelta\n" }],
+        }));
+        await WaitUntilAsync(() => vm.ChangedFiles.Count == 1);
+        File.WriteAllText(created, "alpha\nbeta\ngamma\ndelta\n");
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
+        {
+            ToolCallId = "write-1", Title = "Write Created.txt", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
+            Content = [new ClaudeCode.Contracts.ToolCallContent { Path = created, OldText = "", NewText = "alpha\nbeta\ngamma\ndelta\n" }],
+        }));
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
+        {
+            ToolCallId = "write-1", Title = "Write Created.txt", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Completed, Content = [],
+        }));
+
+        // Edit: optimistic old_string/new_string, agent edits, hook diff (no status), completed (no content).
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
+        {
+            ToolCallId = "edit-1", Title = "Edit Modify.txt", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
+            Content = [new ClaudeCode.Contracts.ToolCallContent { Path = edited, OldText = "line two", NewText = "line TWO changed" }],
+        }));
+        await WaitUntilAsync(() => vm.ChangedFiles.Count == 2);
+        File.WriteAllText(edited, "line one\nline TWO changed\nline three\n");
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
+        {
+            ToolCallId = "edit-1", Title = "Edit Modify.txt", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
+            Content = [new ClaudeCode.Contracts.ToolCallContent { Path = edited, OldText = "line one\nline two\nline three\n", NewText = "line one\nline TWO changed\nline three\n" }],
+        }));
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
+        {
+            ToolCallId = "edit-1", Title = "Edit Modify.txt", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Completed, Content = [],
+        }));
+
+        await WaitUntilAsync(() => vm.ChangedFiles.All(file => file.AddedLines > 0));
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.TurnEnded("end_turn"));
+        turn.SetResult(true);
+        await sending;
+
+        var createdRow = Assert.Single(vm.ChangedFiles, file => file.Name == "Created.txt");
+        Assert.True(createdRow.IsNew);
+        Assert.Equal(4, createdRow.AddedLines);
+        Assert.Equal(0, createdRow.RemovedLines);
+        var editedRow = Assert.Single(vm.ChangedFiles, file => file.Name == "Modify.txt");
+        Assert.False(editedRow.IsNew);
+        Assert.Equal(1, editedRow.AddedLines);
+        Assert.Equal(1, editedRow.RemovedLines);
+        Assert.True(editedRow.CanRevert);
+    }
+
+    // The same three-notification shape for a denied Edit: the row went in on the optimistic
+    // tool_call, the failed update carries only the "Permission denied" text - with nothing to
+    // iterate, the row was never taken back and a file the agent never touched stayed listed.
+    [Fact]
+    public async Task ToolCallDiff_FailedUpdateWithoutContent_UntracksTheUntouchedFile()
+    {
+        using var workspace = new TempWorkspace();
+        var edited = workspace.PathUnder("Modify.txt");
+        File.WriteAllText(edited, "line one\n");
+        var (vm, connection, _) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+        var turn = new TaskCompletionSource<bool>();
+        connection.PromptHandler = _ => turn.Task;
+        vm.InputText = "change it";
+        var sending = vm.SendAsync();
+
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
+        {
+            ToolCallId = "edit-1", Title = "Edit Modify.txt", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
+            Content = [new ClaudeCode.Contracts.ToolCallContent { Path = edited, OldText = "line one", NewText = "line ONE" }],
+        }));
+        await WaitUntilAsync(() => vm.ChangedFiles.Count == 1);
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
+        {
+            ToolCallId = "edit-1", Title = "Edit Modify.txt", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Failed,
+            Content = [new ClaudeCode.Contracts.ToolCallContent { Text = "Permission denied" }],
+        }));
+        await WaitUntilAsync(() => vm.ChangedFiles.Count == 0);
+
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.TurnEnded("end_turn"));
+        turn.SetResult(true);
+        await sending;
+        Assert.Empty(vm.ChangedFiles);
+        Assert.Equal("line one\n", File.ReadAllText(edited));
+    }
+
     // The client cannot tell "the agent created this file" from "the agent rewrote an existing file
     // and omitted oldText": both arrive as an absent oldText over content that already matches the
     // disk. Creation is therefore decided by the client's own read, and a write that landed before
