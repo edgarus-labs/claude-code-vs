@@ -198,6 +198,23 @@ html, body {
   cursor: pointer;
 }
 
+/* File references the transcript's own markdown emitted (ChatFileReference.LinkifyFileReferences
+   on the C# side; matched by the href-prefix check in transcript-common.js's installLinkHandler).
+   Monospace and a dashed underline instead of the ordinary link's solid one, reusing the same
+   --chat-link color token: distinct enough from plain text to read as interactive, and distinct
+   enough from an http(s) link that a click's effect ("open in the editor" vs "open in a browser")
+   stays predictable. */
+.msg-assistant .content a[href^="/__claudecode/open?"] {
+  font-family: var(--chat-code-font);
+  color: var(--chat-link);
+  text-decoration: none;
+  border-bottom: 1px dashed var(--chat-link);
+}
+
+.msg-assistant .content a[href^="/__claudecode/open?"]:hover {
+  border-bottom-style: solid;
+}
+
 .msg-footer {
   color: var(--chat-subtle-fg);
   font-size: 0.78em;

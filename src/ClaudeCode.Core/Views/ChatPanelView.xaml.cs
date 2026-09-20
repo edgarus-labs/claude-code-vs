@@ -486,7 +486,7 @@ public partial class ChatPanelView : UserControl, IDisposable
                 // Ordered so text and tool calls interleave exactly as the agent emitted them,
                 // rather than "all text, then all tool calls" (message.Text/.ToolCalls group by
                 // kind and lose that order - see ChatMessagePart).
-                parts = message.Parts.Select(BuildPartPayload),
+                parts = message.Parts.Select(part => BuildPartPayload(part, message.Role)),
                 durationSeconds = message.DurationSeconds,
                 tokensUsed = message.TokensUsed,
                 images = new JRaw(ImagesJson(message)),
@@ -602,11 +602,20 @@ public partial class ChatPanelView : UserControl, IDisposable
         return json;
     }
 
-    private static object BuildPartPayload(ChatMessagePart part)
+    private static object BuildPartPayload(ChatMessagePart part, ChatRole role)
     {
         if (part is ChatTextPart textPart)
         {
-            return new { type = "text", text = textPart.Text };
+            // Only the assistant's text is linkified. The page renders a user bubble as plain text
+            // (renderUserText writes the lines into textContent) and scans those same raw lines for
+            // pasted-diff headers, so rewriting a path the user typed would echo the markdown
+            // source back at its author and hand the header patterns a rewritten path. Issue #24 is
+            // about references in Claude's responses, which are the only ones rendered as markdown.
+            return new
+            {
+                type = "text",
+                text = role == ChatRole.Assistant ? ChatFileReference.LinkifyFileReferences(textPart.Text) : textPart.Text,
+            };
         }
 
         var call = ((ChatToolCallPart)part).Card;
@@ -712,6 +721,13 @@ public partial class ChatPanelView : UserControl, IDisposable
         {
             case "openLink":
                 OpenTranscriptLink(ReadString(message, "url"));
+                break;
+            case "openFile":
+                // OpenFileReferenceAsync never faults (see its doc comment) - it re-parses and
+                // re-validates href itself via ChatFileReference.TryParseLink rather than trusting
+                // this message, and reports failure through StatusMessage instead of throwing, so
+                // a bare discard cannot leak an unobserved exception onto this COM callback thread.
+                _ = _viewModel.OpenFileReferenceAsync(ReadString(message, "href"));
                 break;
             case "zoom":
                 // DOM deltaY>0 is "scroll down" (zoom out); WPF's Ctrl+wheel convention is the

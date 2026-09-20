@@ -986,7 +986,7 @@ public sealed partial class ChatSessionStateTests
         var snapshotContexts = new ConcurrentBag<SynchronizationContext?>();
         var openContexts = new ConcurrentBag<SynchronizationContext?>();
         var revertContexts = new ConcurrentBag<SynchronizationContext?>();
-        services.OpenDocumentHandler = (_, _) =>
+        services.OpenDocumentHandler = (_, _, _) =>
         {
             openContexts.Add(SynchronizationContext.Current);
             return Task.CompletedTask;
@@ -1095,7 +1095,7 @@ public sealed partial class ChatSessionStateTests
         var (vm, connection, services) = await ConnectWithWorkspaceAsync(workspace.Root);
         using var _vm = vm;
         Assert.True(await connection.RaiseFileWriteRequested(targetPath, "x").Response.Task);
-        services.OpenDocumentHandler = (_, _) => throw new FileNotFoundException("The document was renamed.");
+        services.OpenDocumentHandler = (_, _, _) => throw new FileNotFoundException("The document was renamed.");
 
         await vm.OpenChangedFileCommand.ExecuteAsync(vm.ChangedFiles[0]);
 

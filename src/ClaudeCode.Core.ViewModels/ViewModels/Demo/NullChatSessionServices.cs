@@ -34,7 +34,7 @@ public sealed class NullChatSessionServices : IChatSessionServices
     /// <summary>This double has no host editor at all, so an open can only fail. The interface
     /// contract says the returned task carries that failure; reporting success would tell the caller a
     /// file was shown to the user that never was.</summary>
-    public Task OpenDocumentAsync(string path, CancellationToken cancellationToken) =>
+    public Task OpenDocumentAsync(string path, int? line, CancellationToken cancellationToken) =>
         Task.FromException(new InvalidOperationException("No host editor is available to open documents."));
 
     public Task<string?> TryReadOpenDocumentAsync(string path, CancellationToken cancellationToken) =>

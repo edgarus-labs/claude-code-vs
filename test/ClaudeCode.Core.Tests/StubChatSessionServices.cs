@@ -13,9 +13,11 @@ internal sealed class StubChatSessionServices : IChatSessionServices
     {
         ConnectionFactory = connectionFactory;
         AuthService = authService;
-        WorkspaceRoot = workspaceRoot;
+        _workspaceRoot = workspaceRoot;
         UsageService = usageService ?? new ClaudeCode.Core.ViewModels.Demo.NullUsageService();
     }
+
+    private readonly string? _workspaceRoot;
 
     public IAcpAgentConnectionFactory ConnectionFactory { get; }
 
@@ -23,7 +25,11 @@ internal sealed class StubChatSessionServices : IChatSessionServices
 
     public IUsageService UsageService { get; }
 
-    public string? WorkspaceRoot { get; }
+    /// <summary>Injects a failure for the VSIX host's <c>WorkspaceRoot</c>, which is a live
+    /// callback into solution state and throws while a solution is closing or reloading.</summary>
+    public Func<string?>? WorkspaceRootHandler { get; set; }
+
+    public string? WorkspaceRoot => WorkspaceRootHandler is null ? _workspaceRoot : WorkspaceRootHandler();
 
     public bool HasActiveDocument { get; private set; } = true;
 
@@ -46,14 +52,17 @@ internal sealed class StubChatSessionServices : IChatSessionServices
 
     public List<string> OpenedDocumentPaths { get; } = new();
 
+    public List<int?> OpenedDocumentLines { get; } = new();
+
     /// <summary>Injects a failure for the real host's <c>VS.Documents.OpenAsync</c>, which can fail
     /// for a deleted, renamed or locked document.</summary>
-    public Func<string, CancellationToken, Task>? OpenDocumentHandler { get; set; }
+    public Func<string, int?, CancellationToken, Task>? OpenDocumentHandler { get; set; }
 
-    public Task OpenDocumentAsync(string path, CancellationToken cancellationToken)
+    public Task OpenDocumentAsync(string path, int? line, CancellationToken cancellationToken)
     {
         OpenedDocumentPaths.Add(path);
-        return OpenDocumentHandler?.Invoke(path, cancellationToken) ?? Task.CompletedTask;
+        OpenedDocumentLines.Add(line);
+        return OpenDocumentHandler?.Invoke(path, line, cancellationToken) ?? Task.CompletedTask;
     }
 
     public Func<string, CancellationToken, Task<string?>>? ReadOpenDocumentHandler { get; set; }

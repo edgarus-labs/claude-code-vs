@@ -1902,13 +1902,55 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 using var document = pathLease.ProtectDocument();
                 if (document is null && RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
                     throw new FileNotFoundException("The workspace file does not exist.", pathLease.FullPath);
-                await _services.OpenDocumentAsync(pathLease.FullPath, _lifetime.Token).ConfigureAwait(true);
+                await _services.OpenDocumentAsync(pathLease.FullPath, null, _lifetime.Token).ConfigureAwait(true);
             }).ConfigureAwait(true);
         }
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex)
         {
             if (!_disposed) StatusMessage = $"Could not open {file.Name}: {ex.Message}";
+        }
+    }
+
+    /// <summary>
+    /// Opens a file reference the user clicked in the transcript. <paramref name="href"/> crosses
+    /// the WebView2 boundary carrying a path this renderer lifted out of untrusted agent markdown,
+    /// so it is re-parsed and re-validated here rather than trusted: only a link this renderer
+    /// emitted is accepted, and the path is confined to the workspace before the host ever sees it.
+    /// Never faults - a reference to a file that was never there is ordinary agent output, not an
+    /// error the chat should break on.
+    /// </summary>
+    public async Task OpenFileReferenceAsync(string? href)
+    {
+        if (!ChatFileReference.TryParseLink(href, out var reference, out var line)) return;
+
+        try
+        {
+            // Inside the try on purpose: in the VSIX this property is a live callback into
+            // solution state, which throws while a solution is closing or reloading. The only
+            // caller discards this task on the WebView2 callback thread, so a fault here would be
+            // an unobserved exception rather than the message the summary above promises.
+            var workspaceRoot = _services.WorkspaceRoot;
+            if (string.IsNullOrEmpty(workspaceRoot))
+                throw new InvalidOperationException("no folder or solution is open.");
+
+            // The agent writes workspace-relative paths, but WorkspacePathGuard resolves a relative
+            // candidate against the process working directory - devenv's, which has nothing to do
+            // with the workspace. Anchor it first so the guard judges the path the user meant.
+            var candidate = Path.IsPathRooted(reference) ? reference : Path.Combine(workspaceRoot!, reference);
+            await Task.Run(async () =>
+            {
+                using var pathLease = WorkspacePathGuard.AcquireFile(workspaceRoot, candidate);
+                using var document = pathLease.ProtectDocument();
+                if (document is null && RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                    throw new FileNotFoundException("the file does not exist.", pathLease.FullPath);
+                await _services.OpenDocumentAsync(pathLease.FullPath, line, _lifetime.Token).ConfigureAwait(true);
+            }).ConfigureAwait(true);
+        }
+        catch (OperationCanceledException) when (_disposed) { }
+        catch (Exception ex)
+        {
+            if (!_disposed) StatusMessage = $"Could not open {reference}: {ex.Message}";
         }
     }
 
