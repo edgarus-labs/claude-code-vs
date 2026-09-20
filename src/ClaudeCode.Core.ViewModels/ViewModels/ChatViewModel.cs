@@ -1686,7 +1686,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 string? current;
                 using (var pathLease = WorkspacePathGuard.AcquireFile(_services.WorkspaceRoot, tracked.FullPath))
                     current = await ReadLeasedFileAsync(pathLease).ConfigureAwait(true);
-                var unchanged = string.Equals(current, tracked.OriginalText, StringComparison.Ordinal);
+                // The snapshot is mutable and is corrected from a thread-pool thread under this
+                // lock (TrackChangeBeforeWriteAsync, whose insert-time comment says why a second
+                // notification for this call is in flight at all), so read it under that lock too.
+                string? snapshot;
+                lock (_changedFilesByPath) snapshot = tracked.OriginalText;
+                var unchanged = string.Equals(current, snapshot, StringComparison.Ordinal);
                 RunOnUi(() =>
                 {
                     if (call.Status == ToolCallStatus.Failed)
@@ -1733,6 +1738,17 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                     && TryGetRaceCorrectedSnapshot(existing.OriginalText, status, diff, out var corrected))
                 {
                     existing.CorrectOriginalSnapshot(corrected);
+                    // The agent reports "" as the pre-write content of a file it created (an empty
+                    // structured patch, src/diff.ts: oldText = originalFile), and RevertChangeAsync
+                    // tells an empty original from an absent one to choose between writing and
+                    // deleting: restoring "" would truncate the file the agent created to zero
+                    // bytes instead of removing it, and report success. Only the client's own read
+                    // can prove a file existed and was empty; this text is the agent's word.
+                    // The verdict is flipped here, in the same breath and under the same lock as
+                    // the snapshot it condemns: a Reject that read the two apart passed the stale
+                    // "yes" and wrote that very "" into the file. Only the notification is posted -
+                    // this row may already be in the panel, and CanRevert drives a CanExecute.
+                    if (corrected.Length == 0 && existing.TryMarkNotRevertable()) RunOnUi(existing.NotifyRevertabilityChanged);
                 }
 
                 return (existing, false);
@@ -1745,10 +1761,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         // omit it routinely - and inferring creation from it made Reject delete pre-existing files
         // whose content already matched the reported newText.
         var original = await ReadLeasedFileAsync(pathLease).ConfigureAwait(true);
-        if (TryGetRaceCorrectedSnapshot(original, status, diff, out var correctedOriginal))
-        {
-            original = correctedOriginal;
-        }
+        var raceCorrected = TryGetRaceCorrectedSnapshot(original, status, diff, out var correctedOriginal);
+        if (raceCorrected) original = correctedOriginal;
 
         var entry = new ChangedFileViewModel(pathLease.FullPath, original,
             file => OnUiAsync(() => AcceptChangeAsync(file)),
@@ -1759,9 +1773,29 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         // it lacks, the text the edit replaced. Such a row offers no revert: writing the snapshot
         // back would only rewrite the edit over itself and report success.
         if (diff is not null && !IsPreEditSnapshot(original, diff)) entry.MarkNotRevertable();
+        // An empty corrected original is not restorable either, for the reason the entry-time
+        // lookup above states. Called directly: this row is not in the panel yet.
+        if (raceCorrected && original is { Length: 0 }) entry.MarkNotRevertable();
         lock (_changedFilesByPath)
         {
-            if (_changedFilesByPath.TryGetValue(pathLease.FullPath, out var raced)) return (raced, false);
+            if (_changedFilesByPath.TryGetValue(pathLease.FullPath, out var raced))
+            {
+                // Another notification for this same call inserted the row while the read above was
+                // in flight - UpsertToolCall runs one task per notification, so a call's pending and
+                // completed updates overlap - and its snapshot can have raced the agent's write just
+                // as an earlier notification's can. This return discards the entry just built from
+                // the corrected read, so it is the last chance to correct the row that survives:
+                // same guard, and the same reason, as the entry-time lookup above.
+                if (toolCallId is not null && raced.CreatedByToolCallId == toolCallId
+                    && TryGetRaceCorrectedSnapshot(raced.OriginalText, status, diff, out var late))
+                {
+                    raced.CorrectOriginalSnapshot(late);
+                    if (late.Length == 0 && raced.TryMarkNotRevertable()) RunOnUi(raced.NotifyRevertabilityChanged);
+                }
+
+                return (raced, false);
+            }
+
             _changedFilesByPath[pathLease.FullPath] = entry;
         }
 
@@ -1787,8 +1821,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private static bool TryGetRaceCorrectedSnapshot(
         string? snapshot, ToolCallStatus status, ToolCallContent? diff, out string corrected)
     {
-        if (status == ToolCallStatus.Completed && snapshot is not null && diff?.OldText is { } preEditText &&
-            string.Equals(snapshot, diff.NewText, StringComparison.Ordinal))
+        if (status == ToolCallStatus.Completed && snapshot is not null && diff?.OldText is { } preEditText
+            && diff.NewText is { } postEditText
+            && string.Equals(FoldLineEndings(snapshot), FoldLineEndings(postEditText), StringComparison.Ordinal))
         {
             corrected = preEditText;
             return true;
@@ -1798,14 +1833,19 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         return false;
     }
 
-    // The file's line endings are its own and the diff's are the model's: compare with both folded.
+    // The file's line endings are its own and the diff's are the model's, so every comparison
+    // between the two folds both. Comparing them raw - as the correction above once did - never
+    // matched for a CRLF file, the norm in a Visual Studio workspace: the correction no-opped and
+    // the row kept the snapshot that had raced the write, counting "+0 -0".
+    private static string FoldLineEndings(string text) => text.Replace("\r\n", "\n");
+
     private static bool IsPreEditSnapshot(string? snapshot, ToolCallContent diff)
     {
         if (snapshot is null) return diff.OldText is null;
-        var text = snapshot.Replace("\r\n", "\n");
+        var text = FoldLineEndings(snapshot);
         return diff.OldText is { } oldText
-            ? text.IndexOf(oldText.Replace("\r\n", "\n"), StringComparison.Ordinal) >= 0
-            : !string.Equals(text, diff.NewText!.Replace("\r\n", "\n"), StringComparison.Ordinal);
+            ? text.IndexOf(FoldLineEndings(oldText), StringComparison.Ordinal) >= 0
+            : !string.Equals(text, FoldLineEndings(diff.NewText!), StringComparison.Ordinal);
     }
 
     private async Task<string?> ReadLeasedFileAsync(WorkspacePathLease pathLease)
@@ -1901,7 +1941,21 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task RevertChangeAsync(ChangedFileViewModel file)
     {
-        if (!file.CanRevert) throw new InvalidOperationException("The content from before the edit is not known.");
+        // The snapshot and the verdict on it are corrected together, from a thread-pool thread,
+        // under this lock (TrackChangeBeforeWriteAsync), so capture the pair under that same lock:
+        // reading CanRevert outside it let a Reject pass the stale "yes" and then write back the
+        // empty snapshot the correction had just installed, truncating the file the agent created
+        // to zero bytes. Captured and released before the work starts - the lock is never held
+        // across an await.
+        bool canRevert;
+        string? original;
+        lock (_changedFilesByPath)
+        {
+            canRevert = file.CanRevert;
+            original = file.OriginalText;
+        }
+
+        if (!canRevert) throw new InvalidOperationException("The content from before the edit is not known.");
         // Same rule as UpsertToolCall: lease acquisition (path canonicalization plus a chain of
         // directory-handle opens), File.Delete and WriteAllText are all synchronous, and Reject
         // all runs them once per file in a row straight off a click. Only UntrackChange, which
@@ -1912,8 +1966,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             // The lease is held across the whole operation: releasing it to delete by path unpins
             // the ancestor chain and re-opens the reparse-point swap the lease type prevents.
             using var pathLease = WorkspacePathGuard.AcquireFile(workspaceRoot, file.FullPath);
-            if (file.OriginalText is null) File.Delete(pathLease.FullPath);
-            else await WriteLeasedFileAsync(pathLease, file.OriginalText).ConfigureAwait(true);
+            if (original is null) File.Delete(pathLease.FullPath);
+            else await WriteLeasedFileAsync(pathLease, original).ConfigureAwait(true);
         }).ConfigureAwait(true);
         UntrackChange(file);
     }

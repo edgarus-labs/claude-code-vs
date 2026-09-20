@@ -453,6 +453,181 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(0, file.RemovedLines);
     }
 
+    // The correction of a raced snapshot and the revertability verdict it forces were not applied
+    // atomically: the snapshot was corrected synchronously under the ledger lock while the
+    // downgrade it implies was posted to the dispatcher. A Reject landing in that window read the
+    // stale CanRevert == true and the already-corrected empty original, so it took the "an empty
+    // original is restored by writing, an absent one by deleting" branch and truncated the file the
+    // agent had just created to zero bytes - reporting success - which is the very outcome the
+    // correction exists to prevent. The queued dispatcher makes that window explicit: the posted
+    // downgrade is still in the queue when the Reject runs.
+    [Fact]
+    public async Task ToolCallDiff_RejectRacingTheEmptySnapshotCorrection_DoesNotTruncateTheCreatedFile()
+    {
+        using var workspace = new TempWorkspace();
+        var targetPath = workspace.PathUnder("Created.cs");
+        var ui = new QueuedSynchronizationContext();
+        var connection = new RecordingAcpAgentConnection();
+        var services = new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService(), workspace.Root);
+        var previous = SynchronizationContext.Current;
+        SynchronizationContext.SetSynchronizationContext(ui);
+        ClaudeCode.Core.ViewModels.ChatViewModel vm;
+        try { vm = new ClaudeCode.Core.ViewModels.ChatViewModel(services); }
+        finally { SynchronizationContext.SetSynchronizationContext(previous); }
+        while (!vm.Initialization.IsCompleted) { ui.Drain(); await Task.Yield(); }
+        await vm.Initialization;
+        var turn = new TaskCompletionSource<bool>();
+        connection.PromptHandler = _ => turn.Task;
+        vm.InputText = "create it";
+        var sending = vm.SendAsync();
+        while (!vm.IsBusy) { ui.Drain(); await Task.Yield(); }
+
+        File.WriteAllText(targetPath, "brand new\nfile\n"); // the write lands before any notification
+        // The first notification's diff is the model's own tool input (src/tools.ts) and lacks the
+        // final newline the write actually left on disk, so the raced snapshot is not recognised as
+        // a post-write one yet: the row is created revertable, which is what leaves Reject a race.
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
+        {
+            ToolCallId = "write-1", Title = "Write Created.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
+            Content = [new ClaudeCode.Contracts.ToolCallContent { Path = targetPath, OldText = null, NewText = "brand new\nfile" }],
+        }));
+        while (vm.ChangedFiles.Count == 0) { ui.Drain(); await Task.Yield(); }
+        var file = vm.ChangedFiles[0];
+        Assert.False(file.IsNew);
+        Assert.True(file.CanRevert);
+
+        // Raised with the dispatcher installed so the notification itself is handled inline: only
+        // what the tracking task posts from its own thread - the downgrade among it - stays queued.
+        await WithDispatcherInstalled(ui, () =>
+        {
+            connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
+            {
+                ToolCallId = "write-1", Title = "Write Created.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
+                // The structured patch was empty (src/diff.ts): oldText = originalFile, "" for a
+                // file that did not exist before this write.
+                Content = [new ClaudeCode.Contracts.ToolCallContent { Path = targetPath, OldText = "", NewText = "brand new\nfile\n" }],
+            }));
+            return Task.CompletedTask;
+        });
+        await WaitUntilAsync(() => file.OriginalText is { Length: 0 }); // the snapshot is corrected...
+
+        // ...and the user clicks Reject before the queue behind it is ever pumped.
+        var rejecting = WithDispatcherInstalled(ui, () => file.RejectCommand.ExecuteAsync(null));
+        while (!rejecting.IsCompleted) { ui.Drain(); await Task.Yield(); }
+        await rejecting;
+
+        Assert.True(File.Exists(targetPath));
+        Assert.Equal("brand new\nfile\n", File.ReadAllText(targetPath));
+        Assert.False(file.CanRevert);
+
+        turn.SetResult(true);
+        while (!sending.IsCompleted) { ui.Drain(); await Task.Yield(); }
+        await sending;
+        vm.Dispose();
+        ui.Drain();
+    }
+
+    // The file's line endings are its own and the diff's are the model's - IsPreEditSnapshot folds
+    // both for exactly that reason - and a Visual Studio workspace file is normally CRLF. The
+    // correction compared the two raw, so on Windows it never matched: every created file kept its
+    // raced snapshot and counted "+0 -0", which is the defect this whole path exists to fix.
+    [Fact]
+    public async Task ToolCallDiff_NewCrlfFileSnapshotTakenAfterTheWriteLanded_ShowsItsRealAdditions()
+    {
+        using var workspace = new TempWorkspace();
+        var targetPath = workspace.PathUnder("Created.cs");
+        var (vm, connection, _) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+        var turn = new TaskCompletionSource<bool>();
+        connection.PromptHandler = _ => turn.Task;
+        vm.InputText = "create it";
+        var sending = vm.SendAsync();
+
+        File.WriteAllText(targetPath, "brand new\r\nfile\r\n"); // the write lands before any notification
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
+        {
+            ToolCallId = "write-1", Title = "Write Created.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
+            Content = [new ClaudeCode.Contracts.ToolCallContent { Path = targetPath, OldText = null, NewText = "brand new\nfile\n" }],
+        }));
+        await WaitUntilAsync(() => vm.ChangedFiles.Count == 1);
+
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
+        {
+            ToolCallId = "write-1", Title = "Write Created.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
+            Content = [new ClaudeCode.Contracts.ToolCallContent { Path = targetPath, OldText = "", NewText = "brand new\nfile\n" }],
+        }));
+        await WaitUntilAsync(() => vm.ChangedFiles[0].AddedLines == 2);
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.TurnEnded("end_turn"));
+        turn.SetResult(true);
+        await sending;
+
+        var file = Assert.Single(vm.ChangedFiles);
+        Assert.Equal(2, file.AddedLines);
+        Assert.Equal(0, file.RemovedLines);
+    }
+
+    // The notifications for one tool call are dispatched as separate tasks (UpsertToolCall starts a
+    // Task.Run per notification), so they overlap: the completed update can still be inside its own
+    // snapshot read when the pending one creates the row from a snapshot already equal to the
+    // post-write content. The completed update then meets that row at the insert-time lookup rather
+    // than the entry-time one, and dropping its oldText there leaves the same stale original - a
+    // created file counted as "+0 -0" - that correcting the entry-time lookup was meant to fix.
+    [Fact]
+    public async Task ToolCallDiff_CompletedUpdateFindingTheRowCreatedWhileItRead_StillCorrectsTheSnapshot()
+    {
+        using var workspace = new TempWorkspace();
+        var targetPath = workspace.PathUnder("Created.cs");
+        File.WriteAllText(targetPath, "brand new\nfile\n"); // the write lands before any notification
+        var (vm, connection, services) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+        var turn = new TaskCompletionSource<bool>();
+        connection.PromptHandler = _ => turn.Task;
+        vm.InputText = "create it";
+        var sending = vm.SendAsync();
+
+        // Holds the first snapshot read - the completed update's - open, so the pending update
+        // creates the row while it is suspended there. Answering null hands the read back to disk,
+        // exactly as the stub does with no handler set.
+        var reads = 0;
+        var completedIsReading = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resumeCompleted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        services.ReadOpenDocumentHandler = async (_, _) =>
+        {
+            if (Interlocked.Increment(ref reads) == 1)
+            {
+                completedIsReading.SetResult(true);
+                await resumeCompleted.Task;
+            }
+
+            return null;
+        };
+
+        ClaudeCode.Contracts.ToolCallUpdate Update(ClaudeCode.Contracts.ToolCallStatus status, string? oldText) => new()
+        {
+            ToolCallId = "write-1", Title = "Write Created.cs", Kind = "edit", Status = status,
+            Content = [new ClaudeCode.Contracts.ToolCallContent { Path = targetPath, OldText = oldText, NewText = "brand new\nfile\n" }],
+        };
+        // The structured patch was empty (src/diff.ts): oldText = originalFile, "" for a new file.
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(Update(ClaudeCode.Contracts.ToolCallStatus.Completed, "")));
+        await completedIsReading.Task;
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(Update(ClaudeCode.Contracts.ToolCallStatus.Pending, null)));
+        await WaitUntilAsync(() => vm.ChangedFiles.Count == 1);
+        resumeCompleted.SetResult(true);
+
+        // Three reads in all: the completed update's snapshot, the pending update's, and the
+        // completed update's post-write read - which runs only once it is past the row lookup that
+        // had the last chance to correct the snapshot.
+        await WaitUntilAsync(() => Volatile.Read(ref reads) == 3);
+        var file = Assert.Single(vm.ChangedFiles);
+        Assert.Equal("", file.OriginalText);
+        await WaitUntilAsync(() => file.AddedLines == 2);
+        Assert.Equal(0, file.RemovedLines);
+
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.TurnEnded("end_turn"));
+        turn.SetResult(true);
+        await sending;
+    }
+
     // claude-agent-acp reports an Edit/Write in three notifications (dist/acp-agent.js, dist/tools.js):
     // the tool_call with the model's optimistic diff, a PostToolUse-hook tool_call_update carrying the
     // real structuredPatch diff but no status (parsed as Pending), and a final status=completed
@@ -673,6 +848,83 @@ public sealed partial class ChatSessionStateTests
 
         Assert.True(File.Exists(created));
         Assert.Equal("brand new\n", File.ReadAllText(created));
+    }
+
+    // The agent reports "" as the pre-write content of a file it created (an empty structured
+    // patch, src/diff.ts: oldText = originalFile), so a snapshot corrected from that report is
+    // empty - and an empty original is indistinguishable from an absent one on the row, while
+    // RevertChangeAsync tells them apart to choose between writing and deleting. Offering the
+    // revert there truncated the file the agent had just created to zero bytes, and reported
+    // success; only the client's own read can prove a file existed and was empty.
+    [Fact]
+    public async Task ToolCallDiff_CorrectedToAnEmptyOriginal_OffersNoRevertToTruncateTheCreatedFileWith()
+    {
+        using var workspace = new TempWorkspace();
+        var created = workspace.PathUnder("Created.cs");
+        var (vm, connection, _) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+        var turn = new TaskCompletionSource<bool>();
+        connection.PromptHandler = _ => turn.Task;
+        vm.InputText = "add a file";
+        var sending = vm.SendAsync();
+
+        File.WriteAllText(created, "brand new\nfile\n"); // the agent created it before telling us
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
+        {
+            ToolCallId = "write-1", Title = "Write Created.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
+            Content = [new ClaudeCode.Contracts.ToolCallContent { Path = created, OldText = "", NewText = "brand new\nfile\n" }],
+        }));
+        await WaitUntilAsync(() => vm.ChangedFiles.Count == 1);
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.TurnEnded("end_turn"));
+        turn.SetResult(true);
+        await sending;
+
+        var file = Assert.Single(vm.ChangedFiles);
+        Assert.False(file.CanRevert);
+        await vm.RejectAllChangesCommand.ExecuteAsync(null);
+
+        Assert.Equal("brand new\nfile\n", File.ReadAllText(created));
+        Assert.Single(vm.ChangedFiles);
+    }
+
+    // Same rule one notification later: the hook update carries the real structured patch and no
+    // status (parsed as Pending), and its empty oldText occurs in any text, so the row it creates
+    // from a snapshot that already raced the write stays revertable. The completed update then
+    // corrects that snapshot to "" - and a Reject must not truncate the created file with it.
+    [Fact]
+    public async Task ToolCallDiff_ExistingRowCorrectedToAnEmptyOriginal_WithdrawsItsRevert()
+    {
+        using var workspace = new TempWorkspace();
+        var created = workspace.PathUnder("Created.cs");
+        var (vm, connection, _) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+        var turn = new TaskCompletionSource<bool>();
+        connection.PromptHandler = _ => turn.Task;
+        vm.InputText = "add a file";
+        var sending = vm.SendAsync();
+
+        File.WriteAllText(created, "brand new\nfile\n"); // the agent created it before telling us
+        ClaudeCode.Contracts.ToolCallUpdate Update(ClaudeCode.Contracts.ToolCallStatus status) => new()
+        {
+            ToolCallId = "write-1", Title = "Write Created.cs", Kind = "edit", Status = status,
+            Content = [new ClaudeCode.Contracts.ToolCallContent { Path = created, OldText = "", NewText = "brand new\nfile\n" }],
+        };
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(Update(ClaudeCode.Contracts.ToolCallStatus.Pending)));
+        await WaitUntilAsync(() => vm.ChangedFiles.Count == 1);
+        Assert.True(vm.ChangedFiles[0].CanRevert); // the snapshot still looks pre-edit: "" occurs in it
+
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(Update(ClaudeCode.Contracts.ToolCallStatus.Completed)));
+        await WaitUntilAsync(() => !vm.ChangedFiles[0].CanRevert);
+        connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.TurnEnded("end_turn"));
+        turn.SetResult(true);
+        await sending;
+
+        var file = Assert.Single(vm.ChangedFiles);
+        Assert.Equal("", file.OriginalText); // corrected: the count is right, the revert is not available
+        Assert.Equal(2, file.AddedLines);
+        await file.RejectCommand.ExecuteAsync(null);
+
+        Assert.Equal("brand new\nfile\n", File.ReadAllText(created));
     }
 
     // oldText is agent-controlled and adapters routinely omit it. Reading an absent oldText as

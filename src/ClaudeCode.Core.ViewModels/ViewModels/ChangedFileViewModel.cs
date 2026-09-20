@@ -15,7 +15,7 @@ public sealed class ChangedFileViewModel : ObservableObject
     private int _removedLines;
     private bool _canRevert = true;
 
-    public ChangedFileViewModel(string fullPath, string? originalText, Func<ChangedFileViewModel, Task> accept, Func<ChangedFileViewModel, Task> reject, string? createdByToolCallId = null)
+    public ChangedFileViewModel(string fullPath, string? originalText, Func<ChangedFileViewModel, Task> accept, Func<ChangedFileViewModel, Task> reject, string? createdByToolCallId)
     {
         FullPath = fullPath ?? throw new ArgumentNullException(nameof(fullPath));
         OriginalText = originalText;
@@ -48,16 +48,32 @@ public sealed class ChangedFileViewModel : ObservableObject
     /// <summary>False once <see cref="OriginalText"/> is known not to be the pre-edit content (the
     /// snapshot raced the agent's own write): a revert would only write the edit back over itself
     /// and report success. Never returns to true.</summary>
-    public bool CanRevert
+    public bool CanRevert => _canRevert;
+
+    /// <summary>Clears <see cref="CanRevert"/> with no notification, reporting whether this call is
+    /// the one that cleared it. The correction that forces the downgrade runs off the UI thread
+    /// while it holds the ledger lock, and the verdict has to become false with it: a Reject that
+    /// read the two apart saw the corrected snapshot behind a stale "yes" and wrote that snapshot
+    /// back. Only the notification may be posted, and that is what the pair exists for.</summary>
+    internal bool TryMarkNotRevertable()
     {
-        get => _canRevert;
-        private set
-        {
-            if (SetProperty(ref _canRevert, value)) RejectCommand.NotifyCanExecuteChanged();
-        }
+        if (!_canRevert) return false;
+        _canRevert = false;
+        return true;
     }
 
-    internal void MarkNotRevertable() => CanRevert = false;
+    /// <summary>Announces a completed <see cref="TryMarkNotRevertable"/>. UI thread only: it
+    /// re-evaluates a command's CanExecute.</summary>
+    internal void NotifyRevertabilityChanged()
+    {
+        OnPropertyChanged(nameof(CanRevert));
+        RejectCommand.NotifyCanExecuteChanged();
+    }
+
+    internal void MarkNotRevertable()
+    {
+        if (TryMarkNotRevertable()) NotifyRevertabilityChanged();
+    }
 
     public int AddedLines
     {
