@@ -751,7 +751,29 @@
 
   function setFontSize(px) {
     document.documentElement.style.setProperty("--chat-font-size", px + "px");
+    if (followingBottom) {
+      requestAnimationFrame(scrollToBottom);
+    }
   }
+
+  // Whether the reader was at the end of the transcript before the last geometry change. The host
+  // shrinks this page's viewport whenever a card (Changed Files, a permission or question) opens
+  // above the composer; the page keeps its scrollTop, so the newest lines slid under the card and
+  // read as covered by it. Tracked from scroll events (resize fires after the viewport already
+  // changed, when isAtBottom() no longer tells where the reader was).
+  var followingBottom = true;
+  window.addEventListener(
+    "scroll",
+    function () {
+      followingBottom = isAtBottom();
+    },
+    { passive: true }
+  );
+  window.addEventListener("resize", function () {
+    if (followingBottom) {
+      scrollToBottom();
+    }
+  });
 
   // The transcript's own font size is controlled by the WPF host (see ChatPanelView.ChatTextFontSize)
   // so it stays in sync with the composer/popups, which are still plain WPF. Ctrl+wheel is
