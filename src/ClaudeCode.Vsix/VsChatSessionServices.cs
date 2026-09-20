@@ -12,16 +12,16 @@ namespace ClaudeCode.Vsix;
 
 internal sealed class VsChatSessionServices : IChatSessionServices
 {
-    private readonly Func<string?> _getWorkspaceRoot;
+    private readonly WorkspaceRootTracker _workspaceRootTracker;
     private readonly ActiveEditorDocumentTracker _editorDocumentTracker;
     private readonly Func<bool> _remoteControlAtStartup;
 
-    public VsChatSessionServices(IAcpAgentConnectionFactory connectionFactory, IAcpAuthService authService, IUsageService usageService, Func<string?> getWorkspaceRoot, ActiveEditorDocumentTracker editorDocumentTracker, Func<bool> remoteControlAtStartup)
+    public VsChatSessionServices(IAcpAgentConnectionFactory connectionFactory, IAcpAuthService authService, IUsageService usageService, WorkspaceRootTracker workspaceRootTracker, ActiveEditorDocumentTracker editorDocumentTracker, Func<bool> remoteControlAtStartup)
     {
         ConnectionFactory = connectionFactory ?? throw new ArgumentNullException(nameof(connectionFactory));
         AuthService = authService ?? throw new ArgumentNullException(nameof(authService));
         UsageService = usageService ?? throw new ArgumentNullException(nameof(usageService));
-        _getWorkspaceRoot = getWorkspaceRoot ?? throw new ArgumentNullException(nameof(getWorkspaceRoot));
+        _workspaceRootTracker = workspaceRootTracker ?? throw new ArgumentNullException(nameof(workspaceRootTracker));
         _editorDocumentTracker = editorDocumentTracker ?? throw new ArgumentNullException(nameof(editorDocumentTracker));
         _remoteControlAtStartup = remoteControlAtStartup ?? throw new ArgumentNullException(nameof(remoteControlAtStartup));
     }
@@ -32,7 +32,7 @@ internal sealed class VsChatSessionServices : IChatSessionServices
 
     public IUsageService UsageService { get; }
 
-    public string? WorkspaceRoot => _getWorkspaceRoot();
+    public string? WorkspaceRoot => _workspaceRootTracker.Root;
 
     public bool HasActiveDocument => _editorDocumentTracker.HasActiveDocument;
 
@@ -42,6 +42,12 @@ internal sealed class VsChatSessionServices : IChatSessionServices
     {
         add => _editorDocumentTracker.ActiveDocumentChanged += value;
         remove => _editorDocumentTracker.ActiveDocumentChanged -= value;
+    }
+
+    public event EventHandler? WorkspaceRootChanged
+    {
+        add => _workspaceRootTracker.Changed += value;
+        remove => _workspaceRootTracker.Changed -= value;
     }
 
     public Task<EditorDocumentSnapshot?> CaptureActiveDocumentAsync(CancellationToken cancellationToken) =>

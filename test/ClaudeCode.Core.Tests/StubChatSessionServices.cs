@@ -17,7 +17,7 @@ internal sealed class StubChatSessionServices : IChatSessionServices
         UsageService = usageService ?? new ClaudeCode.Core.ViewModels.Demo.NullUsageService();
     }
 
-    private readonly string? _workspaceRoot;
+    private string? _workspaceRoot;
 
     public IAcpAgentConnectionFactory ConnectionFactory { get; }
 
@@ -37,10 +37,20 @@ internal sealed class StubChatSessionServices : IChatSessionServices
 
     public event EventHandler? ActiveDocumentChanged;
 
+    public event EventHandler? WorkspaceRootChanged;
+
     public void SetHasActiveDocument(bool value)
     {
         HasActiveDocument = value;
         ActiveDocumentChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>Mirrors the host opening or closing a solution: the root changes first, then the
+    /// notification follows.</summary>
+    public void SetWorkspaceRoot(string? value)
+    {
+        _workspaceRoot = value;
+        WorkspaceRootChanged?.Invoke(this, EventArgs.Empty);
     }
 
     public Func<CancellationToken, Task<EditorDocumentSnapshot?>>? CaptureHandler { get; set; }

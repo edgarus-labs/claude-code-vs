@@ -28,6 +28,8 @@ public sealed class NullChatSessionServices : IChatSessionServices
 
     public event EventHandler? ActiveDocumentChanged { add { } remove { } }
 
+    public event EventHandler? WorkspaceRootChanged { add { } remove { } }
+
     public Task<EditorDocumentSnapshot?> CaptureActiveDocumentAsync(CancellationToken cancellationToken) =>
         Task.FromResult<EditorDocumentSnapshot?>(null);
 

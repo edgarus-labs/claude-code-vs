@@ -117,9 +117,13 @@ internal sealed class RecordingAcpAgentConnection : IAcpAgentConnection
         return args;
     }
 
+    /// <summary>Holds <see cref="DisposeAsync"/> open so a test can observe the view model's state
+    /// while an agent teardown is still in flight.</summary>
+    public Func<Task>? DisposeHandler { get; set; }
+
     public ValueTask DisposeAsync()
     {
         DisposeCount++;
-        return default;
+        return DisposeHandler is null ? default : new ValueTask(DisposeHandler());
     }
 }
