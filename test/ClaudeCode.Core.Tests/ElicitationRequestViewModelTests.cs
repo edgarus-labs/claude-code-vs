@@ -2,6 +2,7 @@ using ClaudeCode.Contracts;
 using ClaudeCode.Core.ViewModels;
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Linq;
 using Xunit;
 
@@ -371,5 +372,300 @@ public sealed class ElicitationRequestViewModelTests
         // The wire value is the agent's identifier, not display text - truncating it would answer
         // with an option the agent never offered.
         Assert.Equal(new[] { "red" }, captured!.Content["q0"]);
+    }
+
+    [Fact]
+    public void Constructor_ChoiceFieldsEachFollowedByAnOtherBox_GroupEachOtherBoxWithItsOwnQuestion()
+    {
+        // Claude sends one AskUserQuestion question as two schema properties: the choice field and
+        // an optional free-text "Other" companion. The companion is part of its question, not a
+        // question of its own, so a two-question form must page as "Question 1 of 2".
+        var vm = new ElicitationRequestViewModel("Pick one",
+            [SingleSelectField("approach"), TextField("approach_other"), MultiSelectField("checks"), TextField("checks_other")],
+            _ => { });
+
+        Assert.Equal(2, vm.StepCount);
+        Assert.True(vm.HasMultipleSteps);
+        Assert.Equal(1, vm.CurrentStepNumber);
+        Assert.Equal("Question 1 of 2", vm.StepLabel);
+        Assert.Equal(new[] { vm.Fields[0], vm.Fields[1] }, vm.CurrentStepFields);
+        Assert.False(vm.IsOnLastStep);
+
+        vm.NextCommand.Execute(null);
+
+        Assert.Equal(2, vm.CurrentStepNumber);
+        Assert.Equal("Question 2 of 2", vm.StepLabel);
+        Assert.Equal(new[] { vm.Fields[2], vm.Fields[3] }, vm.CurrentStepFields);
+        Assert.True(vm.IsOnLastStep);
+    }
+
+    [Fact]
+    public void Constructor_ChoiceFieldWithNoTrailingTextField_IsAQuestionOfExactlyOneField()
+    {
+        // "Other" is optional in the schema; a question sent without one must not borrow the next
+        // question's fields.
+        var vm = new ElicitationRequestViewModel("Pick one",
+            [SingleSelectField("q0"), MultiSelectField("q1")], _ => { });
+
+        Assert.Equal(2, vm.StepCount);
+        Assert.Equal(new[] { vm.Fields[0] }, vm.CurrentStepFields);
+
+        vm.NextCommand.Execute(null);
+
+        Assert.Equal(new[] { vm.Fields[1] }, vm.CurrentStepFields);
+    }
+
+    [Fact]
+    public void Constructor_SeveralTextFieldsAfterOneChoiceField_AllBelongToThatQuestion()
+    {
+        // The grouping rule is "a choice field opens a question, text fields join the open one" -
+        // not "a choice field plus exactly one companion".
+        var vm = new ElicitationRequestViewModel("Pick one",
+            [SingleSelectField("q0"), TextField("q0_other"), TextField("q0_note"), TextField("q0_more")], _ => { });
+
+        Assert.Equal(1, vm.StepCount);
+        Assert.Equal(vm.Fields, vm.CurrentStepFields);
+        Assert.Null(vm.StepLabel);
+        Assert.True(vm.IsOnLastStep);
+    }
+
+    [Fact]
+    public void Constructor_TextFieldsBeforeTheFirstChoiceField_StartTheFirstQuestionRatherThanBeingDropped()
+    {
+        var vm = new ElicitationRequestViewModel("Pick one",
+            [TextField("intro"), TextField("intro2"), SingleSelectField("q0"), TextField("q0_other")], _ => { });
+
+        Assert.Equal(2, vm.StepCount);
+        Assert.Equal(new[] { vm.Fields[0], vm.Fields[1] }, vm.CurrentStepFields);
+
+        vm.NextCommand.Execute(null);
+
+        Assert.Equal(new[] { vm.Fields[2], vm.Fields[3] }, vm.CurrentStepFields);
+    }
+
+    [Fact]
+    public void Constructor_AnyForm_PutsEveryFieldInExactlyOneStepInWireOrder()
+    {
+        // The real protection against a grouping bug: a question that falls between two steps is
+        // never shown, and the user accepts a form they were not asked.
+        var vm = new ElicitationRequestViewModel("Pick one",
+            [
+                TextField("intro"),
+                SingleSelectField("q0"), TextField("q0_other"),
+                MultiSelectField("q1"),
+                MultiSelectField("q2"), TextField("q2_other"), TextField("q2_note"),
+            ],
+            _ => { });
+
+        var walked = new List<ElicitationFieldViewModel>();
+        for (var step = 0; step < vm.StepCount; step++)
+        {
+            walked.AddRange(vm.CurrentStepFields);
+            vm.NextCommand.Execute(null);
+        }
+
+        Assert.Equal(vm.Fields, walked);
+    }
+
+    [Fact]
+    public void Constructor_TextOnlyForm_IsOneQuestionWithNothingToStepThrough()
+    {
+        var vm = new ElicitationRequestViewModel("Anything else?", [TextField("q0"), TextField("q1")], _ => { });
+
+        Assert.Equal(1, vm.StepCount);
+        Assert.Equal(vm.Fields, vm.CurrentStepFields);
+        Assert.False(vm.HasMultipleSteps);
+        Assert.Null(vm.StepLabel);
+        Assert.True(vm.IsOnLastStep);
+        Assert.False(vm.BackCommand.CanExecute(null));
+        Assert.False(vm.NextCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public void Constructor_FormWithNoFields_HasNoQuestionAndNavigatesNowhere()
+    {
+        // A message-only form, or one whose fields the bounds dropped entirely: the card still has
+        // to render its message and its Send button, and its ItemsControl must not bind to null.
+        var vm = new ElicitationRequestViewModel("Just so you know", [], _ => { });
+
+        Assert.NotNull(vm.CurrentStepFields);
+        Assert.Empty(vm.CurrentStepFields);
+        Assert.Equal(0, vm.CurrentStepNumber);
+        Assert.Equal(0, vm.StepCount);
+        Assert.False(vm.HasMultipleSteps);
+        Assert.Null(vm.StepLabel);
+        Assert.True(vm.IsOnLastStep);
+
+        vm.NextCommand.Execute(null);
+        vm.BackCommand.Execute(null);
+
+        Assert.Empty(vm.CurrentStepFields);
+        Assert.Equal(0, vm.CurrentStepNumber);
+    }
+
+    [Fact]
+    public void Constructor_MultiStepForm_StartsOnTheFirstQuestion()
+    {
+        // The card shows one question at a time, so the view-model owns the position within the form.
+        var vm = new ElicitationRequestViewModel("Pick one",
+            [SingleSelectField("q0"), MultiSelectField("q1"), TextField("q1_other")], _ => { });
+
+        Assert.Equal(new[] { vm.Fields[0] }, vm.CurrentStepFields);
+        Assert.Equal(1, vm.CurrentStepNumber);
+        Assert.Equal(2, vm.StepCount);
+        Assert.True(vm.HasMultipleSteps);
+        Assert.False(vm.CanGoBack);
+        Assert.True(vm.CanGoNext);
+        Assert.False(vm.IsOnLastStep);
+    }
+
+    [Fact]
+    public void NextAndBack_StepThroughTheFormOneQuestionAtATime()
+    {
+        var vm = new ElicitationRequestViewModel("Pick one",
+            [SingleSelectField("q0"), MultiSelectField("q1"), SingleSelectField("q2"), TextField("q2_other")], _ => { });
+
+        vm.NextCommand.Execute(null);
+
+        Assert.Equal(new[] { vm.Fields[1] }, vm.CurrentStepFields);
+        Assert.Equal(2, vm.CurrentStepNumber);
+        Assert.True(vm.CanGoBack);
+        Assert.True(vm.CanGoNext);
+        Assert.False(vm.IsOnLastStep);
+
+        vm.NextCommand.Execute(null);
+
+        Assert.Equal(new[] { vm.Fields[2], vm.Fields[3] }, vm.CurrentStepFields);
+        Assert.Equal(3, vm.CurrentStepNumber);
+        Assert.False(vm.CanGoNext);
+        Assert.True(vm.IsOnLastStep);
+
+        vm.BackCommand.Execute(null);
+
+        Assert.Equal(new[] { vm.Fields[1] }, vm.CurrentStepFields);
+        Assert.Equal(2, vm.CurrentStepNumber);
+    }
+
+    [Fact]
+    public void NextOnTheLastStep_AndBackOnTheFirst_AreClampedRatherThanRunningOffTheForm()
+    {
+        // CanExecute keeps the buttons disabled, but a command reached any other way (a bound key
+        // gesture, a view written later) must not walk the position out of range: CurrentStepFields
+        // indexes the step list directly, and an IndexOutOfRangeException inside a binding getter
+        // runs on the UI thread, where it tears down devenv.
+        var vm = new ElicitationRequestViewModel("Pick one",
+            [SingleSelectField("q0"), TextField("q0_other"), MultiSelectField("q1")], _ => { });
+
+        vm.BackCommand.Execute(null);
+
+        Assert.Equal(1, vm.CurrentStepNumber);
+
+        vm.NextCommand.Execute(null);
+        vm.NextCommand.Execute(null);
+        vm.NextCommand.Execute(null);
+
+        Assert.Equal(2, vm.CurrentStepNumber);
+        Assert.Equal(new[] { vm.Fields[2] }, vm.CurrentStepFields);
+    }
+
+    [Fact]
+    public void Next_RaisesPropertyChangedForEveryPropertyTheCardBinds()
+    {
+        var vm = new ElicitationRequestViewModel("Pick one",
+            [SingleSelectField("q0"), MultiSelectField("q1"), TextField("q1_other")], _ => { });
+        var changed = new List<string?>();
+        ((INotifyPropertyChanged)vm).PropertyChanged += (_, e) => changed.Add(e.PropertyName);
+
+        vm.NextCommand.Execute(null);
+
+        Assert.Contains(nameof(ElicitationRequestViewModel.CurrentStepFields), changed);
+        Assert.Contains(nameof(ElicitationRequestViewModel.CurrentStepNumber), changed);
+        Assert.Contains(nameof(ElicitationRequestViewModel.StepLabel), changed);
+        Assert.Contains(nameof(ElicitationRequestViewModel.CanGoBack), changed);
+        Assert.Contains(nameof(ElicitationRequestViewModel.CanGoNext), changed);
+        Assert.Contains(nameof(ElicitationRequestViewModel.IsOnLastStep), changed);
+    }
+
+    [Fact]
+    public void Next_RefreshesTheNavigationCommandsCanExecute()
+    {
+        // The card binds Back/Next to these commands; without a CanExecuteChanged the buttons stay
+        // in their startup enablement and the user can click a no-op.
+        var vm = new ElicitationRequestViewModel("Pick one",
+            [SingleSelectField("q0"), TextField("q0_other"), MultiSelectField("q1")], _ => { });
+        var backRefreshed = 0;
+        vm.BackCommand.CanExecuteChanged += (_, _) => backRefreshed++;
+
+        Assert.False(vm.BackCommand.CanExecute(null));
+
+        vm.NextCommand.Execute(null);
+
+        Assert.True(backRefreshed > 0);
+        Assert.True(vm.BackCommand.CanExecute(null));
+        Assert.False(vm.NextCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public void StepLabel_OnTheSecondOfThreeQuestions_ReadsAsQuestionTwoOfThree()
+    {
+        var vm = new ElicitationRequestViewModel("Pick one",
+            [SingleSelectField("q0"), MultiSelectField("q1"), TextField("q1_other"), SingleSelectField("q2")], _ => { });
+
+        Assert.Equal("Question 1 of 3", vm.StepLabel);
+
+        vm.NextCommand.Execute(null);
+
+        Assert.Equal("Question 2 of 3", vm.StepLabel);
+    }
+
+    [Fact]
+    public void Submit_WithoutPaging_StillAnswersEveryFieldOfTheForm()
+    {
+        // Grouping and paging are presentation only: the answer carries every field the user filled
+        // in, including fields on a step they never navigated to.
+        ElicitationAnswer? captured = null;
+        var vm = new ElicitationRequestViewModel("Pick one",
+            [SingleSelectField("approach"), TextField("approach_other"), MultiSelectField("checks"), TextField("checks_other")],
+            answer => captured = answer);
+
+        vm.Fields[0].Options[1].IsSelected = true; // blue, on the step the user is shown
+        vm.Fields[3].TextValue = "typed on a step never visited";
+
+        vm.SubmitCommand.Execute(null);
+
+        Assert.Equal(ElicitationAction.Accept, captured!.Action);
+        Assert.Equal(new[] { "blue" }, captured.Content["approach"]);
+        Assert.Equal(new[] { "typed on a step never visited" }, captured.Content["checks_other"]);
+        Assert.Equal(1, vm.CurrentStepNumber);
+    }
+
+    [Fact]
+    public void Submit_AfterPaging_IsStillAnsweredExactlyOnce()
+    {
+        var answers = new List<ElicitationAnswer>();
+        var vm = new ElicitationRequestViewModel("Pick one",
+            [SingleSelectField("q0"), TextField("q0_other"), MultiSelectField("q1")], answers.Add);
+
+        vm.NextCommand.Execute(null);
+        vm.SubmitCommand.Execute(null);
+        vm.SubmitCommand.Execute(null);
+
+        Assert.Equal(ElicitationAction.Accept, Assert.Single(answers).Action);
+    }
+
+    [Fact]
+    public void Decline_AfterPaging_StillDeclines()
+    {
+        ElicitationAnswer? captured = null;
+        var vm = new ElicitationRequestViewModel("Pick one",
+            [SingleSelectField("q0"), TextField("q0_other"), MultiSelectField("q1")],
+            answer => captured = answer);
+
+        vm.NextCommand.Execute(null);
+        vm.Fields[1].TextValue = "typed but dismissed";
+        vm.DeclineCommand.Execute(null);
+
+        Assert.Equal(ElicitationAction.Decline, captured!.Action);
+        Assert.Empty(captured.Content);
     }
 }

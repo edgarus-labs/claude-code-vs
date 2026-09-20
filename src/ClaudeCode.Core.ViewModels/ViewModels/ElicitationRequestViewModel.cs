@@ -1,7 +1,9 @@
 using ClaudeCode.Contracts;
+using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Windows.Input;
 
@@ -14,7 +16,7 @@ namespace ClaudeCode.Core.ViewModels;
 /// <see cref="MaxFields"/>, <see cref="MaxOptionsPerField"/>, <see cref="MaxDisplayTextLength"/> and
 /// <see cref="MaxFormTextLength"/>) so a hostile or merely runaway <c>elicitation/create</c> cannot
 /// turn into an unbounded ItemsControl and unbounded text layout on the UI thread.</para></summary>
-public sealed class ElicitationRequestViewModel
+public sealed class ElicitationRequestViewModel : ObservableObject
 {
     /// <summary>Most fields rendered from one agent-authored form; the rest are dropped, so they are
     /// neither shown nor answered.</summary>
@@ -41,8 +43,14 @@ public sealed class ElicitationRequestViewModel
     private static readonly IReadOnlyDictionary<string, IReadOnlyList<string>> NoContent =
         new Dictionary<string, IReadOnlyList<string>>();
 
+    private static readonly ElicitationFieldViewModel[] NoFields = Array.Empty<ElicitationFieldViewModel>();
+
     private readonly Action<ElicitationAnswer> _respond;
+    private readonly RelayCommand _backCommand;
+    private readonly RelayCommand _nextCommand;
+    private readonly List<IReadOnlyList<ElicitationFieldViewModel>> _steps;
     private bool _submitted;
+    private int _currentStep;
 
     public ElicitationRequestViewModel(string message, IReadOnlyList<ElicitationField> fields, Action<ElicitationAnswer> respond)
     {
@@ -61,10 +69,13 @@ public sealed class ElicitationRequestViewModel
         var budget = new DisplayTextBudget();
         Message = budget.Truncate(message) ?? string.Empty;
         Fields = fields.Take(MaxFields).Select(field => new ElicitationFieldViewModel(field, budget)).ToList();
+        _steps = GroupIntoSteps(Fields);
         TruncationNotice = DescribeWithheldFields(fields.Count - Fields.Count);
         _respond = respond;
         SubmitCommand = new RelayCommand(Submit);
         DeclineCommand = new RelayCommand(Decline);
+        _backCommand = new RelayCommand(GoBack, () => CanGoBack);
+        _nextCommand = new RelayCommand(GoNext, () => CanGoNext);
     }
 
     public string Message { get; }
@@ -83,6 +94,95 @@ public sealed class ElicitationRequestViewModel
     /// <summary>Dismisses the form without answering it - the user's only way to refuse a question
     /// short of cancelling the whole turn.</summary>
     public ICommand DeclineCommand { get; }
+
+    /// <summary>The fields of the one question the card shows, in wire order. A multi-question form
+    /// is stepped through rather than rendered as one tall wall of questions; empty (never null)
+    /// only when the form has no fields at all.</summary>
+    public IReadOnlyList<ElicitationFieldViewModel> CurrentStepFields =>
+        _currentStep < _steps.Count ? _steps[_currentStep] : NoFields;
+
+    /// <summary>1-based position of the current question, or 0 when the form has no fields.</summary>
+    public int CurrentStepNumber => _steps.Count == 0 ? 0 : _currentStep + 1;
+
+    /// <summary>How many questions the form asks, which is not the field count: one question is a
+    /// choice field plus the free-text companions that follow it.</summary>
+    public int StepCount => _steps.Count;
+
+    public bool HasMultipleSteps => _steps.Count > 1;
+
+    /// <summary>"Question 2 of 3" for a stepped form, or null when there is nothing to step through -
+    /// the card collapses the line on null rather than showing "Question 1 of 1".</summary>
+    public string? StepLabel => HasMultipleSteps
+        ? string.Format(CultureInfo.InvariantCulture, "Question {0} of {1}", CurrentStepNumber, StepCount)
+        : null;
+
+    public bool CanGoBack => _currentStep > 0;
+
+    public bool CanGoNext => _currentStep + 1 < _steps.Count;
+
+    /// <summary>True when the card should offer Send: the user is on the last question, or there is
+    /// no question to answer at all.</summary>
+    public bool IsOnLastStep => !CanGoNext;
+
+    /// <summary>Steps back one question. Disabled on the first question, and a no-op if executed
+    /// there anyway.</summary>
+    public ICommand BackCommand => _backCommand;
+
+    /// <summary>Steps forward one question. Disabled on the last question, and a no-op if executed
+    /// there anyway.</summary>
+    public ICommand NextCommand => _nextCommand;
+
+    private void GoBack() => MoveTo(_currentStep - 1);
+
+    private void GoNext() => MoveTo(_currentStep + 1);
+
+    /// <summary>Groups the (already bounded and truncated) fields into the questions the user is
+    /// actually asked. One AskUserQuestion question arrives as several schema properties: the choice
+    /// field, then an optional free-text "Other" companion, so a field-per-page card would ask a
+    /// two-question form as four questions. Key-agnostic on purpose - the companion's key and title
+    /// are agent-authored, so the shape of the form, not its wording, decides: a choice field opens a
+    /// question, a text field joins the open one, and a text field with no question open (a text-only
+    /// form, or text preceding the first choice) opens one itself so that no field is ever dropped.</summary>
+    private static List<IReadOnlyList<ElicitationFieldViewModel>> GroupIntoSteps(IReadOnlyList<ElicitationFieldViewModel> fields)
+    {
+        var steps = new List<IReadOnlyList<ElicitationFieldViewModel>>();
+        List<ElicitationFieldViewModel>? open = null;
+        foreach (ElicitationFieldViewModel field in fields)
+        {
+            bool opensQuestion = field.Kind == ElicitationFieldKind.SingleSelect || field.Kind == ElicitationFieldKind.MultiSelect;
+            if (opensQuestion || open is null)
+            {
+                open = new List<ElicitationFieldViewModel>();
+                steps.Add(open);
+            }
+
+            open.Add(field);
+        }
+
+        return steps;
+    }
+
+    /// <summary>Clamps as well as guarding through <see cref="CanGoBack"/>/<see cref="CanGoNext"/>:
+    /// <see cref="CurrentStepFields"/> indexes the step list directly, and a command invoked outside
+    /// its button (a key gesture, a later view) must not be able to walk the position out of range -
+    /// the resulting exception would surface inside a binding getter on the UI thread.</summary>
+    private void MoveTo(int step)
+    {
+        if (step < 0 || step >= _steps.Count || step == _currentStep)
+        {
+            return;
+        }
+
+        _currentStep = step;
+        OnPropertyChanged(nameof(CurrentStepFields));
+        OnPropertyChanged(nameof(CurrentStepNumber));
+        OnPropertyChanged(nameof(StepLabel));
+        OnPropertyChanged(nameof(CanGoBack));
+        OnPropertyChanged(nameof(CanGoNext));
+        OnPropertyChanged(nameof(IsOnLastStep));
+        _backCommand.NotifyCanExecuteChanged();
+        _nextCommand.NotifyCanExecuteChanged();
+    }
 
     /// <summary>Answers with whatever was filled in (a field left entirely blank is simply omitted -
     /// submitting with nothing filled in models "skip", matching AskUserQuestion's own semantics).

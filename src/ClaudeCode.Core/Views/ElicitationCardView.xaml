@@ -24,6 +24,9 @@
     <ResourceDictionary>
       <conv:NullToVisibilityConverter x:Key="ElicitationNullToVisibilityConverter" />
       <conv:FractionOfConverter x:Key="ElicitationFractionOfConverter" />
+      <!-- Reused from the panel's converters rather than a second bool-to-visibility of its own;
+           ConverterParameter=Invert gives the one place that needs the negated form (Next). -->
+      <conv:BoolToVisibilityConverter x:Key="ElicitationBoolToVisibilityConverter" />
       <!-- A local copy, not a StaticResource lookup into ChatPanelView.Resources: unlike the
            DynamicResource brushes above, a StaticResource only searches the resource chain of the
            XAML it sits in (this control, then its parents here, then app resources), never another
@@ -68,6 +71,114 @@
         <Setter Property="BorderBrush" Value="{DynamicResource ChatBorderBrush}" />
       </Style>
 
+      <!-- One option row, shared by the single- and multi-select templates below: RadioButton and
+           CheckBox are both ToggleButtons, so one style templates both and the two question kinds
+           cannot drift apart visually. The stock chrome (a system-sized circle or box beside
+           chat-styled text) matched nothing else in the panel, so the row itself is the control: the
+           same rounded, theme-brushed row the model and mode pickers use in ChatPanelView, with an
+           accent check mark for the chosen option - the same single affordance for choose-one and
+           choose-many fields. Templated here rather than shared with those
+           pickers because a StaticResource cannot reach another UserControl's Resources (see the
+           note on ChatTextFontSizeConverter above) and a merged dictionary would shadow the host's
+           themed brushes. Every brush stays a DynamicResource, which resolves against the templated
+           element's tree - the host's palette - not this dictionary.
+
+           The control keeps its ToggleButton identity: IsChecked still drives the view model and
+           mutual exclusion still lives in ElicitationFieldViewModel, so Space/Tab and the exposed
+           radio/checkbox automation peers behave exactly as before the retemplate. -->
+      <Style x:Key="ElicitationOptionRowStyle" TargetType="ToggleButton">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{DynamicResource ChatForegroundBrush}" />
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="Padding" Value="9,7" />
+        <Setter Property="Margin" Value="0,1" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="ToggleButton">
+              <Border x:Name="RowBorder" Background="{TemplateBinding Background}" CornerRadius="7"
+                      BorderBrush="Transparent" BorderThickness="1" Padding="{TemplateBinding Padding}">
+                <Grid>
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <!-- Reserved whether or not a glyph is drawn, so answering an option does not
+                         re-wrap the label next to it. -->
+                    <ColumnDefinition Width="22" />
+                  </Grid.ColumnDefinitions>
+                  <ContentPresenter Grid.Column="0" VerticalAlignment="Center"
+                                    HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" />
+                  <!-- One affordance for both question kinds: the row itself highlights, with an
+                       accent check mark on the chosen option, exactly like the model and mode picker
+                       rows. No box or circle is drawn for either kind - the stock chrome is what
+                       issue #23 removes, and re-adding a square for multi-select only reintroduced
+                       it next to the check mark. -->
+                  <Path x:Name="SelectedGlyph" Grid.Column="1" Visibility="Collapsed"
+                        Data="M 1,6 L 5,10 L 12,2" StrokeThickness="1.6"
+                        Stroke="{DynamicResource ChatAccentBrush}"
+                        HorizontalAlignment="Right" VerticalAlignment="Center" />
+                </Grid>
+              </Border>
+              <ControlTemplate.Triggers>
+                <!-- Selection reads as a faint accent fill plus the accent outline and check mark;
+                     hover only tints with ChatHoverBrush and focus only draws the focus ring, so
+                     neither is mistaken for the chosen option. The fill is ChatAccentSoftBrush -
+                     the accent colour at low alpha - rather than ChatSelectionBrush: under the VS
+                     themes that one is the strong list-selection colour, which is only legible
+                     against ChatSelectionForegroundBrush, and the option description sets its own
+                     subtle foreground, so it cannot follow. Painting selection with the hover
+                     brush, as this did, left the answered row indistinguishable from the one under
+                     the pointer. -->
+                <Trigger Property="IsChecked" Value="True">
+                  <Setter TargetName="SelectedGlyph" Property="Visibility" Value="Visible" />
+                  <Setter TargetName="RowBorder" Property="Background" Value="{DynamicResource ChatAccentSoftBrush}" />
+                  <Setter TargetName="RowBorder" Property="BorderBrush" Value="{DynamicResource ChatAccentBrush}" />
+                </Trigger>
+                <!-- Hover only tints a row that is NOT the answer. A plain IsMouseOver trigger sits
+                     after the IsChecked one and wins on the same property, so pointing at an
+                     answered option replaced its accent fill with the neutral hover grey: the row
+                     kept its outline and check mark but stopped looking selected, and in a
+                     multi-select question the two chosen rows then painted differently depending on
+                     where the mouse happened to rest. -->
+                <MultiTrigger>
+                  <MultiTrigger.Conditions>
+                    <Condition Property="IsMouseOver" Value="True" />
+                    <Condition Property="IsChecked" Value="False" />
+                  </MultiTrigger.Conditions>
+                  <Setter TargetName="RowBorder" Property="Background" Value="{DynamicResource ChatHoverBrush}" />
+                  <!-- Paired with the fill, as every other hover surface in the panel does: under
+                       the VS themes ChatHoverBrush is the themed list-mouse-over colour, which is
+                       only guaranteed legible against its own ChatHoverForegroundBrush. The option
+                       description sets its own subtle brush, so it cannot inherit this and follows
+                       through a trigger of its own. -->
+                  <Setter Property="Foreground" Value="{DynamicResource ChatHoverForegroundBrush}" />
+                </MultiTrigger>
+                <Trigger Property="IsKeyboardFocused" Value="True">
+                  <Setter TargetName="RowBorder" Property="BorderBrush" Value="{DynamicResource ChatFocusBrush}" />
+                </Trigger>
+              </ControlTemplate.Triggers>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Style>
+
+      <!-- The option's description cannot inherit the row's hover foreground: it sets its own
+           subtle brush, which outranks inheritance. It therefore follows the same pair explicitly,
+           and only while the row is hovered AND unanswered - exactly the states in which the row
+           paints the themed hover fill. This mirrors the ConfigValueTemplate rows in
+           ChatPanelView.xaml, which solve the same problem the same way. -->
+      <Style x:Key="ElicitationOptionDescriptionStyle" TargetType="TextBlock">
+        <Setter Property="Foreground" Value="{DynamicResource ChatSubtleForegroundBrush}" />
+        <Style.Triggers>
+          <MultiDataTrigger>
+            <MultiDataTrigger.Conditions>
+              <Condition Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Value="True" />
+              <Condition Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Value="False" />
+            </MultiDataTrigger.Conditions>
+            <Setter Property="Foreground" Value="{DynamicResource ChatHoverForegroundBrush}" />
+          </MultiDataTrigger>
+        </Style.Triggers>
+      </Style>
+
       <!-- Free text. UpdateSourceTrigger=PropertyChanged so Submit reads what is on screen even when
            the button is activated by keyboard without the box ever losing focus. MaxLength bounds
            what the user can hand back to the agent and is the view-model constant itself, so the two
@@ -91,14 +202,14 @@
               <!-- No ToolTip: the description is already rendered in full below, and a WPF ToolTip is
                    an unwrapped Popup with no MaxWidth, so an agent-authored description would paint a
                    screen-wide band. Same for the CheckBox in the multi-select template. -->
-              <RadioButton IsChecked="{Binding IsSelected}" Margin="0,2" Foreground="{DynamicResource ChatForegroundBrush}"
+              <RadioButton IsChecked="{Binding IsSelected}" Style="{StaticResource ElicitationOptionRowStyle}"
                            AutomationProperties.Name="{Binding Label}">
                 <StackPanel>
-                  <TextBlock Text="{Binding Label}" TextWrapping="Wrap"
+                  <TextBlock Text="{Binding Label}" TextWrapping="Wrap" FontWeight="SemiBold"
                              FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType={x:Type views:ChatPanelView}}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}" />
-                  <TextBlock Text="{Binding Description}" TextWrapping="Wrap"
+                  <TextBlock Text="{Binding Description}" TextWrapping="Wrap" Margin="0,3,0,0"
                              FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType={x:Type views:ChatPanelView}}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=11}"
-                             Foreground="{DynamicResource ChatSubtleForegroundBrush}"
+                             Style="{StaticResource ElicitationOptionDescriptionStyle}"
                              Visibility="{Binding Description, Converter={StaticResource ElicitationNullToVisibilityConverter}}" />
                 </StackPanel>
               </RadioButton>
@@ -111,14 +222,14 @@
         <ItemsControl ItemsSource="{Binding Options}">
           <ItemsControl.ItemTemplate>
             <DataTemplate DataType="{x:Type vm:ElicitationOptionViewModel}">
-              <CheckBox IsChecked="{Binding IsSelected}" Margin="0,2" Foreground="{DynamicResource ChatForegroundBrush}"
+              <CheckBox IsChecked="{Binding IsSelected}" Style="{StaticResource ElicitationOptionRowStyle}"
                         AutomationProperties.Name="{Binding Label}">
                 <StackPanel>
-                  <TextBlock Text="{Binding Label}" TextWrapping="Wrap"
+                  <TextBlock Text="{Binding Label}" TextWrapping="Wrap" FontWeight="SemiBold"
                              FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType={x:Type views:ChatPanelView}}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}" />
-                  <TextBlock Text="{Binding Description}" TextWrapping="Wrap"
+                  <TextBlock Text="{Binding Description}" TextWrapping="Wrap" Margin="0,3,0,0"
                              FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType={x:Type views:ChatPanelView}}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=11}"
-                             Foreground="{DynamicResource ChatSubtleForegroundBrush}"
+                             Style="{StaticResource ElicitationOptionDescriptionStyle}"
                              Visibility="{Binding Description, Converter={StaticResource ElicitationNullToVisibilityConverter}}" />
                 </StackPanel>
               </CheckBox>
@@ -189,7 +300,17 @@
                      FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType={x:Type views:ChatPanelView}}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}"
                      Foreground="{DynamicResource ChatForegroundBrush}" Margin="0,0,0,8"
                      AutomationProperties.LiveSetting="Assertive" />
-          <ItemsControl ItemsSource="{Binding Fields}" ItemTemplate="{StaticResource ElicitationFieldTemplate}" />
+          <!-- One question at a time. Rendering the whole Fields collection here put every question
+               of a multi-question form on screen at once: inside the bounded scroll region that is a
+               wall of options, with already-answered questions still holding the space above the one
+               being answered, so the user scrolls to find where the form continues. A step is a list,
+               not a single field: Claude sends one question as a choice field plus the free-text
+               "Other" box that belongs to it, and the view model groups those, so the box must render
+               under its own options rather than page as a question of its own. The step label and the
+               Back/Next buttons below move the step; Submit still answers every field, visited or
+               not, so paging stays presentation only. -->
+          <ItemsControl ItemsSource="{Binding CurrentStepFields}"
+                        ItemTemplate="{StaticResource ElicitationFieldTemplate}" />
         </StackPanel>
       </ScrollViewer>
 
@@ -201,19 +322,59 @@
                  Foreground="{DynamicResource ChatSubtleForegroundBrush}"
                  Visibility="{Binding TruncationNotice, Converter={StaticResource ElicitationNullToVisibilityConverter}}" />
 
-      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,2,0,0">
-        <Button Content="Decline" Margin="0,0,6,0" Command="{Binding DeclineCommand}"
-                Style="{StaticResource ElicitationSecondaryButtonStyle}"
-                AutomationProperties.Name="Decline this question"
-                ToolTip="Tell Claude you do not want to answer" />
-        <!-- No IsDefault: that would make Enter anywhere in the tool window submit this form,
-             including while the user is typing in the composer. The permission card does not
-             claim the default button either. -->
-        <Button Content="Send" Command="{Binding SubmitCommand}"
-                Style="{StaticResource ElicitationButtonStyle}"
-                AutomationProperties.Name="Send answer"
-                ToolTip="Send your answer to Claude" />
-      </StackPanel>
+      <Grid Margin="0,2,0,0">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="Auto" />
+        </Grid.ColumnDefinitions>
+
+        <!-- Left of the buttons so it never crowds them, and trimmed rather than hard-clipped: the
+             Auto column of buttons is measured first, so a narrow docked tool window (or a raised
+             chat font) leaves this label the remainder. No AutomationProperties.Name: a TextBlock
+             already exposes its own text as its name, and overriding it with a fixed string would
+             hide which step the user is on. No LiveSetting either - WPF never raises the UIA
+             LiveRegionChanged event on its own, so declaring a politeness here would announce
+             nothing; stepping is user-initiated, so there is no unannounced surprise to cover. -->
+        <TextBlock Grid.Column="0" Text="{Binding StepLabel}" VerticalAlignment="Center"
+                   HorizontalAlignment="Left" Margin="0,0,8,0"
+                   TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
+                   FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType={x:Type views:ChatPanelView}}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=11}"
+                   Foreground="{DynamicResource ChatSubtleForegroundBrush}"
+                   ToolTip="Use Back and Next to move between the questions in this form"
+                   Visibility="{Binding StepLabel, Converter={StaticResource ElicitationNullToVisibilityConverter}}" />
+
+        <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+          <Button Content="Decline" Margin="0,0,6,0" Command="{Binding DeclineCommand}"
+                  Style="{StaticResource ElicitationSecondaryButtonStyle}"
+                  AutomationProperties.Name="Decline this question"
+                  ToolTip="Tell Claude you do not want to answer" />
+          <!-- Back and Next only exist for a form that has more than one question; on a single
+               question they would be a permanently disabled pair beside the only real action.
+               Back stays enabled/disabled by CanGoBack rather than appearing and disappearing, so
+               the buttons do not shift under the pointer while stepping. -->
+          <Button Content="Back" Margin="0,0,6,0" Command="{Binding BackCommand}"
+                  Style="{StaticResource ElicitationSecondaryButtonStyle}"
+                  AutomationProperties.Name="Previous question"
+                  ToolTip="Go back to the previous question"
+                  Visibility="{Binding HasMultipleSteps, Converter={StaticResource ElicitationBoolToVisibilityConverter}}" />
+          <!-- Exactly one primary action is offered at a time: Next until the last question, then
+               Send. Both in the same slot, so the form never shows two accent buttons and the user
+               cannot send a form whose remaining questions they have not seen. -->
+          <Button Content="Next" Command="{Binding NextCommand}"
+                  Style="{StaticResource ElicitationButtonStyle}"
+                  AutomationProperties.Name="Next question"
+                  ToolTip="Go to the next question"
+                  Visibility="{Binding IsOnLastStep, Converter={StaticResource ElicitationBoolToVisibilityConverter}, ConverterParameter=Invert}" />
+          <!-- No IsDefault: that would make Enter anywhere in the tool window submit this form,
+               including while the user is typing in the composer. The permission card does not
+               claim the default button either. -->
+          <Button Content="Send" Command="{Binding SubmitCommand}"
+                  Style="{StaticResource ElicitationButtonStyle}"
+                  AutomationProperties.Name="Send answer"
+                  ToolTip="Send your answer to Claude"
+                  Visibility="{Binding IsOnLastStep, Converter={StaticResource ElicitationBoolToVisibilityConverter}}" />
+        </StackPanel>
+      </Grid>
     </StackPanel>
   </Border>
 </UserControl>

@@ -921,7 +921,11 @@ public sealed partial class ChatSessionStateTests
 
         var file = Assert.Single(vm.ChangedFiles);
         Assert.Equal("", file.OriginalText); // corrected: the count is right, the revert is not available
-        Assert.Equal(2, file.AddedLines);
+        // Waited for, not asserted outright: the snapshot correction and the recomputed line counts
+        // reach the row through the same queue but not in one step, so a runner slow enough to let
+        // CanRevert flip first saw AddedLines still at 0 (CI run 35512092943). The sibling facts in
+        // this file wait on the count for the same reason.
+        await WaitUntilAsync(() => file.AddedLines == 2);
         await file.RejectCommand.ExecuteAsync(null);
 
         Assert.Equal("brand new\nfile\n", File.ReadAllText(created));
