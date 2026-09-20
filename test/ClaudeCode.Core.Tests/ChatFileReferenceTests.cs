@@ -24,6 +24,21 @@ public sealed class ChatFileReferenceTests
             "See [`src/Foo.cs`](" + Link("src%2FFoo.cs") + ").",
             ChatFileReference.LinkifyFileReferences("See `src/Foo.cs`."));
 
+    // The shape agent answers actually use most: a backticked path carrying a location suffix
+    // ("Found it: `src\ClaudeCode.Vsix\EditorCaret.cs:1`"). The suffix has to come off before the
+    // extension is judged, or the extension reads as "cs:1", matches nothing, and the single most
+    // common real reference silently stays plain text.
+    [Theory]
+    [InlineData("`src/Foo.cs:12`", "[`src/Foo.cs:12`]", "src%2FFoo.cs", 12)]
+    [InlineData("`src/Foo.cs:12:5`", "[`src/Foo.cs:12:5`]", "src%2FFoo.cs", 12)]
+    [InlineData("`src/Foo.cs(12,5)`", "[`src/Foo.cs(12,5)`]", "src%2FFoo.cs", 12)]
+    [InlineData(@"`src\ClaudeCode.Vsix\EditorCaret.cs:1`", @"[`src\ClaudeCode.Vsix\EditorCaret.cs:1`]", "src%5CClaudeCode.Vsix%5CEditorCaret.cs", 1)]
+    public void Linkify_CodeSpanWithLocationSuffix_LinksThePathAndKeepsTheLine(
+        string span, string expectedText, string encodedPath, int line) =>
+        Assert.Equal(
+            "Found it: " + expectedText + "(" + Link(encodedPath, line) + ")",
+            ChatFileReference.LinkifyFileReferences("Found it: " + span));
+
     // A bare file name has no path separator, so only the backticks distinguish "the file README.md"
     // from ordinary prose. Inside a code span the author already said it is a literal.
     [Fact]

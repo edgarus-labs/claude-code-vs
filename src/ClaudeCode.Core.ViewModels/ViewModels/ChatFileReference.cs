@@ -314,8 +314,16 @@ public static class ChatFileReference
         var content = line.Substring(backtick + 1, close - backtick - 1);
         var consumed = close - backtick + 1;
 
-        rendered = content.Length > 0 && !ContainsWhitespace(content) && HasRecognizedExtension(content)
-            ? "[`" + content + "`](" + BuildHref(content, null) + ")"
+        // Split the location suffix off before judging the extension, exactly as the prose path
+        // does. Without this "`src\Foo.cs:12`" - the shape agent answers overwhelmingly use - reads
+        // as extension "cs:12", matches nothing, and silently stays plain text; and even a match
+        // would hand the host a path with ":12" glued on that no editor can open. The suffix stays
+        // in the visible code span so the reference still reads the way the agent wrote it, and no
+        // backslash escaping is applied: a code span is already literal.
+        var (pathPart, _, lineNumber) = ExtractLocationSuffix(content);
+
+        rendered = pathPart.Length > 0 && !ContainsWhitespace(content) && HasRecognizedExtension(pathPart)
+            ? "[`" + content + "`](" + BuildHref(pathPart, lineNumber) + ")"
             : line.Substring(backtick, consumed);
 
         return consumed;
