@@ -49,4 +49,9 @@
 	<SolidColorBrush x:Key="ChatSelectionBrush" Color="#FF3F3F46" />
 	<SolidColorBrush x:Key="ChatSelectionForegroundBrush" Color="{StaticResource ChatForegroundColor}" />
 	<SolidColorBrush x:Key="ChatFocusBrush" Color="{StaticResource ChatAccentColor}" />
+	<!-- The Claude accent at low alpha: a selection fill that reads as "chosen" on both the dark
+	     fallback surface and the light VS themes, because it tints whatever is behind it instead of
+	     replacing it. A theme-specific opaque colour cannot do that, and ChatSelectionBrush is the
+	     VS list-selection colour, legible only against ChatSelectionForegroundBrush. -->
+	<SolidColorBrush x:Key="ChatAccentSoftBrush" Color="{StaticResource ChatAccentColor}" Opacity="0.22" />
 </ResourceDictionary>

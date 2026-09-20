@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -103,58 +104,105 @@ public sealed class ElicitationCardViewLayoutTests
 
     // The options were drawn with the stock WPF RadioButton/CheckBox chrome: a system-sized circle
     // or box next to chat-styled text, inside a card whose every other surface is a rounded,
-    // theme-brushed row (issue #23). The replacement templates the whole row like the model and mode
-    // pickers in ChatPanelView. RadioButton and CheckBox are both ToggleButtons, so one row style
-    // serves single- and multi-select; these facts pin that the default chrome is gone, that the row
-    // is the control surface, and that checked, hover and keyboard-focus states each still have a
-    // visual of their own.
+    // theme-brushed row (issue #23). What matters for the user is not the shape of the markup but
+    // that the default chrome is gone, that the content still has somewhere to render, and that the
+    // chosen option is told apart from a merely hovered or focused one - a retemplate whose
+    // selection visual is also its hover visual answers nothing.
     [Fact]
-    public void OptionsAreChatStyledRowsInsteadOfDefaultToggleChrome()
+    public void OptionRowsTellSelectionApartFromHoverAndFocus()
     {
         XDocument view = XDocument.Load(ViewPath());
-        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
 
-        XElement[] options = view
-            .Descendants()
-            .Where(element => element.Name == Xaml + "RadioButton" || element.Name == Xaml + "CheckBox")
-            .ToArray();
-        Assert.Equal(2, options.Length);
-
-        foreach (XElement option in options)
+        foreach (XElement option in OptionControls(view))
         {
-            string style = (string?)option.Attribute("Style")
-                ?? throw new Xunit.Sdk.XunitException(
-                    $"The {option.Name.LocalName} option carries no Style, so WPF draws the default "
-                        + "radio/checkbox chrome the card is supposed to replace.");
-            Match key = Regex.Match(style, @"^\{StaticResource (?<key>[A-Za-z0-9_]+)\}$");
-            Assert.True(key.Success, $"Unexpected option style reference: {style}");
+            XElement template = OptionRowTemplate(view, option);
 
-            XElement rowStyle = Assert.Single(
-                view.Descendants(Xaml + "Style"),
-                element => (string?)element.Attribute(x + "Key") == key.Groups["key"].Value);
-            Assert.Equal("ToggleButton", (string?)rowStyle.Attribute("TargetType"));
-            Assert.Contains(
-                rowStyle.Elements(Xaml + "Setter"),
-                setter => (string?)setter.Attribute("Property") == "HorizontalContentAlignment"
-                    && (string?)setter.Attribute("Value") == "Stretch");
+            // No ContentPresenter means the label and description have nowhere to render at all.
+            Assert.NotEmpty(template.Descendants(Xaml + "ContentPresenter"));
 
-            XElement template = Assert.Single(rowStyle.Descendants(Xaml + "ControlTemplate"));
+            HashSet<string> selected = TriggerEffects(template, "IsChecked");
+            HashSet<string> hovered = TriggerEffects(template, "IsMouseOver");
+            Assert.NotEmpty(TriggerEffects(template, "IsKeyboardFocused"));
+            Assert.True(
+                selected.Except(hovered).Any(),
+                $"The {option.Name.LocalName} row paints nothing when checked that it does not also "
+                    + "paint on hover, so the answered option cannot be told from the one under the "
+                    + "pointer.");
 
-            // The label, the description and the selection glyph all sit inside one templated
-            // border: that border is what the user clicks and what paints every state, so the hit
-            // target is the row rather than a glyph beside it.
-            XElement content = Assert.Single(template.Descendants(Xaml + "ContentPresenter"));
-            Assert.Contains(content.Ancestors(Xaml + "Border"), border => border.Parent == template);
-
-            foreach (string state in new[] { "IsChecked", "IsMouseOver", "IsKeyboardFocused" })
-            {
-                XElement trigger = Assert.Single(
-                    template.Descendants(Xaml + "Trigger"),
-                    element => (string?)element.Attribute("Property") == state);
-                Assert.NotEmpty(trigger.Elements(Xaml + "Setter"));
-            }
+            // Trigger precedence: a later trigger wins on the same property. An unconditional hover
+            // trigger therefore repainted the background of an ALREADY ANSWERED row with the neutral
+            // hover tint - it kept its outline and check mark but lost the accent fill, so in a
+            // multi-select question the chosen rows looked different depending on where the pointer
+            // rested. Hover must be conditioned on the row not being the answer.
+            Assert.Empty(UnconditionalHoverTriggers(template));
         }
     }
+
+    private static IEnumerable<XElement> OptionControls(XDocument view) =>
+        view.Descendants().Where(
+            element => element.Name == Xaml + "RadioButton" || element.Name == Xaml + "CheckBox");
+
+    /// <summary>The ControlTemplate the option's style applies, following BasedOn.</summary>
+    private static XElement OptionRowTemplate(XDocument view, XElement option) =>
+        Assert.Single(StyleChain(view, option).SelectMany(style => style.Descendants(Xaml + "ControlTemplate")));
+
+    /// <summary>The option's style and everything it derives from, nearest first.</summary>
+    private static List<XElement> StyleChain(XDocument view, XElement option)
+    {
+        var chain = new List<XElement>();
+        string? reference = (string?)option.Attribute("Style")
+            ?? throw new Xunit.Sdk.XunitException(
+                $"The {option.Name.LocalName} option carries no Style, so WPF draws the default "
+                    + "radio/checkbox chrome the card is supposed to replace.");
+
+        while (reference is not null)
+        {
+            Match key = Regex.Match(reference, @"^\{(?:Static|Dynamic)Resource (?<key>[^}\s]+)\}$");
+            Assert.True(key.Success, $"Unexpected option style reference: {reference}");
+            XElement style = Assert.Single(
+                view.Descendants(Xaml + "Style"),
+                element => (string?)element.Attribute(
+                    XNamespace.Get("http://schemas.microsoft.com/winfx/2006/xaml") + "Key")
+                    == key.Groups["key"].Value);
+            chain.Add(style);
+            reference = (string?)style.Attribute("BasedOn");
+        }
+
+        return chain;
+    }
+
+    /// <summary>What every trigger keyed on <paramref name="property"/> being true paints, as
+    /// target/property/value triples. Covers <c>MultiTrigger</c>, since a state that must not fire
+    /// unconditionally is expressed as one condition among several.</summary>
+    private static HashSet<string> TriggerEffects(XElement template, string property)
+    {
+        bool FiresOn(XElement trigger) =>
+            ((string?)trigger.Attribute("Property") == property && (string?)trigger.Attribute("Value") == "True")
+                || trigger.Descendants(Xaml + "Condition").Any(
+                    condition => (string?)condition.Attribute("Property") == property
+                        && (string?)condition.Attribute("Value") == "True");
+
+        var effects = new HashSet<string>(
+            template
+                .Descendants()
+                .Where(trigger => (trigger.Name == Xaml + "Trigger" || trigger.Name == Xaml + "MultiTrigger") && FiresOn(trigger))
+                .SelectMany(trigger => trigger.Elements(Xaml + "Setter"))
+                .Select(setter => SetterKey(setter.Attribute("TargetName"), setter.Attribute("Property"), setter.Attribute("Value"))));
+
+        Assert.NotEmpty(effects);
+        return effects;
+    }
+
+    /// <summary>Every trigger that fires on hover regardless of whether the row is the answer.</summary>
+    private static XElement[] UnconditionalHoverTriggers(XElement template) =>
+        template
+            .Descendants(Xaml + "Trigger")
+            .Where(trigger => (string?)trigger.Attribute("Property") == "IsMouseOver"
+                && (string?)trigger.Attribute("Value") == "True")
+            .ToArray();
+
+    private static string SetterKey(params XAttribute?[] parts) =>
+        string.Join("=", parts.Select(part => (string?)part ?? string.Empty));
 
     // Ctrl+wheel scaling drives ChatPanelView.ChatTextFontSize; a row that hard-codes a size stays
     // put while the text around it grows, which is the scaling half of issue #23.
@@ -180,6 +228,41 @@ public sealed class ElicitationCardViewLayoutTests
             Assert.Contains("ChatTextFontSizeConverter", fontSize);
         }
     }
+
+    // A form with three questions rendered all three at once: the bounded scroll region then held a
+    // wall of options, and the user had to scroll past questions they had already answered to reach
+    // the answer buttons below it. The card steps through the form one question at a time, where a
+    // question is the choice field plus the free-text "Other" box Claude sends alongside it - the
+    // view model groups those into one step, so the card must render the whole of CurrentStepFields
+    // and never the whole Fields collection.
+    [Fact]
+    public void CardShowsOneQuestionStepAtATimeRatherThanTheWholeForm()
+    {
+        XDocument view = XDocument.Load(ViewPath());
+
+        XElement? wholeForm = view.Descendants().FirstOrDefault(
+            element => IsBindingTo(element.Attribute("ItemsSource"), "Fields"));
+        Assert.True(
+            wholeForm is null,
+            $"<{wholeForm?.Name.LocalName}> binds ItemsSource to the whole Fields collection, so every "
+                + "question of the form is on screen at once - the defect: a multi-question form becomes "
+                + "a wall of options inside the bounded scroll region and the user scrolls past answered "
+                + "questions to reach the buttons.");
+
+        Assert.True(
+            view.Descendants().Any(
+                element => IsBindingTo(element.Attribute("ItemsSource"), "CurrentStepFields")
+                    || IsBindingTo(element.Attribute("Content"), "CurrentStepFields")
+                    || IsBindingTo(element.Attribute("DataContext"), "CurrentStepFields")),
+            "Nothing in the card binds CurrentStepFields, so the current step has no source. Binding a "
+                + "single field instead drops the free-text \"Other\" box that belongs to the question on "
+                + "screen - or pages it as a question of its own.");
+    }
+
+    /// <summary>Whether the attribute is a binding whose path is exactly <paramref name="path"/>.</summary>
+    private static bool IsBindingTo(XAttribute? attribute, string path) =>
+        attribute is not null
+        && Regex.IsMatch((string)attribute, $@"^\{{Binding (Path=)?{path}[,}}]");
 
     private static string ViewPath([CallerFilePath] string testFilePath = "") =>
         Path.GetFullPath(
