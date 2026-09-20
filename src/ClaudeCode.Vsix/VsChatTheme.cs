@@ -18,7 +18,10 @@ internal static class VsChatTheme
         // Derived from the tool window text color (not ComboBoxBorder/SystemGrayText): those keys
         // can be near-invisible against the input background, and VS renders some of them differently
         // while the main window is inactive - the composer frame and placeholder then vanished.
-        SetDerivedBrush(view, "ChatSubtleForegroundBrush", EnvironmentColors.ToolWindowTextColorKey, 0x99);
+        // 0xCC (80% alpha) rather than the previous 0x99 (60%): timestamps, placeholders and
+        // attachment names read as this brush too, and 60% fell below readable contrast on several
+        // VS themes, especially on a 4K display.
+        SetDerivedBrush(view, "ChatSubtleForegroundBrush", EnvironmentColors.ToolWindowTextColorKey, 0xCC);
         SetDerivedBrush(view, "ChatBorderBrush", EnvironmentColors.ToolWindowTextColorKey, 0x48);
         SetBrush(view, "ChatInputBackgroundBrush", EnvironmentColors.ComboBoxBackgroundColorKey);
         SetBrush(view, "ChatPopupBackgroundBrush", EnvironmentColors.CommandBarMenuBackgroundGradientBeginColorKey);

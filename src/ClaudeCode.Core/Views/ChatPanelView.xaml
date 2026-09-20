@@ -420,14 +420,17 @@
               <ColumnDefinition Width="Auto" />
               <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
-            <TextBlock FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"
+            <TextBlock FontWeight="SemiBold" VerticalAlignment="Center"
+                       FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType=views:ChatPanelView}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}"
                        Foreground="{DynamicResource ChatForegroundBrush}">
               <Run Text="Changed files" /><Run Text=" · " /><Run Text="{Binding ChangedFiles.Count, Mode=OneWay}" />
             </TextBlock>
-            <Button Grid.Column="1" Content="Reject all" Padding="8,3" FontSize="11" Margin="0,0,4,0"
+            <Button Grid.Column="1" Content="Reject all" Padding="8,3" Margin="0,0,4,0"
+                    FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType=views:ChatPanelView}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=11}"
                     Style="{StaticResource LinkButtonStyle}" Command="{Binding RejectAllChangesCommand}"
                     AutomationProperties.Name="Reject all changes" />
-            <Button Grid.Column="2" Content="Accept all" Padding="8,3" FontSize="11"
+            <Button Grid.Column="2" Content="Accept all" Padding="8,3"
+                    FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType=views:ChatPanelView}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=11}"
                     Style="{StaticResource LinkButtonStyle}" Foreground="{DynamicResource ChatAccentBrush}"
                     Command="{Binding AcceptAllChangesCommand}" AutomationProperties.Name="Accept all changes" />
           </Grid>
@@ -453,19 +456,25 @@
                           Command="{Binding DataContext.OpenChangedFileCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
                           CommandParameter="{Binding}" AutomationProperties.Name="{Binding Name, StringFormat='Open {0}'}">
                     <StackPanel Orientation="Horizontal">
-                      <TextBlock Text="&#xE8A5;" FontFamily="Segoe MDL2 Assets" FontSize="11" Margin="0,0,7,0" VerticalAlignment="Center"
+                      <TextBlock Text="&#xE8A5;" FontFamily="Segoe MDL2 Assets" Margin="0,0,7,0" VerticalAlignment="Center"
+                                 FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType=views:ChatPanelView}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=11}"
                                  Foreground="{DynamicResource ChatSubtleForegroundBrush}" />
-                      <TextBlock Text="{Binding Name}" FontSize="12" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
-                      <TextBlock Text="new" FontSize="10" Margin="7,0,0,0" VerticalAlignment="Center"
+                      <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                                 FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType=views:ChatPanelView}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}" />
+                      <TextBlock Text="new" Margin="7,0,0,0" VerticalAlignment="Center"
+                                 FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType=views:ChatPanelView}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=10}"
                                  Foreground="{DynamicResource ChatSubtleForegroundBrush}"
                                  Visibility="{Binding IsNew, Converter={StaticResource BoolToVisibilityConverter}}" />
                     </StackPanel>
                   </Button>
-                  <TextBlock Grid.Column="1" FontSize="11" VerticalAlignment="Center" Margin="8,0,8,0" FontFamily="Consolas">
+                  <TextBlock Grid.Column="1" VerticalAlignment="Center" Margin="8,0,8,0" FontFamily="Consolas"
+                             FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType=views:ChatPanelView}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=11}">
                     <Run Text="{Binding AddedLines, Mode=OneWay, StringFormat='+{0}'}" Foreground="{DynamicResource ChatDiffAddedForegroundBrush}" />
                     <Run Text="{Binding RemovedLines, Mode=OneWay, StringFormat='−{0}'}" Foreground="{DynamicResource ChatDiffRemovedForegroundBrush}" />
                   </TextBlock>
-                  <Button Grid.Column="2" Width="24" Height="24"
+                  <Button Grid.Column="2" Margin="0,0,10,0"
+                          Width="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType=views:ChatPanelView}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=24}"
+                          Height="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType=views:ChatPanelView}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=24}"
                           Command="{Binding RejectCommand}" AutomationProperties.Name="{Binding Name, StringFormat='Reject changes to {0}'}"
                           ToolTipService.ShowOnDisabled="True">
                     <!-- A row whose pre-edit content is unknown keeps a disabled reject button; its tooltip
@@ -482,7 +491,9 @@
                     </Button.Style>
                     <Path Data="M 0,0 L 8,8 M 0,8 L 8,0" StrokeThickness="1.4" Style="{StaticResource ButtonIconStrokeStyle}" />
                   </Button>
-                  <Button Grid.Column="3" Width="24" Height="24" Style="{StaticResource LinkButtonStyle}" ToolTip="Accept (keep)"
+                  <Button Grid.Column="3" Style="{StaticResource LinkButtonStyle}" ToolTip="Accept (keep)"
+                          Width="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType=views:ChatPanelView}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=24}"
+                          Height="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType=views:ChatPanelView}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=24}"
                           Foreground="{DynamicResource ChatAccentBrush}"
                           Command="{Binding AcceptCommand}" AutomationProperties.Name="{Binding Name, StringFormat='Accept changes to {0}'}">
                     <Path Data="M 0,4 L 3.5,8 L 10,1" StrokeThickness="1.6" Style="{StaticResource ButtonIconStrokeStyle}" />
@@ -650,13 +661,17 @@
                   <Binding ElementName="ComposerBox" Path="FontFamily" />
                 </MultiBinding>
               </Grid.Height>
-              <Button Width="28" Height="28" Padding="0" VerticalAlignment="Center" Command="{Binding SendCommand}" Click="SendButton_Click"
+              <Button Padding="0" VerticalAlignment="Center" Command="{Binding SendCommand}" Click="SendButton_Click"
+                      Width="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=28}"
+                      Height="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=28}"
                       Style="{StaticResource ChatButtonStyle}" ToolTip="Send message (Enter)" AutomationProperties.Name="Send message"
                       Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibilityConverter}, ConverterParameter=Invert}">
                 <Path Data="M 6,12 L 6,0 M 1,5 L 6,0 L 11,5" StrokeThickness="1.8"
                       Style="{StaticResource ButtonIconStrokeStyle}" />
               </Button>
-              <Button Width="28" Height="28" Padding="0" VerticalAlignment="Center" Command="{Binding CancelCommand}"
+              <Button Padding="0" VerticalAlignment="Center" Command="{Binding CancelCommand}"
+                      Width="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=28}"
+                      Height="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=28}"
                       Style="{StaticResource ChatButtonStyle}" ToolTip="Stop response" AutomationProperties.Name="Stop response"
                       Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibilityConverter}}">
                 <Rectangle Width="10" Height="10" RadiusX="1.5" RadiusY="1.5"
@@ -784,7 +799,9 @@
                      or model matters. CanConfigure deliberately ignores IsBusy for the same reason. -->
                 <ContentControl Style="{StaticResource DraftControlStyle}" Focusable="False">
                   <StackPanel Orientation="Horizontal">
-                    <Button x:Name="AttachButton" Width="32" Height="32" Command="{Binding AttachActiveDocumentCommand}"
+                    <Button x:Name="AttachButton" Command="{Binding AttachActiveDocumentCommand}"
+                            Width="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=32}"
+                            Height="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=32}"
                             Style="{StaticResource LinkButtonStyle}" ToolTipService.ShowOnDisabled="True"
                             AutomationProperties.Name="Attach active Visual Studio document"
                             AutomationProperties.HelpText="Captures the current editor text now. Attach documents from multiple tabs before sending.">
@@ -807,7 +824,9 @@
                       <Path Data="M 0,6 L 12,6 M 6,0 L 6,12" StrokeThickness="1.5"
                             Style="{StaticResource ButtonIconStrokeStyle}" />
                     </Button>
-                    <Button Width="32" Height="32" Click="SlashButton_Click"
+                    <Button Click="SlashButton_Click"
+                            Width="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=32}"
+                            Height="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=32}"
                             Style="{StaticResource LinkButtonStyle}" ToolTip="Session commands (/)"
                             AutomationProperties.Name="Session commands">
                       <Border Width="15" Height="15" CornerRadius="3" BorderThickness="1.2"
@@ -816,10 +835,13 @@
                               HorizontalAlignment="Center" VerticalAlignment="Center" />
                       </Border>
                     </Button>
-                    <Button Width="32" Height="32" Click="AttachImageButton_Click"
+                    <Button Click="AttachImageButton_Click"
+                            Width="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=32}"
+                            Height="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=32}"
                             Style="{StaticResource LinkButtonStyle}" ToolTip="Attach an image file (or paste with Ctrl+V)"
                             AutomationProperties.Name="Attach image file">
-                      <TextBlock Text="&#xE91B;" FontFamily="Segoe MDL2 Assets" />
+                      <TextBlock Text="&#xE91B;" FontFamily="Segoe MDL2 Assets"
+                                 FontSize="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}" />
                     </Button>
                   </StackPanel>
                 </ContentControl>
@@ -832,8 +854,10 @@
                         AutomationProperties.Name="Session mode" AutomationProperties.HelpText="Choose how Claude asks for permission in this conversation.">
                   <StackPanel Orientation="Horizontal">
                     <TextBlock Text="{Binding ActiveModeName, Converter={StaticResource SessionModeGlyphConverter}}"
-                               FontFamily="Segoe MDL2 Assets" FontSize="13" Margin="0,0,6,0" VerticalAlignment="Center" />
-                    <TextBlock Text="{Binding ActiveModeName}" TextTrimming="CharacterEllipsis" FontSize="12" VerticalAlignment="Center" />
+                               FontFamily="Segoe MDL2 Assets" Margin="0,0,6,0" VerticalAlignment="Center"
+                               FontSize="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=13}" />
+                    <TextBlock Text="{Binding ActiveModeName}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                               FontSize="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}" />
                     <Path Data="M 0,0 L 4,4 L 8,0" Margin="6,2,0,0" VerticalAlignment="Center"
                           Style="{StaticResource ButtonIconStrokeStyle}" StrokeThickness="1.3" />
                   </StackPanel>
@@ -861,14 +885,19 @@
                     </Style>
                   </Button.Style>
                   <StackPanel Orientation="Horizontal">
-                    <TextBlock Text="&#xE774;" FontFamily="Segoe MDL2 Assets" FontSize="12" Margin="0,0,6,0" VerticalAlignment="Center" />
-                    <TextBlock Text="Remote Control" FontSize="12" VerticalAlignment="Center" />
+                    <TextBlock Text="&#xE774;" FontFamily="Segoe MDL2 Assets" Margin="0,0,6,0" VerticalAlignment="Center"
+                               FontSize="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}" />
+                    <TextBlock Text="Remote Control" VerticalAlignment="Center"
+                               FontSize="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}" />
                   </StackPanel>
                 </Button>
-                <Button Width="26" Height="26" Click="RemoteControlLink_Click" Style="{StaticResource LinkButtonStyle}"
+                <Button Click="RemoteControlLink_Click" Style="{StaticResource LinkButtonStyle}"
+                        Width="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=26}"
+                        Height="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=26}"
                         ToolTip="{Binding RemoteControlUrl}" AutomationProperties.Name="Open this session on claude.ai/code"
                         Visibility="{Binding RemoteControlUrl, Converter={StaticResource NullToVisibilityConverter}}">
-                  <TextBlock Text="&#xE8A7;" FontFamily="Segoe MDL2 Assets" FontSize="11" />
+                  <TextBlock Text="&#xE8A7;" FontFamily="Segoe MDL2 Assets"
+                             FontSize="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=11}" />
                 </Button>
                 <Button x:Name="ModelButton" Margin="7,0,0,0" HorizontalAlignment="Right"
                         MaxWidth="280" Padding="6,5" Click="ModelButton_Click" IsEnabled="{Binding CanConfigure}"
@@ -882,7 +911,8 @@
                       <ColumnDefinition Width="Auto" />
                       <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
-                    <TextBlock Grid.ColumnSpan="2" Text="{Binding ModelEffortLabel}" TextTrimming="CharacterEllipsis" FontSize="12" VerticalAlignment="Center" />
+                    <TextBlock Grid.ColumnSpan="2" Text="{Binding ModelEffortLabel}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                               FontSize="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}" />
                     <Path Grid.Column="2" Data="M 0,0 L 4,4 L 8,0" Margin="7,0,0,2" VerticalAlignment="Center"
                           Style="{StaticResource ButtonIconStrokeStyle}" StrokeThickness="1.3" />
                   </Grid>
