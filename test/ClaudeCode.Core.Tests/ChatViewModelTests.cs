@@ -147,6 +147,69 @@ public sealed class ChatViewModelTests
         Assert.Null(vm.CurrentPlan);
     }
 
+    // Issue #25: the tool window outlives any solution, so without this the transcript of project A
+    // stays on screen - and keeps talking to an agent still rooted in A - after the user opens B.
+    [Fact]
+    public async Task WorkspaceRootChanged_ToADifferentSolution_ClearsTranscriptAndStartsTheNextSessionInTheNewRoot()
+    {
+        var first = new RecordingAcpAgentConnection();
+        var second = new RecordingAcpAgentConnection();
+        var factory = new SingleConnectionFactory(first);
+        var services = new StubChatSessionServices(factory, new AlwaysSignedInAuthService(), "/solution-a");
+        using var vm = new ChatViewModel(services);
+        await vm.InitializeAsync();
+
+        vm.InputText = "what does this project do?";
+        await vm.SendAsync();
+        first.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("It builds A."));
+        Assert.NotEmpty(vm.Messages);
+
+        factory.ConnectHandler = _ => Task.FromResult<IAcpAgentConnection>(second);
+        services.SetWorkspaceRoot("/solution-b");
+
+        await WaitUntilAsync(() => vm.Messages.Count == 0 && second.NewSessionCwds.Count == 1);
+        // A's agent process is rooted in A's directory for its whole life, so the switch has to end
+        // it rather than reuse it for B.
+        Assert.Equal(1, first.DisposeCount);
+        Assert.Equal("/solution-b", second.NewSessionCwds[0]);
+        // B starts empty: no prior conversation - A's or B's own - is loaded back in.
+        Assert.Empty(second.LoadedSessions);
+
+        vm.InputText = "and this one?";
+        await vm.SendAsync();
+        Assert.Single(second.Prompts);
+    }
+
+    // Closing a solution and reopening the same one (a reload, or File > Close Solution followed by
+    // reopening it) is not a project switch: wiping a live conversation there is data loss, not the
+    // fix for #25. Exactly one teardown proves only the genuine A -> B switch reset anything.
+    [Fact]
+    public async Task WorkspaceRootChanged_ForTheSameSolutionReopened_KeepsTheConversation()
+    {
+        var first = new RecordingAcpAgentConnection();
+        var second = new RecordingAcpAgentConnection();
+        var factory = new SingleConnectionFactory(first);
+        var services = new StubChatSessionServices(factory, new AlwaysSignedInAuthService(), "/solution-a");
+        using var vm = new ChatViewModel(services);
+        await vm.InitializeAsync();
+
+        vm.InputText = "what does this project do?";
+        await vm.SendAsync();
+        first.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("It builds A."));
+        var messagesBeforeReload = vm.Messages.Count;
+
+        services.SetWorkspaceRoot(null);          // solution closed
+        services.SetWorkspaceRoot("/solution-a"); // ...and the same one reopened
+        Assert.Equal(messagesBeforeReload, vm.Messages.Count);
+        Assert.Equal(0, first.DisposeCount);
+
+        factory.ConnectHandler = _ => Task.FromResult<IAcpAgentConnection>(second);
+        services.SetWorkspaceRoot("/solution-b");
+        await WaitUntilAsync(() => vm.Messages.Count == 0);
+        Assert.Equal(1, first.DisposeCount);
+        Assert.Equal("/solution-b", Assert.Single(second.NewSessionCwds));
+    }
+
     [Fact]
     public async Task ShowHistoryCommand_PopulatesSessionHistory_ScopedToWorkspaceRoot()
     {

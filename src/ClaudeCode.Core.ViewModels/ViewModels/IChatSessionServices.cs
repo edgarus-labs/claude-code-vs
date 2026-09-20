@@ -22,6 +22,11 @@ public interface IChatSessionServices
     /// <summary>Raised when <see cref="HasActiveDocument"/> may have changed. May fire on any thread.</summary>
     event EventHandler? ActiveDocumentChanged;
 
+    /// <summary>Raised when <see cref="WorkspaceRoot"/> may have changed, i.e. the host opened or
+    /// closed a solution/workspace. May fire on any thread, and may fire when the root is in fact
+    /// unchanged (a solution reload reopens the same root); the handler decides what changed.</summary>
+    event EventHandler? WorkspaceRootChanged;
+
     /// <summary>Whether every new session should have Remote Control (claude.ai/code) turned on automatically.</summary>
     bool RemoteControlAtStartup { get; }
 

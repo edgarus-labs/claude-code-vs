@@ -21,6 +21,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private readonly CancellationTokenSource _lifetime = new CancellationTokenSource();
     private IAcpAgentConnection? _connection;
     private string? _sessionId;
+    private string? _workspaceRoot;
     private SessionConfigOption? _modelOption;
     private SessionConfigOption? _effortOption;
     private SessionConfigOption? _modeOption;
@@ -93,6 +94,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         OpenSessionCommand = new AsyncRelayCommand<SessionSummary>(OpenSessionAsync, session => CanEditDraft && session is not null);
         AttachActiveDocumentCommand = new AsyncRelayCommand(AttachActiveDocumentAsync, () => CanEditDraft && !_isCapturingDocument && _services.HasActiveDocument);
         _services.ActiveDocumentChanged += OnActiveDocumentChanged;
+        _workspaceRoot = TryReadWorkspaceRoot();
+        _services.WorkspaceRootChanged += OnWorkspaceRootChanged;
         ApplySlashSuggestionCommand = new RelayCommand<AvailableCommand>(ApplySlashSuggestion,
             command => CanEditDraft && AreSlashSuggestionsVisible && command is not null && SlashSuggestions.Contains(command));
         RemoveAttachmentCommand = new RelayCommand<ChatAttachmentViewModel>(attachment =>
@@ -692,6 +695,50 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         AttachActiveDocumentCommand.NotifyCanExecuteChanged();
         OnPropertyChanged(nameof(HasActiveDocument));
     });
+
+    private void OnWorkspaceRootChanged(object? sender, EventArgs e) => RunOnUi(() =>
+    {
+        if (_disposed) return;
+        var root = TryReadWorkspaceRoot();
+        // A closed solution - or a root the host cannot report right now - is not a project switch:
+        // the conversation still belongs to the project it was started in, and closing a solution is
+        // also the first half of reloading the same one. Only a different root switches projects.
+        if (root is null || string.Equals(root, _workspaceRoot, StringComparison.OrdinalIgnoreCase)) return;
+        _workspaceRoot = root;
+        _ = SwitchWorkspaceAsync();
+    });
+
+    /// <summary>Drops the previous project's session, transcript and agent process, then reconnects
+    /// so the empty chat is immediately usable in the new one. The agent is spawned with the
+    /// workspace root as its working directory and can never follow a switch, so reusing the
+    /// connection would leave the new project talking to the old project's process.</summary>
+    private async Task SwitchWorkspaceAsync()
+    {
+        try
+        {
+            await ReleaseConnectionAsync().ConfigureAwait(true);
+            if (_disposed) return;
+            ResetTranscriptState();
+            StatusMessage = null;
+            NotifyStateChanged();
+            await InitializeCoreAsync(_lifetime.Token).ConfigureAwait(true);
+        }
+        catch (OperationCanceledException) when (_disposed || _lifetime.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            // Nothing awaits this handler, so an escaping exception would be unobserved on the UI thread.
+            if (!_disposed) StatusMessage = $"Could not switch to the new workspace: {ex.Message}";
+        }
+    }
+
+    /// <summary>The host reads live solution state for this, which can throw while a solution is
+    /// closing or reloading; an unknown root is treated as "no switch" rather than a reason to
+    /// discard a conversation.</summary>
+    private string? TryReadWorkspaceRoot()
+    {
+        try { return _services.WorkspaceRoot; }
+        catch { return null; }
+    }
 
     public bool HasActiveDocument => _services.HasActiveDocument;
 
@@ -2117,6 +2164,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         _disposed = true;
         _services.AuthService.StateChanged -= OnAuthStateChanged;
         _services.ActiveDocumentChanged -= OnActiveDocumentChanged;
+        _services.WorkspaceRootChanged -= OnWorkspaceRootChanged;
         _lifetime.Cancel();
         RunOnUi(() => _ = DisposeCoreAsync());
     }

@@ -33,7 +33,7 @@ public sealed class ClaudeCodePackage : AsyncPackage
     private VsControlSessionRegistry? _vsControlSessionRegistry;
     private ActiveEditorDocumentTracker? _editorDocumentTracker;
     private SolutionEvents? _solutionEvents;
-    private string? _cachedWorkspaceRoot;
+    private readonly WorkspaceRootTracker _workspaceRootTracker = new WorkspaceRootTracker();
 
     protected override async Task InitializeAsync(CancellationToken cancellationToken, IProgress<ServiceProgressData> progress)
     {
@@ -56,7 +56,7 @@ public sealed class ClaudeCodePackage : AsyncPackage
         _solutionEvents.OnAfterOpenSolution += OnSolutionOpened;
         _solutionEvents.OnAfterCloseSolution += OnSolutionClosed;
         var currentSolution = await VS.Solutions.GetCurrentSolutionAsync();
-        _cachedWorkspaceRoot = ComputeWorkspaceRoot(currentSolution?.FullPath);
+        _workspaceRootTracker.Update(ComputeWorkspaceRoot(currentSolution?.FullPath));
 
         var connectionFactory = new ClaudeCodeConnectionFactory(GetOptions, GetWorkspaceRoot, _vsControlSessionRegistry);
 
@@ -66,7 +66,7 @@ public sealed class ClaudeCodePackage : AsyncPackage
         ClaudeCodeServices.GetWorkspaceRoot = GetWorkspaceRoot;
 
         ClaudeCode.Core.Views.ChatPanelView.ServicesFactory =
-            () => new VsChatSessionServices(ClaudeCodeServices.ConnectionFactory!, ClaudeCodeServices.AuthService!, ClaudeCodeServices.UsageService!, ClaudeCodeServices.GetWorkspaceRoot!, editorDocumentTracker,
+            () => new VsChatSessionServices(ClaudeCodeServices.ConnectionFactory!, ClaudeCodeServices.AuthService!, ClaudeCodeServices.UsageService!, _workspaceRootTracker, editorDocumentTracker,
                 ReadRemoteControlAtStartup);
 
         await this.RegisterCommandsAsync();
@@ -154,16 +154,16 @@ public sealed class ClaudeCodePackage : AsyncPackage
         }
     }
 
-    private string? GetWorkspaceRoot() => _cachedWorkspaceRoot;
+    private string? GetWorkspaceRoot() => _workspaceRootTracker.Root;
 
     private void OnSolutionOpened(Solution? solution)
     {
-        _cachedWorkspaceRoot = ComputeWorkspaceRoot(solution?.FullPath);
+        _workspaceRootTracker.Update(ComputeWorkspaceRoot(solution?.FullPath));
     }
 
     private void OnSolutionClosed()
     {
-        _cachedWorkspaceRoot = null;
+        _workspaceRootTracker.Update(null);
     }
 
     /// Pure so it can be exercised without a live VS host; not itself VS-SDK dependent.
