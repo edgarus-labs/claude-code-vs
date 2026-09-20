@@ -7,7 +7,7 @@ namespace ClaudeCode.Core.Tests;
 public sealed class ChangedFileViewModelTests
 {
     private static ChangedFileViewModel Create(string? originalText) =>
-        new ChangedFileViewModel(@"C:\ws\file.txt", originalText, _ => Task.CompletedTask, _ => Task.CompletedTask);
+        new ChangedFileViewModel(@"C:\ws\file.txt", originalText, _ => Task.CompletedTask, _ => Task.CompletedTask, null);
 
     [Fact]
     public void UpdateCounts_NewEmptyFile_ReportsNoLineChanges()

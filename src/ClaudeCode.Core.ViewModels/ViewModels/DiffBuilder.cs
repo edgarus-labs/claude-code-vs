@@ -11,23 +11,25 @@ internal static class DiffBuilder
 
     private static List<DiffLineViewModel> BuildCore(string oldText, string newText)
     {
-        var oldLines = SplitLines(oldText);
-        var newLines = SplitLines(newText);
-        int n = oldLines.Length;
-        int m = newLines.Length;
+        // A terminating "\n" ends the last line rather than starting an empty one - but only when
+        // both sides agree on it (or one side is empty): "one" vs "one\n" must still show the added
+        // newline as a real difference (see Build_TrailingNewlineDifference_IsVisible).
+        var stripTerminator = (oldText.Length == 0 || EndsWithNewline(oldText)) && (newText.Length == 0 || EndsWithNewline(newText));
+        var oldLines = SplitLines(oldText, stripTerminator, out int n);
+        var newLines = SplitLines(newText, stripTerminator, out int m);
 
         var result = new List<DiffLineViewModel>(n + m);
 
         if (n == 0 || m == 0 || (long)n * m > _maxAlignmentCells)
         {
-            foreach (var line in oldLines)
+            for (int i = 0; i < n; i++)
             {
-                result.Add(new DiffLineViewModel(DiffLineKind.Removed, line));
+                result.Add(new DiffLineViewModel(DiffLineKind.Removed, oldLines[i]));
             }
 
-            foreach (var line in newLines)
+            for (int j = 0; j < m; j++)
             {
-                result.Add(new DiffLineViewModel(DiffLineKind.Added, line));
+                result.Add(new DiffLineViewModel(DiffLineKind.Added, newLines[j]));
             }
 
             return result;
@@ -81,6 +83,27 @@ internal static class DiffBuilder
         return result;
     }
 
-    private static string[] SplitLines(string text) =>
-        string.IsNullOrEmpty(text) ? Array.Empty<string>() : text.Replace("\r\n", "\n").Split('\n');
+    private static bool EndsWithNewline(string text) => text.Length > 0 && text[text.Length - 1] == '\n';
+
+    // Hands back the raw split array plus the number of leading entries that are real lines. The
+    // count exists because shrinking the array to drop the terminator's empty trailing segment is
+    // not an in-place operation: it allocates a second full-size array and copies every element,
+    // which every diff of a normally terminated file would pay. Entries at or past "count" are
+    // not lines and must not be read.
+    private static string[] SplitLines(string text, bool stripTerminator, out int count)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            count = 0;
+            return Array.Empty<string>();
+        }
+
+        // The terminator's empty trailing segment is discounted after the split rather than trimmed
+        // off the text first: that avoids a second whole-file string copy. The length guard keeps
+        // "\n" as one empty line.
+        var lines = text.Replace("\r\n", "\n").Split('\n');
+        count = lines.Length;
+        if (stripTerminator && count > 1 && lines[count - 1].Length == 0) count--;
+        return lines;
+    }
 }

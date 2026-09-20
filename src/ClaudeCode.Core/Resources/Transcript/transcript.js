@@ -750,8 +750,58 @@
   }
 
   function setFontSize(px) {
-    document.documentElement.style.setProperty("--chat-font-size", px + "px");
+    // The size arrives from the host as an arbitrary value and is substituted into the
+    // `font: var(--chat-font-size)/1.5 ...` shorthand in transcript.css. A non-numeric, NaN or
+    // negative value makes that shorthand invalid at computed-value time, so the whole font
+    // declaration drops and the page falls back to the UA font and size until some later call
+    // happens to be valid. The host already clamps to TranscriptHostProtocol.MinFontSize/
+    // MaxFontSize (10-28); these deliberately wider bounds are the guard at the host->page
+    // boundary, not the primary clamp, so they can never contradict the host's range.
+    var size = Number(px);
+    if (!isFinite(size)) {
+      return;
+    }
+
+    document.documentElement.style.setProperty("--chat-font-size", Math.min(72, Math.max(8, size)) + "px");
+    queueBottomScroll();
   }
+
+  // Handle of the frame queueBottomScroll booked, 0 when none is pending.
+  var pendingBottomScroll = 0;
+
+  // Re-sticks the transcript to its end after a geometry change, at most once per frame. Both
+  // callers arrive in bursts - the host pushes a size per Ctrl+wheel notch, and dragging the tool
+  // window's splitter streams resize events - and scrollToBottom reads scrollHeight, forcing a
+  // reflow of the whole transcript, so only the last one of a burst is worth running: drop the
+  // frame already queued.
+  function queueBottomScroll() {
+    if (!followingBottom) {
+      return;
+    }
+
+    if (pendingBottomScroll !== 0) {
+      cancelAnimationFrame(pendingBottomScroll);
+    }
+    pendingBottomScroll = requestAnimationFrame(function () {
+      pendingBottomScroll = 0;
+      scrollToBottom();
+    });
+  }
+
+  // Whether the reader was at the end of the transcript before the last geometry change. The host
+  // shrinks this page's viewport whenever a card (Changed Files, a permission or question) opens
+  // above the composer; the page keeps its scrollTop, so the newest lines slid under the card and
+  // read as covered by it. Tracked from scroll events (resize fires after the viewport already
+  // changed, when isAtBottom() no longer tells where the reader was).
+  var followingBottom = true;
+  window.addEventListener(
+    "scroll",
+    function () {
+      followingBottom = isAtBottom();
+    },
+    { passive: true }
+  );
+  window.addEventListener("resize", queueBottomScroll, { passive: true });
 
   // The transcript's own font size is controlled by the WPF host (see ChatPanelView.ChatTextFontSize)
   // so it stays in sync with the composer/popups, which are still plain WPF. Ctrl+wheel is

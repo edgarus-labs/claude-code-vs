@@ -24,6 +24,11 @@
     <ResourceDictionary>
       <conv:NullToVisibilityConverter x:Key="ElicitationNullToVisibilityConverter" />
       <conv:FractionOfConverter x:Key="ElicitationFractionOfConverter" />
+      <!-- A local copy, not a StaticResource lookup into ChatPanelView.Resources: unlike the
+           DynamicResource brushes above, a StaticResource only searches the resource chain of the
+           XAML it sits in (this control, then its parents here, then app resources), never another
+           UserControl's Resources, so the host's dictionary is out of reach by scope, not by timing. -->
+      <views:ChatTextFontSizeConverter x:Key="ChatTextFontSizeConverter" />
 
       <Style x:Key="ElicitationButtonStyle" TargetType="Button">
         <Setter Property="Background" Value="{DynamicResource ChatAccentBrush}" />
@@ -32,6 +37,7 @@
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="12,6" />
         <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="FontSize" Value="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType={x:Type views:ChatPanelView}}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}" />
         <Setter Property="Template">
           <Setter.Value>
             <ControlTemplate TargetType="Button">
@@ -69,7 +75,8 @@
       <DataTemplate x:Key="ElicitationTextFieldTemplate" DataType="{x:Type vm:ElicitationFieldViewModel}">
         <TextBox Text="{Binding TextValue, UpdateSourceTrigger=PropertyChanged}"
                  MaxLength="{x:Static vm:ElicitationRequestViewModel.MaxDisplayTextLength}"
-                 AcceptsReturn="False" TextWrapping="Wrap" Padding="6,4" FontSize="12"
+                 AcceptsReturn="False" TextWrapping="Wrap" Padding="6,4"
+                 FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType={x:Type views:ChatPanelView}}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}"
                  Background="{DynamicResource ChatBackgroundBrush}" Foreground="{DynamicResource ChatForegroundBrush}"
                  CaretBrush="{DynamicResource ChatForegroundBrush}" BorderBrush="{DynamicResource ChatBorderBrush}"
                  AutomationProperties.Name="{Binding Title, TargetNullValue='Answer'}" />
@@ -87,8 +94,10 @@
               <RadioButton IsChecked="{Binding IsSelected}" Margin="0,2" Foreground="{DynamicResource ChatForegroundBrush}"
                            AutomationProperties.Name="{Binding Label}">
                 <StackPanel>
-                  <TextBlock Text="{Binding Label}" FontSize="12" TextWrapping="Wrap" />
-                  <TextBlock Text="{Binding Description}" FontSize="11" TextWrapping="Wrap"
+                  <TextBlock Text="{Binding Label}" TextWrapping="Wrap"
+                             FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType={x:Type views:ChatPanelView}}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}" />
+                  <TextBlock Text="{Binding Description}" TextWrapping="Wrap"
+                             FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType={x:Type views:ChatPanelView}}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=11}"
                              Foreground="{DynamicResource ChatSubtleForegroundBrush}"
                              Visibility="{Binding Description, Converter={StaticResource ElicitationNullToVisibilityConverter}}" />
                 </StackPanel>
@@ -105,8 +114,10 @@
               <CheckBox IsChecked="{Binding IsSelected}" Margin="0,2" Foreground="{DynamicResource ChatForegroundBrush}"
                         AutomationProperties.Name="{Binding Label}">
                 <StackPanel>
-                  <TextBlock Text="{Binding Label}" FontSize="12" TextWrapping="Wrap" />
-                  <TextBlock Text="{Binding Description}" FontSize="11" TextWrapping="Wrap"
+                  <TextBlock Text="{Binding Label}" TextWrapping="Wrap"
+                             FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType={x:Type views:ChatPanelView}}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}" />
+                  <TextBlock Text="{Binding Description}" TextWrapping="Wrap"
+                             FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType={x:Type views:ChatPanelView}}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=11}"
                              Foreground="{DynamicResource ChatSubtleForegroundBrush}"
                              Visibility="{Binding Description, Converter={StaticResource ElicitationNullToVisibilityConverter}}" />
                 </StackPanel>
@@ -118,10 +129,12 @@
 
       <DataTemplate x:Key="ElicitationFieldTemplate" DataType="{x:Type vm:ElicitationFieldViewModel}">
         <StackPanel Margin="0,0,0,10">
-          <TextBlock Text="{Binding Title}" FontSize="12" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,0,0,2"
+          <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,0,0,2"
+                     FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType={x:Type views:ChatPanelView}}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}"
                      Foreground="{DynamicResource ChatForegroundBrush}"
                      Visibility="{Binding Title, Converter={StaticResource ElicitationNullToVisibilityConverter}}" />
-          <TextBlock Text="{Binding Description}" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,4"
+          <TextBlock Text="{Binding Description}" TextWrapping="Wrap" Margin="0,0,0,4"
+                     FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType={x:Type views:ChatPanelView}}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=11}"
                      Foreground="{DynamicResource ChatSubtleForegroundBrush}"
                      Visibility="{Binding Description, Converter={StaticResource ElicitationNullToVisibilityConverter}}" />
           <!-- The default (text) template must be a Style setter, not a local ContentTemplate value:
@@ -173,6 +186,7 @@
                                         ConverterParameter=0.8}">
         <StackPanel>
           <TextBlock x:Name="MessageText" Text="{Binding Message}" TextWrapping="Wrap" FontWeight="SemiBold"
+                     FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType={x:Type views:ChatPanelView}}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}"
                      Foreground="{DynamicResource ChatForegroundBrush}" Margin="0,0,0,8"
                      AutomationProperties.LiveSetting="Assertive" />
           <ItemsControl ItemsSource="{Binding Fields}" ItemTemplate="{StaticResource ElicitationFieldTemplate}" />
@@ -182,7 +196,8 @@
       <!-- Questions past MaxFields are dropped to bound the form; the agent is still told the form was
            accepted, so say what was withheld - outside the scroll region, since a notice the user can
            scroll away from is no notice at all. -->
-      <TextBlock Text="{Binding TruncationNotice}" TextWrapping="Wrap" FontSize="11" Margin="0,4,0,0"
+      <TextBlock Text="{Binding TruncationNotice}" TextWrapping="Wrap" Margin="0,4,0,0"
+                 FontSize="{Binding ChatTextFontSize, RelativeSource={RelativeSource AncestorType={x:Type views:ChatPanelView}}, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=11}"
                  Foreground="{DynamicResource ChatSubtleForegroundBrush}"
                  Visibility="{Binding TruncationNotice, Converter={StaticResource ElicitationNullToVisibilityConverter}}" />
 

@@ -33,7 +33,6 @@ public partial class ChatPanelView : UserControl, IDisposable
     private const int MaxImageBytes = 5 * 1024 * 1024;
     private const long MaxImagePixels = 20_000_000;
     private const int MaxImages = 5;
-    internal const double DefaultChatTextFontSize = 13d;
     private const int CopyFeedbackDisplayMilliseconds = 4000;
     private const string TranscriptLostMessage =
         "The transcript display stopped updating after a Microsoft Edge WebView2 process failure " +
@@ -46,7 +45,7 @@ public partial class ChatPanelView : UserControl, IDisposable
 
     public static readonly DependencyProperty ChatTextFontSizeProperty = DependencyProperty.Register(
         nameof(ChatTextFontSize), typeof(double), typeof(ChatPanelView),
-        new FrameworkPropertyMetadata(DefaultChatTextFontSize, OnChatTextFontSizeChanged));
+        new FrameworkPropertyMetadata(TranscriptHostProtocol.DefaultFontSize, OnChatTextFontSizeChanged));
 
     public static Func<IChatSessionServices>? ServicesFactory { get; set; }
 
@@ -1342,12 +1341,14 @@ public partial class ChatPanelView : UserControl, IDisposable
     }
 }
 
-/// <summary>Preserves the transcript's relative typography as its base text size changes.</summary>
+/// <summary>Preserves the transcript's relative typography as its base text size changes. The
+/// arithmetic lives in <see cref="TranscriptHostProtocol.ScaleFontSize"/> so it is reachable from
+/// the XAML-free test host; this type is only the WPF binding adapter.</summary>
 public sealed class ChatTextFontSizeConverter : IValueConverter
 {
     public object Convert(object value, Type targetType, object parameter, CultureInfo culture) =>
-        (double)value * System.Convert.ToDouble(parameter, CultureInfo.InvariantCulture) /
-        ChatPanelView.DefaultChatTextFontSize;
+        TranscriptHostProtocol.ScaleFontSize(
+            (double)value, System.Convert.ToDouble(parameter, CultureInfo.InvariantCulture));
 
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) =>
         throw new NotSupportedException();
