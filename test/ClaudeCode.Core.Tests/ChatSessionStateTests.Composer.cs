@@ -312,6 +312,219 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("second, queued", Assert.IsType<ContentBlock.Text>(Assert.Single(connection.Prompts[1])).Value);
     }
 
+    // CanEditDraft's own comment (ChatViewModel.cs) documents the exact hazard this guards against
+    // for a *live* send: "a prompt accepted mid-switch is sent to the outgoing session and then
+    // wiped from the transcript by ResetTranscriptState". A message queued while a turn is in
+    // flight must not reopen that hole through the auto-dispatch path once the turn ends.
+    [Fact]
+    public async Task QueuedMessage_IsNotDispatchedIntoANewWorkspaceIfTheTurnEndsMidSwitch()
+    {
+        var firstTurn = new TaskCompletionSource<bool>();
+        var releaseGate = new TaskCompletionSource<bool>();
+        var connection = new RecordingAcpAgentConnection
+        {
+            PromptHandler = _ => firstTurn.Task,
+            DisposeHandler = () => releaseGate.Task,
+        };
+        var services = new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService(), workspaceRoot: @"C:\ProjectA");
+        using var vm = new ChatViewModel(services);
+        await vm.Initialization;
+
+        vm.InputText = "for project A";
+        var firstSend = vm.SendAsync();
+        Assert.True(vm.IsBusy);
+        Assert.Equal(@"C:\ProjectA", Assert.Single(connection.NewSessionCwds));
+
+        vm.InputText = "queued while on project A";
+        await vm.SendAsync();
+        var queued = Assert.Single(vm.Messages, message => message.Role == ChatRole.User && message.Text == "queued while on project A");
+        Assert.True(queued.IsPending);
+
+        // Mirrors OnWorkspaceRootChanged: the root changes, then VS notifies. ReleaseConnectionAsync
+        // nulls _connection/_sessionId synchronously and then suspends on DisposeAsync (releaseGate),
+        // so at this point the switch is "in flight" exactly like the real, slow agent-process teardown.
+        services.SetWorkspaceRoot(@"C:\ProjectB");
+
+        // The turn ends *while the switch is still suspended in DisposeAsync* - the scenario the
+        // finding describes, reproduced deterministically instead of relying on real timing. The
+        // dispatch must hold off entirely while the switch is in flight, not just avoid using the
+        // new workspace: no second session/new call yet, and the bubble still reads pending.
+        firstTurn.SetResult(true);
+        await firstSend;
+        Assert.True(queued.IsPending);
+        Assert.Single(connection.NewSessionCwds);
+
+        // Let the switch finish and settle.
+        releaseGate.SetResult(true);
+        await WaitUntilAsync(() => vm.SessionTitle == "Untitled" && !vm.IsBusy);
+
+        Assert.DoesNotContain(connection.Prompts, prompt =>
+            prompt.Any(block => block is ContentBlock.Text text && text.Value == "queued while on project A"));
+        Assert.Empty(vm.Messages);
+    }
+
+    // A queued message belongs to the session it was typed into. When that session dies the message
+    // can never be delivered, so it must not linger in the transcript: the bubble goes with it and
+    // the user is told, because they wrote it and it is now gone.
+    [Fact]
+    public async Task AgentDisconnect_DiscardsQueuedMessages_AndSaysSoInsteadOfLeavingThemInTheTranscript()
+    {
+        var firstTurn = new TaskCompletionSource<bool>();
+        var connection = new RecordingAcpAgentConnection { PromptHandler = _ => firstTurn.Task };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "first";
+        var firstSend = vm.SendAsync();
+        vm.InputText = "queued behind the first";
+        await vm.SendAsync();
+        var queued = Assert.Single(vm.Messages, message => message.Text == "queued behind the first");
+
+        connection.RaiseDisconnected();
+
+        Assert.DoesNotContain(queued, vm.Messages);
+        Assert.Contains("not sent", vm.StatusMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("disconnected", vm.StatusMessage!, StringComparison.OrdinalIgnoreCase);
+
+        firstTurn.SetResult(true);
+        await firstSend;
+        Assert.Single(connection.Prompts);
+    }
+
+    // Stop means stop: a follow-up the user queued behind the turn they just cancelled must not be
+    // fired off the moment that cancellation lands.
+    [Fact]
+    public async Task Cancel_DropsWhateverIsStillQueued_RatherThanDispatchingItWhenTheTurnEnds()
+    {
+        var firstTurn = new TaskCompletionSource<bool>();
+        var connection = new RecordingAcpAgentConnection { PromptHandler = _ => firstTurn.Task };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "first";
+        var firstSend = vm.SendAsync();
+        vm.InputText = "queued behind the first";
+        await vm.SendAsync();
+        var queued = Assert.Single(vm.Messages, message => message.Text == "queued behind the first");
+
+        await vm.CancelCommand.ExecuteAsync(null);
+        firstTurn.SetResult(true);
+        await firstSend;
+
+        Assert.Equal(1, connection.CancelCount);
+        Assert.Single(connection.Prompts);
+        Assert.DoesNotContain(queued, vm.Messages);
+        Assert.Contains("not sent", vm.StatusMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    // A config change is its own RPC and deliberately allowed mid-turn, so a turn can end while one
+    // is still in flight. Dispatching into that window is the hazard CanQueueOrSendDraft exists to
+    // stop - but the queue must not be stranded there either: it goes out when the change lands.
+    [Fact]
+    public async Task QueuedMessage_WaitsForAnInFlightConfigChange_AndStillGoesOutWhenItCompletes()
+    {
+        var firstTurn = new TaskCompletionSource<bool>();
+        var config = new TaskCompletionSource<IReadOnlyList<SessionConfigOption>>();
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options(), PromptHandler = _ => firstTurn.Task };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "first";
+        var firstSend = vm.SendAsync();
+        vm.InputText = "queued behind the first";
+        await vm.SendAsync();
+
+        connection.ConfigHandler = (_, _, _) => config.Task;
+        var configChange = vm.SelectModelAsync(vm.AvailableModels[1]);
+        Assert.True(vm.IsConfigBusy);
+
+        firstTurn.SetResult(true);
+        await firstSend;
+        Assert.Single(connection.Prompts); // the config change still owns the session
+
+        config.SetResult(Options("opus"));
+        await configChange;
+        await WaitUntilAsync(() => connection.Prompts.Count == 2);
+
+        Assert.Equal("queued behind the first", Assert.IsType<ContentBlock.Text>(Assert.Single(connection.Prompts[1])).Value);
+    }
+
+    // The queue is a queue: two follow-ups typed during one turn go out in the order they were
+    // written, not reversed or collapsed.
+    [Fact]
+    public async Task QueuedMessages_AreDispatchedInTheOrderTheyWereSent()
+    {
+        var firstTurn = new TaskCompletionSource<bool>();
+        var connection = new RecordingAcpAgentConnection { PromptHandler = _ => firstTurn.Task };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "first";
+        var firstSend = vm.SendAsync();
+        vm.InputText = "second";
+        await vm.SendAsync();
+        vm.InputText = "third";
+        await vm.SendAsync();
+
+        Assert.Collection(vm.Messages.Where(message => message.Role == ChatRole.User),
+            message => Assert.False(message.IsPending),
+            message => Assert.True(message.IsPending),
+            message => Assert.True(message.IsPending));
+
+        firstTurn.SetResult(true);
+        await firstSend;
+        await WaitUntilAsync(() => connection.Prompts.Count == 3);
+
+        Assert.Equal("second", Assert.IsType<ContentBlock.Text>(Assert.Single(connection.Prompts[1])).Value);
+        Assert.Equal("third", Assert.IsType<ContentBlock.Text>(Assert.Single(connection.Prompts[2])).Value);
+        Assert.All(vm.Messages.Where(message => message.Role == ChatRole.User), message => Assert.False(message.IsPending));
+    }
+
+    // Disposal races the turn that was in flight: the queue must die with the view model rather than
+    // reconnecting a disposed session to deliver a message nobody is listening for.
+    [Fact]
+    public async Task Dispose_WhileAMessageIsQueued_DispatchesNothingAndFaultsNothing()
+    {
+        var firstTurn = new TaskCompletionSource<bool>();
+        var connection = new RecordingAcpAgentConnection { PromptHandler = _ => firstTurn.Task };
+        var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "first";
+        var firstSend = vm.SendAsync();
+        vm.InputText = "queued behind the first";
+        await vm.SendAsync();
+
+        vm.Dispose();
+        firstTurn.SetResult(true);
+        await firstSend;
+
+        Assert.Single(connection.Prompts);
+    }
+
+    // The error a failed turn reported is the only thing telling the user it failed. Automatically
+    // dispatching the next queued message must not wipe it off the screen before they can read it.
+    [Fact]
+    public async Task FailedTurn_KeepsItsErrorVisible_WhenTheNextQueuedMessageIsDispatched()
+    {
+        var firstTurn = new TaskCompletionSource<bool>();
+        // Only the first turn fails: the queued follow-up must succeed, or the error would survive
+        // just because the second turn reported the same one.
+        var connection = new RecordingAcpAgentConnection
+        {
+            PromptHandler = content => content.Any(block => block is ContentBlock.Text text && text.Value == "first")
+                ? firstTurn.Task
+                : Task.CompletedTask,
+        };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "first";
+        var firstSend = vm.SendAsync();
+        vm.InputText = "queued behind the first";
+        await vm.SendAsync();
+
+        firstTurn.SetException(new InvalidOperationException("the agent gave up"));
+        await firstSend;
+        await WaitUntilAsync(() => connection.Prompts.Count == 2);
+
+        Assert.Contains("the agent gave up", vm.StatusMessage, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task StartupCommands_UseLatestListOnlyForReturnedSession()
     {

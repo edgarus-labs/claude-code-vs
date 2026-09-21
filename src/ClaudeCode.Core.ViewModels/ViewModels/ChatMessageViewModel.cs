@@ -8,9 +8,13 @@ namespace ClaudeCode.Core.ViewModels;
 
 public sealed class ChatMessageViewModel : ObservableObject
 {
-    public ChatMessageViewModel(ChatRole role, string text = "")
+    /// <param name="isPending">True for a message queued locally while an earlier turn is still in
+    /// flight; see <see cref="IsPending"/>. Only a <see cref="ChatRole.User"/> message is ever
+    /// queued, because only the composer can produce one.</param>
+    public ChatMessageViewModel(ChatRole role, string text = "", bool isPending = false)
     {
         Role = role;
+        _isPending = isPending;
         text ??= string.Empty;
         _text = MarkdownSafetyLimits.LimitMarkdownLength(text);
         _textBuilder = new StringBuilder(_text);
@@ -23,20 +27,24 @@ public sealed class ChatMessageViewModel : ObservableObject
 
     public ChatRole Role { get; }
 
-    private bool _isPending;
-
-    /// <summary>True while this user message is queued locally - typed and sent while a previous
-    /// turn was still in flight - and hasn't actually gone out to the agent yet. Cleared once the
-    /// prior turn finishes and this message is dispatched.</summary>
-    public bool IsPending
-    {
-        get => _isPending;
-        set => SetProperty(ref _isPending, value);
-    }
-
     private readonly StringBuilder _textBuilder;
     private string? _text;
     private bool _isTruncated;
+    private bool _isPending;
+
+    /// <summary>True while this message is queued locally - typed and sent while a previous turn was
+    /// still in flight - and has not been handed to the agent yet. The transcript dims a pending
+    /// bubble so it cannot be mistaken for one that was delivered.</summary>
+    public bool IsPending
+    {
+        get => _isPending;
+        private set => SetProperty(ref _isPending, value);
+    }
+
+    /// <summary>Records that this message has now been submitted to the agent. One-way on purpose:
+    /// a message that has gone out can never become pending again, so the flag is not a setter
+    /// anyone outside can flip back.</summary>
+    public void MarkSent() => IsPending = false;
 
     public string Text => _text ??= _textBuilder.ToString();
 

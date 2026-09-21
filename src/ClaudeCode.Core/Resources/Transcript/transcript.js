@@ -698,8 +698,17 @@
   // of tearing down and rebuilding the whole message - links, tool cards and every other
   // already-rendered part included - on every one of the ~5 rebuilds/s a streaming turn produces.
   // A click landing on a file-reference link earlier in the message would otherwise race a rebuild
-  // that swaps the very node under the pointer.
+  // that swaps the very node under the pointer. Only ever consulted for assistant messages: a user
+  // bubble is built as one block by a different branch of buildMessage (see render()).
   function isTrailingTextGrowth(prev, next) {
+    // The caller patches lastElementChild, which is the last part only while the message has no
+    // footer. buildMessage appends one as soon as durationSeconds is a number, so a finished message
+    // is always rebuilt - patching one would replace its "Responded in ..." line with a copy of the
+    // text. The equality check below cannot stand in for this: both sides carry the same duration.
+    if (typeof prev.durationSeconds === "number") {
+      return false;
+    }
+
     if (prev.role !== next.role || prev.pending !== next.pending
         || prev.durationSeconds !== next.durationSeconds || prev.tokensUsed !== next.tokensUsed
         || JSON.stringify(prev.images) !== JSON.stringify(next.images)) {
@@ -873,5 +882,10 @@
     setActivity: setActivity,
     applyTheme: common.applyTheme,
     setFontSize: setFontSize,
+    // Exposed for test/transcript/render-diff.test.js: these two are pure functions over the host's
+    // JSON payload and decide whether a streamed message is patched or rebuilt, which is the one
+    // piece of this renderer that can be proven correct without a browser.
+    partsEqual: partsEqual,
+    isTrailingTextGrowth: isTrailingTextGrowth,
   };
 })();

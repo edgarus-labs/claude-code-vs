@@ -708,12 +708,17 @@
                    instead of submitting it immediately (see ChatViewModel.SendCoreAsync), so Stop
                    sits alongside it rather than replacing it. -->
               <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                <Button Width="28" Height="28" Padding="0" Margin="0,0,4,0" Command="{Binding CancelCommand}"
-                        Style="{StaticResource ChatButtonStyle}" ToolTip="Stop response" AutomationProperties.Name="Stop response"
-                        Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibilityConverter}}">
-                  <Rectangle Width="10" Height="10" RadiusX="1.5" RadiusY="1.5"
-                             Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
-                </Button>
+                <!-- The Stop slot is reserved rather than collapsed: this column is Auto-sized, so a
+                     button appearing and disappearing with every turn would shrink and regrow the
+                     text box underneath it - and reflow whatever the user is mid-sentence in. -->
+                <Grid Width="32">
+                  <Button Width="28" Height="28" Padding="0" HorizontalAlignment="Left" Command="{Binding CancelCommand}"
+                          Style="{StaticResource ChatButtonStyle}" ToolTip="Stop response" AutomationProperties.Name="Stop response"
+                          Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibilityConverter}}">
+                    <Rectangle Width="10" Height="10" RadiusX="1.5" RadiusY="1.5"
+                               Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                  </Button>
+                </Grid>
                 <Button Width="28" Height="28" Padding="0" Command="{Binding SendCommand}" Click="SendButton_Click"
                         Style="{StaticResource ChatButtonStyle}" ToolTip="Send message (Enter)" AutomationProperties.Name="Send message">
                   <Path Data="M 6,12 L 6,0 M 1,5 L 6,0 L 11,5" StrokeThickness="1.8"

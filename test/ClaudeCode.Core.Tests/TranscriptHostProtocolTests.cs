@@ -100,6 +100,7 @@ public sealed class TranscriptHostProtocolTests
     [InlineData(nameof(ChatMessageViewModel.TokensUsed))]
     [InlineData(nameof(ToolCallCardViewModel.Title))]
     [InlineData(nameof(ChatMessageViewModel.Images))]
+    [InlineData(nameof(ChatMessageViewModel.IsPending))]
     [InlineData(nameof(ToolCallCardViewModel.Status))]
     public void AffectsTranscript_PropertyCarriedByThePayload_RequiresRepaint(string propertyName)
     {
