@@ -77,6 +77,20 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private const long MaxDocumentAttachmentBytes = 1L * 1024 * 1024;
     private const int UsageWarningThresholdPercent = 75;
     private static readonly TimeSpan UsagePollInterval = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan UsagePollRetryInterval = TimeSpan.FromSeconds(15);
+
+    /// <summary>How many consecutive failed fetches still get the short retry interval. The retry
+    /// exists for the startup race (VS's inherited PATH/auth not settled yet), which resolves in
+    /// seconds; past that a failure means usage is simply unavailable, and hammering an agent that
+    /// keeps failing every 15s for the rest of the session buys nothing.</summary>
+    private const int UsagePollFastRetries = 4;
+
+    /// <summary>How long <see cref="UsagePollingLoopAsync"/> waits before its next attempt: the
+    /// short retry interval while the startup race is still plausible, the normal cadence once a
+    /// fetch has succeeded or the fast retries are spent. Extracted so the decision itself - not
+    /// just the constants - is directly unit-testable without waiting out either real interval.</summary>
+    internal static TimeSpan NextUsagePollDelay(int consecutiveFailures) =>
+        consecutiveFailures > 0 && consecutiveFailures <= UsagePollFastRetries ? UsagePollRetryInterval : UsagePollInterval;
 
     private static readonly IReadOnlyDictionary<string, IReadOnlyList<string>> _emptyElicitationContent =
         new Dictionary<string, IReadOnlyList<string>>();
@@ -315,7 +329,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // _isSwitchingSession covers the session/new and session/load round trips: neither IsBusy nor
     // IsConnecting is set for their duration, so without it a prompt accepted mid-switch is sent to
     // the outgoing session and then wiped from the transcript by ResetTranscriptState.
-    private bool CanEditDraft => !_disposed && !NeedsAuthentication && !IsConnecting && !IsBusy
+    private bool CanEditDraft => CanQueueOrSendDraft && !IsBusy;
+
+    // Same admission checks as CanEditDraft, minus IsBusy: a turn already in flight must not block
+    // composing and sending the next message - it gets queued (see SendCoreAsync/EnqueueDraft) and
+    // dispatched once the current turn ends, instead of being blocked until then.
+    private bool CanQueueOrSendDraft => !_disposed && !NeedsAuthentication && !IsConnecting
         && !IsConfigBusy && !_isSwitchingSession;
 
     /// <summary>The working directory this client trusts - never a path the agent reported.</summary>
@@ -458,11 +477,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task UsagePollingLoopAsync()
     {
+        int consecutiveFailures = 0;
         while (!_lifetime.IsCancellationRequested)
         {
             try
             {
                 UsageSnapshot? snapshot = await _services.UsageService.GetUsageAsync(_lifetime.Token).ConfigureAwait(false);
+                consecutiveFailures = snapshot is null ? consecutiveFailures + 1 : 0;
                 if (snapshot is not null)
                 {
                     RunOnUi(() => ApplyUsageSnapshot(snapshot));
@@ -475,11 +496,17 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             catch
             {
                 // Usage is best-effort presentation, never allowed to affect the chat session itself.
+                consecutiveFailures++;
             }
 
+            // On startup, VS's inherited PATH/auth state may not be settled yet, so the first
+            // fetch(es) can transiently fail. Retry soon instead of leaving the usage button hidden
+            // for a full poll interval - then settle back to the normal cadence, whether because a
+            // fetch succeeded or because the fast retries are spent (see NextUsagePollDelay).
+            TimeSpan delay = NextUsagePollDelay(consecutiveFailures);
             try
             {
-                await Task.Delay(UsagePollInterval, _lifetime.Token).ConfigureAwait(false);
+                await Task.Delay(delay, _lifetime.Token).ConfigureAwait(false);
             }
             // Dispose() cancels before it disposes, but an iteration preempted between the loop's
             // cancellation check and this call reads _lifetime.Token after disposal, which throws
@@ -719,13 +746,15 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         // is sent to a session ResetTranscriptState is about to erase - the hazard documented on
         // CanEditDraft and already guarded by NewSessionCoreAsync and OpenSessionCoreAsync.
         _isSwitchingSession = true;
+        // Cleared before the teardown, not after it: the outgoing workspace's status is stale from
+        // here on, and ReleaseConnectionAsync is about to report anything the switch costs the user.
+        StatusMessage = null;
         NotifyStateChanged();
         try
         {
             await ReleaseConnectionAsync().ConfigureAwait(true);
             if (_disposed) return;
             ResetTranscriptState();
-            StatusMessage = null;
             await InitializeCoreAsync(_lifetime.Token).ConfigureAwait(true);
         }
         catch (OperationCanceledException) when (_disposed || _lifetime.IsCancellationRequested) { }
@@ -896,6 +925,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             IsConfigBusy = false;
             NotifySelectionsChanged();
             SendPendingPlanReview();
+            // A turn can end while this RPC is still in flight, and the queue refuses to dispatch
+            // into a config change; this is the blocker lifting, so whatever it held back goes now.
+            DispatchNextQueuedMessage();
         }
     }
 
@@ -946,45 +978,131 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
     }
 
-    private bool CanSend() => CanEditDraft && !_isCapturingDocument &&
+    private bool CanSend() => CanQueueOrSendDraft && !_isCapturingDocument &&
         (!string.IsNullOrWhiteSpace(InputText) || Attachments.Count > 0);
 
     public Task SendAsync() => OnUiAsync(SendCoreAsync);
 
-    private async Task SendCoreAsync()
+    // A message typed and sent while a turn is already in flight: shown in the transcript right
+    // away (dimmed, see ChatMessageViewModel.IsPending) so the user can see it was captured, held
+    // here until the in-flight turn ends, then dispatched exactly like a normal send.
+    private sealed class QueuedMessage
     {
-        if (!CanSend()) return;
+        public QueuedMessage(ChatMessageViewModel bubble, string text, IReadOnlyList<ChatAttachmentViewModel> attachments)
+        {
+            Bubble = bubble;
+            Text = text;
+            Attachments = attachments;
+        }
+
+        public ChatMessageViewModel Bubble { get; }
+        public string Text { get; }
+        public IReadOnlyList<ChatAttachmentViewModel> Attachments { get; }
+    }
+
+    private readonly Queue<QueuedMessage> _queuedMessages = new Queue<QueuedMessage>();
+
+    private Task SendCoreAsync()
+    {
+        if (!CanSend()) return Task.CompletedTask;
+
+        // Sending is the user's own action, so it is what clears a stale error - not the start of
+        // every turn, which would wipe the failure of the turn that just ended before it could be
+        // read (an auto-dispatched queue would erase its own predecessor's error).
+        StatusMessage = null;
+
+        // Snapshot now, not after the connect round trip: the composer stays editable mid-turn, so
+        // whatever is typed while EnsureConnectedAsync is still running belongs to the *next*
+        // message and must neither be folded into this prompt nor cleared with it.
+        var text = InputText.Trim();
+        var attachments = Attachments.ToArray();
+
+        if (IsBusy)
+        {
+            EnqueueDraft(text, attachments);
+            return Task.CompletedTask;
+        }
+
+        return RunTurnAsync(() =>
+        {
+            // Acquire before consuming the draft: failed startup must not lose text or attachments.
+            // RunTurnAsync's own EnsureConnectedAsync has already succeeded by the time this runs.
+            Messages.Add(BuildUserBubble(text, attachments, isPending: false));
+            UpdateSessionTitleFromFirstUserMessage();
+            ConsumeDraft(text, attachments);
+            return (text, (IReadOnlyList<ChatAttachmentViewModel>)attachments);
+        });
+    }
+
+    // Draft is consumed immediately (unlike the live-send path above) so the composer is free for
+    // the next message right away; there is no "connect first" step to guard here since dispatch -
+    // and therefore the connection attempt - happens later, once DispatchNextQueuedMessage dequeues
+    // this entry and DispatchQueuedMessageAsync runs it through RunTurnAsync.
+    private void EnqueueDraft(string text, ChatAttachmentViewModel[] attachments)
+    {
+        var bubble = BuildUserBubble(text, attachments, isPending: true);
+        Messages.Add(bubble);
+        UpdateSessionTitleFromFirstUserMessage();
+        ConsumeDraft(text, attachments);
+        _queuedMessages.Enqueue(new QueuedMessage(bubble, text, attachments));
+    }
+
+    // Images render as thumbnails on the bubble; only documents keep a text placeholder.
+    private static ChatMessageViewModel BuildUserBubble(string text, ChatAttachmentViewModel[] attachments, bool isPending)
+    {
+        var transcriptText = string.Join(Environment.NewLine, new[] { text }
+            .Where(part => part.Length > 0).Concat(attachments.Where(attachment => attachment.IsDocument)
+                .Select(attachment => "[Document: " + attachment.Name + "]")));
+        return new ChatMessageViewModel(ChatRole.User, transcriptText, isPending)
+        {
+            Images = attachments.Where(attachment => attachment.IsImage)
+                .Select(attachment => new ChatMessageImage(attachment.Name, attachment.MimeType, attachment.Base64Data)).ToList(),
+        };
+    }
+
+    // Takes exactly what this message carried out of the composer and leaves anything typed or
+    // attached since alone: that newer draft is the user's next message, not part of this one.
+    private void ConsumeDraft(string text, ChatAttachmentViewModel[] attachments)
+    {
+        if (InputText.Trim() == text) InputText = string.Empty;
+        foreach (var attachment in attachments) Attachments.Remove(attachment);
+        AttachmentError = null;
+    }
+
+    // Mirrors SendCoreAsync's live-send path for a message that was queued earlier: the bubble
+    // already exists in the transcript, so this only has to stop it reading as pending at the same
+    // point the live path commits - once the connection is in hand and the prompt is about to go.
+    private Task DispatchQueuedMessageAsync(QueuedMessage queued)
+    {
+        return RunTurnAsync(() =>
+        {
+            queued.Bubble.MarkSent();
+            return (queued.Text, queued.Attachments);
+        });
+    }
+
+    // Shared by SendCoreAsync and DispatchQueuedMessageAsync: everything from connecting through
+    // submitting one turn's content and reacting to how it ended is identical between a live send
+    // and a queued dispatch - only how (text, attachments) is obtained differs, which is why that
+    // step is the one thing left to the caller. `prepare` runs only after EnsureConnectedAsync has
+    // already succeeded, preserving the live-send path's "acquire before consuming the draft" rule.
+    private async Task RunTurnAsync(Func<(string Text, IReadOnlyList<ChatAttachmentViewModel> Attachments)> prepare)
+    {
         ActivityText = "Working…";
         IsBusy = true;
         _turnStartedAt = DateTimeOffset.UtcNow;
         _turnStartUsedTokens = _sessionUsedTokens;
         TurnTokens = null;
-        StatusMessage = null;
         try
         {
-            // Acquire before consuming the draft: failed startup must not lose text or attachments.
             var (connection, sessionId) = await EnsureConnectedAsync(_lifetime.Token).ConfigureAwait(true);
             if (_disposed) return;
-            var text = InputText.Trim();
-            var attachments = Attachments.ToArray();
-            var content = new List<ContentBlock>(attachments.Length + 1);
+            var (text, attachments) = prepare();
+            var content = new List<ContentBlock>(attachments.Count + 1);
             if (text.Length > 0) content.Add(new ContentBlock.Text(text));
             foreach (var attachment in attachments)
                 content.Add(attachment.ToContentBlock());
 
-            // Images render as thumbnails on the bubble; only documents keep a text placeholder.
-            var transcriptText = string.Join(Environment.NewLine, new[] { text }
-                .Where(part => part.Length > 0).Concat(attachments.Where(attachment => attachment.IsDocument)
-                    .Select(attachment => "[Document: " + attachment.Name + "]")));
-            Messages.Add(new ChatMessageViewModel(ChatRole.User, transcriptText)
-            {
-                Images = attachments.Where(attachment => attachment.IsImage)
-                    .Select(attachment => new ChatMessageImage(attachment.Name, attachment.MimeType, attachment.Base64Data)).ToList(),
-            });
-            UpdateSessionTitleFromFirstUserMessage();
-            InputText = string.Empty;
-            Attachments.Clear();
-            AttachmentError = null;
             _currentAssistantMessage = null;
             // Once submitted, acceptance is ambiguous on transport failure. Do not restore/resend it.
             await connection.SendPromptAsync(sessionId, content, _lifetime.Token).ConfigureAwait(true);
@@ -1002,6 +1120,42 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
 
         SendPendingPlanReview();
+        DispatchNextQueuedMessage();
+    }
+
+    // Auto-dispatch answers to the same admission gates as a message the user sends by hand: a queue
+    // entry that outlives the state it was typed in is exactly the hazard CanQueueOrSendDraft
+    // documents (a prompt landing in a session that is being torn down, swapped, signed out of, or
+    // reconfigured). Every gate that can close here reopens by either discarding the queue with the
+    // session it belonged to (DiscardQueuedMessages) or calling this again when it lifts - see the
+    // config-change path - so a queued message is never stranded pending forever.
+    private void DispatchNextQueuedMessage()
+    {
+        if (IsBusy || !CanQueueOrSendDraft || _queuedMessages.Count == 0) return;
+        _ = DispatchQueuedMessageAsync(_queuedMessages.Dequeue());
+    }
+
+    /// <summary>Drops every message still waiting to go out, taking its bubble out of the transcript
+    /// with it: the message never reached the agent, so a bubble left behind would read as delivered.
+    /// Returns how many were dropped so the caller can tell the user - they wrote them, and this is
+    /// the only notice they will get.</summary>
+    private int DiscardQueuedMessages()
+    {
+        int discarded = _queuedMessages.Count;
+        while (_queuedMessages.Count > 0) Messages.Remove(_queuedMessages.Dequeue().Bubble);
+        return discarded;
+    }
+
+    /// <summary>Adds the "queued messages were lost" clause to whatever the caller is already
+    /// reporting, so neither the cause (disconnect, sign-out, workspace change, Stop) nor the
+    /// consequence is dropped. Returns <paramref name="status"/> unchanged when nothing was lost.</summary>
+    private static string? WithQueueNotice(string? status, int discarded)
+    {
+        if (discarded <= 0) return status;
+        var notice = discarded == 1
+            ? "A queued message was not sent."
+            : discarded + " queued messages were not sent.";
+        return string.IsNullOrEmpty(status) ? notice : status + " " + notice;
     }
 
     private string? _pendingPlanReviewComments;
@@ -1058,6 +1212,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private async Task CancelCoreAsync()
     {
         if (_disposed || _connection is null || _sessionId is null) return;
+        // Stop means stop: a follow-up queued behind the turn being cancelled would otherwise be
+        // fired the instant that cancellation lands, which is the opposite of what Stop asks for.
+        // Only reported when something was actually dropped - Stop is not a "clear the status" button.
+        int discarded = DiscardQueuedMessages();
+        if (discarded > 0) StatusMessage = WithQueueNotice(null, discarded);
         try
         {
             await _connection.CancelAsync(_sessionId, _lifetime.Token).ConfigureAwait(true);
@@ -1233,6 +1392,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private void ResetTranscriptState()
     {
+        // Queue first: it is transcript-lifetime state like Messages, and going through the same
+        // discard keeps "a pending bubble always has a live queue entry" true on every path.
+        DiscardQueuedMessages();
         Messages.Clear();
         lock (_changedFilesByPath) _changedFilesByPath.Clear();
         _toolCallDiffsById.Clear();
@@ -2085,8 +2247,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         RunOnUi(() =>
         {
             if (_disposed || !ReferenceEquals(sender, _connection)) return;
-            _ = ReleaseConnectionAsync();
+            // Set first, release second: ReleaseConnectionAsync appends what the dropped queue costs
+            // to this message instead of either of them overwriting the other.
             StatusMessage = ex is not null ? $"Agent disconnected: {ex.Message}" : "Agent disconnected.";
+            _ = ReleaseConnectionAsync();
         });
     }
 
@@ -2095,6 +2259,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         var connection = _connection;
         _connection = null;
         _sessionId = null;
+        // A queued message belongs to the session it was typed into. Releasing that session is the
+        // one chokepoint every way of losing it goes through - disconnect, sign-out, workspace
+        // switch, a failed connect - so the queue dies here rather than surviving to be delivered
+        // into whatever session comes next. Callers set their own status first; this appends to it.
+        StatusMessage = WithQueueNotice(StatusMessage, DiscardQueuedMessages());
         _pendingCommandCatalogs = null;
         _availableCommands = Array.Empty<AvailableCommand>();
         _hasCommandCatalog = false;

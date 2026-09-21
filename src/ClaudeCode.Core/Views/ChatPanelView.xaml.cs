@@ -489,6 +489,7 @@ public partial class ChatPanelView : UserControl, IDisposable
                 parts = message.Parts.Select(part => BuildPartPayload(part, message.Role)),
                 durationSeconds = message.DurationSeconds,
                 tokensUsed = message.TokensUsed,
+                pending = message.IsPending,
                 images = new JRaw(ImagesJson(message)),
             }));
             _messagesJsonStale = false;

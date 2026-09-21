@@ -464,7 +464,7 @@
     var budget = common.newHighlightBudget();
     var wrap = document.createElement("div");
     var isUser = message.role === "User" || message.role === "user";
-    wrap.className = "msg " + (isUser ? "msg-user" : "msg-assistant");
+    wrap.className = "msg " + (isUser ? "msg-user" : "msg-assistant") + (message.pending ? " msg-pending" : "");
     // #transcript is a polite live region, and the incremental renderer replaces the in-flight
     // message node wholesale ~5x/s - a removal plus an addition, which makes assistive technology
     // restart the announcement of the whole growing message on every tick. An unfinished message
@@ -682,8 +682,56 @@
   // Incremental: the host sends the whole transcript every few hundred ms during a turn, but only
   // the message being streamed actually changes. Each rendered message keeps a signature of its
   // payload; unchanged ones keep their DOM (and thus selection, expansion, scroll of inner code).
-  var rendered = []; // [{ signature, node }] parallel to payload.messages
+  var rendered = []; // [{ signature, node, message, isUser }] parallel to payload.messages
   var activityNode = null;
+
+  function partsEqual(a, b) {
+    // Plain JSON-shaped part objects straight off the wire (see ChatPanelView.xaml.cs
+    // BuildPartPayload) - comparing their serialized form is exact and cheap next to a structural
+    // walk.
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+
+  // True when `next` differs from `prev` (same message, same index) only by its last part's text
+  // having grown - the overwhelmingly common case while a turn is streaming (AppendText only ever
+  // extends the last text part). Detecting this lets the renderer patch just that one part instead
+  // of tearing down and rebuilding the whole message - links, tool cards and every other
+  // already-rendered part included - on every one of the ~5 rebuilds/s a streaming turn produces.
+  // A click landing on a file-reference link earlier in the message would otherwise race a rebuild
+  // that swaps the very node under the pointer. Only ever consulted for assistant messages: a user
+  // bubble is built as one block by a different branch of buildMessage (see render()).
+  function isTrailingTextGrowth(prev, next) {
+    // The caller patches lastElementChild, which is the last part only while the message has no
+    // footer. buildMessage appends one as soon as durationSeconds is a number, so a finished message
+    // is always rebuilt - patching one would replace its "Responded in ..." line with a copy of the
+    // text. The equality check below cannot stand in for this: both sides carry the same duration.
+    if (typeof prev.durationSeconds === "number") {
+      return false;
+    }
+
+    if (prev.role !== next.role || prev.pending !== next.pending
+        || prev.durationSeconds !== next.durationSeconds || prev.tokensUsed !== next.tokensUsed
+        || JSON.stringify(prev.images) !== JSON.stringify(next.images)) {
+      return false;
+    }
+
+    var prevParts = prev.parts || [];
+    var nextParts = next.parts || [];
+    if (prevParts.length === 0 || prevParts.length !== nextParts.length) {
+      return false;
+    }
+
+    for (var i = 0; i < prevParts.length - 1; i++) {
+      if (!partsEqual(prevParts[i], nextParts[i])) {
+        return false;
+      }
+    }
+
+    var prevLast = prevParts[prevParts.length - 1];
+    var nextLast = nextParts[nextParts.length - 1];
+    return prevLast.type === "text" && nextLast.type === "text"
+      && typeof nextLast.text === "string" && nextLast.text.indexOf(prevLast.text || "") === 0;
+  }
 
   // The activity indicator is the only thing that changes on most host ticks, so the host updates
   // it through this entry point without re-posting the messages payload (which carries every
@@ -720,19 +768,29 @@
     var messages = (payload && payload.messages) || [];
 
     for (var i = 0; i < messages.length; i++) {
-      var signature = JSON.stringify(messages[i]);
+      var message = messages[i];
+      var signature = JSON.stringify(message);
       var existing = rendered[i];
       if (existing && existing.signature === signature) {
         continue;
       }
 
-      var node = buildMessage(messages[i]);
+      if (existing && !existing.isUser && isTrailingTextGrowth(existing.message, message)) {
+        var parts = message.parts || [];
+        var replacement = renderMarkdown(parts[parts.length - 1].text, common.newHighlightBudget());
+        existing.node.replaceChild(replacement, existing.node.lastElementChild);
+        rendered[i] = { signature: signature, node: existing.node, message: message, isUser: existing.isUser };
+        continue;
+      }
+
+      var isUser = message.role === "User" || message.role === "user";
+      var node = buildMessage(message);
       if (existing) {
         root.replaceChild(node, existing.node);
       } else {
         root.insertBefore(node, activityNode);
       }
-      rendered[i] = { signature: signature, node: node };
+      rendered[i] = { signature: signature, node: node, message: message, isUser: isUser };
     }
 
     while (rendered.length > messages.length) {
@@ -824,5 +882,10 @@
     setActivity: setActivity,
     applyTheme: common.applyTheme,
     setFontSize: setFontSize,
+    // Exposed for test/transcript/render-diff.test.js: these two are pure functions over the host's
+    // JSON payload and decide whether a streamed message is patched or rebuilt, which is the one
+    // piece of this renderer that can be proven correct without a browser.
+    partsEqual: partsEqual,
+    isTrailingTextGrowth: isTrailingTextGrowth,
   };
 })();

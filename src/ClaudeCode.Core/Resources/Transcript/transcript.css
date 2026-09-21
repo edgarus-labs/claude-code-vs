@@ -57,6 +57,12 @@ html, body {
   word-break: break-word;
 }
 
+/* Queued locally while a turn is still in flight - not yet sent to the agent. */
+.msg-user.msg-pending .bubble {
+  font-style: italic;
+  opacity: 0.7;
+}
+
 .msg-user .user-images {
   display: flex;
   flex-wrap: wrap;

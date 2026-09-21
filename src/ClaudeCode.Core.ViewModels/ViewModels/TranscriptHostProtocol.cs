@@ -108,6 +108,7 @@ public static class TranscriptHostProtocol
         nameof(ChatMessageViewModel.DurationSeconds) or
         nameof(ChatMessageViewModel.TokensUsed) or
         nameof(ChatMessageViewModel.Images) or
+        nameof(ChatMessageViewModel.IsPending) or
         nameof(ToolCallCardViewModel.Title) or
         nameof(ToolCallCardViewModel.Status);
 }

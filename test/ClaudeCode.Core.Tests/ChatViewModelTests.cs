@@ -910,6 +910,23 @@ public sealed class ChatViewModelTests
         Assert.Null(vm.StatusMessage);
     }
 
+    // UsagePollingLoopAsync waits out this exact decision between attempts (real 15s/5min intervals,
+    // too slow to await in a unit test). Asserted as relationships rather than literals so retuning
+    // either interval stays a free change and only a real regression - no fast retry at all, or a
+    // fast retry that never gives up - fails the test.
+    [Fact]
+    public void NextUsagePollDelay_RetriesSoonAfterAFailedFetch_ThenSettlesBackToTheNormalCadence()
+    {
+        TimeSpan normalDelay = ChatViewModel.NextUsagePollDelay(consecutiveFailures: 0);
+
+        Assert.True(ChatViewModel.NextUsagePollDelay(1) < normalDelay,
+            "The fetch that failed at startup must be retried sooner than the normal poll cadence.");
+
+        // An agent that keeps failing is not a startup race: the fast retry has to stop somewhere
+        // rather than polling a permanently broken usage service every few seconds all session.
+        Assert.Equal(normalDelay, ChatViewModel.NextUsagePollDelay(100));
+    }
+
     // Usage is best-effort presentation: a fetch that throws - on open, after a turn - must neither
     // surface to the caller nor disturb the last good snapshot, and the next fetch must still run.
     [Fact]
