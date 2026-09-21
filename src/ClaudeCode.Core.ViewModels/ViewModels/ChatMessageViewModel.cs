@@ -23,6 +23,17 @@ public sealed class ChatMessageViewModel : ObservableObject
 
     public ChatRole Role { get; }
 
+    private bool _isPending;
+
+    /// <summary>True while this user message is queued locally - typed and sent while a previous
+    /// turn was still in flight - and hasn't actually gone out to the agent yet. Cleared once the
+    /// prior turn finishes and this message is dispatched.</summary>
+    public bool IsPending
+    {
+        get => _isPending;
+        set => SetProperty(ref _isPending, value);
+    }
+
     private readonly StringBuilder _textBuilder;
     private string? _text;
     private bool _isTruncated;

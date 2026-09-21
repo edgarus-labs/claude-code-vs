@@ -126,9 +126,9 @@
       <Style x:Key="ComposerStyle" TargetType="TextBox">
         <Setter Property="IsReadOnlyCaretVisible" Value="True" />
         <Style.Triggers>
-          <DataTrigger Binding="{Binding IsBusy}" Value="True">
-            <Setter Property="IsReadOnly" Value="True" />
-          </DataTrigger>
+          <!-- Deliberately NOT gated on IsBusy: the composer stays editable while a turn is in
+               flight so the next message can be typed and queued (see ChatViewModel.EnqueueDraft)
+               instead of blocking the user until the response finishes. -->
           <DataTrigger Binding="{Binding IsConfigBusy}" Value="True">
             <Setter Property="IsReadOnly" Value="True" />
           </DataTrigger>
@@ -703,19 +703,23 @@
                 </MultiBinding>
               </Grid.Height>
               <!-- Send/Stop keep a fixed size at every zoom level (owner decision on #22): their glyph
-                   is fixed-coordinate Path data, so a growing button only grows the empty frame. -->
-              <Button Width="28" Height="28" Padding="0" VerticalAlignment="Center" Command="{Binding SendCommand}" Click="SendButton_Click"
-                      Style="{StaticResource ChatButtonStyle}" ToolTip="Send message (Enter)" AutomationProperties.Name="Send message"
-                      Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibilityConverter}, ConverterParameter=Invert}">
-                <Path Data="M 6,12 L 6,0 M 1,5 L 6,0 L 11,5" StrokeThickness="1.8"
-                      Style="{StaticResource ButtonIconStrokeStyle}" />
-              </Button>
-              <Button Width="28" Height="28" Padding="0" VerticalAlignment="Center" Command="{Binding CancelCommand}"
-                      Style="{StaticResource ChatButtonStyle}" ToolTip="Stop response" AutomationProperties.Name="Stop response"
-                      Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibilityConverter}}">
-                <Rectangle Width="10" Height="10" RadiusX="1.5" RadiusY="1.5"
-                           Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
-              </Button>
+                   is fixed-coordinate Path data, so a growing button only grows the empty frame.
+                   Send stays visible (and enabled) while busy too: sending then queues the message
+                   instead of submitting it immediately (see ChatViewModel.SendCoreAsync), so Stop
+                   sits alongside it rather than replacing it. -->
+              <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <Button Width="28" Height="28" Padding="0" Margin="0,0,4,0" Command="{Binding CancelCommand}"
+                        Style="{StaticResource ChatButtonStyle}" ToolTip="Stop response" AutomationProperties.Name="Stop response"
+                        Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibilityConverter}}">
+                  <Rectangle Width="10" Height="10" RadiusX="1.5" RadiusY="1.5"
+                             Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                </Button>
+                <Button Width="28" Height="28" Padding="0" Command="{Binding SendCommand}" Click="SendButton_Click"
+                        Style="{StaticResource ChatButtonStyle}" ToolTip="Send message (Enter)" AutomationProperties.Name="Send message">
+                  <Path Data="M 6,12 L 6,0 M 1,5 L 6,0 L 11,5" StrokeThickness="1.8"
+                        Style="{StaticResource ButtonIconStrokeStyle}" />
+                </Button>
+              </StackPanel>
             </Grid>
             <!-- No MinHeight: one line tall initially, grows with the text up to MaxHeight (VS Code behavior). -->
             <TextBox x:Name="ComposerBox" Text="{Binding InputText, UpdateSourceTrigger=PropertyChanged}"

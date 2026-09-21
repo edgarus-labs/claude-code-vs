@@ -77,6 +77,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private const long MaxDocumentAttachmentBytes = 1L * 1024 * 1024;
     private const int UsageWarningThresholdPercent = 75;
     private static readonly TimeSpan UsagePollInterval = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan UsagePollRetryInterval = TimeSpan.FromSeconds(15);
 
     private static readonly IReadOnlyDictionary<string, IReadOnlyList<string>> _emptyElicitationContent =
         new Dictionary<string, IReadOnlyList<string>>();
@@ -315,7 +316,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // _isSwitchingSession covers the session/new and session/load round trips: neither IsBusy nor
     // IsConnecting is set for their duration, so without it a prompt accepted mid-switch is sent to
     // the outgoing session and then wiped from the transcript by ResetTranscriptState.
-    private bool CanEditDraft => !_disposed && !NeedsAuthentication && !IsConnecting && !IsBusy
+    private bool CanEditDraft => CanQueueOrSendDraft && !IsBusy;
+
+    // Same admission checks as CanEditDraft, minus IsBusy: a turn already in flight must not block
+    // composing and sending the next message - it gets queued (see SendCoreAsync/EnqueueDraft) and
+    // dispatched once the current turn ends, instead of being blocked until then.
+    private bool CanQueueOrSendDraft => !_disposed && !NeedsAuthentication && !IsConnecting
         && !IsConfigBusy && !_isSwitchingSession;
 
     /// <summary>The working directory this client trusts - never a path the agent reported.</summary>
@@ -460,11 +466,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         while (!_lifetime.IsCancellationRequested)
         {
+            bool fetched = false;
             try
             {
                 UsageSnapshot? snapshot = await _services.UsageService.GetUsageAsync(_lifetime.Token).ConfigureAwait(false);
                 if (snapshot is not null)
                 {
+                    fetched = true;
                     RunOnUi(() => ApplyUsageSnapshot(snapshot));
                 }
             }
@@ -477,9 +485,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 // Usage is best-effort presentation, never allowed to affect the chat session itself.
             }
 
+            // On startup, VS's inherited PATH/auth state may not be settled yet, so the first
+            // fetch(es) can transiently fail. Retry soon instead of leaving the usage button
+            // hidden for a full poll interval - once a fetch succeeds, fall back to the normal cadence.
+            TimeSpan delay = fetched ? UsagePollInterval : UsagePollRetryInterval;
             try
             {
-                await Task.Delay(UsagePollInterval, _lifetime.Token).ConfigureAwait(false);
+                await Task.Delay(delay, _lifetime.Token).ConfigureAwait(false);
             }
             // Dispose() cancels before it disposes, but an iteration preempted between the loop's
             // cancellation check and this call reads _lifetime.Token after disposal, which throws
@@ -946,14 +958,40 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
     }
 
-    private bool CanSend() => CanEditDraft && !_isCapturingDocument &&
+    private bool CanSend() => CanQueueOrSendDraft && !_isCapturingDocument &&
         (!string.IsNullOrWhiteSpace(InputText) || Attachments.Count > 0);
 
     public Task SendAsync() => OnUiAsync(SendCoreAsync);
 
+    // A message typed and sent while a turn is already in flight: shown in the transcript right
+    // away (dimmed, see ChatMessageViewModel.IsPending) so the user can see it was captured, held
+    // here until the in-flight turn ends, then dispatched exactly like a normal send.
+    private sealed class QueuedMessage
+    {
+        public QueuedMessage(ChatMessageViewModel bubble, string text, IReadOnlyList<ChatAttachmentViewModel> attachments)
+        {
+            Bubble = bubble;
+            Text = text;
+            Attachments = attachments;
+        }
+
+        public ChatMessageViewModel Bubble { get; }
+        public string Text { get; }
+        public IReadOnlyList<ChatAttachmentViewModel> Attachments { get; }
+    }
+
+    private readonly Queue<QueuedMessage> _queuedMessages = new Queue<QueuedMessage>();
+
     private async Task SendCoreAsync()
     {
         if (!CanSend()) return;
+
+        if (IsBusy)
+        {
+            EnqueueDraft();
+            return;
+        }
+
         ActivityText = "Working…";
         IsBusy = true;
         _turnStartedAt = DateTimeOffset.UtcNow;
@@ -1002,6 +1040,77 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
 
         SendPendingPlanReview();
+        DispatchNextQueuedMessage();
+    }
+
+    // Draft is consumed immediately (unlike the live-send path above) so the composer is free for
+    // the next message right away; there is no "connect first" step to guard here since dispatch -
+    // and therefore the connection attempt - happens later, from DispatchNextQueuedMessage.
+    private void EnqueueDraft()
+    {
+        var text = InputText.Trim();
+        var attachments = Attachments.ToArray();
+        var transcriptText = string.Join(Environment.NewLine, new[] { text }
+            .Where(part => part.Length > 0).Concat(attachments.Where(attachment => attachment.IsDocument)
+                .Select(attachment => "[Document: " + attachment.Name + "]")));
+        var bubble = new ChatMessageViewModel(ChatRole.User, transcriptText)
+        {
+            Images = attachments.Where(attachment => attachment.IsImage)
+                .Select(attachment => new ChatMessageImage(attachment.Name, attachment.MimeType, attachment.Base64Data)).ToList(),
+            IsPending = true,
+        };
+        Messages.Add(bubble);
+        UpdateSessionTitleFromFirstUserMessage();
+        InputText = string.Empty;
+        Attachments.Clear();
+        AttachmentError = null;
+        _queuedMessages.Enqueue(new QueuedMessage(bubble, text, attachments));
+    }
+
+    // Mirrors SendCoreAsync's live-send path for a message that was queued earlier: the bubble
+    // already exists in the transcript, so this only has to flip it out of the pending look and
+    // actually submit it once a turn is free to start.
+    private async Task DispatchQueuedMessageAsync(QueuedMessage queued)
+    {
+        queued.Bubble.IsPending = false;
+        ActivityText = "Working…";
+        IsBusy = true;
+        _turnStartedAt = DateTimeOffset.UtcNow;
+        _turnStartUsedTokens = _sessionUsedTokens;
+        TurnTokens = null;
+        StatusMessage = null;
+        try
+        {
+            var (connection, sessionId) = await EnsureConnectedAsync(_lifetime.Token).ConfigureAwait(true);
+            if (_disposed) return;
+            var content = new List<ContentBlock>(queued.Attachments.Count + 1);
+            if (queued.Text.Length > 0) content.Add(new ContentBlock.Text(queued.Text));
+            foreach (var attachment in queued.Attachments)
+                content.Add(attachment.ToContentBlock());
+
+            _currentAssistantMessage = null;
+            await connection.SendPromptAsync(sessionId, content, _lifetime.Token).ConfigureAwait(true);
+        }
+        catch (OperationCanceledException) when (_disposed) { }
+        catch (Exception ex)
+        {
+            if (!_disposed) StatusMessage = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            IsBusy = false;
+            ActivityText = string.Empty;
+            _currentAssistantMessage = null;
+        }
+
+        SendPendingPlanReview();
+        DispatchNextQueuedMessage();
+    }
+
+    private void DispatchNextQueuedMessage()
+    {
+        if (_disposed || IsBusy || _queuedMessages.Count == 0) return;
+        _ = DispatchQueuedMessageAsync(_queuedMessages.Dequeue());
     }
 
     private string? _pendingPlanReviewComments;
@@ -1234,6 +1343,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private void ResetTranscriptState()
     {
         Messages.Clear();
+        _queuedMessages.Clear();
         lock (_changedFilesByPath) _changedFilesByPath.Clear();
         _toolCallDiffsById.Clear();
         ChangedFiles.Clear();

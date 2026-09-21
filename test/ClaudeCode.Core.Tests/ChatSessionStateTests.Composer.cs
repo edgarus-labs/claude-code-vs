@@ -205,17 +205,14 @@ public sealed partial class ChatSessionStateTests
     [InlineData("connecting")]
     [InlineData("signed-out")]
     [InlineData("configuring")]
-    [InlineData("busy")]
     [InlineData("disposed")]
     public async Task DraftGates_BlockCaptureImageMutationAndSend(string gate)
     {
         var ready = new TaskCompletionSource<NewSessionResult>();
         var config = new TaskCompletionSource<IReadOnlyList<SessionConfigOption>>();
-        var completed = new TaskCompletionSource<bool>();
         var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
         if (gate == "connecting") connection.NewSessionHandler = _ => ready.Task;
         if (gate == "configuring") connection.ConfigHandler = (_, _, _) => config.Task;
-        if (gate == "busy") connection.PromptHandler = _ => completed.Task;
         var captures = 0;
         IAcpAuthService auth = gate == "signed-out" ? new AdvisoryAuthService(AuthState.SignedOut) : new AlwaysSignedInAuthService();
         var services = new StubChatSessionServices(new SingleConnectionFactory(connection), auth)
@@ -229,11 +226,10 @@ public sealed partial class ChatSessionStateTests
         using var vm = new ChatViewModel(services);
         Task pending = Task.CompletedTask;
         if (gate != "connecting") await vm.Initialization;
-        if (gate is "configuring" or "busy" or "disposed")
+        if (gate is "configuring" or "disposed")
         {
             vm.AddImageAttachment("retained.png", "image/png", "AQID");
             if (gate == "configuring") pending = vm.SelectModelAsync(vm.AvailableModels[1]);
-            if (gate == "busy") pending = vm.SendAsync();
             if (gate == "disposed") vm.Dispose();
         }
         vm.InputText = "/co";
@@ -257,9 +253,63 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(promptCount, connection.Prompts.Count);
         ready.TrySetResult(new NewSessionResult(RecordingAcpAgentConnection.SessionId, Options()));
         config.TrySetResult(Options("opus"));
-        completed.TrySetResult(true);
         await pending;
         await vm.Initialization;
+    }
+
+    // Unlike the other gates above, a turn already in flight must not block sending the next
+    // message outright: it queues instead (shown pending in the transcript, see
+    // ChatMessageViewModel.IsPending) and goes out once the current turn ends. Capture and
+    // attachment mutation stay blocked mid-turn just like the other gates.
+    [Fact]
+    public async Task Busy_BlocksCaptureAndAttachmentMutation_ButQueuesSendUntilTurnEnds()
+    {
+        var completed = new TaskCompletionSource<bool>();
+        var connection = new RecordingAcpAgentConnection { PromptHandler = _ => completed.Task };
+        var captures = 0;
+        var services = new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService())
+        {
+            CaptureHandler = _ =>
+            {
+                captures++;
+                return Task.FromResult<EditorDocumentSnapshot?>(new EditorDocumentSnapshot(@"C:\Workspace\blocked.cs", "blocked"));
+            },
+        };
+        using var vm = new ChatViewModel(services);
+        await vm.Initialization;
+        vm.InputText = "first";
+        var firstTurn = vm.SendAsync();
+        Assert.True(vm.IsBusy);
+
+        vm.AddImageAttachment("retained.png", "image/png", "AQID");
+        var attachments = vm.Attachments.ToArray();
+
+        Assert.False(vm.AttachActiveDocumentCommand.CanExecute(null));
+        await vm.AttachActiveDocumentCommand.ExecuteAsync(null);
+        Assert.Equal(0, captures);
+        foreach (var attachment in attachments)
+        {
+            Assert.False(vm.RemoveAttachmentCommand.CanExecute(attachment));
+            vm.RemoveAttachmentCommand.Execute(attachment);
+        }
+        Assert.Equal(attachments, vm.Attachments);
+
+        vm.InputText = "second, queued";
+        Assert.True(vm.SendCommand.CanExecute(null));
+        await vm.SendAsync();
+
+        var queued = Assert.Single(vm.Messages, message => message.Role == ChatRole.User && message.Text == "second, queued");
+        Assert.True(queued.IsPending);
+        Assert.Equal(string.Empty, vm.InputText);
+        Assert.Empty(vm.Attachments);
+        Assert.Single(connection.Prompts); // only "first" has actually gone out so far
+
+        completed.SetResult(true);
+        await firstTurn;
+        await WaitUntilAsync(() => connection.Prompts.Count == 2);
+
+        Assert.False(queued.IsPending);
+        Assert.Equal("second, queued", Assert.IsType<ContentBlock.Text>(Assert.Single(connection.Prompts[1])).Value);
     }
 
     [Fact]
