@@ -536,17 +536,20 @@ public sealed partial class ChatSessionStateTests
         connection.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([new AvailableCommand("foreign", "Foreign", null)]), "foreign-session");
         connection.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([new AvailableCommand("review", "Review", "scope")]), "returned-session");
         connection.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([new AvailableCommand("foreign-latest", "Foreign", null)]), "foreign-session");
-        Assert.Empty(vm.SlashSuggestions);
+        // Before the session resolves there is no adapter catalog yet, but /login and /logout are
+        // always available: they are exactly how a still-disconnected user would get signed in.
+        Assert.Equal(ClientSlashCommandNames, vm.SlashSuggestions.Select(c => c.Name));
 
         ready.SetResult(new NewSessionResult("returned-session", []));
         await vm.Initialization;
 
-        var command = Assert.Single(vm.SlashSuggestions);
+        var command = vm.SlashSuggestions[0];
         Assert.Equal("review", command.Name);
         Assert.Equal("scope", command.InputHint);
         Assert.True(vm.AreSlashSuggestionsVisible);
+        Assert.Equal(new[] { "review" }.Concat(ClientSlashCommandNames), vm.SlashSuggestions.Select(c => c.Name));
         connection.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([new AvailableCommand("wrong-session", "Wrong", null)]));
-        Assert.Equal("review", Assert.Single(vm.SlashSuggestions).Name);
+        Assert.Equal(new[] { "review" }.Concat(ClientSlashCommandNames), vm.SlashSuggestions.Select(c => c.Name));
     }
 
     [Fact]
@@ -561,8 +564,8 @@ public sealed partial class ChatSessionStateTests
         ready.SetResult(new NewSessionResult(RecordingAcpAgentConnection.SessionId, []));
         await vm.Initialization;
 
-        Assert.Empty(vm.SlashSuggestions);
-        Assert.Null(vm.SelectedSlashSuggestion);
+        Assert.Equal(ClientSlashCommandNames, vm.SlashSuggestions.Select(c => c.Name));
+        Assert.Equal("login", vm.SelectedSlashSuggestion?.Name);
         Assert.True(vm.AreSlashSuggestionsVisible);
         Assert.False(string.IsNullOrWhiteSpace(vm.CommandCatalogStatus));
     }
@@ -579,14 +582,15 @@ public sealed partial class ChatSessionStateTests
         vm.SelectedSlashSuggestion = vm.SlashSuggestions[1];
         var removedSelection = vm.SelectedSlashSuggestion;
         connection.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([new AvailableCommand("help", "Help", null)]));
-        Assert.Equal("help", Assert.Single(vm.SlashSuggestions).Name);
+        Assert.Equal(new[] { "help" }.Concat(ClientSlashCommandNames), vm.SlashSuggestions.Select(c => c.Name));
         Assert.NotSame(removedSelection, vm.SelectedSlashSuggestion);
         connection.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([]), "foreign-session");
-        Assert.Equal("help", Assert.Single(vm.SlashSuggestions).Name);
+        Assert.Equal(new[] { "help" }.Concat(ClientSlashCommandNames), vm.SlashSuggestions.Select(c => c.Name));
         connection.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([]));
 
-        Assert.Empty(vm.SlashSuggestions);
-        Assert.Null(vm.SelectedSlashSuggestion);
+        // The adapter's catalog is now empty, but /login and /logout remain - they never depend on it.
+        Assert.Equal(ClientSlashCommandNames, vm.SlashSuggestions.Select(c => c.Name));
+        Assert.Equal("login", vm.SelectedSlashSuggestion?.Name);
         Assert.True(vm.AreSlashSuggestionsVisible);
         Assert.False(string.IsNullOrWhiteSpace(vm.CommandCatalogStatus));
     }
@@ -615,7 +619,7 @@ public sealed partial class ChatSessionStateTests
         vm.InputText = "/";
         ui.Drain();
 
-        Assert.Empty(vm.SlashSuggestions);
+        Assert.Equal(ClientSlashCommandNames, vm.SlashSuggestions.Select(c => c.Name));
         Assert.True(vm.AreSlashSuggestionsVisible);
     }
 
@@ -629,7 +633,7 @@ public sealed partial class ChatSessionStateTests
         vm.InputText = "/";
         connection.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([new AvailableCommand("review", "Review", null)]));
         ui.Drain();
-        Assert.Equal("review", Assert.Single(vm.SlashSuggestions).Name);
+        Assert.Equal(new[] { "review" }.Concat(ClientSlashCommandNames), vm.SlashSuggestions.Select(c => c.Name));
         await Task.Run(() => connection.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([new AvailableCommand("queued", "Queued", null)])));
         var previous = SynchronizationContext.Current;
         SynchronizationContext.SetSynchronizationContext(ui);
@@ -645,8 +649,8 @@ public sealed partial class ChatSessionStateTests
         connection.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([new AvailableCommand("after-disconnect", "Stale", null)]));
         ui.Drain();
 
-        Assert.Empty(vm.SlashSuggestions);
-        Assert.Null(vm.SelectedSlashSuggestion);
+        Assert.Equal(ClientSlashCommandNames, vm.SlashSuggestions.Select(c => c.Name));
+        Assert.Equal("login", vm.SelectedSlashSuggestion?.Name);
         Assert.True(vm.AreSlashSuggestionsVisible);
         Assert.False(string.IsNullOrWhiteSpace(vm.CommandCatalogStatus));
     }
@@ -668,11 +672,11 @@ public sealed partial class ChatSessionStateTests
         second.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([new AvailableCommand("current", "Current", null)]));
         first.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([new AvailableCommand("stale", "Stale", null)]));
 
-        Assert.Equal("current", Assert.Single(vm.SlashSuggestions).Name);
+        Assert.Equal(new[] { "current" }.Concat(ClientSlashCommandNames), vm.SlashSuggestions.Select(c => c.Name));
     }
 
     [Theory]
-    [InlineData("/", true, "compact", "Compare", "review")]
+    [InlineData("/", true, "compact", "Compare", "review", "login", "logout")]
     [InlineData("/cO", true, "compact", "Compare")]
     [InlineData("/view", true)]
     [InlineData(" /co", false)]
@@ -905,7 +909,7 @@ public sealed partial class ChatSessionStateTests
         await switching;
 
         vm.InputText = "/";
-        Assert.Equal("review", Assert.Single(vm.SlashSuggestions).Name);
+        Assert.Equal(new[] { "review" }.Concat(ClientSlashCommandNames), vm.SlashSuggestions.Select(c => c.Name));
         Assert.Empty(vm.CommandCatalogStatus);
     }
 

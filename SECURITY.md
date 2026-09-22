@@ -28,6 +28,13 @@ credentials, or confidential source code. Context and tool results are passed to
 agent and may be sent to its configured model provider; do not treat local IPC as a
 guarantee that data stays on the machine.
 
+The sidebar's `/login` and `/logout` commands launch the same resolved, trusted adapter
+executable the sign-in status probe already uses (never a path or command derived from
+untrusted input) to run its bundled CLI auth commands. The extension process itself never
+reads, logs, or stores the resulting credentials; only the process exit code and the existing
+status probe's JSON cross back into the extension. When `auth logout` fails, the last 4 KB of its
+stderr is written to the Visual Studio ActivityLog for diagnosis (never shown in the UI).
+
 In-scope concerns include (but are not limited to): the Visual Studio extension
 (`ClaudeCode.Vsix`), the ACP transport (`ClaudeCode.Acp`), the VS-control MCP bridge
 (`ClaudeCode.VsControl.Mcp`), and the CI/CD workflows that build and publish releases.

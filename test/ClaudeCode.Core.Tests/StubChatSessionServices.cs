@@ -92,4 +92,17 @@ internal sealed class StubChatSessionServices : IChatSessionServices
         OpenDocuments[path] = text;
         return Task.FromResult(true);
     }
+
+    public bool ConfirmSignOutResponse { get; set; } = true;
+
+    public List<CancellationToken> ConfirmSignOutRequests { get; } = new();
+
+    /// <summary>Injects a failure for the VSIX host's modal confirmation dialog.</summary>
+    public Func<CancellationToken, Task<bool>>? ConfirmSignOutHandler { get; set; }
+
+    public Task<bool> ConfirmSignOutEverywhereAsync(CancellationToken cancellationToken)
+    {
+        ConfirmSignOutRequests.Add(cancellationToken);
+        return ConfirmSignOutHandler?.Invoke(cancellationToken) ?? Task.FromResult(ConfirmSignOutResponse);
+    }
 }

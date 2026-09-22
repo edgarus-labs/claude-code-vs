@@ -18,4 +18,10 @@ internal sealed class AlwaysSignedInAuthService : IAcpAuthService
     public Task SignInAsync(CancellationToken cancellationToken, IProgress<string>? progress = null) => Task.CompletedTask;
 
     public Task SignOutAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    public Task<AuthCommandOutcome> LaunchInteractiveLoginAsync(CancellationToken cancellationToken, IProgress<string>? progress = null) =>
+        Task.FromResult(new AuthCommandOutcome(true, "Signed in."));
+
+    public Task<AuthCommandOutcome> LaunchInteractiveLogoutAsync(CancellationToken cancellationToken) =>
+        Task.FromResult(new AuthCommandOutcome(true, "Signed out."));
 }

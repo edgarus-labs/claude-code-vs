@@ -35,8 +35,8 @@ adapter's advertised capabilities — this is not a claim of feature parity with
 - **Interactive debugging** — breakpoints, stepping, call stack, locals, expression evaluation, and UI
   Automation of the running app (click buttons, type into fields, screenshot windows).
 - **Remote Control** — drive the same session from [claude.ai/code](https://claude.ai/code).
-- **Reuses your existing Claude Code login** — no separate sign-in flow, no credentials touched inside
-  the Visual Studio process.
+- **Reuses your existing Claude Code login** — `/login` and `/logout` in the sidebar delegate to the
+  adapter's own bundled CLI; the extension never reads or stores credentials itself.
 
 ## Table of contents
 
@@ -67,11 +67,15 @@ npm install -g @agentclientprotocol/claude-agent-acp
 ```
 
 Authentication reuses the Claude Code CLI's native configuration and credentials, including
-`CLAUDE_CONFIG_DIR`. The extension does not launch its own login flow and never touches credentials
-inside the Visual Studio process: the one component that reads an OAuth token (the usage-limit
-lookup) does so in a short-lived subprocess, and only the trimmed JSON it prints crosses back. If
-needed, run `claude auth login` in a terminal, then use **Check CLI sign-in** in the sidebar.
-Restart Visual Studio after changing environment variables.
+`CLAUDE_CONFIG_DIR`. Type `/login` in the sidebar to sign in: it opens a visible console running the
+adapter's own bundled CLI (`claude-agent-acp --cli auth login --claudeai`), which handles the OAuth
+flow in your browser; `/logout` runs the same CLI's logout in the background, signing out
+everywhere on this machine (not only Visual Studio), after a confirmation. The extension itself
+never reads or stores credentials — only the process exit code and the existing status probe cross
+back (a failed logout's stderr tail goes to the Visual Studio ActivityLog, never the UI). The one component that reads an OAuth
+token directly (the usage-limit lookup) does so in a short-lived subprocess, and only the trimmed
+JSON it prints crosses back. You can also run `claude auth login` in a terminal instead, then use
+**Check CLI sign-in** in the sidebar. Restart Visual Studio after changing environment variables.
 
 The adapter advertises the available models and model-specific effort levels before the first message.
 The extension has no model list of its own: a new model shows up in the model picker once the adapter
@@ -93,11 +97,12 @@ tools (see `docs/VsControlProtocol.md` for the exact wire contract).
   snapshot; press **+** again on that file to refresh it.
 - **Attach images:** use the separate image button or paste an image with Ctrl+V. The **+** button is
   for document context, not image selection.
-- **Slash commands:** type `/` to filter the adapter's live command catalog. Use Up/Down to select,
-  Tab or Enter to insert the selection without sending, and Escape to dismiss. You can then add
-  arguments and send. Skill and plugin commands appear only as advertised by the backend; the sidebar
-  does not provide an installed-plugin manager or a plugin reload RPC. Manage installed plugins through
-  the Claude Code CLI.
+- **Slash commands:** type `/` to filter the adapter's live command catalog, plus two commands the
+  sidebar always offers itself: `/login` and `/logout` (see [Getting started](#getting-started)). Use
+  Up/Down to select, Tab or Enter to insert the selection without sending, and Escape to dismiss. You
+  can then add arguments and send. Skill and plugin commands appear only as advertised by the backend;
+  the sidebar does not provide an installed-plugin manager or a plugin reload RPC. Manage installed
+  plugins through the Claude Code CLI.
 - **Read and copy:** user messages appear in right-aligned bubbles; assistant responses are selectable,
   unboxed Markdown, including tables and code blocks. Both message types have a copy action that copies
   the original message text rather than rendered formatting. Markdown images display their alt text;
