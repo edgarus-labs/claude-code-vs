@@ -24,6 +24,8 @@ internal sealed class AcpAuthService : IAcpAuthService
     private const string _loginInstructions = "Run 'claude auth login' in a terminal, or "
         + "'claude-agent-acp --cli auth login' to use the adapter's bundled CLI, then check sign-in again. "
         + "Use the same CLAUDE_CONFIG_DIR environment as Visual Studio and restart Visual Studio after changing it.";
+    private const string _adapterMissingMessage = "Install @agentclientprotocol/claude-agent-acp and Node.js 22 or newer, "
+        + "or configure its ACP executable path in Tools > Options > Claude Code.";
     private readonly Func<string?> _adapterPathProvider;
     private readonly object _stateLock = new object();
     private AuthState _currentState = AuthState.Unknown;
@@ -43,16 +45,10 @@ internal sealed class AcpAuthService : IAcpAuthService
     public async Task<bool> IsSignedInAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        // The options callback uses GetDialogPage, which is UI-thread affine.
-        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
-        string? overridePath = _adapterPathProvider();
-        var executable = string.IsNullOrWhiteSpace(overridePath)
-            ? AcpExecutableResolver.TryResolveDefault()
-            : AcpExecutableResolver.TryResolve(overridePath!);
+        var executable = await ResolveExecutableAsync(cancellationToken).ConfigureAwait(false);
         if (executable is null)
         {
-            SetState(AuthState.Unknown, "Install @agentclientprotocol/claude-agent-acp and Node.js 22 or newer, "
-                + "or configure its ACP executable path in Tools > Options > Claude Code. Native sign-in has not been checked.");
+            SetState(AuthState.Unknown, _adapterMissingMessage + " Native sign-in has not been checked.");
             return false;
         }
 
@@ -112,9 +108,147 @@ internal sealed class AcpAuthService : IAcpAuthService
         return Task.CompletedTask;
     }
 
+    public async Task<AuthCommandOutcome> LaunchInteractiveLoginAsync(CancellationToken cancellationToken, IProgress<string>? progress = null)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var executable = await ResolveExecutableAsync(cancellationToken).ConfigureAwait(false);
+        if (executable is null)
+        {
+            return new AuthCommandOutcome(false, _adapterMissingMessage);
+        }
+
+        progress?.Report("Opening a console window to sign in — finish in the browser that opens.");
+        var arguments = AcpAuthCliArguments.Login(executable);
+        // A cancelled attempt must keep whatever state was current beforehand (AC: "keeps the
+        // previous state"), not overwrite it with a guess - the caller's own cancellation handling
+        // reports the message, so this does not call SetState at all.
+        int exitCode = await Task.Run(() => RunVisibleProcessAsync(executable.FileName, arguments, cancellationToken), cancellationToken).ConfigureAwait(false);
+
+        // Trust the same status probe the rest of the extension relies on, not the exit code alone:
+        // a console the user closed early can still exit 0 without completing OAuth.
+        bool signedIn = await IsSignedInAsync(cancellationToken).ConfigureAwait(false);
+        if (signedIn)
+        {
+            return new AuthCommandOutcome(true, "Signed in to Claude.");
+        }
+
+        string detail = exitCode == 0
+            ? "The sign-in console finished, but native sign-in could not be confirmed. " + _loginInstructions
+            : $"Sign-in was not completed (exit code {exitCode.ToString(System.Globalization.CultureInfo.InvariantCulture)}). " + _loginInstructions;
+        return new AuthCommandOutcome(false, detail);
+    }
+
+    public async Task<AuthCommandOutcome> LaunchInteractiveLogoutAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var executable = await ResolveExecutableAsync(cancellationToken).ConfigureAwait(false);
+        if (executable is null)
+        {
+            return new AuthCommandOutcome(false, _adapterMissingMessage);
+        }
+
+        var arguments = AcpAuthCliArguments.Logout(executable);
+        int exitCode = await Task.Run(() => RunHiddenProcessAsync(executable.FileName, arguments, cancellationToken), cancellationToken).ConfigureAwait(false);
+        if (exitCode != 0)
+        {
+            string failureDetail = $"Sign-out did not complete (exit code {exitCode.ToString(System.Globalization.CultureInfo.InvariantCulture)}). " + _loginInstructions;
+            SetState(CurrentState, failureDetail);
+            return new AuthCommandOutcome(false, failureDetail);
+        }
+
+        const string detail = "Signed out of Claude Code. This affects the CLI, VS Code and other clients on this machine, not only Visual Studio.";
+        SetState(AuthState.SignedOut, detail);
+        return new AuthCommandOutcome(true, detail);
+    }
+
+    private async Task<AcpExecutableSpec?> ResolveExecutableAsync(CancellationToken cancellationToken)
+    {
+        // The options callback uses GetDialogPage, which is UI-thread affine.
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
+        string? overridePath = _adapterPathProvider();
+        return string.IsNullOrWhiteSpace(overridePath)
+            ? AcpExecutableResolver.TryResolveDefault()
+            : AcpExecutableResolver.TryResolve(overridePath!);
+    }
+
+    private static async Task<int> RunVisibleProcessAsync(string fileName, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
+    {
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = fileName,
+                Arguments = ProcessArgumentEscaping.ToArgumentsString(arguments),
+                UseShellExecute = false,
+                CreateNoWindow = false,
+            },
+            EnableRaisingEvents = true,
+        };
+        var exited = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        process.Exited += (_, __) => exited.TrySetResult(true);
+        if (!process.Start())
+        {
+            throw new InvalidOperationException("The sign-in console could not be started.");
+        }
+
+        using (cancellationToken.Register(() => KillProcessTree(process)))
+        {
+            await exited.Task.ConfigureAwait(false);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return process.ExitCode;
+    }
+
+    private static async Task<int> RunHiddenProcessAsync(string fileName, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
+    {
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = fileName,
+                Arguments = ProcessArgumentEscaping.ToArgumentsString(arguments),
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            },
+            EnableRaisingEvents = true,
+        };
+        var exited = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        process.Exited += (_, __) => exited.TrySetResult(true);
+        if (!process.Start())
+        {
+            throw new InvalidOperationException("The sign-out process could not be started.");
+        }
+
+        // Neither stream is ever published; discard both so the process cannot block on a full pipe.
+        Task stdout = process.StandardOutput.BaseStream.CopyToAsync(Stream.Null);
+        Task stderr = process.StandardError.BaseStream.CopyToAsync(Stream.Null);
+        try
+        {
+            using (cancellationToken.Register(() => KillProcessTree(process)))
+            {
+                await exited.Task.ConfigureAwait(false);
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            return process.ExitCode;
+        }
+        finally
+        {
+            process.StandardOutput.Dispose();
+            process.StandardError.Dispose();
+            _ = stdout.ContinueWith(task => { _ = task.Exception; },
+                CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            _ = stderr.ContinueWith(task => { _ = task.Exception; },
+                CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        }
+    }
+
     private static async Task<AuthState> ReadNativeStatusAsync(AcpExecutableSpec executable, CancellationToken cancellationToken)
     {
-        var arguments = new List<string>(executable.Arguments) { "--cli", "auth", "status", "--json" };
+        var arguments = AcpAuthCliArguments.Status(executable);
         using var process = new Process
         {
             StartInfo = new ProcessStartInfo
@@ -182,7 +316,7 @@ internal sealed class AcpAuthService : IAcpAuthService
         {
             if (started)
             {
-                TerminateOwnedProbe(process);
+                KillProcessTree(process);
                 process.StandardOutput.Dispose();
                 process.StandardError.Dispose();
             }
@@ -208,7 +342,9 @@ internal sealed class AcpAuthService : IAcpAuthService
         return output.ToString();
     }
 
-    private static void TerminateOwnedProbe(Process process)
+    // .NET Framework lacks Kill(entireProcessTree). Target only this freshly spawned process and
+    // its native CLI child, never other Claude processes or user sessions.
+    private static void KillProcessTree(Process process)
     {
         try
         {
@@ -217,8 +353,6 @@ internal sealed class AcpAuthService : IAcpAuthService
                 return;
             }
 
-            // .NET Framework lacks Kill(entireProcessTree). Target only this freshly spawned
-            // probe and its native CLI child, never other Claude processes or user sessions.
             using var cleanup = Process.Start(new ProcessStartInfo
             {
                 FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "taskkill.exe"),

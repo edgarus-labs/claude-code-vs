@@ -1,7 +1,9 @@
 using ClaudeCode.Contracts;
 using ClaudeCode.Core.ViewModels;
 using Community.VisualStudio.Toolkit;
+using Microsoft.VisualStudio;
 using Microsoft.VisualStudio.Shell;
+using Microsoft.VisualStudio.Shell.Interop;
 using Microsoft.VisualStudio.Text;
 using System;
 using System.IO;
@@ -97,5 +99,18 @@ internal sealed class VsChatSessionServices : IChatSessionServices
         if (edit.HasFailedChanges || edit.Canceled)
             throw new IOException("The editor rejected the document edit.");
         return true;
+    }
+
+    public async Task<bool> ConfirmSignOutEverywhereAsync(CancellationToken cancellationToken)
+    {
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
+        int result = VsShellUtilities.ShowMessageBox(
+            ServiceProvider.GlobalProvider,
+            "This signs you out of Claude Code everywhere on this machine (the CLI, VS Code and other clients), not only Visual Studio. Continue?",
+            "Claude Code",
+            OLEMSGICON.OLEMSGICON_QUERY,
+            OLEMSGBUTTON.OLEMSGBUTTON_YESNO,
+            OLEMSGDEFBUTTON.OLEMSGDEFBUTTON_SECOND);
+        return result == (int)VSConstants.MessageBoxResult.IDYES;
     }
 }

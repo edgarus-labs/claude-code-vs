@@ -72,6 +72,17 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private bool _usageWarningDismissed;
     private int _lastUsageWarningPercent = -1;
     private bool _isUsagePanelOpen;
+    private bool _isAuthCommandRunning;
+    private CancellationTokenSource? _authCommandCts;
+
+    // Never advertised by the adapter (it deliberately excludes login/logout from the commands it
+    // sends, see AGENTS.md issue #34): these are added locally so the popup can offer them even
+    // when there is no session at all, which is exactly the state /login exists to get out of.
+    private static readonly AvailableCommand LoginCommand =
+        new AvailableCommand("login", "Sign in to Claude Code (opens a console and your browser)");
+    private static readonly AvailableCommand LogoutCommand =
+        new AvailableCommand("logout", "Sign out of Claude Code everywhere on this machine");
+    private static readonly IReadOnlyList<AvailableCommand> ClientCommands = new[] { LoginCommand, LogoutCommand };
 
     private const long MaxImageAttachmentBytes = 5L * 1024 * 1024;
     private const long MaxDocumentAttachmentBytes = 1L * 1024 * 1024;
@@ -111,7 +122,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         _workspaceRoot = TryReadWorkspaceRoot();
         _services.WorkspaceRootChanged += OnWorkspaceRootChanged;
         ApplySlashSuggestionCommand = new RelayCommand<AvailableCommand>(ApplySlashSuggestion,
-            command => CanEditDraft && AreSlashSuggestionsVisible && command is not null && SlashSuggestions.Contains(command));
+            command => CanShowSlashPopup && AreSlashSuggestionsVisible && command is not null && SlashSuggestions.Contains(command));
+        CancelAuthCommand = new RelayCommand(() => _authCommandCts?.Cancel(), () => IsAuthCommandRunning);
         RemoveAttachmentCommand = new RelayCommand<ChatAttachmentViewModel>(attachment =>
         {
             if (attachment is not null && CanEditDraft)
@@ -165,7 +177,22 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     public IRelayCommand OpenUsagePanelCommand { get; }
     public IRelayCommand CloseUsagePanelCommand { get; }
     public IRelayCommand DismissUsageWarningCommand { get; }
+    public IRelayCommand CancelAuthCommand { get; }
     public Task Initialization { get; }
+
+    /// <summary>True while a client-side /login or /logout console command is running.</summary>
+    public bool IsAuthCommandRunning
+    {
+        get => _isAuthCommandRunning;
+        private set
+        {
+            if (SetProperty(ref _isAuthCommandRunning, value))
+            {
+                CancelAuthCommand.NotifyCanExecuteChanged();
+                SendCommand.NotifyCanExecuteChanged();
+            }
+        }
+    }
 
     private bool _isRemoteControlEnabled;
     private bool _isRemoteControlBusy;
@@ -330,6 +357,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // IsConnecting is set for their duration, so without it a prompt accepted mid-switch is sent to
     // the outgoing session and then wiped from the transcript by ResetTranscriptState.
     private bool CanEditDraft => CanQueueOrSendDraft && !IsBusy;
+
+    // /login and /logout exist precisely to get out of NeedsAuthentication, so their popup must
+    // stay reachable through the one gate CanEditDraft applies that would otherwise hide it. It
+    // still respects IsBusy/_isSwitchingSession/disposal: those describe a turn or session switch
+    // actually in flight, not "no session because signed out".
+    private bool CanShowSlashPopup => !_disposed && !IsBusy && !_isSwitchingSession;
 
     // Same admission checks as CanEditDraft, minus IsBusy: a turn already in flight must not block
     // composing and sending the next message - it gets queued (see SendCoreAsync/EnqueueDraft) and
@@ -844,7 +877,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private void ApplySlashSuggestion(AvailableCommand? command)
     {
-        if (!CanEditDraft || !AreSlashSuggestionsVisible || command is null || !SlashSuggestions.Contains(command)) return;
+        if (!CanShowSlashPopup || !AreSlashSuggestionsVisible || command is null || !SlashSuggestions.Contains(command)) return;
         InputText = "/" + command.Name + " ";
     }
 
@@ -865,7 +898,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         if (isSlashToken)
         {
             var prefix = InputText.Substring(1);
-            foreach (var command in _availableCommands)
+            foreach (var command in _availableCommands.Concat(ClientCommands))
                 if (command.Name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) SlashSuggestions.Add(command);
         }
         SelectedSlashSuggestion = SlashSuggestions.FirstOrDefault(command => command.Name == selectedName)
@@ -876,7 +909,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private void UpdateSlashPresentation()
     {
         var isSlashToken = IsSlashToken;
-        AreSlashSuggestionsVisible = CanEditDraft && isSlashToken && !_slashSuggestionsDismissed;
+        AreSlashSuggestionsVisible = CanShowSlashPopup && isSlashToken && !_slashSuggestionsDismissed;
         CommandCatalogStatus = _sessionId is null
             ? (IsConnecting ? "Connecting to discover commands…" : "Connect to Claude to discover commands.")
             : !_hasCommandCatalog ? "Discovering commands from Claude…"
@@ -978,8 +1011,24 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
     }
 
-    private bool CanSend() => CanQueueOrSendDraft && !_isCapturingDocument &&
-        (!string.IsNullOrWhiteSpace(InputText) || Attachments.Count > 0);
+    // /login and /logout bypass CanQueueOrSendDraft's NeedsAuthentication/IsConnecting/IsConfigBusy
+    // gates on purpose - NeedsAuthentication is exactly the state /login exists to resolve - but
+    // still respect it while one is already running, to prevent a second concurrent console launch.
+    private bool CanSend() => !_isCapturingDocument && (!string.IsNullOrWhiteSpace(InputText) || Attachments.Count > 0) &&
+        (TryGetClientCommand(InputText.Trim(), out _) ? !_disposed && !IsAuthCommandRunning : CanQueueOrSendDraft);
+
+    private enum ClientSlashCommand { Login, Logout }
+
+    private static bool TryGetClientCommand(string trimmedInput, out ClientSlashCommand command)
+    {
+        var token = trimmedInput;
+        int spaceIndex = token.IndexOf(' ');
+        if (spaceIndex >= 0) token = token.Substring(0, spaceIndex);
+        if (string.Equals(token, "/" + LoginCommand.Name, StringComparison.OrdinalIgnoreCase)) { command = ClientSlashCommand.Login; return true; }
+        if (string.Equals(token, "/" + LogoutCommand.Name, StringComparison.OrdinalIgnoreCase)) { command = ClientSlashCommand.Logout; return true; }
+        command = default;
+        return false;
+    }
 
     public Task SendAsync() => OnUiAsync(SendCoreAsync);
 
@@ -1006,15 +1055,21 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         if (!CanSend()) return Task.CompletedTask;
 
-        // Sending is the user's own action, so it is what clears a stale error - not the start of
-        // every turn, which would wipe the failure of the turn that just ended before it could be
-        // read (an auto-dispatched queue would erase its own predecessor's error).
-        StatusMessage = null;
-
         // Snapshot now, not after the connect round trip: the composer stays editable mid-turn, so
         // whatever is typed while EnsureConnectedAsync is still running belongs to the *next*
         // message and must neither be folded into this prompt nor cleared with it.
         var text = InputText.Trim();
+        if (TryGetClientCommand(text, out var clientCommand))
+        {
+            // Never a prompt: intercepted here, before the queue exists, so it can never be
+            // buffered and later replayed into session/prompt by DispatchQueuedMessageAsync.
+            return RunClientCommandAsync(clientCommand);
+        }
+
+        // Sending is the user's own action, so it is what clears a stale error - not the start of
+        // every turn, which would wipe the failure of the turn that just ended before it could be
+        // read (an auto-dispatched queue would erase its own predecessor's error).
+        StatusMessage = null;
         var attachments = Attachments.ToArray();
 
         if (IsBusy)
@@ -1032,6 +1087,63 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             ConsumeDraft(text, attachments);
             return (text, (IReadOnlyList<ChatAttachmentViewModel>)attachments);
         });
+    }
+
+    // /login and /logout never touch the turn/queue machinery above: they are local actions against
+    // IAcpAuthService, not agent prompts. IsAuthCommandRunning is this method's own busy flag (CanSend
+    // already refuses a second concurrent call) so it can run independently of IsBusy/NeedsAuthentication.
+    private async Task RunClientCommandAsync(ClientSlashCommand command)
+    {
+        if (_disposed || IsAuthCommandRunning) return;
+        InputText = string.Empty;
+        StatusMessage = null;
+
+        if (command == ClientSlashCommand.Logout)
+        {
+            bool confirmed;
+            try
+            {
+                confirmed = await _services.ConfirmSignOutEverywhereAsync(_lifetime.Token).ConfigureAwait(true);
+            }
+            catch (OperationCanceledException) when (_disposed) { return; }
+            if (_disposed || !confirmed) return;
+        }
+
+        IsAuthCommandRunning = true;
+        _authCommandCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        var token = _authCommandCts.Token;
+        try
+        {
+            if (command == ClientSlashCommand.Login)
+            {
+                StatusMessage = "Opening a console to sign in to Claude Code…";
+                var progress = new Progress<string>(message => RunOnUi(() => { if (!_disposed) StatusMessage = message; }));
+                var outcome = await _services.AuthService.LaunchInteractiveLoginAsync(token, progress).ConfigureAwait(true);
+                if (_disposed) return;
+                if (outcome.Succeeded) await InitializeCoreAsync(_lifetime.Token).ConfigureAwait(true);
+                if (!_disposed) StatusMessage = outcome.Message;
+            }
+            else
+            {
+                StatusMessage = "Signing out of Claude Code…";
+                var outcome = await _services.AuthService.LaunchInteractiveLogoutAsync(token).ConfigureAwait(true);
+                if (!_disposed) StatusMessage = outcome.Message;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            if (!_disposed) StatusMessage = command == ClientSlashCommand.Login ? "Sign-in cancelled." : "Sign-out cancelled.";
+        }
+        catch (Exception ex)
+        {
+            if (!_disposed) StatusMessage = $"{(command == ClientSlashCommand.Login ? "Sign-in" : "Sign-out")} failed: {ex.Message}";
+        }
+        finally
+        {
+            _authCommandCts?.Dispose();
+            _authCommandCts = null;
+            IsAuthCommandRunning = false;
+        }
     }
 
     // Draft is consumed immediately (unlike the live-send path above) so the composer is free for

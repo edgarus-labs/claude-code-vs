@@ -34,6 +34,11 @@ public sealed partial class ChatSessionStateTests
     private static ChatViewModel Create(RecordingAcpAgentConnection connection) =>
         new(new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService()));
 
+    // /login and /logout are never advertised by the adapter; ChatViewModel adds them to every
+    // slash-popup match locally (see issue #34), so any assertion on the adapter's own catalog has
+    // to account for these two trailing entries too.
+    private static readonly string[] ClientSlashCommandNames = { "login", "logout" };
+
     [Fact]
     public async Task Startup_PreparesAdvertisedCurrentSettingsBeforeFirstPrompt()
     {
@@ -425,5 +430,9 @@ public sealed partial class ChatSessionStateTests
         public Task<bool> IsSignedInAsync(CancellationToken cancellationToken) => Task.FromResult(false);
         public Task SignInAsync(CancellationToken cancellationToken, IProgress<string>? progress = null) => Task.CompletedTask;
         public Task SignOutAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task<AuthCommandOutcome> LaunchInteractiveLoginAsync(CancellationToken cancellationToken, IProgress<string>? progress = null) =>
+            Task.FromResult(new AuthCommandOutcome(true, "Signed in."));
+        public Task<AuthCommandOutcome> LaunchInteractiveLogoutAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(new AuthCommandOutcome(true, "Signed out."));
     }
 }

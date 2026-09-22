@@ -644,18 +644,19 @@
         <TextBlock x:Name="CopyFeedback" TextWrapping="Wrap" Margin="3,0,3,8" Visibility="Collapsed"
                    FontSize="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=11}"
                    Foreground="{DynamicResource ChatSubtleForegroundBrush}" AutomationProperties.LiveSetting="Polite" />
-      </StackPanel>
-
-      <StackPanel Grid.Row="1" Margin="4,8" Visibility="{Binding NeedsAuthentication, Converter={StaticResource BoolToVisibilityConverter}}">
-        <TextBlock Text="Use your Claude Code sign-in to start chatting." TextWrapping="Wrap" Margin="0,0,0,10" />
-        <Button Content="Check CLI sign-in" HorizontalAlignment="Left" Style="{StaticResource ChatButtonStyle}"
-                Command="{Binding SignInCommand}" />
+        <!-- Informational only: the composer below stays visible and usable while signed out too,
+             since typing /login there is how this hint is meant to be acted on. -->
+        <StackPanel Margin="4,0,4,8" Visibility="{Binding NeedsAuthentication, Converter={StaticResource BoolToVisibilityConverter}}">
+          <TextBlock Text="Use your Claude Code sign-in to start chatting, or type /login below." TextWrapping="Wrap" Margin="0,0,0,10" />
+          <Button Content="Check CLI sign-in" HorizontalAlignment="Left" Style="{StaticResource ChatButtonStyle}"
+                  Command="{Binding SignInCommand}" />
+        </StackPanel>
       </StackPanel>
 
       <!-- Composer: only the text area is boxed (rounded, focus-highlighted); the toolbar row sits
-           below it unboxed, like the Claude desktop app. -->
-      <Grid x:Name="ComposerCard" Grid.Row="1"
-            Visibility="{Binding NeedsAuthentication, Converter={StaticResource BoolToVisibilityConverter}, ConverterParameter=Invert}">
+           below it unboxed, like the Claude desktop app. Always visible, including while signed out,
+           so /login (the way to get out of that state) is always reachable. -->
+      <Grid x:Name="ComposerCard" Grid.Row="1">
         <Grid.RowDefinitions>
           <RowDefinition Height="Auto" />
           <RowDefinition Height="Auto" />
@@ -719,6 +720,14 @@
                                Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
                   </Button>
                 </Grid>
+                <!-- Not a reserved slot like Stop above: this only ever appears for the rare, one-off
+                     /login or /logout console launch, not every turn, so there is no reflow to guard against. -->
+                <Button Width="28" Height="28" Padding="0" Margin="0,0,4,0" Command="{Binding CancelAuthCommand}"
+                        Style="{StaticResource ChatButtonStyle}" ToolTip="Cancel sign-in" AutomationProperties.Name="Cancel sign-in"
+                        Visibility="{Binding IsAuthCommandRunning, Converter={StaticResource BoolToVisibilityConverter}}">
+                  <Rectangle Width="10" Height="10" RadiusX="1.5" RadiusY="1.5"
+                             Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                </Button>
                 <Button Width="28" Height="28" Padding="0" Command="{Binding SendCommand}" Click="SendButton_Click"
                         Style="{StaticResource ChatButtonStyle}" ToolTip="Send message (Enter)" AutomationProperties.Name="Send message">
                   <Path Data="M 6,12 L 6,0 M 1,5 L 6,0 L 11,5" StrokeThickness="1.8"

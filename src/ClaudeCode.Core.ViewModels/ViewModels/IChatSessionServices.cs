@@ -56,4 +56,10 @@ public interface IChatSessionServices
     /// so a host permission or read-only restriction cannot become a disk-write fallback.
     /// </summary>
     Task<bool> TryWriteOpenDocumentAsync(string path, string text, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Asks the user to confirm signing out of Claude Code everywhere on this machine (CLI, VS Code,
+    /// other clients), not only Visual Studio. Returns false if the user declines or cancels.
+    /// </summary>
+    Task<bool> ConfirmSignOutEverywhereAsync(CancellationToken cancellationToken);
 }

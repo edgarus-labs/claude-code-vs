@@ -237,7 +237,7 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(200_000, vm.ContextWindowSize);
         Assert.Equal(6, vm.ContextUsagePercent);
         vm.InputText = "/";
-        Assert.Equal("review", Assert.Single(vm.SlashSuggestions).Name);
+        Assert.Equal(new[] { "review" }.Concat(ClientSlashCommandNames), vm.SlashSuggestions.Select(c => c.Name));
         vm.InputText = string.Empty;
 
         // The agent's edit is still on disk, so the row that offers to revert it must survive too.
@@ -367,6 +367,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Empty(vm.Messages);
         Assert.Equal("Untitled", vm.SessionTitle);
         vm.InputText = "/";
-        Assert.Equal("review", Assert.Single(vm.SlashSuggestions).Name);
+        Assert.Equal(new[] { "review" }.Concat(ClientSlashCommandNames), vm.SlashSuggestions.Select(c => c.Name));
     }
 }

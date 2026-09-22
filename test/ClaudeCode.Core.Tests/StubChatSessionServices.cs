@@ -92,4 +92,14 @@ internal sealed class StubChatSessionServices : IChatSessionServices
         OpenDocuments[path] = text;
         return Task.FromResult(true);
     }
+
+    public bool ConfirmSignOutResponse { get; set; } = true;
+
+    public List<CancellationToken> ConfirmSignOutRequests { get; } = new();
+
+    public Task<bool> ConfirmSignOutEverywhereAsync(CancellationToken cancellationToken)
+    {
+        ConfirmSignOutRequests.Add(cancellationToken);
+        return Task.FromResult(ConfirmSignOutResponse);
+    }
 }
