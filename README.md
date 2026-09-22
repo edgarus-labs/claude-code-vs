@@ -74,6 +74,9 @@ needed, run `claude auth login` in a terminal, then use **Check CLI sign-in** in
 Restart Visual Studio after changing environment variables.
 
 The adapter advertises the available models and model-specific effort levels before the first message.
+The extension has no model list of its own: a new model shows up in the model picker once the adapter
+supports it. Claude Opus 5.5 needs `claude-agent-acp` 0.81.0 or newer. To upgrade an existing
+install, run `npm install -g @agentclientprotocol/claude-agent-acp@latest`, then restart Visual Studio.
 Permission requests remain interactive; choosing **Yes** approves only that request.
 
 Claude can also *drive Visual Studio itself*: every chat session injects a client-side MCP server
