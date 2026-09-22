@@ -21,11 +21,10 @@ namespace ClaudeCode.Vsix.Auth;
 /// </summary>
 internal sealed class AcpAuthService : IAcpAuthService
 {
-    private const string _loginInstructions = "Run 'claude auth login' in a terminal, or "
-        + "'claude-agent-acp --cli auth login' to use the adapter's bundled CLI, then check sign-in again. "
-        + "Use the same CLAUDE_CONFIG_DIR environment as Visual Studio and restart Visual Studio after changing it.";
-    private const string _adapterMissingMessage = "Install @agentclientprotocol/claude-agent-acp and Node.js 22 or newer, "
-        + "or configure its ACP executable path in Tools > Options > Claude Code.";
+    private const string _loginInstructions = AcpAuthCommandOutcomes.LoginInstructions;
+    private const string _adapterMissingMessage = AcpAuthCommandOutcomes.AdapterMissingMessage;
+    private const string _logSource = "Claude Code";
+    private static readonly TimeSpan _logoutTimeout = TimeSpan.FromSeconds(30);
     private readonly Func<string?> _adapterPathProvider;
     private readonly object _stateLock = new object();
     private AuthState _currentState = AuthState.Unknown;
@@ -114,28 +113,21 @@ internal sealed class AcpAuthService : IAcpAuthService
         var executable = await ResolveExecutableAsync(cancellationToken).ConfigureAwait(false);
         if (executable is null)
         {
-            return new AuthCommandOutcome(false, _adapterMissingMessage);
+            return AcpAuthCommandOutcomes.AdapterMissing;
         }
 
         progress?.Report("Opening a console window to sign in — finish in the browser that opens.");
         var arguments = AcpAuthCliArguments.Login(executable);
-        // A cancelled attempt must keep whatever state was current beforehand (AC: "keeps the
-        // previous state"), not overwrite it with a guess - the caller's own cancellation handling
-        // reports the message, so this does not call SetState at all.
-        int exitCode = await Task.Run(() => RunVisibleProcessAsync(executable.FileName, arguments, cancellationToken), cancellationToken).ConfigureAwait(false);
-
-        // Trust the same status probe the rest of the extension relies on, not the exit code alone:
-        // a console the user closed early can still exit 0 without completing OAuth.
-        bool signedIn = await IsSignedInAsync(cancellationToken).ConfigureAwait(false);
-        if (signedIn)
+        // If cancelled, RunVisibleProcessAsync throws before the status re-probe below, so the
+        // previous AuthState is kept; the caller reports the cancellation.
+        int? exitCode = await Task.Run(() => RunVisibleProcessAsync(executable.FileName, arguments, cancellationToken), cancellationToken).ConfigureAwait(false);
+        if (exitCode is null)
         {
-            return new AuthCommandOutcome(true, "Signed in to Claude.");
+            return AcpAuthCommandOutcomes.LoginCouldNotStart;
         }
 
-        string detail = exitCode == 0
-            ? "The sign-in console finished, but native sign-in could not be confirmed. " + _loginInstructions
-            : $"Sign-in was not completed (exit code {exitCode.ToString(System.Globalization.CultureInfo.InvariantCulture)}). " + _loginInstructions;
-        return new AuthCommandOutcome(false, detail);
+        await IsSignedInAsync(cancellationToken).ConfigureAwait(false);
+        return AcpAuthCommandOutcomes.ForLogin(CurrentState, exitCode.Value);
     }
 
     public async Task<AuthCommandOutcome> LaunchInteractiveLogoutAsync(CancellationToken cancellationToken)
@@ -144,21 +136,37 @@ internal sealed class AcpAuthService : IAcpAuthService
         var executable = await ResolveExecutableAsync(cancellationToken).ConfigureAwait(false);
         if (executable is null)
         {
-            return new AuthCommandOutcome(false, _adapterMissingMessage);
+            return AcpAuthCommandOutcomes.AdapterMissing;
         }
 
         var arguments = AcpAuthCliArguments.Logout(executable);
-        int exitCode = await Task.Run(() => RunHiddenProcessAsync(executable.FileName, arguments, cancellationToken), cancellationToken).ConfigureAwait(false);
-        if (exitCode != 0)
+        // Logout needs no user interaction, so unlike login it is bounded.
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(_logoutTimeout);
+        int? exitCode;
+        try
         {
-            string failureDetail = $"Sign-out did not complete (exit code {exitCode.ToString(System.Globalization.CultureInfo.InvariantCulture)}). " + _loginInstructions;
-            SetState(CurrentState, failureDetail);
-            return new AuthCommandOutcome(false, failureDetail);
+            exitCode = await Task.Run(() => RunHiddenProcessAsync(executable.FileName, arguments, timeout.Token), timeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            ActivityLog.TryLogWarning(_logSource, "'auth logout' did not exit within " + _logoutTimeout.TotalSeconds + " seconds and was stopped.");
+            return AcpAuthCommandOutcomes.LogoutTimedOut;
         }
 
-        const string detail = "Signed out of Claude Code. This affects the CLI, VS Code and other clients on this machine, not only Visual Studio.";
-        SetState(AuthState.SignedOut, detail);
-        return new AuthCommandOutcome(true, detail);
+        if (exitCode is null)
+        {
+            return AcpAuthCommandOutcomes.LogoutCouldNotStart;
+        }
+
+        await IsSignedInAsync(cancellationToken).ConfigureAwait(false);
+        var outcome = AcpAuthCommandOutcomes.ForLogout(exitCode.Value, CurrentState);
+        if (outcome.Succeeded)
+        {
+            SetState(AuthState.SignedOut, outcome.Message);
+        }
+
+        return outcome;
     }
 
     private async Task<AcpExecutableSpec?> ResolveExecutableAsync(CancellationToken cancellationToken)
@@ -171,7 +179,8 @@ internal sealed class AcpAuthService : IAcpAuthService
             : AcpExecutableResolver.TryResolve(overridePath!);
     }
 
-    private static async Task<int> RunVisibleProcessAsync(string fileName, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
+    /// <summary>Returns the exit code, or null when the console could not be started (logged).</summary>
+    private static async Task<int?> RunVisibleProcessAsync(string fileName, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
     {
         using var process = new Process
         {
@@ -186,21 +195,27 @@ internal sealed class AcpAuthService : IAcpAuthService
         };
         var exited = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         process.Exited += (_, __) => exited.TrySetResult(true);
-        if (!process.Start())
+        if (!TryStart(process, "sign-in console"))
         {
-            throw new InvalidOperationException("The sign-in console could not be started.");
+            return null;
         }
 
-        using (cancellationToken.Register(() => KillProcessTree(process)))
+        try
         {
-            await exited.Task.ConfigureAwait(false);
+            await ProcessExitWait.WaitForExitAsync(exited.Task, cancellationToken).ConfigureAwait(false);
+            return process.ExitCode;
         }
-
-        cancellationToken.ThrowIfCancellationRequested();
-        return process.ExitCode;
+        finally
+        {
+            // Cancellation or any unexpected failure: never leave the console running. This runs on
+            // the thread pool (the caller wraps this in Task.Run), never on the thread that cancelled.
+            KillProcessTree(process);
+        }
     }
 
-    private static async Task<int> RunHiddenProcessAsync(string fileName, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
+    /// <summary>Returns the exit code, or null when the process could not be started (logged).
+    /// stdout is discarded; a bounded stderr tail goes to the ActivityLog on failure, never to the UI.</summary>
+    private static async Task<int?> RunHiddenProcessAsync(string fileName, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
     {
         using var process = new Process
         {
@@ -217,26 +232,34 @@ internal sealed class AcpAuthService : IAcpAuthService
         };
         var exited = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         process.Exited += (_, __) => exited.TrySetResult(true);
-        if (!process.Start())
+        if (!TryStart(process, "sign-out command"))
         {
-            throw new InvalidOperationException("The sign-out process could not be started.");
+            return null;
         }
 
-        // Neither stream is ever published; discard both so the process cannot block on a full pipe.
-        Task stdout = process.StandardOutput.BaseStream.CopyToAsync(Stream.Null);
-        Task stderr = process.StandardError.BaseStream.CopyToAsync(Stream.Null);
+        Task stdout = Task.CompletedTask;
+        Task<string> stderr = Task.FromResult(string.Empty);
         try
         {
-            using (cancellationToken.Register(() => KillProcessTree(process)))
+            // Drain both so the process cannot block on a full pipe.
+            stdout = process.StandardOutput.BaseStream.CopyToAsync(Stream.Null);
+            stderr = ReadBoundedTailAsync(process.StandardError, 4 * 1024);
+            await ProcessExitWait.WaitForExitAsync(exited.Task, cancellationToken).ConfigureAwait(false);
+            int exitCode = process.ExitCode;
+            if (exitCode != 0)
             {
-                await exited.Task.ConfigureAwait(false);
+                Task finished = await Task.WhenAny(stderr, Task.Delay(TimeSpan.FromSeconds(1), CancellationToken.None)).ConfigureAwait(false);
+                string tail = finished == stderr && stderr.Status == TaskStatus.RanToCompletion
+                    ? await stderr.ConfigureAwait(false) : string.Empty;
+                ActivityLog.TryLogWarning(_logSource, "'auth logout' exited with code "
+                    + exitCode.ToString(System.Globalization.CultureInfo.InvariantCulture) + ". stderr: " + tail);
             }
 
-            cancellationToken.ThrowIfCancellationRequested();
-            return process.ExitCode;
+            return exitCode;
         }
         finally
         {
+            KillProcessTree(process);
             process.StandardOutput.Dispose();
             process.StandardError.Dispose();
             _ = stdout.ContinueWith(task => { _ = task.Exception; },
@@ -244,6 +267,42 @@ internal sealed class AcpAuthService : IAcpAuthService
             _ = stderr.ContinueWith(task => { _ = task.Exception; },
                 CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         }
+    }
+
+    private static bool TryStart(Process process, string description)
+    {
+        try
+        {
+            if (process.Start())
+            {
+                return true;
+            }
+
+            ActivityLog.TryLogError(_logSource, "The " + description + " could not be started: " + process.StartInfo.FileName);
+        }
+        catch (Exception ex) when (ex is Win32Exception || ex is InvalidOperationException)
+        {
+            ActivityLog.TryLogError(_logSource, "The " + description + " could not be started: " + process.StartInfo.FileName + ": " + ex);
+        }
+
+        return false;
+    }
+
+    private static async Task<string> ReadBoundedTailAsync(StreamReader reader, int maxCharacters)
+    {
+        var buffer = new char[1024];
+        var output = new StringBuilder();
+        int count;
+        while ((count = await reader.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false)) != 0)
+        {
+            output.Append(buffer, 0, count);
+            if (output.Length > maxCharacters)
+            {
+                output.Remove(0, output.Length - maxCharacters);
+            }
+        }
+
+        return output.ToString();
     }
 
     private static async Task<AuthState> ReadNativeStatusAsync(AcpExecutableSpec executable, CancellationToken cancellationToken)
@@ -369,7 +428,9 @@ internal sealed class AcpAuthService : IAcpAuthService
         }
         catch (Exception ex) when (ex is Win32Exception || ex is InvalidOperationException)
         {
-            // The probe may exit between the check and the targeted cleanup.
+            // Usually the process exited between the check and the targeted cleanup; the direct
+            // Kill below is the fallback. Logged so a genuinely failed kill is diagnosable.
+            ActivityLog.TryLogWarning(_logSource, "Process-tree cleanup via taskkill failed: " + ex.Message);
         }
         finally
         {

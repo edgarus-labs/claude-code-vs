@@ -69,9 +69,10 @@ npm install -g @agentclientprotocol/claude-agent-acp
 Authentication reuses the Claude Code CLI's native configuration and credentials, including
 `CLAUDE_CONFIG_DIR`. Type `/login` in the sidebar to sign in: it opens a visible console running the
 adapter's own bundled CLI (`claude-agent-acp --cli auth login --claudeai`), which handles the OAuth
-flow in your browser; `/logout` signs out the same way, everywhere on this machine (not only Visual
-Studio), after a confirmation. The extension itself never reads or stores credentials — only the
-process exit code and the existing status probe cross back. The one component that reads an OAuth
+flow in your browser; `/logout` runs the same CLI's logout in the background, signing out
+everywhere on this machine (not only Visual Studio), after a confirmation. The extension itself
+never reads or stores credentials — only the process exit code and the existing status probe cross
+back (a failed logout's stderr tail goes to the Visual Studio ActivityLog, never the UI). The one component that reads an OAuth
 token directly (the usage-limit lookup) does so in a short-lived subprocess, and only the trimmed
 JSON it prints crosses back. You can also run `claude auth login` in a terminal instead, then use
 **Check CLI sign-in** in the sidebar. Restart Visual Studio after changing environment variables.

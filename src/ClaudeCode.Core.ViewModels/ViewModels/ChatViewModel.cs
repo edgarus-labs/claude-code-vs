@@ -76,7 +76,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private CancellationTokenSource? _authCommandCts;
 
     // Never advertised by the adapter (it deliberately excludes login/logout from the commands it
-    // sends, see AGENTS.md issue #34): these are added locally so the popup can offer them even
+    // sends, see issue #34): these are added locally so the popup can offer them even
     // when there is no session at all, which is exactly the state /login exists to get out of.
     private static readonly AvailableCommand LoginCommand =
         new AvailableCommand("login", "Sign in to Claude Code (opens a console and your browser)");
@@ -358,10 +358,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // the outgoing session and then wiped from the transcript by ResetTranscriptState.
     private bool CanEditDraft => CanQueueOrSendDraft && !IsBusy;
 
-    // /login and /logout exist precisely to get out of NeedsAuthentication, so their popup must
-    // stay reachable through the one gate CanEditDraft applies that would otherwise hide it. It
-    // still respects IsBusy/_isSwitchingSession/disposal: those describe a turn or session switch
-    // actually in flight, not "no session because signed out".
+    // /login and /logout exist precisely to get out of NeedsAuthentication, so their popup bypasses
+    // CanEditDraft's NeedsAuthentication/IsConnecting/IsConfigBusy gates. It still respects
+    // IsBusy/_isSwitchingSession/disposal: those describe a turn or session switch actually in
+    // flight, not "no session because signed out".
     private bool CanShowSlashPopup => !_disposed && !IsBusy && !_isSwitchingSession;
 
     // Same admission checks as CanEditDraft, minus IsBusy: a turn already in flight must not block
@@ -1012,10 +1012,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     }
 
     // /login and /logout bypass CanQueueOrSendDraft's NeedsAuthentication/IsConnecting/IsConfigBusy
-    // gates on purpose - NeedsAuthentication is exactly the state /login exists to resolve - but
-    // still respect it while one is already running, to prevent a second concurrent console launch.
+    // gates on purpose - NeedsAuthentication is exactly the state /login exists to resolve. They are
+    // never queued, so they are refused outright while a turn or session switch is in flight
+    // (CanShowSlashPopup) and while one of them is already running (no second concurrent console).
     private bool CanSend() => !_isCapturingDocument && (!string.IsNullOrWhiteSpace(InputText) || Attachments.Count > 0) &&
-        (TryGetClientCommand(InputText.Trim(), out _) ? !_disposed && !IsAuthCommandRunning : CanQueueOrSendDraft);
+        (TryGetClientCommand(InputText.Trim(), out _) ? CanRunClientCommand : CanQueueOrSendDraft);
+
+    private bool CanRunClientCommand => CanShowSlashPopup && !IsAuthCommandRunning;
 
     private enum ClientSlashCommand { Login, Logout }
 
@@ -1091,52 +1094,47 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     // /login and /logout never touch the turn/queue machinery above: they are local actions against
     // IAcpAuthService, not agent prompts. IsAuthCommandRunning is this method's own busy flag (CanSend
-    // already refuses a second concurrent call) so it can run independently of IsBusy/NeedsAuthentication.
+    // already refuses a second concurrent call) so it can run independently of NeedsAuthentication.
     private async Task RunClientCommandAsync(ClientSlashCommand command)
     {
-        if (_disposed || IsAuthCommandRunning) return;
+        if (!CanRunClientCommand) return;
+        bool login = command == ClientSlashCommand.Login;
         InputText = string.Empty;
         StatusMessage = null;
-
-        if (command == ClientSlashCommand.Logout)
-        {
-            bool confirmed;
-            try
-            {
-                confirmed = await _services.ConfirmSignOutEverywhereAsync(_lifetime.Token).ConfigureAwait(true);
-            }
-            catch (OperationCanceledException) when (_disposed) { return; }
-            if (_disposed || !confirmed) return;
-        }
 
         IsAuthCommandRunning = true;
         _authCommandCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
         var token = _authCommandCts.Token;
+        bool signedIn = false;
         try
         {
-            if (command == ClientSlashCommand.Login)
+            AuthCommandOutcome outcome;
+            if (login)
             {
                 StatusMessage = "Opening a console to sign in to Claude Code…";
                 var progress = new Progress<string>(message => RunOnUi(() => { if (!_disposed) StatusMessage = message; }));
-                var outcome = await _services.AuthService.LaunchInteractiveLoginAsync(token, progress).ConfigureAwait(true);
-                if (_disposed) return;
-                if (outcome.Succeeded) await InitializeCoreAsync(_lifetime.Token).ConfigureAwait(true);
-                if (!_disposed) StatusMessage = outcome.Message;
+                outcome = await _services.AuthService.LaunchInteractiveLoginAsync(token, progress).ConfigureAwait(true);
             }
             else
             {
+                if (!await _services.ConfirmSignOutEverywhereAsync(token).ConfigureAwait(true)) return;
                 StatusMessage = "Signing out of Claude Code…";
-                var outcome = await _services.AuthService.LaunchInteractiveLogoutAsync(token).ConfigureAwait(true);
-                if (!_disposed) StatusMessage = outcome.Message;
+                outcome = await _services.AuthService.LaunchInteractiveLogoutAsync(token).ConfigureAwait(true);
             }
+
+            if (_disposed) return;
+            StatusMessage = outcome.Message;
+            signedIn = login && outcome.Succeeded;
         }
-        catch (OperationCanceledException)
+        // Only the user's Cancel (or disposal) is a cancellation; any other OperationCanceledException
+        // is a failure of the command itself and is reported as one below.
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
-            if (!_disposed) StatusMessage = command == ClientSlashCommand.Login ? "Sign-in cancelled." : "Sign-out cancelled.";
+            if (!_disposed) StatusMessage = login ? "Sign-in cancelled." : "Sign-out cancelled.";
         }
         catch (Exception ex)
         {
-            if (!_disposed) StatusMessage = $"{(command == ClientSlashCommand.Login ? "Sign-in" : "Sign-out")} failed: {ex.Message}";
+            if (!_disposed) StatusMessage = $"{(login ? "Sign-in" : "Sign-out")} failed: {ex.Message}";
         }
         finally
         {
@@ -1144,6 +1142,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             _authCommandCts = null;
             IsAuthCommandRunning = false;
         }
+
+        // After the sign-in itself has been reported, so a connect failure (which InitializeCoreAsync
+        // reports on its own) is what the user reads last, never hidden behind "Signed in".
+        if (signedIn && !_disposed) await InitializeCoreAsync(_lifetime.Token).ConfigureAwait(true);
     }
 
     // Draft is consumed immediately (unlike the live-send path above) so the composer is free for

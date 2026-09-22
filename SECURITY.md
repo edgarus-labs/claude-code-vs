@@ -32,7 +32,8 @@ The sidebar's `/login` and `/logout` commands launch the same resolved, trusted 
 executable the sign-in status probe already uses (never a path or command derived from
 untrusted input) to run its bundled CLI auth commands. The extension process itself never
 reads, logs, or stores the resulting credentials; only the process exit code and the existing
-status probe's JSON cross back into the extension.
+status probe's JSON cross back into the extension. When `auth logout` fails, the last 4 KB of its
+stderr is written to the Visual Studio ActivityLog for diagnosis (never shown in the UI).
 
 In-scope concerns include (but are not limited to): the Visual Studio extension
 (`ClaudeCode.Vsix`), the ACP transport (`ClaudeCode.Acp`), the VS-control MCP bridge

@@ -28,4 +28,10 @@ public sealed class AcpAuthCliArgumentsTests
         Assert.Equal(new[] { "--cli", "auth", "logout" }, AcpAuthCliArguments.Logout(DirectExecutable));
         Assert.Equal(new[] { "C:\\adapter\\dist\\index.js", "--cli", "auth", "logout" }, AcpAuthCliArguments.Logout(NodeLaunchedExecutable));
     }
+
+    [Fact]
+    public void NullExecutable_IsRejectedWithArgumentNullException()
+    {
+        Assert.Throws<System.ArgumentNullException>(() => AcpAuthCliArguments.Login(null!));
+    }
 }

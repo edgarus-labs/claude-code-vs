@@ -45,5 +45,6 @@ public sealed class NullChatSessionServices : IChatSessionServices
     public Task<bool> TryWriteOpenDocumentAsync(string path, string text, CancellationToken cancellationToken) =>
         Task.FromResult(false);
 
-    public Task<bool> ConfirmSignOutEverywhereAsync(CancellationToken cancellationToken) => Task.FromResult(true);
+    /// <summary>There is no user to ask, so a machine-wide sign-out is never confirmed on their behalf.</summary>
+    public Task<bool> ConfirmSignOutEverywhereAsync(CancellationToken cancellationToken) => Task.FromResult(false);
 }

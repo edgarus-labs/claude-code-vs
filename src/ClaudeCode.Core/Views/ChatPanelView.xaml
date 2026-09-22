@@ -723,7 +723,7 @@
                 <!-- Not a reserved slot like Stop above: this only ever appears for the rare, one-off
                      /login or /logout console launch, not every turn, so there is no reflow to guard against. -->
                 <Button Width="28" Height="28" Padding="0" Margin="0,0,4,0" Command="{Binding CancelAuthCommand}"
-                        Style="{StaticResource ChatButtonStyle}" ToolTip="Cancel sign-in" AutomationProperties.Name="Cancel sign-in"
+                        Style="{StaticResource ChatButtonStyle}" ToolTip="Cancel sign-in or sign-out" AutomationProperties.Name="Cancel sign-in or sign-out"
                         Visibility="{Binding IsAuthCommandRunning, Converter={StaticResource BoolToVisibilityConverter}}">
                   <Rectangle Width="10" Height="10" RadiusX="1.5" RadiusY="1.5"
                              Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
