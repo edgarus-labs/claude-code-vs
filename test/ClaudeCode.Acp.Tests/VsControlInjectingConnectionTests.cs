@@ -198,6 +198,8 @@ public sealed class VsControlInjectingConnectionTests
 
         public bool IsInitialized => true;
 
+        public bool SupportsPromptQueueing => false;
+
         public Task InitializeAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
         public Task<NewSessionResult> NewSessionAsync(string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken)

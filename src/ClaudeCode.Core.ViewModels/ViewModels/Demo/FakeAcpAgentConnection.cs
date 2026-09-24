@@ -20,6 +20,9 @@ public sealed class FakeAcpAgentConnection : IAcpAgentConnection
 
     public bool IsInitialized { get; private set; }
 
+    // The demo turn loop runs one prompt at a time; a concurrent prompt would interleave its echo.
+    public bool SupportsPromptQueueing => false;
+
     public Task InitializeAsync(CancellationToken cancellationToken)
     {
         IsInitialized = true;

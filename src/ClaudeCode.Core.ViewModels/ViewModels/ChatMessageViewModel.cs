@@ -33,7 +33,8 @@ public sealed class ChatMessageViewModel : ObservableObject
     private bool _isPending;
 
     /// <summary>True while this message is queued locally - typed and sent while a previous turn was
-    /// still in flight - and has not been handed to the agent yet. The transcript dims a pending
+    /// still in flight - and the agent has not started on it yet (it may already be waiting in the
+    /// agent's own prompt queue). The transcript dims a pending
     /// bubble so it cannot be mistaken for one that was delivered.</summary>
     public bool IsPending
     {
@@ -41,7 +42,7 @@ public sealed class ChatMessageViewModel : ObservableObject
         private set => SetProperty(ref _isPending, value);
     }
 
-    /// <summary>Records that this message has now been submitted to the agent. One-way on purpose:
+    /// <summary>Records that the agent has now taken this message up. One-way on purpose:
     /// a message that has gone out can never become pending again, so the flag is not a setter
     /// anyone outside can flip back.</summary>
     public void MarkSent() => IsPending = false;

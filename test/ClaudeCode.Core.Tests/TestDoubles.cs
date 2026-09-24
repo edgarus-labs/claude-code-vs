@@ -10,10 +10,12 @@ internal sealed class RecordingAcpAgentConnection : IAcpAgentConnection
 {
     public const string SessionId = "session-1";
     public List<IReadOnlyList<ContentBlock>> Prompts { get; } = [];
+    public List<string> PromptSessionIds { get; } = [];
     public List<(string Id, string Value)> ConfigChanges { get; } = [];
     public int CancelCount { get; private set; }
     public int DisposeCount { get; private set; }
     public bool IsInitialized { get; private set; }
+    public bool SupportsPromptQueueing { get; set; }
     public IReadOnlyList<SessionConfigOption> ConfigOptions { get; set; } = [];
     public Func<CancellationToken, Task>? InitializeHandler { get; set; }
     public Func<CancellationToken, Task<NewSessionResult>>? NewSessionHandler { get; set; }
@@ -58,6 +60,7 @@ internal sealed class RecordingAcpAgentConnection : IAcpAgentConnection
     public Task SendPromptAsync(string sessionId, IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken)
     {
         Prompts.Add(content);
+        PromptSessionIds.Add(sessionId);
         return PromptHandler?.Invoke(content) ?? Task.CompletedTask;
     }
 

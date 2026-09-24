@@ -9,6 +9,13 @@ public interface IAcpAgentConnection : IAsyncDisposable
 {
     bool IsInitialized { get; }
 
+    /// <summary>True when the agent advertised, in its <c>initialize</c> response, that it accepts a
+    /// further <see cref="SendPromptAsync"/> while one is still running and queues it itself -
+    /// taking it up at its next input boundary instead of rejecting it or interrupting the running
+    /// turn. False until <see cref="InitializeAsync"/> completes, and whenever the agent did not
+    /// say so.</summary>
+    bool SupportsPromptQueueing { get; }
+
     Task InitializeAsync(CancellationToken cancellationToken);
 
     Task<NewSessionResult> NewSessionAsync(string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken);

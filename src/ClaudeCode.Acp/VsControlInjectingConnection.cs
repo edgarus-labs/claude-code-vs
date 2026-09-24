@@ -43,6 +43,8 @@ public sealed class VsControlInjectingConnection : IAcpAgentConnection
 
     public bool IsInitialized => _inner.IsInitialized;
 
+    public bool SupportsPromptQueueing => _inner.SupportsPromptQueueing;
+
     public Task InitializeAsync(CancellationToken cancellationToken) => _inner.InitializeAsync(cancellationToken);
 
     public async Task<NewSessionResult> NewSessionAsync(string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken)

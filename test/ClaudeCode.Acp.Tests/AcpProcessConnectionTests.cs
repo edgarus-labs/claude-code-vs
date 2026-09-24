@@ -226,6 +226,39 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         await pending.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
+    // claude-agent-acp advertises that it queues a session/prompt sent while another is running;
+    // the chat view model only sends one mid-turn when the agent said so.
+    [Fact]
+    public async Task InitializeAsync_ReportsPromptQueueing_WhenTheAgentAdvertisesIt()
+    {
+        Assert.False(_connection.SupportsPromptQueueing);
+        var pending = _connection.InitializeAsync(CancellationToken.None);
+        JsonObject request = await ReadRequestAsync("initialize");
+
+        await ReplyAsync(request, """{"protocolVersion":1,"agentCapabilities":{"_meta":{"claudeCode":{"promptQueueing":true}}}}""");
+        await pending.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(_connection.SupportsPromptQueueing);
+    }
+
+    // Agent-supplied and therefore untrusted: only a literal JSON true opts in, so an agent that
+    // says nothing (or something malformed) keeps the one-prompt-at-a-time behavior.
+    [Theory]
+    [InlineData("""{"protocolVersion":1}""")]
+    [InlineData("""{"protocolVersion":1,"agentCapabilities":{"_meta":{"claudeCode":{"promptQueueing":"true"}}}}""")]
+    [InlineData("""{"protocolVersion":1,"agentCapabilities":{"_meta":{"claudeCode":true}}}""")]
+    [InlineData("""{"protocolVersion":1,"agentCapabilities":[]}""")]
+    public async Task InitializeAsync_DoesNotReportPromptQueueing_UnlessTheAgentSaysExactlyTrue(string result)
+    {
+        var pending = _connection.InitializeAsync(CancellationToken.None);
+        JsonObject request = await ReadRequestAsync("initialize");
+
+        await ReplyAsync(request, result);
+        await pending.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.False(_connection.SupportsPromptQueueing);
+    }
+
     [Fact]
     public async Task InboundElicitationCreateRequest_FormMode_ParsesFieldsAndRoundTripsAcceptedAnswer()
     {

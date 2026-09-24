@@ -42,6 +42,7 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
     private int _disposed;
     private int _disconnected;
     private int _isInitialized;
+    private volatile bool _supportsPromptQueueing;
 
     public AcpProcessConnection(
         string executableFileName,
@@ -155,6 +156,8 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
 
     public bool IsInitialized => Volatile.Read(ref _isInitialized) != 0;
 
+    public bool SupportsPromptQueueing => _supportsPromptQueueing;
+
     public event EventHandler<SessionUpdateEventArgs>? SessionUpdate;
 
     public event EventHandler<PermissionRequestEventArgs>? PermissionRequested;
@@ -221,9 +224,21 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
             },
         };
 
-        await _rpc.SendRequestAsync("initialize", @params, cancellationToken).ConfigureAwait(false);
+        JsonNode? result = await _rpc.SendRequestAsync("initialize", @params, cancellationToken).ConfigureAwait(false);
+        _supportsPromptQueueing = ReadsPromptQueueing(result);
         Volatile.Write(ref _isInitialized, 1);
     }
+
+    // claude-agent-acp's extension marker (agentCapabilities._meta.claudeCode.promptQueueing): a
+    // session/prompt sent while one is running is queued by the agent and taken up at its next input
+    // boundary. Agent-supplied, so only a literal JSON true counts.
+    private static bool ReadsPromptQueueing(JsonNode? result) =>
+        result is JsonObject response
+        && response["agentCapabilities"] is JsonObject capabilities
+        && capabilities["_meta"] is JsonObject meta
+        && meta["claudeCode"] is JsonObject claudeCode
+        && claudeCode["promptQueueing"] is JsonValue flag
+        && flag.GetValueKind() == System.Text.Json.JsonValueKind.True;
 
     /// <summary>
     /// Starts a new ACP session rooted at <paramref name="cwd"/>. <paramref name="cwd"/> is sent to
