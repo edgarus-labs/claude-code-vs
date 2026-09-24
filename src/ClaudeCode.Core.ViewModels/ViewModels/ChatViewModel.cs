@@ -111,7 +111,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         _services = services ?? throw new ArgumentNullException(nameof(services));
         _uiContext = SynchronizationContext.Current
             ?? throw new InvalidOperationException("ChatViewModel must be constructed on a thread with a SynchronizationContext (e.g. the WPF UI thread).");
-        SendCommand = new AsyncRelayCommand(SendAsync, CanSend);
+        // A send that starts a turn keeps executing until the turn ends; without concurrent
+        // executions the command would report CanExecute=false for that whole time and make the
+        // mid-turn queue (see EnqueueDraft) unreachable from the Send button and Enter key.
+        SendCommand = new AsyncRelayCommand(SendAsync, CanSend, AsyncRelayCommandOptions.AllowConcurrentExecutions);
         CancelCommand = new AsyncRelayCommand(CancelAsync, () => IsBusy && !_disposed && _connection is not null && _sessionId is not null);
         SignInCommand = new AsyncRelayCommand(SignInAsync, () => !IsSignedIn && !_disposed);
         NewSessionCommand = new AsyncRelayCommand(NewSessionAsync, () => CanEditDraft);

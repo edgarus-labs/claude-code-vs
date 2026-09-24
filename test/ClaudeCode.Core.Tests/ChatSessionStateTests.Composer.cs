@@ -312,6 +312,34 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("second, queued", Assert.IsType<ContentBlock.Text>(Assert.Single(connection.Prompts[1])).Value);
     }
 
+    // The Send button and Enter key drive SendCommand, not SendAsync: a turn started through the
+    // command keeps that command executing until the turn ends, so the command itself must not
+    // report CanExecute=false for that whole time or the queue above is unreachable from the UI.
+    [Fact]
+    public async Task SendCommand_StaysExecutableWhileTheTurnItStartedIsInFlight_AndQueues()
+    {
+        var completed = new TaskCompletionSource<bool>();
+        var connection = new RecordingAcpAgentConnection { PromptHandler = _ => completed.Task };
+        using var vm = new ChatViewModel(new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService()));
+        await vm.Initialization;
+        vm.InputText = "first";
+        var firstTurn = vm.SendCommand.ExecuteAsync(null);
+        Assert.True(vm.IsBusy);
+
+        vm.InputText = "second, queued";
+        Assert.True(vm.SendCommand.CanExecute(null));
+        await vm.SendCommand.ExecuteAsync(null);
+
+        var queued = Assert.Single(vm.Messages, message => message.Role == ChatRole.User && message.Text == "second, queued");
+        Assert.True(queued.IsPending);
+        Assert.Single(connection.Prompts);
+
+        completed.SetResult(true);
+        await firstTurn;
+        await WaitUntilAsync(() => connection.Prompts.Count == 2);
+        Assert.False(queued.IsPending);
+    }
+
     // CanEditDraft's own comment (ChatViewModel.cs) documents the exact hazard this guards against
     // for a *live* send: "a prompt accepted mid-switch is sent to the outgoing session and then
     // wiped from the transcript by ResetTranscriptState". A message queued while a turn is in
