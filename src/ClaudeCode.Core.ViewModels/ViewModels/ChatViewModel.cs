@@ -1816,8 +1816,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                     }
 
                     if (_currentAssistantMessage is not null && TurnTokens is long turnTokens) _currentAssistantMessage.TokensUsed = turnTokens;
-                    RaiseAttention(ChatAttentionKind.TurnCompleted, "Claude finished",
-                        _currentAssistantMessage?.Text is { Length: > 0 } reply ? reply : "The response is ready in Visual Studio.");
+                    // A hand-off ends this prompt while the agent is already on the next one in
+                    // _submittedPrompts (the one returning is still listed): Claude is not finished.
+                    if (_submittedPrompts.Count <= 1)
+                        RaiseAttention(ChatAttentionKind.TurnCompleted, "Claude finished",
+                            _currentAssistantMessage?.Text is { Length: > 0 } reply ? reply : "The response is ready in Visual Studio.");
 
                     _currentAssistantMessage = null;
                     _currentUserMessage = null;

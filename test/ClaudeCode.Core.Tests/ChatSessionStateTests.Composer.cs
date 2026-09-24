@@ -607,6 +607,96 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(2, connection.Prompts.Count);
     }
 
+    // F-42-1: the agent settles the first prompt when it takes the follow-up in, so that prompt's
+    // TurnEnded arrives while Claude is still working on the follow-up. "Claude finished" is only
+    // true once nothing is left running.
+    [Fact]
+    public async Task QueueingAgent_HandOff_DoesNotSayClaudeFinished_WhileTheFollowUpIsStillRunning()
+    {
+        var turns = new PromptGate();
+        var connection = new RecordingAcpAgentConnection { SupportsPromptQueueing = true, PromptHandler = turns.Handle };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        var finished = new List<ChatAttentionEventArgs>();
+        vm.AttentionRequested += (_, e) => { if (e.Kind == ChatAttentionKind.TurnCompleted) finished.Add(e); };
+        vm.InputText = "first";
+        var firstSend = vm.SendAsync();
+        connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("one"));
+        vm.InputText = "follow-up";
+        await vm.SendAsync();
+
+        connection.RaiseSessionUpdate(new SessionUpdate.TurnEnded("end_turn"));
+        turns.Complete("first");
+        await firstSend;
+        Assert.Empty(finished);
+
+        connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("two"));
+        connection.RaiseSessionUpdate(new SessionUpdate.TurnEnded("end_turn"));
+        turns.Complete("follow-up");
+        await WaitUntilAsync(() => !vm.IsBusy);
+        Assert.Equal("two", Assert.Single(finished).Message);
+    }
+
+    // F-42-2: a withdrawn prompt's "cancelled" answer arrives before the stopped turn's own; it must
+    // not close off the stopped turn's bubble, which still gets its duration when that turn ends.
+    [Fact]
+    public async Task QueueingAgent_Cancel_WithdrawnPromptsTurnEnd_DoesNotCloseTheStoppedTurnsBubble()
+    {
+        var turns = new PromptGate();
+        var connection = new RecordingAcpAgentConnection { SupportsPromptQueueing = true, PromptHandler = turns.Handle };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "first";
+        var firstSend = vm.SendAsync();
+        connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("partial"));
+        vm.InputText = "second";
+        await vm.SendAsync();
+        var stopped = Assert.Single(vm.Messages, message => message.Role == ChatRole.Assistant);
+
+        await vm.CancelCommand.ExecuteAsync(null);
+        connection.RaiseSessionUpdate(new SessionUpdate.TurnEnded("cancelled")); // the withdrawn "second"
+        turns.Complete("second");
+        connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk(" answer"));
+        Assert.Null(stopped.DurationSeconds);
+        Assert.Equal("partial answer", stopped.Text);
+
+        connection.RaiseSessionUpdate(new SessionUpdate.TurnEnded("cancelled")); // the stopped "first"
+        Assert.NotNull(stopped.DurationSeconds);
+        turns.Complete("first");
+        await firstSend;
+        await WaitUntilAsync(() => connection.Prompts.Count == 3);
+        turns.Complete("second");
+        await WaitUntilAsync(() => !vm.IsBusy);
+    }
+
+    // F-42-2: once the agent hands off, the follow-up is what the turn stats measure - its bubble's
+    // tokens count from the hand-off, not from when the first prompt started.
+    [Fact]
+    public async Task QueueingAgent_HandOff_MeasuresTheFollowUpFromTheHandOff()
+    {
+        var turns = new PromptGate();
+        var connection = new RecordingAcpAgentConnection { SupportsPromptQueueing = true, PromptHandler = turns.Handle };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "first";
+        var firstSend = vm.SendAsync();
+        vm.InputText = "follow-up";
+        await vm.SendAsync();
+        connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("one"));
+        connection.RaiseSessionUpdate(new SessionUpdate.UsageUpdate(1_000, null, null, null));
+        connection.RaiseSessionUpdate(new SessionUpdate.TurnEnded("end_turn"));
+        turns.Complete("first");
+        await firstSend;
+
+        connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("two"));
+        connection.RaiseSessionUpdate(new SessionUpdate.UsageUpdate(1_300, null, null, null));
+        connection.RaiseSessionUpdate(new SessionUpdate.TurnEnded("end_turn"));
+        turns.Complete("follow-up");
+        await WaitUntilAsync(() => !vm.IsBusy);
+
+        Assert.Equal(300, Assert.Single(vm.Messages, message => message.Text == "two").TokensUsed);
+    }
+
     // An agent that did not advertise queueing keeps the one-prompt-at-a-time contract.
     [Fact]
     public async Task NonQueueingAgent_FollowUpWaitsForTheRunningTurnToEnd()
