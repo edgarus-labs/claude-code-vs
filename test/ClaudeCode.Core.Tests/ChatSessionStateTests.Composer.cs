@@ -530,13 +530,13 @@ public sealed partial class ChatSessionStateTests
 
         await vm.CancelCommand.ExecuteAsync(null);
         // The agent answers the not-yet-started prompts "cancelled" straight away...
-        turns.Complete("second");
-        turns.Complete("third");
+        turns.Complete("second", "cancelled");
+        turns.Complete("third", "cancelled");
         await Task.Yield();
         Assert.Equal(3, connection.Prompts.Count); // ...but the stopped turn has not ended yet.
         Assert.All(vm.Messages.Where(message => message.Text is "second" or "third"), message => Assert.True(message.IsPending));
 
-        turns.Complete("first");
+        turns.Complete("first", "cancelled");
         await firstSend;
         await WaitUntilAsync(() => connection.Prompts.Count == 5);
 
@@ -578,16 +578,73 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(["first", "second"], connection.Prompts.Select(Text));
     }
 
-    // A follow-up the agent answered with an error was still handed over (acceptance is ambiguous, so
-    // it is never re-sent): it must not stay dimmed as if it were still waiting to go out.
+    // A follow-up the agent refused while it was still waiting behind the running turn never ran, so
+    // it is not lost: the error is shown, the message stays pending and goes out once more, as a
+    // normal send, when the running turn ends.
     [Fact]
-    public async Task QueueingAgent_FailedFollowUp_ReportsTheErrorAndStopsReadingAsPending()
+    public async Task QueueingAgent_FailedFollowUp_ShowsTheError_AndIsSentAgainOnceTheTurnEnds()
     {
-        var firstTurn = new TaskCompletionSource<bool>();
+        var turns = new PromptGate();
+        var connection = new RecordingAcpAgentConnection { SupportsPromptQueueing = true, PromptHandler = turns.Handle };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "first";
+        var firstSend = vm.SendAsync();
+        vm.InputText = "follow-up";
+        await vm.SendAsync();
+        var followUp = Assert.Single(vm.Messages, message => message.Text == "follow-up");
+
+        turns.Fail("follow-up", new InvalidOperationException("prompt rejected"));
+        Assert.Contains("prompt rejected", vm.StatusMessage, StringComparison.Ordinal);
+        Assert.True(followUp.IsPending);
+        Assert.True(vm.IsBusy); // the first turn is still running
+
+        turns.Complete("first");
+        await firstSend;
+        await WaitUntilAsync(() => connection.Prompts.Count == 3);
+        Assert.Equal(["first", "follow-up", "follow-up"], connection.Prompts.Select(Text));
+        Assert.False(followUp.IsPending);
+        turns.Complete("follow-up");
+        await WaitUntilAsync(() => !vm.IsBusy);
+    }
+
+    // Stop can land just after the agent has already taken the follow-up in (the first prompt's
+    // end_turn is on its way). The follow-up is then the turn being stopped - it ran - and must not
+    // be sent a second time.
+    [Fact]
+    public async Task QueueingAgent_CancelDuringAHandOff_DoesNotResendTheFollowUpTheAgentHadStarted()
+    {
+        var turns = new PromptGate();
+        var connection = new RecordingAcpAgentConnection { SupportsPromptQueueing = true, PromptHandler = turns.Handle };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "first";
+        var firstSend = vm.SendAsync();
+        vm.InputText = "follow-up";
+        await vm.SendAsync();
+        var followUp = Assert.Single(vm.Messages, message => message.Text == "follow-up");
+
+        await vm.CancelCommand.ExecuteAsync(null);
+        turns.Complete("first");                    // settled by the hand-off, before Stop reached the agent
+        await firstSend;
+        turns.Complete("follow-up", "cancelled");   // the running follow-up, stopped
+        await WaitUntilAsync(() => !vm.IsBusy);
+
+        Assert.Equal(["first", "follow-up"], connection.Prompts.Select(Text));
+        Assert.False(followUp.IsPending);
+    }
+
+    // A Stop that never reached the agent leaves every queued follow-up with the agent, which still
+    // runs them: none may be sent a second time.
+    [Fact]
+    public async Task QueueingAgent_CancelThatFails_SendsNothingTwice()
+    {
+        var turns = new PromptGate();
         var connection = new RecordingAcpAgentConnection
         {
             SupportsPromptQueueing = true,
-            PromptHandler = content => Text(content) == "first" ? firstTurn.Task : Task.FromException(new InvalidOperationException("prompt rejected")),
+            PromptHandler = turns.Handle,
+            CancelHandler = () => Task.FromException(new InvalidOperationException("pipe broken")),
         };
         using var vm = Create(connection);
         await vm.Initialization;
@@ -596,15 +653,45 @@ public sealed partial class ChatSessionStateTests
         vm.InputText = "follow-up";
         await vm.SendAsync();
 
-        var followUp = Assert.Single(vm.Messages, message => message.Text == "follow-up");
-        await WaitUntilAsync(() => !followUp.IsPending);
-        Assert.Contains("prompt rejected", vm.StatusMessage, StringComparison.Ordinal);
-        Assert.True(vm.IsBusy); // the first turn is still running
-
-        firstTurn.SetResult(true);
+        await vm.CancelCommand.ExecuteAsync(null);
+        Assert.Contains("Cancel failed", vm.StatusMessage, StringComparison.Ordinal);
+        turns.Complete("first");
         await firstSend;
-        Assert.False(vm.IsBusy);
-        Assert.Equal(2, connection.Prompts.Count);
+        turns.Complete("follow-up");
+        await WaitUntilAsync(() => !vm.IsBusy);
+
+        Assert.Equal(["first", "follow-up"], connection.Prompts.Select(Text));
+        Assert.All(vm.Messages.Where(message => message.Role == ChatRole.User), message => Assert.False(message.IsPending));
+    }
+
+    // A message typed while a Stop is still landing is not sent ahead into the turn being cancelled
+    // (the agent would drop it); it waits, and goes out after the follow-ups the stop sent back.
+    [Fact]
+    public async Task QueueingAgent_MessageSentWhileStopping_WaitsForTheStop_AndKeepsItsOrder()
+    {
+        var turns = new PromptGate();
+        var connection = new RecordingAcpAgentConnection { SupportsPromptQueueing = true, PromptHandler = turns.Handle };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "first";
+        var firstSend = vm.SendAsync();
+        vm.InputText = "second";
+        await vm.SendAsync();
+
+        await vm.CancelCommand.ExecuteAsync(null);
+        vm.InputText = "third";
+        await vm.SendAsync();
+        Assert.Equal(["first", "second"], connection.Prompts.Select(Text));
+
+        turns.Complete("second", "cancelled");
+        turns.Complete("first", "cancelled");
+        await firstSend;
+        await WaitUntilAsync(() => connection.Prompts.Count == 4);
+
+        Assert.Equal(["first", "second", "second", "third"], connection.Prompts.Select(Text));
+        turns.Complete("second");
+        turns.Complete("third");
+        await WaitUntilAsync(() => !vm.IsBusy);
     }
 
     // F-42-1: the agent settles the first prompt when it takes the follow-up in, so that prompt's
@@ -655,14 +742,14 @@ public sealed partial class ChatSessionStateTests
 
         await vm.CancelCommand.ExecuteAsync(null);
         connection.RaiseSessionUpdate(new SessionUpdate.TurnEnded("cancelled")); // the withdrawn "second"
-        turns.Complete("second");
+        turns.Complete("second", "cancelled");
         connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk(" answer"));
         Assert.Null(stopped.DurationSeconds);
         Assert.Equal("partial answer", stopped.Text);
 
         connection.RaiseSessionUpdate(new SessionUpdate.TurnEnded("cancelled")); // the stopped "first"
         Assert.NotNull(stopped.DurationSeconds);
-        turns.Complete("first");
+        turns.Complete("first", "cancelled");
         await firstSend;
         await WaitUntilAsync(() => connection.Prompts.Count == 3);
         turns.Complete("second");
@@ -725,18 +812,21 @@ public sealed partial class ChatSessionStateTests
     /// session/prompt returns - the way the agent settles each one on its own schedule.</summary>
     private sealed class PromptGate
     {
-        private readonly Dictionary<string, Queue<TaskCompletionSource<bool>>> _pending = [];
+        private readonly Dictionary<string, Queue<TaskCompletionSource<string>>> _pending = [];
 
-        public Task<bool> Handle(IReadOnlyList<ContentBlock> content)
+        public Task<string> Handle(IReadOnlyList<ContentBlock> content)
         {
             var text = Text(content);
-            if (!_pending.TryGetValue(text, out var queue)) _pending[text] = queue = new Queue<TaskCompletionSource<bool>>();
-            var tcs = new TaskCompletionSource<bool>();
+            if (!_pending.TryGetValue(text, out var queue)) _pending[text] = queue = new Queue<TaskCompletionSource<string>>();
+            var tcs = new TaskCompletionSource<string>();
             queue.Enqueue(tcs);
             return tcs.Task;
         }
 
-        public void Complete(string text) => _pending[text].Dequeue().SetResult(true);
+        /// <summary>Returns the oldest pending prompt with this text, with the agent's stop reason.</summary>
+        public void Complete(string text, string stopReason = "end_turn") => _pending[text].Dequeue().SetResult(stopReason);
+
+        public void Fail(string text, Exception error) => _pending[text].Dequeue().SetException(error);
     }
 
     // A config change is its own RPC and deliberately allowed mid-turn, so a turn can end while one

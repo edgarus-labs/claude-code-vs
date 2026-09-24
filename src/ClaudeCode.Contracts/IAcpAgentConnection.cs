@@ -44,7 +44,11 @@ public interface IAcpAgentConnection : IAsyncDisposable
 
     Task<IReadOnlyList<SessionConfigOption>> SetSessionConfigOptionAsync(string sessionId, string configId, string value, CancellationToken cancellationToken);
 
-    Task SendPromptAsync(string sessionId, IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken);
+    /// <summary>Runs one prompt turn and returns the agent's <c>stopReason</c> for it once the turn
+    /// has ended (<c>"end_turn"</c> when the agent gave none). <c>"cancelled"</c> means the turn was
+    /// stopped by <see cref="CancelAsync"/> - for a prompt still waiting in the agent's queue (see
+    /// <see cref="SupportsPromptQueueing"/>) that it never started at all.</summary>
+    Task<string> SendPromptAsync(string sessionId, IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken);
 
     Task CancelAsync(string sessionId, CancellationToken cancellationToken);
 

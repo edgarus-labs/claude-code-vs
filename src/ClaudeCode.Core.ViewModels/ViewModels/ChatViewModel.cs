@@ -369,7 +369,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     // Same admission checks as CanEditDraft, minus IsBusy: a turn already in flight must not block
     // composing and sending the next message - it gets queued (see SendCoreAsync/EnqueueDraft) and
-    // dispatched once the current turn ends, instead of being blocked until then.
+    // dispatched straight away to an agent that queues prompts itself, otherwise once the current
+    // turn ends - instead of being blocked until then.
     private bool CanQueueOrSendDraft => !_disposed && !NeedsAuthentication && !IsConnecting
         && !IsConfigBusy && !_isSwitchingSession;
 
@@ -1065,17 +1066,18 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // it takes the next one in.
     private readonly List<QueuedMessage?> _submittedPrompts = new List<QueuedMessage?>();
 
-    // RunTurnAsync calls not yet finished - including prompts withdrawn from _submittedPrompts whose
-    // session/prompt is still to return. IsBusy covers all of them.
+    // RunTurnAsync calls not yet finished - including prompts dropped from _submittedPrompts with their
+    // session whose session/prompt is still to return. IsBusy covers all of them.
     private int _runningTurns;
 
-    // Set by Stop until every running turn has returned: nothing is sent ahead into a turn that is
-    // being cancelled, since the agent would settle it unstarted.
+    // Set by Stop until every running turn has returned (or the cancel fails): nothing is sent ahead
+    // into a turn that is being cancelled, since the agent would settle it unstarted.
     private bool _isStopping;
 
-    // Withdrawn prompts the agent will still answer "cancelled"; their synthesized TurnEnded must not
-    // close off the bubble of the turn that is actually stopping. See WithdrawUnstartedPrompts.
-    private int _withdrawnTurnEndsToSkip;
+    // Sent-ahead messages the agent returned without ever running them (Stop settles those
+    // "cancelled"; a refused prompt faults). They go back to the front of the queue, in order, once
+    // nothing is running - never lost, never sent twice.
+    private readonly List<QueuedMessage> _returnedUnstarted = new List<QueuedMessage>();
 
     private Task SendCoreAsync()
     {
@@ -1232,6 +1234,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             TurnTokens = null;
         }
         bool submitted = false;
+        string? stopReason = null;
         try
         {
             var (connection, sessionId) = await EnsureConnectedAsync(_lifetime.Token).ConfigureAwait(true);
@@ -1247,8 +1250,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             _submittedPrompts.Add(queued);
             submitted = true;
             if (_submittedPrompts.Count == 1) queued?.Bubble.MarkSent();
-            // Once submitted, acceptance is ambiguous on transport failure. Do not restore/resend it.
-            await connection.SendPromptAsync(sessionId, content, _lifetime.Token).ConfigureAwait(true);
+            // Once the running prompt is submitted, acceptance is ambiguous on transport failure: it is
+            // not restored or resent. (A sent-ahead prompt is judged in OnPromptReturned.)
+            stopReason = await connection.SendPromptAsync(sessionId, content, _lifetime.Token).ConfigureAwait(true);
         }
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex)
@@ -1257,14 +1261,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
         finally
         {
-            if (submitted) OnPromptReturned(queued);
+            if (submitted) OnPromptReturned(queued, stopReason);
             if (--_runningTurns == 0)
             {
                 IsBusy = false;
                 ActivityText = string.Empty;
                 _currentAssistantMessage = null;
                 _isStopping = false;
-                _withdrawnTurnEndsToSkip = 0;
+                RequeueReturnedUnstarted();
             }
         }
 
@@ -1273,15 +1277,23 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         DispatchNextQueuedMessage();
     }
 
-    // The agent settles the running prompt when it takes the next queued one in, so that one is
-    // running now: it gets its own assistant bubble, stops reading as pending, and is what the turn
-    // timer measures. A prompt already withdrawn (Stop, discard) is no longer tracked here at all;
-    // any other has been answered by the agent, however it ended, so it no longer reads as pending.
-    private void OnPromptReturned(QueuedMessage? queued)
+    // Whether a returning prompt ran is decided here, when its answer arrives, not when Stop is
+    // pressed: answers arrive in the agent's order, so a prompt still behind another one here was never
+    // started. Such a prompt the agent settled "cancelled" (Stop) or refused never ran, and is sent
+    // again later; the running one (index 0) ran however it ended. When the running prompt returns
+    // with others still waiting, the agent has taken the next one in (hand-off): that one is running
+    // now, gets its own assistant bubble, stops reading as pending, and is what the turn timer
+    // measures. A prompt dropped with its session (DiscardQueuedMessages) is no longer tracked.
+    private void OnPromptReturned(QueuedMessage? queued, string? stopReason)
     {
         int index = _submittedPrompts.IndexOf(queued);
         if (index < 0) return;
         _submittedPrompts.RemoveAt(index);
+        if (index > 0 && queued is not null && stopReason is null or "cancelled")
+        {
+            _returnedUnstarted.Add(queued);
+            return;
+        }
         queued?.Bubble.MarkSent();
         if (index != 0 || _submittedPrompts.Count == 0) return;
         _currentAssistantMessage = null;
@@ -1293,7 +1305,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     // Sent ahead only to an agent that advertised it queues prompts itself: it takes them in at its
     // next input boundary, between the running turn's operations, without interrupting any of them.
-    private bool CanSendAhead => !_isStopping && _connection?.SupportsPromptQueueing == true;
+    // Held back while a returned-unstarted message waits to go out again, so it keeps its place.
+    private bool CanSendAhead => !_isStopping && _returnedUnstarted.Count == 0 && _connection?.SupportsPromptQueueing == true;
 
     // Auto-dispatch answers to the same admission gates as a message the user sends by hand: a queue
     // entry that outlives the state it was typed in is exactly the hazard CanQueueOrSendDraft
@@ -1309,33 +1322,35 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             _ = DispatchQueuedMessageAsync(_queuedMessages.Dequeue());
     }
 
-    // Prompts behind the running one are still waiting in the agent's queue, and session/cancel
-    // settles those unstarted - they never run. They are still the user's next messages, so they go
-    // back to the front of the local queue, in order, still pending.
-    private void WithdrawUnstartedPrompts()
+    // Called once nothing is running: messages the agent returned unstarted go back to the front of
+    // the queue, in the order they were sent, ahead of anything typed since.
+    private void RequeueReturnedUnstarted()
     {
-        if (_submittedPrompts.Count <= 1) return;
-        var unstarted = _submittedPrompts.Skip(1).Select(prompt => prompt!).Concat(_queuedMessages).ToList();
-        _withdrawnTurnEndsToSkip += _submittedPrompts.Count - 1;
-        _submittedPrompts.RemoveRange(1, _submittedPrompts.Count - 1);
+        if (_returnedUnstarted.Count == 0) return;
+        var ordered = _returnedUnstarted.Concat(_queuedMessages).ToList();
+        _returnedUnstarted.Clear();
         _queuedMessages.Clear();
-        foreach (var message in unstarted) _queuedMessages.Enqueue(message);
+        foreach (var message in ordered) _queuedMessages.Enqueue(message);
     }
 
     /// <summary>Drops every message still waiting to go out - including any the agent was holding
-    /// but had not started - taking its bubble out of the transcript with it: the message never ran,
-    /// so a bubble left behind would read as delivered. Returns how many were dropped so the caller
-    /// can tell the user - they wrote them, and this is the only notice they will get.</summary>
+    /// but had not started, or had returned unstarted - taking its bubble out of the transcript with
+    /// it: the message never ran, so a bubble left behind would read as delivered. Returns how many
+    /// were dropped so the caller can tell the user - they wrote them, and this is the only notice
+    /// they will get.</summary>
     private int DiscardQueuedMessages()
     {
-        WithdrawUnstartedPrompts();
-        int discarded = _queuedMessages.Count;
-        while (_queuedMessages.Count > 0) Messages.Remove(_queuedMessages.Dequeue().Bubble);
-        return discarded;
+        var dropped = _submittedPrompts.Skip(1).Select(prompt => prompt!)
+            .Concat(_returnedUnstarted).Concat(_queuedMessages).ToList();
+        if (_submittedPrompts.Count > 1) _submittedPrompts.RemoveRange(1, _submittedPrompts.Count - 1);
+        _returnedUnstarted.Clear();
+        _queuedMessages.Clear();
+        foreach (var message in dropped) Messages.Remove(message.Bubble);
+        return dropped.Count;
     }
 
     /// <summary>Adds the "queued messages were lost" clause to whatever the caller is already
-    /// reporting, so neither the cause (disconnect, sign-out, workspace change, Stop) nor the
+    /// reporting, so neither the cause (disconnect, sign-out, workspace change) nor the
     /// consequence is dropped. Returns <paramref name="status"/> unchanged when nothing was lost.</summary>
     private static string? WithQueueNotice(string? status, int discarded)
     {
@@ -1401,12 +1416,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         if (_disposed || _connection is null || _sessionId is null) return;
         // Stop cancels the running turn, not the follow-ups the user has already written: they stay
-        // queued and RunTurnAsync's tail dispatches them once every cancelled prompt has returned.
-        if (IsBusy)
-        {
-            _isStopping = true;
-            WithdrawUnstartedPrompts();
-        }
+        // queued, and any the agent returns unstarted are sent again (OnPromptReturned); RunTurnAsync's
+        // tail dispatches them once every cancelled prompt has returned.
+        if (IsBusy) _isStopping = true;
         try
         {
             await _connection.CancelAsync(_sessionId, _lifetime.Token).ConfigureAwait(true);
@@ -1414,6 +1426,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex)
         {
+            // The turn goes on, so sending ahead into it is safe again.
+            _isStopping = false;
             if (!_disposed) StatusMessage = $"Cancel failed: {ex.Message}";
         }
     }
@@ -1802,14 +1816,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                     OnPropertyChanged(nameof(ContextUsageLabel));
                     break;
                 case SessionUpdate.TurnEnded turnEnded:
-                    // A withdrawn prompt's "cancelled" answer (the agent settles those before the
-                    // turn it is stopping) ends nothing the transcript shows.
-                    if (turnEnded.StopReason == "cancelled" && _withdrawnTurnEndsToSkip > 0)
-                    {
-                        _withdrawnTurnEndsToSkip--;
-                        break;
-                    }
-                    // The prompt task owns IsBusy, preventing a new send/config before it returns.
+                    // Raised just before its prompt returns, so that prompt is still in
+                    // _submittedPrompts. Stop settles prompts still waiting behind the running one
+                    // "cancelled" first (answers arrive in order): such an answer, while the running
+                    // prompt is still listed ahead of it, ends nothing the transcript shows.
+                    if (turnEnded.StopReason == "cancelled" && _submittedPrompts.Count > 1) break;
+                    // IsBusy is owned by the running RunTurnAsync calls and clears only when the last
+                    // of them returns, not here.
                     if (_currentAssistantMessage is not null && _turnStartedAt is DateTimeOffset startedAt)
                     {
                         _currentAssistantMessage.DurationSeconds = Math.Max(0, (int)(DateTimeOffset.UtcNow - startedAt).TotalSeconds);
@@ -1934,8 +1947,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                         _pendingPlanReviewComments = comments;
                         plan.MarkResolved("Sent back for revision");
                         Choose(reject);
-                        // A locally driven turn owns IsBusy, so SendCoreAsync's tail delivers the
-                        // review once the prompt RPC returns. A turn driven from claude.ai/code
+                        // A locally driven turn owns IsBusy, so RunTurnAsync's tail delivers the
+                        // review once the last in-flight prompt returns. A turn driven from claude.ai/code
                         // never sets it, and there is nothing to wait for: SessionUpdate.TurnEnded
                         // is raised from our own session/prompt response, so a remote turn produces
                         // none. Deferring on it would strand the user's typed review indefinitely,

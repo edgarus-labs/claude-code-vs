@@ -352,7 +352,7 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
     }
 
-    public async Task SendPromptAsync(string sessionId, IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken)
+    public async Task<string> SendPromptAsync(string sessionId, IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken)
     {
         var promptArray = new JsonArray();
         foreach (ContentBlock block in content)
@@ -371,6 +371,7 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         JsonNode? result = await _rpc.SendRequestAsync("session/prompt", @params, cancellationToken).ConfigureAwait(false);
         string stopReason = result is JsonObject obj ? GetOptionalString(obj, "stopReason") ?? "end_turn" : "end_turn";
         SessionUpdate?.Invoke(this, new SessionUpdateEventArgs(sessionId, new SessionUpdate.TurnEnded(stopReason)));
+        return stopReason;
     }
 
     public async Task CancelAsync(string sessionId, CancellationToken cancellationToken)

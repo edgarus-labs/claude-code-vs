@@ -58,7 +58,7 @@ public sealed class FakeAcpAgentConnection : IAcpAgentConnection
         }),
     };
 
-    public async Task SendPromptAsync(string sessionId, IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken)
+    public async Task<string> SendPromptAsync(string sessionId, IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken)
     {
         var text = string.Concat(content.OfType<ContentBlock.Text>().Select(t => t.Value));
         using var turnCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -79,10 +79,12 @@ public sealed class FakeAcpAgentConnection : IAcpAgentConnection
             }
 
             SessionUpdate?.Invoke(this, new SessionUpdateEventArgs(sessionId, new SessionUpdate.TurnEnded("end_turn")));
+            return "end_turn";
         }
         catch (OperationCanceledException)
         {
             SessionUpdate?.Invoke(this, new SessionUpdateEventArgs(sessionId, new SessionUpdate.TurnEnded("cancelled")));
+            return "cancelled";
         }
         finally
         {

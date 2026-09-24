@@ -93,7 +93,7 @@ public sealed class VsControlInjectingConnection : IAcpAgentConnection
     public Task<IReadOnlyList<SessionConfigOption>> SetSessionConfigOptionAsync(string sessionId, string configId, string value, CancellationToken cancellationToken) =>
         _inner.SetSessionConfigOptionAsync(sessionId, configId, value, cancellationToken);
 
-    public Task SendPromptAsync(string sessionId, IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken) =>
+    public Task<string> SendPromptAsync(string sessionId, IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken) =>
         _inner.SendPromptAsync(sessionId, content, cancellationToken);
 
     public Task CancelAsync(string sessionId, CancellationToken cancellationToken) =>

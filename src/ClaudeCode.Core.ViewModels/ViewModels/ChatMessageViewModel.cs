@@ -42,7 +42,8 @@ public sealed class ChatMessageViewModel : ObservableObject
         private set => SetProperty(ref _isPending, value);
     }
 
-    /// <summary>Records that the agent has now taken this message up. One-way on purpose:
+    /// <summary>Records that this message no longer waits to go out: the agent is running it, or
+    /// has answered it. One-way on purpose:
     /// a message that has gone out can never become pending again, so the flag is not a setter
     /// anyone outside can flip back.</summary>
     public void MarkSent() => IsPending = false;

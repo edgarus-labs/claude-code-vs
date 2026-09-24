@@ -57,17 +57,22 @@ internal sealed class RecordingAcpAgentConnection : IAcpAgentConnection
         return ConfigHandler?.Invoke(configId, value, cancellationToken) ?? Task.FromResult(ConfigOptions);
     }
 
-    public Task SendPromptAsync(string sessionId, IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken)
+    // A handler returning Task<string> supplies the stop reason; any other Task ends as "end_turn".
+    public async Task<string> SendPromptAsync(string sessionId, IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken)
     {
         Prompts.Add(content);
         PromptSessionIds.Add(sessionId);
-        return PromptHandler?.Invoke(content) ?? Task.CompletedTask;
+        var turn = PromptHandler?.Invoke(content) ?? Task.CompletedTask;
+        await turn;
+        return turn is Task<string> withReason ? withReason.Result : "end_turn";
     }
+
+    public Func<Task>? CancelHandler { get; set; }
 
     public Task CancelAsync(string sessionId, CancellationToken cancellationToken)
     {
         CancelCount++;
-        return Task.CompletedTask;
+        return CancelHandler?.Invoke() ?? Task.CompletedTask;
     }
 
     public List<(string SessionId, bool Enabled, string? Name)> RemoteControlCalls { get; } = [];

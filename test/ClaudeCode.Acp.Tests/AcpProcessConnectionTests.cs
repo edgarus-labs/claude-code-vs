@@ -960,6 +960,21 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         Assert.Equal(0, disconnected);
     }
 
+    // The chat view model tells a queued prompt the agent never started ("cancelled" by Stop) from
+    // one that ran by this value, so it must be the agent's own stopReason.
+    [Theory]
+    [InlineData("""{"stopReason":"cancelled"}""", "cancelled")]
+    [InlineData("""{"stopReason":"end_turn"}""", "end_turn")]
+    [InlineData("""{}""", "end_turn")]
+    public async Task SendPromptAsync_ReturnsTheAgentsStopReason(string result, string expected)
+    {
+        Task<string> pending = _connection.SendPromptAsync("s1", new ContentBlock[] { new ContentBlock.Text("hi") }, CancellationToken.None);
+        JsonObject request = await ReadRequestAsync("session/prompt");
+        await ReplyAsync(request, result);
+
+        Assert.Equal(expected, await pending.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
     [Fact]
     public async Task SendPromptAsync_PreservesImageOnlyContent_AndCompletesTheTurn()
     {
