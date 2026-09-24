@@ -784,6 +784,96 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(300, Assert.Single(vm.Messages, message => message.Text == "two").TokensUsed);
     }
 
+    // If the agent answers Stop the other way round - the stopped turn first - the follow-up still
+    // behind it never ran: it must not read as delivered, and goes out once more.
+    [Fact]
+    public async Task QueueingAgent_Cancel_StoppedTurnAnsweredFirst_FollowUpStillReadsPendingAndIsResent()
+    {
+        var turns = new PromptGate();
+        var connection = new RecordingAcpAgentConnection { SupportsPromptQueueing = true, PromptHandler = turns.Handle };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "first";
+        var firstSend = vm.SendAsync();
+        vm.InputText = "second";
+        await vm.SendAsync();
+        var second = Assert.Single(vm.Messages, message => message.Text == "second");
+
+        await vm.CancelCommand.ExecuteAsync(null);
+        turns.Complete("first", "cancelled");
+        await firstSend;
+        Assert.True(second.IsPending);
+        turns.Complete("second", "cancelled");
+        await WaitUntilAsync(() => connection.Prompts.Count == 3);
+
+        Assert.Equal(["first", "second", "second"], connection.Prompts.Select(Text));
+        turns.Complete("second");
+        await WaitUntilAsync(() => !vm.IsBusy);
+        Assert.False(second.IsPending);
+    }
+
+    // A message typed after a follow-up the agent refused goes out after it, not ahead of it.
+    [Fact]
+    public async Task QueueingAgent_MessageAfterARefusedFollowUp_KeepsItsPlaceBehindIt()
+    {
+        var turns = new PromptGate();
+        var connection = new RecordingAcpAgentConnection { SupportsPromptQueueing = true, PromptHandler = turns.Handle };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "first";
+        var firstSend = vm.SendAsync();
+        vm.InputText = "second";
+        await vm.SendAsync();
+        turns.Fail("second", new InvalidOperationException("prompt rejected"));
+        vm.InputText = "third";
+        await vm.SendAsync();
+        Assert.Equal(["first", "second"], connection.Prompts.Select(Text));
+
+        turns.Complete("first");
+        await firstSend;
+        await WaitUntilAsync(() => connection.Prompts.Count == 4);
+        Assert.Equal(["first", "second", "second", "third"], connection.Prompts.Select(Text));
+        turns.Complete("second");
+        turns.Complete("third");
+        await WaitUntilAsync(() => !vm.IsBusy);
+    }
+
+    // When the agent process dies every pending prompt fails, before the disconnect itself is
+    // processed. A follow-up that never ran is dropped with the session and reported "not sent" -
+    // never shown as delivered, and never re-sent into the dead connection.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task QueueingAgent_AgentDies_FollowUpIsReportedNotSent_WhicheverPromptFailsFirst(bool runningFailsFirst)
+    {
+        var ui = new QueuedSynchronizationContext();
+        var turns = new PromptGate();
+        var connection = new RecordingAcpAgentConnection { SupportsPromptQueueing = true, PromptHandler = turns.Handle };
+        using var vm = CreateOnUiContext(connection, ui);
+        await vm.Initialization;
+        ui.Drain();
+        vm.InputText = "first";
+        _ = vm.SendAsync();
+        ui.Drain();
+        vm.InputText = "second";
+        _ = vm.SendAsync();
+        ui.Drain();
+        Assert.Equal(["first", "second"], connection.Prompts.Select(Text));
+        var second = Assert.Single(vm.Messages, message => message.Text == "second");
+
+        // Off the UI thread, like the connection's reader: every pending prompt faults, then
+        // Disconnected - each posted to the UI thread in that order.
+        var died = new InvalidOperationException("agent exited");
+        foreach (var text in runningFailsFirst ? new[] { "first", "second" } : new[] { "second", "first" }) turns.Fail(text, died);
+        connection.RaiseDisconnected();
+        ui.Drain();
+        ui.Drain();
+
+        Assert.DoesNotContain(second, vm.Messages);
+        Assert.Contains("not sent", vm.StatusMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(["first", "second"], connection.Prompts.Select(Text));
+    }
+
     // An agent that did not advertise queueing keeps the one-prompt-at-a-time contract.
     [Fact]
     public async Task NonQueueingAgent_FollowUpWaitsForTheRunningTurnToEnd()

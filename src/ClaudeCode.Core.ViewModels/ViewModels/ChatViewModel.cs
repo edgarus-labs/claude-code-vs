@@ -1074,9 +1074,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // into a turn that is being cancelled, since the agent would settle it unstarted.
     private bool _isStopping;
 
-    // Sent-ahead messages the agent returned without ever running them (Stop settles those
-    // "cancelled"; a refused prompt faults). They go back to the front of the queue, in order, once
-    // nothing is running - never lost, never sent twice.
+    // Sent-ahead messages that came back without ever having started (Stop settles those
+    // "cancelled"; a send that fails - refused, or the agent died - faults). They go back to the
+    // front of the queue, in order, once nothing is running - never lost, never sent twice.
     private readonly List<QueuedMessage> _returnedUnstarted = new List<QueuedMessage>();
 
     private Task SendCoreAsync()
@@ -1234,6 +1234,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             TurnTokens = null;
         }
         bool submitted = false;
+        bool requeued = false;
         string? stopReason = null;
         try
         {
@@ -1268,34 +1269,43 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 ActivityText = string.Empty;
                 _currentAssistantMessage = null;
                 _isStopping = false;
-                RequeueReturnedUnstarted();
+                requeued = RequeueReturnedUnstarted();
             }
         }
 
         if (_runningTurns > 0) return;
         SendPendingPlanReview();
-        DispatchNextQueuedMessage();
+        // When the agent dies, every pending prompt fails before its Disconnected is processed (it is
+        // posted right behind them). Sending what came back unstarted must wait its turn on the UI
+        // thread, so that disconnect drops it with its session instead of it going to a dead pipe.
+        if (requeued && _uiContext is not null) _uiContext.Post(_ => DispatchNextQueuedMessage(), null);
+        else DispatchNextQueuedMessage();
     }
 
     // Whether a returning prompt ran is decided here, when its answer arrives, not when Stop is
-    // pressed: answers arrive in the agent's order, so a prompt still behind another one here was never
-    // started. Such a prompt the agent settled "cancelled" (Stop) or refused never ran, and is sent
-    // again later; the running one (index 0) ran however it ended. When the running prompt returns
-    // with others still waiting, the agent has taken the next one in (hand-off): that one is running
-    // now, gets its own assistant bubble, stops reading as pending, and is what the turn timer
-    // measures. A prompt dropped with its session (DiscardQueuedMessages) is no longer tracked.
+    // pressed. A prompt runs once it is confirmed started: sent while nothing else was in flight, or
+    // taken in by a hand-off - either way its bubble stops reading as pending. One still pending that
+    // comes back "cancelled" (Stop) or failed (refused, or the agent died) never ran, and is sent
+    // again once nothing is running - or dropped with its session, with a notice. A hand-off is only
+    // a real end of the running prompt (not "cancelled", not a failure) while others wait: the agent
+    // has taken the next one in, which now runs, gets its own assistant bubble, and is what the turn
+    // timer measures. A prompt dropped with its session (DiscardQueuedMessages) is no longer tracked.
     private void OnPromptReturned(QueuedMessage? queued, string? stopReason)
     {
         int index = _submittedPrompts.IndexOf(queued);
         if (index < 0) return;
         _submittedPrompts.RemoveAt(index);
-        if (index > 0 && queued is not null && stopReason is null or "cancelled")
+        bool endedNormally = stopReason is not null and not "cancelled";
+        if (queued is not null && queued.Bubble.IsPending)
         {
-            _returnedUnstarted.Add(queued);
-            return;
+            if (!endedNormally)
+            {
+                _returnedUnstarted.Add(queued);
+                return;
+            }
+            queued.Bubble.MarkSent();
         }
-        queued?.Bubble.MarkSent();
-        if (index != 0 || _submittedPrompts.Count == 0) return;
+        if (index != 0 || _submittedPrompts.Count == 0 || !endedNormally) return;
         _currentAssistantMessage = null;
         _turnStartedAt = DateTimeOffset.UtcNow;
         _turnStartUsedTokens = _sessionUsedTokens;
@@ -1323,14 +1333,15 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     }
 
     // Called once nothing is running: messages the agent returned unstarted go back to the front of
-    // the queue, in the order they were sent, ahead of anything typed since.
-    private void RequeueReturnedUnstarted()
+    // the queue, in the order they were sent, ahead of anything typed since. Returns whether any did.
+    private bool RequeueReturnedUnstarted()
     {
-        if (_returnedUnstarted.Count == 0) return;
+        if (_returnedUnstarted.Count == 0) return false;
         var ordered = _returnedUnstarted.Concat(_queuedMessages).ToList();
         _returnedUnstarted.Clear();
         _queuedMessages.Clear();
         foreach (var message in ordered) _queuedMessages.Enqueue(message);
+        return true;
     }
 
     /// <summary>Drops every message still waiting to go out - including any the agent was holding
@@ -1817,9 +1828,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                     break;
                 case SessionUpdate.TurnEnded turnEnded:
                     // Raised just before its prompt returns, so that prompt is still in
-                    // _submittedPrompts. Stop settles prompts still waiting behind the running one
-                    // "cancelled" first (answers arrive in order): such an answer, while the running
-                    // prompt is still listed ahead of it, ends nothing the transcript shows.
+                    // _submittedPrompts. On Stop the agent settles the prompts still waiting in its
+                    // queue "cancelled" before the running one returns: such an answer, while the
+                    // running prompt is still listed ahead of it, ends nothing the transcript shows.
                     if (turnEnded.StopReason == "cancelled" && _submittedPrompts.Count > 1) break;
                     // IsBusy is owned by the running RunTurnAsync calls and clears only when the last
                     // of them returns, not here.
