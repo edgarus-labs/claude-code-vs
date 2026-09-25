@@ -662,8 +662,9 @@ public sealed partial class AcpProcessConnection
         return list.Count == 0 ? Array.Empty<string>() : list;
     }
 
-    // claude-agent-acp: Glob and Grep carry no locations; the files they found arrive only in the
-    // PostToolUse update's _meta.claudeCode.toolResponse - `filenames` for Glob and Grep's file
+    // claude-agent-acp: a Glob's locations name only the folder it searched, and a Grep carries
+    // none; the files they found arrive only in the PostToolUse update's
+    // _meta.claudeCode.toolResponse - `filenames` for Glob and Grep's file
     // modes, and for Grep's default content mode only "path:line:text" lines (count mode:
     // "path:count"). Other tools' toolResponse has other shapes and is not read here.
     private static void AddSearchResultPaths(JsonObject? meta, List<string> paths)
