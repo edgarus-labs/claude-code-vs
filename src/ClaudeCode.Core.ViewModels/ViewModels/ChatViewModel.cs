@@ -1648,6 +1648,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         Messages.Clear();
         lock (_changedFilesByPath) _changedFilesByPath.Clear();
         _toolCallDiffsById.Clear();
+        if (_runningSubagents.Count > 0) { _runningSubagents.Clear(); OnPropertyChanged(nameof(RunningAgentCount)); }
         ChangedFiles.Clear();
         ClearPendingRequests("The session was replaced.");
         _explicitSessionTitle = null;
@@ -1899,6 +1900,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         });
     }
 
+    // Subagent tool calls that have not finished, by id; see RunningAgentCount.
+    private readonly HashSet<string> _runningSubagents = new HashSet<string>(StringComparer.Ordinal);
+
+    /// <summary>How many subagents (Claude Code's Agent tool) are running - the composer's
+    /// "N agents" pill, like the VS Code extension's.</summary>
+    public int RunningAgentCount => _runningSubagents.Count;
+
     private void UpsertToolCall(ToolCallUpdate call)
     {
         // File-system work (path canonicalization, whole-file reads) must never run on the WPF
@@ -1911,16 +1919,23 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             if (diffs.Count > 0) _ = Task.Run(() => TrackToolCallFileChangesAsync(call, diffs));
         }
         var message = EnsureAssistantMessage();
-        var existing = message.ToolCalls.FirstOrDefault(t => t.ToolCallId == call.ToolCallId);
-        if (existing is not null)
+        var card = message.ToolCalls.FirstOrDefault(t => t.ToolCallId == call.ToolCallId);
+        if (card is not null)
         {
-            existing.Apply(call);
+            card.Apply(call);
         }
         else
         {
-            var card = new ToolCallCardViewModel(call);
+            card = new ToolCallCardViewModel(call);
             message.ToolCalls.Add(card);
             message.AppendToolCall(card);
+        }
+        if (card.IsSubagent)
+        {
+            bool changed = card.Status is ToolCallStatus.Completed or ToolCallStatus.Failed
+                ? _runningSubagents.Remove(card.ToolCallId)
+                : _runningSubagents.Add(card.ToolCallId);
+            if (changed) OnPropertyChanged(nameof(RunningAgentCount));
         }
         // Deliberately not the tool's own title/command text here: the activity indicator is a
         // generic "something is happening" status, not a live command echo.

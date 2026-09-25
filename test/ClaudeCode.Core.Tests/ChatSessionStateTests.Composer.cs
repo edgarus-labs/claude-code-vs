@@ -1291,6 +1291,34 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("visible answer", Assert.Single(vm.Messages, message => message.Role == ChatRole.Assistant).Text);
     }
 
+    // The composer shows how many subagents are running, like the VS Code extension's "N agents" pill.
+    // An update that does not name the tool (most status updates) keeps the call counted as a subagent.
+    [Fact]
+    public async Task RunningAgentCount_CountsSubagentCallsUntilTheyFinish()
+    {
+        var completed = new TaskCompletionSource<bool>();
+        var connection = new RecordingAcpAgentConnection { PromptHandler = _ => completed.Task };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "go";
+        var prompt = vm.SendAsync();
+        Assert.Equal(0, vm.RunningAgentCount);
+
+        connection.RaiseSessionUpdate(new SessionUpdate.ToolCall(new ToolCallUpdate { ToolCallId = "a1", Title = "Explore", IsSubagent = true, Status = ToolCallStatus.InProgress }));
+        connection.RaiseSessionUpdate(new SessionUpdate.ToolCall(new ToolCallUpdate { ToolCallId = "a2", Title = "Review", IsSubagent = true, Status = ToolCallStatus.Pending }));
+        connection.RaiseSessionUpdate(new SessionUpdate.ToolCall(new ToolCallUpdate { ToolCallId = "r1", Title = "Read", Status = ToolCallStatus.InProgress }));
+        Assert.Equal(2, vm.RunningAgentCount);
+
+        connection.RaiseSessionUpdate(new SessionUpdate.ToolCall(new ToolCallUpdate { ToolCallId = "a1", Status = ToolCallStatus.InProgress }));
+        Assert.Equal(2, vm.RunningAgentCount);
+        connection.RaiseSessionUpdate(new SessionUpdate.ToolCall(new ToolCallUpdate { ToolCallId = "a1", Status = ToolCallStatus.Completed }));
+        connection.RaiseSessionUpdate(new SessionUpdate.ToolCall(new ToolCallUpdate { ToolCallId = "a2", Status = ToolCallStatus.Failed }));
+        Assert.Equal(0, vm.RunningAgentCount);
+
+        completed.SetResult(true);
+        await prompt;
+    }
+
     // Like the VS Code extension, Claude's thinking is shown in the transcript, where it happened -
     // Claude often settles a message sent mid-turn there, and what is not shown was never said. It
     // stays separate from the reply's Text.

@@ -46,8 +46,13 @@ public sealed class ToolCallCardViewModel : ObservableObject
     private string? _cachedDiffNewText;
     private IReadOnlyList<DiffLineViewModel>? _cachedDiffLines;
 
+    /// <summary>True once any update has named this call a subagent; see <see cref="ToolCallUpdate.IsSubagent"/>.</summary>
+    public bool IsSubagent { get; private set; }
+
     public void Apply(ToolCallUpdate call)
     {
+        if (call.IsSubagent) IsSubagent = true;
+
         if (!string.IsNullOrEmpty(call.Title))
         {
             // MCP tools arrive as a routing identifier (mcp__visual-studio__listAppWindows).

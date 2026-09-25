@@ -653,8 +653,8 @@
         </StackPanel>
       </StackPanel>
 
-      <!-- Composer: only the text area is boxed (rounded, focus-highlighted); the toolbar row sits
-           below it unboxed, like the Claude desktop app. Always visible, including while signed out,
+      <!-- Composer: one rounded, focus-highlighted box holding the text area and, under a hairline,
+           the toolbar - like the VS Code extension. Always visible, including while signed out,
            so /login (the way to get out of that state) is always reachable. -->
       <Grid x:Name="ComposerCard" Grid.Row="1">
         <Grid.RowDefinitions>
@@ -682,7 +682,13 @@
               </Style.Triggers>
             </Style>
           </Border.Style>
-        <Grid Margin="10,6,10,6">
+        <Grid>
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <Grid Margin="12,9,12,7">
           <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
@@ -690,51 +696,6 @@
           </Grid.RowDefinitions>
 
           <Grid Grid.Row="1" Margin="3,0,3,0">
-            <Grid.ColumnDefinitions>
-              <ColumnDefinition Width="*" />
-              <ColumnDefinition Width="Auto" />
-            </Grid.ColumnDefinitions>
-            <!-- Docked to the bottom so it stays by the last line while the text grows, but sized to exactly one
-                 text line (at the current font size) so it is centered on a single-line composer. -->
-            <Grid Grid.Column="1" Margin="8,0,0,0" VerticalAlignment="Bottom" MinHeight="28">
-              <Grid.Height>
-                <MultiBinding Converter="{StaticResource SingleLineHeightConverter}" ConverterParameter="6">
-                  <Binding ElementName="ComposerBox" Path="FontSize" />
-                  <Binding ElementName="ComposerBox" Path="FontFamily" />
-                </MultiBinding>
-              </Grid.Height>
-              <!-- Send/Stop keep a fixed size at every zoom level (owner decision on #22): their glyph
-                   is fixed-coordinate Path data, so a growing button only grows the empty frame.
-                   Send stays visible (and enabled) while busy too: sending then queues the message
-                   instead of submitting it immediately (see ChatViewModel.SendCoreAsync), so Stop
-                   sits alongside it rather than replacing it. -->
-              <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                <!-- The Stop slot is reserved rather than collapsed: this column is Auto-sized, so a
-                     button appearing and disappearing with every turn would shrink and regrow the
-                     text box underneath it - and reflow whatever the user is mid-sentence in. -->
-                <Grid Width="32">
-                  <Button Width="28" Height="28" Padding="0" HorizontalAlignment="Left" Command="{Binding CancelCommand}"
-                          Style="{StaticResource ChatButtonStyle}" ToolTip="Stop response" AutomationProperties.Name="Stop response"
-                          Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibilityConverter}}">
-                    <Rectangle Width="10" Height="10" RadiusX="1.5" RadiusY="1.5"
-                               Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
-                  </Button>
-                </Grid>
-                <!-- Not a reserved slot like Stop above: this only ever appears for the rare, one-off
-                     /login or /logout console launch, not every turn, so there is no reflow to guard against. -->
-                <Button Width="28" Height="28" Padding="0" Margin="0,0,4,0" Command="{Binding CancelAuthCommand}"
-                        Style="{StaticResource ChatButtonStyle}" ToolTip="Cancel sign-in or sign-out" AutomationProperties.Name="Cancel sign-in or sign-out"
-                        Visibility="{Binding IsAuthCommandRunning, Converter={StaticResource BoolToVisibilityConverter}}">
-                  <Rectangle Width="10" Height="10" RadiusX="1.5" RadiusY="1.5"
-                             Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
-                </Button>
-                <Button Width="28" Height="28" Padding="0" Command="{Binding SendCommand}" Click="SendButton_Click"
-                        Style="{StaticResource ChatButtonStyle}" ToolTip="Send message (Enter)" AutomationProperties.Name="Send message">
-                  <Path Data="M 6,12 L 6,0 M 1,5 L 6,0 L 11,5" StrokeThickness="1.8"
-                        Style="{StaticResource ButtonIconStrokeStyle}" />
-                </Button>
-              </StackPanel>
-            </Grid>
             <!-- No MinHeight: one line tall initially, grows with the text up to MaxHeight (VS Code behavior). -->
             <TextBox x:Name="ComposerBox" Text="{Binding InputText, UpdateSourceTrigger=PropertyChanged}"
                      Style="{StaticResource ComposerStyle}" AcceptsReturn="True" AcceptsTab="False"
@@ -859,8 +820,10 @@
           </Grid>
 
         </Grid>
-        </Border>
-        <Grid Grid.Row="1" Margin="4,6,4,0">
+        <!-- The toolbar lives in the same rounded container as the text, under a hairline, like the
+             VS Code extension - one box that scales as a unit. -->
+        <Border Grid.Row="1" Height="1" Opacity="0.6" Background="{DynamicResource ChatBorderBrush}" />
+        <Grid Grid.Row="2" Margin="6,3,6,3">
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="*" />
               <ColumnDefinition Width="Auto" />
@@ -899,19 +862,19 @@
                           </TextBlock>
                         </ToolTip>
                       </Button.ToolTip>
-                      <Path Data="M 0,6 L 12,6 M 6,0 L 6,12" StrokeThickness="1.5"
-                            Style="{StaticResource ButtonIconStrokeStyle}" />
+                      <Viewbox Width="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=15}" Height="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=15}"><Path Data="M 0,7 L 14,7 M 7,0 L 7,14" StrokeThickness="1.6"
+                            Style="{StaticResource ButtonIconStrokeStyle}" /></Viewbox>
                     </Button>
                     <Button Click="SlashButton_Click" MinWidth="32" MinHeight="32"
                             Width="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=32}"
                             Height="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=32}"
                             Style="{StaticResource LinkButtonStyle}" ToolTip="Session commands (/)"
                             AutomationProperties.Name="Session commands">
-                      <Border Width="15" Height="15" CornerRadius="3" BorderThickness="1.2"
+                      <Viewbox Width="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=15}" Height="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=15}"><Border Width="16" Height="16" CornerRadius="3" BorderThickness="1.3"
                               BorderBrush="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}">
                         <Path Data="M 4,11 L 8,2" StrokeThickness="1.3" Style="{StaticResource ButtonIconStrokeStyle}"
                               HorizontalAlignment="Center" VerticalAlignment="Center" />
-                      </Border>
+                      </Border></Viewbox>
                     </Button>
                     <Button Click="AttachImageButton_Click" MinWidth="32" MinHeight="32"
                             Width="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=32}"
@@ -919,35 +882,27 @@
                             Style="{StaticResource LinkButtonStyle}" ToolTip="Attach an image file (or paste with Ctrl+V)"
                             AutomationProperties.Name="Attach image file">
                       <TextBlock Text="&#xE91B;" FontFamily="Segoe MDL2 Assets"
-                                 FontSize="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}" />
+                                 FontSize="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=14}" />
                     </Button>
                   </StackPanel>
                 </ContentControl>
-                <!-- MaxWidth scales with the label it caps: pinned it would trim the mode name to
-                     ellipsis at the very font size the user raised to read it (#22). -->
-                <Button x:Name="ModeButton" Margin="4,0,0,0" Padding="6,5"
-                        MaxWidth="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=180}"
-                        Click="ModeButton_Click" IsEnabled="{Binding CanConfigure}"
-                        Style="{StaticResource LinkButtonStyle}" BorderBrush="Transparent"
-                        Background="Transparent" Foreground="{DynamicResource ChatForegroundBrush}"
-                        ToolTip="Choose session mode" ToolTipService.ShowOnDisabled="True"
-                        Visibility="{Binding HasModes, Converter={StaticResource BoolToVisibilityConverter}}"
-                        AutomationProperties.Name="Session mode" AutomationProperties.HelpText="Choose how Claude asks for permission in this conversation.">
-                  <StackPanel Orientation="Horizontal">
-                    <TextBlock Text="{Binding ActiveModeName, Converter={StaticResource SessionModeGlyphConverter}}"
-                               FontFamily="Segoe MDL2 Assets" Margin="0,0,6,0" VerticalAlignment="Center"
-                               FontSize="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=13}" />
-                    <TextBlock Text="{Binding ActiveModeName}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
-                               FontSize="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}" />
-                    <Path Data="M 0,0 L 4,4 L 8,0" Margin="6,2,0,0" VerticalAlignment="Center"
-                          Style="{StaticResource ButtonIconStrokeStyle}" StrokeThickness="1.3" />
-                  </StackPanel>
-                </Button>
+                <!-- Context-window fill ring (hover for exact numbers). -->
+                <Grid Width="16" Height="16" Margin="6,0,6,0" DockPanel.Dock="Left" VerticalAlignment="Center"
+                      ToolTip="{Binding ContextUsageLabel}" AutomationProperties.Name="{Binding ContextUsageLabel}"
+                      Visibility="{Binding ContextUsagePercent, Converter={StaticResource NullToVisibilityConverter}}">
+                  <Ellipse Stroke="{DynamicResource ChatBorderBrush}" StrokeThickness="2" />
+                  <Ellipse Stroke="{DynamicResource ChatAccentBrush}" StrokeThickness="2" RenderTransformOrigin="0.5,0.5"
+                           StrokeDashArray="{Binding ContextUsagePercent, Converter={StaticResource PercentToDashArrayConverter}, ConverterParameter=7\,2}">
+                    <Ellipse.RenderTransform>
+                      <RotateTransform Angle="-90" />
+                    </Ellipse.RenderTransform>
+                  </Ellipse>
+                </Grid>
                 <!-- Remote Control pill: blue while the session can be driven from claude.ai/code.
                      No Visibility binding: session modes (HasModes) are an unrelated capability, and
                      the view model exposes no remote-control capability flag, so let
                      ToggleRemoteControlCommand.CanExecute disable the pill instead of hiding it. -->
-                <Button x:Name="RemoteControlButton" Margin="4,0,0,0" Padding="9,4" Command="{Binding ToggleRemoteControlCommand}"
+                <Button x:Name="RemoteControlButton" Margin="4,0,0,0" Padding="8,0" VerticalAlignment="Center" Height="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=24}" Command="{Binding ToggleRemoteControlCommand}"
                         ToolTipService.ShowOnDisabled="True" AutomationProperties.Name="Remote Control">
                   <Button.Style>
                     <Style TargetType="Button" BasedOn="{StaticResource LinkButtonStyle}">
@@ -980,7 +935,29 @@
                   <TextBlock Text="&#xE8A7;" FontFamily="Segoe MDL2 Assets"
                              FontSize="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=11}" />
                 </Button>
-                <Button x:Name="ModelButton" Margin="7,0,0,0" HorizontalAlignment="Right" Padding="6,5"
+                <!-- Running subagents (Claude Code's Agent tool), like the VS Code extension's pill. -->
+                <Border Margin="4,0,0,0" Padding="8,0" CornerRadius="8" VerticalAlignment="Center" Height="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=24}"
+                        Background="{DynamicResource ChatHoverBrush}"
+                        ToolTip="Subagents running in this session" AutomationProperties.Name="Running agents">
+                  <StackPanel Orientation="Horizontal">
+                    <Ellipse Width="6" Height="6" Margin="0,0,6,0" VerticalAlignment="Center">
+                      <Ellipse.Style>
+                        <Style TargetType="Ellipse">
+                          <Setter Property="Fill" Value="{DynamicResource ChatSubtleForegroundBrush}" />
+                          <Style.Triggers>
+                            <DataTrigger Binding="{Binding RunningAgentCount}" Value="0">
+                              <Setter Property="Opacity" Value="0.6" />
+                            </DataTrigger>
+                          </Style.Triggers>
+                        </Style>
+                      </Ellipse.Style>
+                    </Ellipse>
+                    <TextBlock Text="{Binding RunningAgentCount, StringFormat='{}{0} agents'}" VerticalAlignment="Center"
+                               Foreground="{DynamicResource ChatForegroundBrush}"
+                               FontSize="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}" />
+                  </StackPanel>
+                </Border>
+                <Button x:Name="ModelButton" Margin="4,0,0,0" HorizontalAlignment="Left" Padding="8,0" VerticalAlignment="Center" Height="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=24}"
                         MaxWidth="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=280}"
                         Click="ModelButton_Click" IsEnabled="{Binding CanConfigure}"
                         Style="{StaticResource LinkButtonStyle}" BorderBrush="Transparent"
@@ -1001,19 +978,52 @@
                 </Button>
               </DockPanel>
             </ContentControl>
-            <!-- Context-window fill ring (hover for exact numbers). -->
-            <Grid Grid.Column="1" Width="16" Height="16" Margin="6,0,4,0" VerticalAlignment="Center"
-                  ToolTip="{Binding ContextUsageLabel}" AutomationProperties.Name="{Binding ContextUsageLabel}"
-                  Visibility="{Binding ContextUsagePercent, Converter={StaticResource NullToVisibilityConverter}}">
-              <Ellipse Stroke="{DynamicResource ChatBorderBrush}" StrokeThickness="2" />
-              <Ellipse Stroke="{DynamicResource ChatAccentBrush}" StrokeThickness="2" RenderTransformOrigin="0.5,0.5"
-                       StrokeDashArray="{Binding ContextUsagePercent, Converter={StaticResource PercentToDashArrayConverter}, ConverterParameter=7\,2}">
-                <Ellipse.RenderTransform>
-                  <RotateTransform Angle="-90" />
-                </Ellipse.RenderTransform>
-              </Ellipse>
-            </Grid>
+            <!-- Right end, like the VS Code extension: session mode, then Stop/Send, which scale with the
+                 chat font like the rest of the toolbar (owner decision, replacing #22). Send stays enabled while busy:
+                 sending then queues the message (see ChatViewModel.SendCoreAsync), so Stop sits
+                 alongside it rather than replacing it. -->
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                <!-- MaxWidth scales with the label it caps: pinned it would trim the mode name to
+                     ellipsis at the very font size the user raised to read it (#22). -->
+                <Button x:Name="ModeButton" Margin="0,0,4,0" Padding="6,5"
+                        MaxWidth="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=180}"
+                        Click="ModeButton_Click" IsEnabled="{Binding CanConfigure}"
+                        Style="{StaticResource LinkButtonStyle}" BorderBrush="Transparent"
+                        Background="Transparent" Foreground="{DynamicResource ChatForegroundBrush}"
+                        ToolTip="Choose session mode" ToolTipService.ShowOnDisabled="True"
+                        Visibility="{Binding HasModes, Converter={StaticResource BoolToVisibilityConverter}}"
+                        AutomationProperties.Name="Session mode" AutomationProperties.HelpText="Choose how Claude asks for permission in this conversation.">
+                  <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="{Binding ActiveModeName, Converter={StaticResource SessionModeGlyphConverter}}"
+                               FontFamily="Segoe MDL2 Assets" Margin="0,0,6,0" VerticalAlignment="Center"
+                               FontSize="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=13}" />
+                    <TextBlock Text="{Binding ActiveModeName}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                               FontSize="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}" />
+                    <Path Data="M 0,0 L 4,4 L 8,0" Margin="6,2,0,0" VerticalAlignment="Center"
+                          Style="{StaticResource ButtonIconStrokeStyle}" StrokeThickness="1.3" />
+                  </StackPanel>
+                </Button>
+              <Button Width="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=28}" Height="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=28}" Padding="0" Margin="0,0,4,0" Command="{Binding CancelAuthCommand}"
+                      Style="{StaticResource ChatButtonStyle}" ToolTip="Cancel sign-in or sign-out" AutomationProperties.Name="Cancel sign-in or sign-out"
+                      Visibility="{Binding IsAuthCommandRunning, Converter={StaticResource BoolToVisibilityConverter}}">
+                <Viewbox Width="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=10}" Height="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=10}"><Rectangle Width="10" Height="10" RadiusX="1.5" RadiusY="1.5"
+                           Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" /></Viewbox>
+              </Button>
+              <Button Width="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=28}" Height="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=28}" Padding="0" Margin="0,0,4,0" Command="{Binding CancelCommand}"
+                      Style="{StaticResource ChatButtonStyle}" ToolTip="Stop response" AutomationProperties.Name="Stop response"
+                      Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibilityConverter}}">
+                <Viewbox Width="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=10}" Height="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=10}"><Rectangle Width="10" Height="10" RadiusX="1.5" RadiusY="1.5"
+                           Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" /></Viewbox>
+              </Button>
+              <Button Width="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=28}" Height="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=28}" Padding="0" Command="{Binding SendCommand}" Click="SendButton_Click"
+                      Style="{StaticResource ChatButtonStyle}" ToolTip="Send message (Enter)" AutomationProperties.Name="Send message">
+                <Viewbox Width="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}" Height="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}"><Path Data="M 6,12 L 6,0 M 1,5 L 6,0 L 11,5" StrokeThickness="1.8"
+                      Style="{StaticResource ButtonIconStrokeStyle}" /></Viewbox>
+              </Button>
+            </StackPanel>
         </Grid>
+        </Grid>
+        </Border>
       </Grid>
 
       <Popup x:Name="SlashPopup" PlacementTarget="{Binding ElementName=ComposerCard}" Placement="Top"
@@ -1078,7 +1088,7 @@
       <Popup x:Name="ModelPopup" PlacementTarget="{Binding ElementName=ComposerCard}" Placement="Top"
              VerticalOffset="-6" AllowsTransparency="True" StaysOpen="False" Opened="ModelPopup_Opened"
              Closed="ModelPopup_Closed" DataContext="{Binding DataContext, ElementName=ChatPanel}">
-        <Border Width="{Binding ActualWidth, ElementName=ComposerCard}" MaxHeight="440"
+        <Border Width="{Binding ActualWidth, ElementName=ComposerCard}" MaxHeight="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=440}"
                 Background="{DynamicResource ChatPopupBackgroundBrush}" BorderBrush="{DynamicResource ChatBorderBrush}"
                 BorderThickness="1" CornerRadius="12" Padding="7" KeyboardNavigation.TabNavigation="Cycle"
                 TextElement.Foreground="{DynamicResource ChatForegroundBrush}" PreviewKeyDown="ModelPopup_PreviewKeyDown"
@@ -1154,7 +1164,7 @@
              VerticalOffset="-6" AllowsTransparency="True" StaysOpen="False"
              Opened="ModePopup_Opened"
              DataContext="{Binding DataContext, ElementName=ChatPanel}">
-        <Border Width="{Binding ActualWidth, ElementName=ComposerCard}" MaxHeight="360"
+        <Border Width="{Binding ActualWidth, ElementName=ComposerCard}" MaxHeight="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=360}"
                 Background="{DynamicResource ChatPopupBackgroundBrush}" BorderBrush="{DynamicResource ChatBorderBrush}"
                 BorderThickness="1" CornerRadius="12" Padding="7"
                 TextElement.Foreground="{DynamicResource ChatForegroundBrush}"

@@ -1176,6 +1176,25 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         Assert.Equal("accept", accepted["result"]!["action"]!.GetValue<string>());
     }
 
+    // claude-agent-acp names the underlying Claude Code tool in _meta.claudeCode.toolName; a subagent
+    // is the Agent (formerly Task) tool. The composer counts those while they run.
+    [Theory]
+    [InlineData("Agent", true)]
+    [InlineData("Task", true)]
+    [InlineData("TaskCreate", false)]
+    [InlineData("Read", false)]
+    public async Task SessionUpdate_ToolCall_MarksSubagentsByTheirClaudeCodeToolName(string toolName, bool isSubagent)
+    {
+        var received = new TaskCompletionSource<SessionUpdateEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _connection.SessionUpdate += (_, update) => received.TrySetResult(update);
+
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer,
+            "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"tool_call\",\"toolCallId\":\"t1\",\"title\":\"x\",\"kind\":\"think\",\"status\":\"in_progress\",\"_meta\":{\"claudeCode\":{\"toolName\":\"" + toolName + "\"}}}}}");
+
+        var call = Assert.IsType<SessionUpdate.ToolCall>((await received.Task.WaitAsync(TimeSpan.FromSeconds(5))).Update).Call;
+        Assert.Equal(isSubagent, call.IsSubagent);
+    }
+
     [Fact]
     public async Task SessionUpdate_ToolCallWithoutAToolCallId_DropsThatNotificationAndKeepsThePumpAlive()
     {
