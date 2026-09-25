@@ -63,9 +63,10 @@ public static class ChatFileReference
     /// or bare URLs are copied through untouched, a backtick code span becomes a link only when its
     /// entire content is path-shaped, and a plain-prose word becomes a link when it carries a
     /// recognized file extension together with either a path separator or a <c>:line</c>,
-    /// <c>:line:col</c>, or <c>(line,col)</c> location suffix. Trailing sentence punctuation is kept
-    /// outside the link, and the characters markdown reads specially inside link text are escaped so
-    /// the visible text renders as the literal path the agent wrote.
+    /// <c>:line:col</c>, or <c>(line,col)</c> location suffix. Trailing sentence punctuation and
+    /// <c>*</c>/<c>_</c> emphasis wrapping the reference (<c>**`src\Foo.cs`**</c>) are kept outside
+    /// the link. The link shows only the file name and the location suffix the agent wrote
+    /// (<c>Foo.cs:12</c>); the full path goes into the href, which is used for navigation only.
     /// </summary>
     public static string LinkifyFileReferences(string? markdown)
     {
@@ -270,6 +271,19 @@ public static class ChatFileReference
                 continue;
             }
 
+            // Emphasis glued to a code span ("**`src\Foo.cs`**"): copy the delimiter run through so
+            // the span itself is judged on the next pass and the link lands inside the emphasis.
+            if (c == '*' || c == '_')
+            {
+                var run = DelimiterRunLength(line, i);
+                if (i + run < line.Length && line[i + run] == '`')
+                {
+                    result.Append(line, i, run);
+                    i += run;
+                    continue;
+                }
+            }
+
             if (c == '`')
             {
                 var spanConsumed = TryConsumeCodeSpan(line, i, out var span);
@@ -428,10 +442,10 @@ public static class ChatFileReference
         // Split the location suffix off before judging the extension, exactly as the prose path
         // does. Without this "`src\Foo.cs:12`" - the shape agent answers overwhelmingly use - reads
         // as extension "cs:12", matches nothing, and silently stays plain text; and even a match
-        // would hand the host a path with ":12" glued on that no editor can open. The suffix stays
-        // in the visible code span so the reference still reads the way the agent wrote it, and no
-        // backslash escaping is applied: a code span is already literal.
-        var (pathPart, _, lineNumber) = ExtractLocationSuffix(content);
+        // would hand the host a path with ":12" glued on that no editor can open. The visible code
+        // span keeps only the file name and the suffix ("`Foo.cs:12`") - the path lives in the href -
+        // and needs no escaping: a code span is already literal.
+        var (pathPart, suffix, lineNumber) = ExtractLocationSuffix(content);
 
         // The two branches have to refuse the same things or they ship different bugs: prose never
         // sees a URL because the line scanner consumes it first, so without the same check here
@@ -446,7 +460,7 @@ public static class ChatFileReference
             && HasRecognizedExtension(pathPart);
 
         rendered = isPathShaped
-            ? "[`" + content + "`](" + BuildHref(pathPart, lineNumber) + ")"
+            ? "[`" + FileName(pathPart) + suffix + "`](" + BuildHref(pathPart, lineNumber) + ")"
             : line.Substring(backtick, consumed);
 
         return consumed;
@@ -463,16 +477,50 @@ public static class ChatFileReference
         var core = rawToken.Substring(0, coreLength);
         var tail = rawToken.Substring(coreLength);
 
+        // Emphasis wrapping the whole path ("**src\Foo.cs**") stays outside the link. Only a run
+        // repeated at both ends counts: a leading-only run ("__init__.py:3") is part of the name.
+        var run = DelimiterRunLength(core, 0);
+        if (run > 0 && core.Length > 2 * run && string.CompareOrdinal(core, core.Length - run, core, 0, run) == 0)
+        {
+            var delimiters = core.Substring(0, run);
+            var inner = TryRenderPath(core.Substring(run, core.Length - 2 * run));
+            return inner is null ? rawToken : delimiters + inner + delimiters + tail;
+        }
+
+        var rendered = TryRenderPath(core);
+        return rendered is null ? rawToken : rendered + tail;
+    }
+
+    private static string? TryRenderPath(string core)
+    {
         var (pathPart, suffix, line) = ExtractLocationSuffix(core);
         var hasSeparator = ContainsSeparator(pathPart);
         var hasExtension = HasRecognizedExtension(pathPart);
 
         if (!hasExtension || (!hasSeparator && suffix.Length == 0))
         {
-            return rawToken;
+            return null;
         }
 
-        return "[" + EscapeLinkText(pathPart) + suffix + "](" + BuildHref(pathPart, line) + ")" + tail;
+        return "[" + EscapeLinkText(FileName(pathPart)) + suffix + "](" + BuildHref(pathPart, line) + ")";
+    }
+
+    // Length of the run of the '*' or '_' emphasis delimiter starting at index (0 when none).
+    private static int DelimiterRunLength(string text, int index)
+    {
+        var delimiter = text[index];
+        if (delimiter != '*' && delimiter != '_')
+        {
+            return 0;
+        }
+
+        var end = index;
+        while (end < text.Length && text[end] == delimiter)
+        {
+            end++;
+        }
+
+        return end - index;
     }
 
     private static int TrimTrailingPunctuation(string token)
@@ -628,17 +676,21 @@ public static class ChatFileReference
         return result;
     }
 
+    // What a reference shows: the final segment of the path. The full path the agent wrote goes
+    // into the href, where it is used for navigation only.
+    private static string FileName(string path) => path.Substring(LastSeparatorIndex(path) + 1);
+
     /// <summary>
-    /// Escapes the characters markdown reads specially inside link text. A backslash is an escape
-    /// character - unescaped, <c>src\.editorconfig</c> renders as "src.editorconfig" - and a square
-    /// bracket delimits the link text itself: <c>docs/a].md</c> emitted raw ends the text at the
-    /// <c>]</c>, so markdown-it renders the rest, destination included, as visible text. The
-    /// code-span branch needs none of this because a code span binds tighter than either.
+    /// Escapes the characters markdown reads specially inside link text. A square bracket delimits
+    /// the link text itself: <c>a].md</c> emitted raw ends the text at the <c>]</c>, so markdown-it
+    /// renders the rest, destination included, as visible text. The text is a file name, so it
+    /// never holds a backslash - that is a path separator. The code-span branch needs none of this
+    /// because a code span binds tighter than the brackets.
     /// </summary>
-    private static string EscapeLinkText(string path)
+    private static string EscapeLinkText(string fileName)
     {
         var needsEscaping = false;
-        foreach (var c in path)
+        foreach (var c in fileName)
         {
             if (IsLinkTextEscape(c))
             {
@@ -649,11 +701,11 @@ public static class ChatFileReference
 
         if (!needsEscaping)
         {
-            return path;
+            return fileName;
         }
 
-        var builder = new StringBuilder(path.Length + 4);
-        foreach (var c in path)
+        var builder = new StringBuilder(fileName.Length + 4);
+        foreach (var c in fileName)
         {
             if (IsLinkTextEscape(c))
             {
@@ -666,7 +718,7 @@ public static class ChatFileReference
         return builder.ToString();
     }
 
-    private static bool IsLinkTextEscape(char c) => c == '\\' || c == '[' || c == ']';
+    private static bool IsLinkTextEscape(char c) => c == '[' || c == ']';
 
     private static string BuildHref(string path, int? line)
     {

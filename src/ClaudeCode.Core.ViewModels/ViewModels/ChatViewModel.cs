@@ -1615,6 +1615,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         var contextWindowBeforeLoad = _contextWindowSize;
         var turnStartTokensBeforeLoad = _turnStartUsedTokens;
         var turnTokensBeforeLoad = TurnTokens;
+        var toolCallLocationsBeforeLoad = _toolCallLocations.ToArray();
         _isSwitchingSession = true;
         NotifyStateChanged();
         try
@@ -1653,6 +1654,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 }
 
                 foreach (var file in changedFilesBeforeLoad) ChangedFiles.Add(file);
+                // Its transcript's bare file references still name the files it read.
+                _toolCallLocations.UnionWith(toolCallLocationsBeforeLoad);
                 _explicitSessionTitle = explicitTitleBeforeLoad;
                 SessionTitle = titleBeforeLoad;
                 if (hadCatalogBeforeLoad) ApplyCommandCatalog(commandsBeforeLoad);
@@ -2211,10 +2214,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private readonly Dictionary<string, List<ToolCallContent>> _toolCallDiffsById = new Dictionary<string, List<ToolCallContent>>(StringComparer.Ordinal);
 
     // Every location a tool call of this transcript reported (the files Claude read, edited or
-    // recalled, a Glob's search folder), exactly as the agent sent it - what a bare "`Program.cs:12`"
-    // in its answer refers to (see ResolveFileReference). Stored unparsed on purpose: this is filled
-    // on the UI thread, where parsing an agent string can throw (on .NET Framework, the VS host, even
-    // Path.IsPathRooted does for "<>|); ResolveFileReference validates each candidate off it instead.
+    // recalled, a Glob's search folder, the files a Glob or Grep found), exactly as the agent sent
+    // it - what a bare "`Program.cs:12`" in its answer refers to (see ResolveFileReference). Stored
+    // unparsed on purpose: this is filled on the UI thread, where parsing an agent string can throw
+    // (on .NET Framework, the VS host, even Path.IsPathRooted does for "<>|); ResolveFileReference
+    // validates each candidate off it instead.
     // UI thread only, like _toolCallDiffsById; OpenFileReferenceAsync snapshots it there.
     private readonly HashSet<string> _toolCallLocations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -2525,12 +2529,18 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     /// anchored on <paramref name="workspaceRoot"/>, and when that path is inside the workspace and
     /// the file exists it is used. Otherwise the agent usually named a file it worked on elsewhere
     /// by its bare name or a partial path ("`Program.cs:12`", issue #39): the reference then stands
-    /// for the one tool-call location inside the workspace that ends in that path, matched on whole
-    /// path segments. More than one such file throws rather than picking arbitrarily; matches that
-    /// are all outside the workspace throw as refused rather than as missing; no match returns the
-    /// anchored path, which the caller then reports as missing. Only the recorded locations are
-    /// consulted - never a search of the solution by name - and each is validated here, off the UI
-    /// thread, before the filesystem sees it.
+    /// for the one existing file among the tool-call locations inside the workspace that ends in
+    /// that path, matched on whole path segments. A location is absolute (a Read/Edit/Write file)
+    /// or relative to the session cwd - the workspace root - (a file Glob or Grep found), so a
+    /// relative one is anchored there too. A location with no file behind it - a failed
+    /// guess Claude read before finding the file, or one it later deleted - is no namesake. More
+    /// than one such file throws rather than picking arbitrarily; matches that
+    /// are all outside the workspace throw as refused rather than as missing. When no location
+    /// names the file at all - Claude saw the name only in a shell command's output - it is the one
+    /// file under the workspace whose path ends in the reference (<see cref="WorkspaceFileSearch"/>),
+    /// again throwing when several do. No match returns the anchored path, which the caller then
+    /// reports as missing. Every candidate is validated here, off the UI thread, before the
+    /// filesystem sees it.
     /// </summary>
     private static string ResolveFileReference(string workspaceRoot, string reference, IReadOnlyList<string> toolCallLocations)
     {
@@ -2547,10 +2557,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         foreach (var location in toolCallLocations)
         {
             if (!location.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar).EndsWith(suffix, StringComparison.OrdinalIgnoreCase)) continue;
-            if (IsRootedLocation(location) && WorkspacePathGuard.TryResolveWithinWorkspace(workspaceRoot, location, out var fullPath))
-                matches.Add(fullPath);
-            else
+            if (!TryAnchorLocation(workspaceRoot, location, out var anchored) || !WorkspacePathGuard.TryResolveWithinWorkspace(workspaceRoot, anchored, out var fullPath))
                 refused = true;
+            else if (File.Exists(fullPath))
+                matches.Add(fullPath);
         }
 
         if (matches.Count > 1)
@@ -2558,13 +2568,27 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         if (matches.Count == 1) return matches.First();
         if (refused)
             throw new UnauthorizedAccessException("the file Claude worked on by that name is outside the workspace or cannot be resolved safely.");
-        return underRoot;
+
+        foreach (var found in WorkspaceFileSearch.FindBySuffix(workspaceRoot, suffix))
+        {
+            if (WorkspacePathGuard.TryResolveWithinWorkspace(workspaceRoot, found, out var fullPath) && File.Exists(fullPath))
+                matches.Add(fullPath);
+        }
+
+        if (matches.Count > 1)
+            throw new IOException("more than one file in the workspace has that name; ask Claude for the full path.");
+        return matches.Count == 1 ? matches.First() : underRoot;
     }
 
-    // A relative location has no base the host can trust. Checked for invalid characters first
-    // because on .NET Framework Path.IsPathRooted itself throws for them.
-    private static bool IsRootedLocation(string location) =>
-        location.IndexOfAny(Path.GetInvalidPathChars()) < 0 && Path.IsPathRooted(location);
+    // Checked for invalid characters first because on .NET Framework Path.IsPathRooted and
+    // Path.Combine themselves throw for them.
+    private static bool TryAnchorLocation(string workspaceRoot, string location, out string anchored)
+    {
+        anchored = string.Empty;
+        if (location.IndexOfAny(Path.GetInvalidPathChars()) >= 0) return false;
+        anchored = Path.IsPathRooted(location) ? location : Path.Combine(workspaceRoot, location);
+        return true;
+    }
 
     private async Task RejectChangeAsync(ChangedFileViewModel file)
     {

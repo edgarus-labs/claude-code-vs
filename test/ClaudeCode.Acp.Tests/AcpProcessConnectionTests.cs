@@ -1243,6 +1243,37 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         Assert.Empty(call.Locations);
     }
 
+    // Glob and Grep report no locations: the files they found reach the client only in the
+    // PostToolUse update's _meta.claudeCode.toolResponse (claude-agent-acp), as paths relative to
+    // the session cwd - `filenames` for Glob and Grep's file modes, and for Grep's default content
+    // mode only the "path:line:text" lines. A bare "`OrderService.cs:5`" the agent writes after such
+    // a search names one of those files, so they must survive parsing (payloads as captured from
+    // claude-agent-acp 0.81.2).
+    [Theory]
+    [InlineData("""{"toolName":"Glob","toolResponse":{"filenames":["src\\Core\\Order.cs","src\\Core\\Services\\OrderService.cs"],"numFiles":2,"truncated":false}}""",
+        new[] { @"src\Core\Order.cs", @"src\Core\Services\OrderService.cs" })]
+    [InlineData("""{"toolName":"Grep","toolResponse":{"mode":"files_with_matches","filenames":["src\\Core\\Services\\OrderService.cs"],"numFiles":1}}""",
+        new[] { @"src\Core\Services\OrderService.cs" })]
+    [InlineData("""{"toolName":"Grep","toolResponse":{"mode":"content","numFiles":0,"filenames":[],"content":"src\\Web\\OrderController.cs:9:    => _orders.CalculateTotal(net, 0.23m);\nsrc\\Core\\Services\\OrderService.cs:5:    public decimal CalculateTotal(decimal net, decimal taxRate)","numLines":2}}""",
+        new[] { @"src\Web\OrderController.cs", @"src\Core\Services\OrderService.cs" })]
+    [InlineData("""{"toolName":"Grep","toolResponse":{"mode":"content","filenames":[],"content":"C:\\repo\\src\\Program.cs:12:Main();\nsrc\\a.cs-11-context line\n\nno line number here\nsrc\\count.cs:3"}}""",
+        new[] { @"C:\repo\src\Program.cs", @"src\count.cs" })]
+    [InlineData("""{"toolName":"Grep","toolResponse":{"mode":"content","filenames":["x.cs",7,null],"content":42}}""",
+        new[] { "x.cs" })]
+    [InlineData("""{"toolName":"Grep","toolResponse":"not an object"}""", new string[0])]
+    [InlineData("""{"toolName":"Bash","toolResponse":{"filenames":["x.cs"],"content":"a.cs:1:text"}}""", new string[0])]
+    public async Task SessionUpdate_ToolCallUpdateWithASearchToolResponse_ReportsTheFilesItFound(string claudeCodeMeta, string[] expected)
+    {
+        var received = new TaskCompletionSource<SessionUpdateEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _connection.SessionUpdate += (_, update) => received.TrySetResult(update);
+
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer,
+            """{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"t1","_meta":{"claudeCode":""" + claudeCodeMeta + "}}}}");
+
+        var call = Assert.IsType<SessionUpdate.ToolCall>((await received.Task.WaitAsync(TimeSpan.FromSeconds(5))).Update).Call;
+        Assert.Equal(expected, call.Locations);
+    }
+
     [Fact]
     public async Task SessionUpdate_ToolCallWithoutAToolCallId_DropsThatNotificationAndKeepsThePumpAlive()
     {

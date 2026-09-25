@@ -324,6 +324,53 @@ public sealed partial class ChatSessionStateTests
         Assert.NotEqual(await NotFoundStatusAsync(vm, "secrets.cs"), status);
     }
 
+    // Issue #39 as reproduced in VS: Claude found the files with Grep and never read them. Glob
+    // and Grep report what they found relative to the session cwd - the workspace root - so that
+    // relative path is the precise reference a bare "`OrderService.cs:5`" in the answer stands for,
+    // even with a namesake elsewhere in the workspace.
+    [Fact]
+    public async Task OpenFileReference_BareNameOfAFileTheAgentFoundBySearch_OpensThatFile()
+    {
+        using var workspace = new TempWorkspace();
+        var relative = Path.Combine("src", "Shop.Core", "Services", "OrderService.cs");
+        var namesake = workspace.PathUnder(Path.Combine("legacy", "OrderService.cs"));
+        Directory.CreateDirectory(Path.GetDirectoryName(workspace.PathUnder(relative))!);
+        Directory.CreateDirectory(Path.GetDirectoryName(namesake)!);
+        File.WriteAllText(workspace.PathUnder(relative), "x");
+        File.WriteAllText(namesake, "y");
+        var (vm, connection, services) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+        RaiseToolCallOn(connection, "grep-1", relative);
+
+        await vm.OpenFileReferenceAsync(Href("OrderService.cs", 5));
+
+        Assert.Null(vm.StatusMessage);
+        Assert.Equal(Path.GetFullPath(workspace.PathUnder(relative)), Assert.Single(services.OpenedDocumentPaths), ignoreCase: true);
+        Assert.Equal(5, Assert.Single(services.OpenedDocumentLines));
+    }
+
+    // A relative search result is anchored on the workspace root, never trusted to stay in it: one
+    // that climbs out is refused like any other agent-supplied path.
+    [Fact]
+    public async Task OpenFileReference_BareNameOfASearchResultThatClimbsOutOfTheWorkspace_IsRefused()
+    {
+        if (!OperatingSystem.IsWindows()) return; // see OpenFileReference_FileThatDoesNotExist_ReportsWithoutFaulting
+        using var workspace = new TempWorkspace();
+        using var outside = new TempWorkspace();
+        var secret = outside.PathUnder("secrets.cs");
+        File.WriteAllText(secret, "top secret");
+        var (vm, connection, services) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+        RaiseToolCallOn(connection, "grep-1", Path.GetRelativePath(workspace.Root, secret));
+
+        await vm.OpenFileReferenceAsync(Href("secrets.cs"));
+
+        Assert.Empty(services.OpenedDocumentPaths);
+        var status = vm.StatusMessage;
+        Assert.Contains("secrets.cs", status!, StringComparison.Ordinal);
+        Assert.NotEqual(await NotFoundStatusAsync(vm, "secrets.cs"), status);
+    }
+
     // A namesake outside the workspace could never be opened, so it must not make the one inside
     // it ambiguous - e.g. a README.md in the git root above a solution in a subfolder.
     [Fact]
@@ -348,7 +395,10 @@ public sealed partial class ChatSessionStateTests
 
     // Locations are agent-supplied strings. One the runtime cannot parse - a null character, or on
     // .NET Framework (the VS host) any of "<>| - must neither break the session update that carried
-    // it (it runs on the UI thread) nor stop the valid location beside it from resolving.
+    // it (it runs on the UI thread) nor stop the valid location beside it from resolving. The bad
+    // character sits in a folder so each location really ends in a "Program.cs" segment and reaches the
+    // resolution step. This TFM (net10.0) does not reproduce the .NET Framework throw from
+    // Path.IsPathRooted for "<>|; IsRootedLocation's pre-check for it is not exercised here.
     [Fact]
     public async Task OpenFileReference_ToolCallWithUnparseableLocations_StillShowsTheCallAndResolvesTheValidOne()
     {
@@ -359,7 +409,7 @@ public sealed partial class ChatSessionStateTests
         var (vm, connection, services) = await ConnectWithWorkspaceAsync(workspace.Root);
         using var _vm = vm;
 
-        RaiseToolCallOn(connection, "read-1", workspace.PathUnder("a\0Program.cs"), workspace.PathUnder("a|Program.cs"), target);
+        RaiseToolCallOn(connection, "read-1", workspace.PathUnder(Path.Combine("a\0b", "Program.cs")), workspace.PathUnder(Path.Combine("a|b", "Program.cs")), target);
         await vm.OpenFileReferenceAsync(Href("Program.cs"));
 
         Assert.Single(vm.Messages.SelectMany(message => message.ToolCalls), tool => tool.ToolCallId == "read-1");
@@ -367,23 +417,193 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(Path.GetFullPath(target), Assert.Single(services.OpenedDocumentPaths), ignoreCase: true);
     }
 
-    // What the agent read belongs to the conversation that read it.
+    // What the agent read belongs to the conversation that read it: after a new session the name
+    // no longer picks the file the previous one read out of its namesakes.
     [Fact]
     public async Task OpenFileReference_AfterANewSession_NoLongerResolvesAgainstThePreviousSessionsReads()
     {
-        if (!OperatingSystem.IsWindows()) return; // see OpenFileReference_FileThatDoesNotExist_ReportsWithoutFaulting
+        using var workspace = new TempWorkspace();
+        Directory.CreateDirectory(workspace.PathUnder("a"));
+        Directory.CreateDirectory(workspace.PathUnder("b"));
+        var read = workspace.PathUnder(Path.Combine("a", "Foo.cs"));
+        File.WriteAllText(read, "x");
+        File.WriteAllText(workspace.PathUnder(Path.Combine("b", "Foo.cs")), "y");
+        var (vm, connection, services) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+        RaiseToolCallOn(connection, "read-1", read);
+
+        await vm.NewSessionCommand.ExecuteAsync(null);
+        await vm.OpenFileReferenceAsync(Href("Foo.cs"));
+
+        Assert.Empty(services.OpenedDocumentPaths);
+        Assert.Contains("Foo.cs", vm.StatusMessage!, StringComparison.Ordinal);
+    }
+
+    // Claude often guesses where a file is before it finds it: the failed Read of the guess still
+    // reported its location. A path with no file behind it is not a namesake of the one that exists.
+    [Fact]
+    public async Task OpenFileReference_BareNameOfAFileTheAgentFoundAfterAFailedGuess_OpensTheFileThatExists()
+    {
         using var workspace = new TempWorkspace();
         Directory.CreateDirectory(workspace.PathUnder("src"));
         var target = workspace.PathUnder(Path.Combine("src", "Program.cs"));
         File.WriteAllText(target, "x");
         var (vm, connection, services) = await ConnectWithWorkspaceAsync(workspace.Root);
         using var _vm = vm;
-        RaiseToolCallOn(connection, "read-1", target);
+        RaiseToolCallOn(connection, "read-1", workspace.PathUnder(Path.Combine("lib", "Program.cs")));
+        RaiseToolCallOn(connection, "read-2", target);
 
-        await vm.NewSessionCommand.ExecuteAsync(null);
         await vm.OpenFileReferenceAsync(Href("Program.cs"));
 
+        Assert.Null(vm.StatusMessage);
+        Assert.Equal(Path.GetFullPath(target), Assert.Single(services.OpenedDocumentPaths), ignoreCase: true);
+    }
+
+    // A failed session/load puts the user back in the conversation they were in, so its file
+    // references must keep resolving against what the agent read in it - picking that file out of
+    // its namesakes, as before the load.
+    [Fact]
+    public async Task OpenFileReference_AfterAFailedSessionLoad_StillResolvesAgainstTheRestoredConversationsReads()
+    {
+        using var workspace = new TempWorkspace();
+        Directory.CreateDirectory(workspace.PathUnder("src"));
+        Directory.CreateDirectory(workspace.PathUnder("legacy"));
+        var target = workspace.PathUnder(Path.Combine("src", "Program.cs"));
+        File.WriteAllText(target, "x");
+        File.WriteAllText(workspace.PathUnder(Path.Combine("legacy", "Program.cs")), "y");
+        var (vm, connection, services) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+        RaiseToolCallOn(connection, "read-1", target);
+        connection.LoadSessionHandler = (_, _, _, _) =>
+            Task.FromException<NewSessionResult>(new InvalidOperationException("Agent restarted"));
+        await vm.OpenSessionAsync(new SessionSummary("session-2", workspace.Root, "Older chat", null));
+        Assert.Contains("Could not open session", vm.StatusMessage!, StringComparison.Ordinal);
+
+        await vm.OpenFileReferenceAsync(Href("Program.cs"));
+
+        Assert.Equal(Path.GetFullPath(target), Assert.Single(services.OpenedDocumentPaths), ignoreCase: true);
+    }
+
+    // The case left over once Claude's own paths are exhausted: it names a file it only saw in a
+    // shell command's output ("git show --stat" listing "AcpProcessConnectionTests.cs") - no tool
+    // call reported it. The file exists in the workspace, so the link has to open it.
+    [Fact]
+    public async Task OpenFileReference_BareNameNoToolReported_OpensTheOneFileOfThatNameInTheWorkspace()
+    {
+        using var workspace = new TempWorkspace();
+        var target = workspace.PathUnder(Path.Combine("test", "ClaudeCode.Acp.Tests", "AcpProcessConnectionTests.cs"));
+        Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+        File.WriteAllText(target, "x");
+        var (vm, _, services) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+
+        await vm.OpenFileReferenceAsync(Href("AcpProcessConnectionTests.cs", 1214));
+
+        Assert.Null(vm.StatusMessage);
+        Assert.Equal(Path.GetFullPath(target), Assert.Single(services.OpenedDocumentPaths), ignoreCase: true);
+        Assert.Equal(1214, Assert.Single(services.OpenedDocumentLines));
+    }
+
+    // Directories the reference does name narrow the workspace search the same way they narrow the
+    // tool-call locations: whole segments, so "Views/Chat.cs" is not "ViewModels/Chat.cs".
+    [Fact]
+    public async Task OpenFileReference_PartialPathNoToolReported_OpensTheFileThoseFoldersName()
+    {
+        using var workspace = new TempWorkspace();
+        var target = workspace.PathUnder(Path.Combine("src", "Views", "Chat.cs"));
+        var other = workspace.PathUnder(Path.Combine("src", "ViewModels", "Chat.cs"));
+        Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(other)!);
+        File.WriteAllText(target, "x");
+        File.WriteAllText(other, "y");
+        var (vm, _, services) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+
+        await vm.OpenFileReferenceAsync(Href("Views/Chat.cs"));
+
+        Assert.Null(vm.StatusMessage);
+        Assert.Equal(Path.GetFullPath(target), Assert.Single(services.OpenedDocumentPaths), ignoreCase: true);
+    }
+
+    // Two files of the name in the workspace and nothing to tell them apart: opening either would
+    // be a guess, so the click says so and opens nothing.
+    [Fact]
+    public async Task OpenFileReference_BareNameNoToolReportedMatchingTwoWorkspaceFiles_ReportsAmbiguityAndOpensNothing()
+    {
+        using var workspace = new TempWorkspace();
+        Directory.CreateDirectory(workspace.PathUnder("a"));
+        Directory.CreateDirectory(workspace.PathUnder("b"));
+        File.WriteAllText(workspace.PathUnder(Path.Combine("a", "Foo.cs")), "x");
+        File.WriteAllText(workspace.PathUnder(Path.Combine("b", "Foo.cs")), "y");
+        var (vm, _, services) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+
+        await vm.OpenFileReferenceAsync(Href("Foo.cs"));
+
         Assert.Empty(services.OpenedDocumentPaths);
+        var status = vm.StatusMessage;
+        Assert.Contains("Foo.cs", status!, StringComparison.Ordinal);
+        Assert.NotEqual(await NotFoundStatusAsync(vm, "Foo.cs"), status);
+    }
+
+    // A build copies content files into bin/obj ("appsettings.json" under bin\Debug\net8.0): that
+    // copy is not a second file the user means, so the source one opens.
+    [Theory]
+    [InlineData("bin")]
+    [InlineData("obj")]
+    public async Task OpenFileReference_BareNameNoToolReportedWithACopyInBuildOutput_OpensTheSourceFile(string buildFolder)
+    {
+        using var workspace = new TempWorkspace();
+        var target = workspace.PathUnder(Path.Combine("src", "App", "appsettings.json"));
+        var copy = workspace.PathUnder(Path.Combine("src", "App", buildFolder, "Debug", "net8.0", "appsettings.json"));
+        Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(copy)!);
+        File.WriteAllText(target, "{}");
+        File.WriteAllText(copy, "{}");
+        var (vm, _, services) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+
+        await vm.OpenFileReferenceAsync(Href("appsettings.json"));
+
+        Assert.Null(vm.StatusMessage);
+        Assert.Equal(Path.GetFullPath(target), Assert.Single(services.OpenedDocumentPaths), ignoreCase: true);
+    }
+
+    // Every file that exists is openable, a generated one that lives only in obj included.
+    [Fact]
+    public async Task OpenFileReference_BareNameNoToolReportedOnlyInBuildOutput_OpensIt()
+    {
+        using var workspace = new TempWorkspace();
+        var target = workspace.PathUnder(Path.Combine("src", "App", "obj", "Debug", "App.g.cs"));
+        Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+        File.WriteAllText(target, "x");
+        var (vm, _, services) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+
+        await vm.OpenFileReferenceAsync(Href("App.g.cs"));
+
+        Assert.Null(vm.StatusMessage);
+        Assert.Equal(Path.GetFullPath(target), Assert.Single(services.OpenedDocumentPaths), ignoreCase: true);
+    }
+
+    // The workspace search is the last resort: a file Claude did read wins over its namesakes.
+    [Fact]
+    public async Task OpenFileReference_BareNameOfAFileTheAgentReadWithANamesakeInTheWorkspace_OpensTheOneItRead()
+    {
+        using var workspace = new TempWorkspace();
+        Directory.CreateDirectory(workspace.PathUnder("a"));
+        Directory.CreateDirectory(workspace.PathUnder("b"));
+        var read = workspace.PathUnder(Path.Combine("b", "Foo.cs"));
+        File.WriteAllText(workspace.PathUnder(Path.Combine("a", "Foo.cs")), "x");
+        File.WriteAllText(read, "y");
+        var (vm, connection, services) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+        RaiseToolCallOn(connection, "read-1", read);
+
+        await vm.OpenFileReferenceAsync(Href("Foo.cs"));
+
+        Assert.Null(vm.StatusMessage);
+        Assert.Equal(Path.GetFullPath(read), Assert.Single(services.OpenedDocumentPaths), ignoreCase: true);
     }
 
     // The href crosses the WebView2 boundary, so it is as untrusted as the markdown it came from.
