@@ -1615,6 +1615,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         var contextWindowBeforeLoad = _contextWindowSize;
         var turnStartTokensBeforeLoad = _turnStartUsedTokens;
         var turnTokensBeforeLoad = TurnTokens;
+        var toolCallLocationsBeforeLoad = _toolCallLocations.ToArray();
         _isSwitchingSession = true;
         NotifyStateChanged();
         try
@@ -1653,6 +1654,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 }
 
                 foreach (var file in changedFilesBeforeLoad) ChangedFiles.Add(file);
+                // Its transcript's bare file references still name the files it read.
+                _toolCallLocations.UnionWith(toolCallLocationsBeforeLoad);
                 _explicitSessionTitle = explicitTitleBeforeLoad;
                 SessionTitle = titleBeforeLoad;
                 if (hadCatalogBeforeLoad) ApplyCommandCatalog(commandsBeforeLoad);
@@ -1683,6 +1686,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         Messages.Clear();
         lock (_changedFilesByPath) _changedFilesByPath.Clear();
         _toolCallDiffsById.Clear();
+        _toolCallLocations.Clear();
         ClearRunningSubagents();
         ChangedFiles.Clear();
         ClearPendingRequests("The session was replaced.");
@@ -1882,6 +1886,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                     UpdateActivity("Thinking…");
                     break;
                 case SessionUpdate.ToolCall toolCall:
+                    _toolCallLocations.UnionWith(toolCall.Call.Locations);
                     UpsertToolCall(toolCall.Call);
                     break;
                 case SessionUpdate.Plan plan:
@@ -2208,6 +2213,15 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // UI thread only (UpsertToolCall and ResetTranscriptState), where notifications are serialized.
     private readonly Dictionary<string, List<ToolCallContent>> _toolCallDiffsById = new Dictionary<string, List<ToolCallContent>>(StringComparer.Ordinal);
 
+    // Every location a tool call of this transcript reported (the files Claude read, edited or
+    // recalled, a Glob's search folder, the files a Glob or Grep found), exactly as the agent sent
+    // it - what a bare "`Program.cs:12`" in its answer refers to (see ResolveFileReference). Stored
+    // unparsed on purpose: this is filled on the UI thread, where parsing an agent string can throw
+    // (on .NET Framework, the VS host, even Path.IsPathRooted does for "<>|); ResolveFileReference
+    // validates each candidate off it instead.
+    // UI thread only, like _toolCallDiffsById; OpenFileReferenceAsync snapshots it there.
+    private readonly HashSet<string> _toolCallLocations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
     // Resolves, in notification order, the diffs a tool-call notification should be tracked against:
     // its own when it carries any, otherwise - for the content-less final update - the last ones it
     // reported. Deciding this here rather than inside the per-notification background task keeps a
@@ -2487,17 +2501,19 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             if (string.IsNullOrEmpty(workspaceRoot))
                 throw new InvalidOperationException("no folder or solution is open.");
 
-            // The agent writes workspace-relative paths, but WorkspacePathGuard resolves a relative
-            // candidate against the process working directory - devenv's, which has nothing to do
-            // with the workspace. Anchor it first so the guard judges the path the user meant.
-            var candidate = Path.IsPathRooted(reference) ? reference : Path.Combine(workspaceRoot!, reference);
+            // Snapshotted here, before the lookup moves off the UI thread that owns the set - the
+            // thread WebView2 raises the message callback on.
+            var toolCallLocations = _toolCallLocations.ToArray();
+            // Read before the walk: Dispose() cancels, then disposes the source.
+            var cancellationToken = _lifetime.Token;
             await Task.Run(async () =>
             {
+                var candidate = ResolveFileReference(workspaceRoot!, reference, toolCallLocations, cancellationToken);
                 using var pathLease = WorkspacePathGuard.AcquireFile(workspaceRoot, candidate);
                 using var document = pathLease.ProtectDocument();
                 if (document is null && RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
                     throw new FileNotFoundException("the file does not exist.", pathLease.FullPath);
-                await _services.OpenDocumentAsync(pathLease.FullPath, line, _lifetime.Token).ConfigureAwait(true);
+                await _services.OpenDocumentAsync(pathLease.FullPath, line, cancellationToken).ConfigureAwait(true);
             }).ConfigureAwait(true);
         }
         catch (OperationCanceledException) when (_disposed) { }
@@ -2505,6 +2521,78 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         {
             if (!_disposed) StatusMessage = $"Could not open {reference}: {ex.Message}";
         }
+    }
+
+    /// <summary>
+    /// Picks the path a transcript file reference names; the caller still confines it to the
+    /// workspace. An absolute reference is taken as written. The agent writes workspace-relative
+    /// paths, but WorkspacePathGuard resolves a relative candidate against the process working
+    /// directory - devenv's, which has nothing to do with the workspace - so a relative one is
+    /// anchored on <paramref name="workspaceRoot"/>, and when that path is inside the workspace and
+    /// the file exists it is used. Otherwise the agent usually named a file it worked on elsewhere
+    /// by its bare name or a partial path ("`Program.cs:12`", issue #39): the reference then stands
+    /// for the one existing file among the tool-call locations inside the workspace that ends in
+    /// that path, matched on whole path segments. A location is absolute (a Read/Edit/Write file)
+    /// or relative to the session cwd - the workspace root - (a file Glob or Grep found), so a
+    /// relative one is anchored there too. A location with no file behind it - a failed
+    /// guess Claude read before finding the file, or one it later deleted - is no namesake, and
+    /// neither is one the runtime cannot parse. More
+    /// than one such file throws rather than picking arbitrarily; matches that
+    /// are all outside the workspace throw as refused rather than as missing. When no location
+    /// names the file at all - Claude saw the name only in a shell command's output - it is the one
+    /// file under the workspace whose path ends in the reference (<see cref="WorkspaceFileSearch"/>),
+    /// again throwing when several do. No match returns the anchored path, which the caller then
+    /// reports as missing. Every candidate is validated here, off the UI thread, before the
+    /// filesystem sees it.
+    /// </summary>
+    private static string ResolveFileReference(string workspaceRoot, string reference, IReadOnlyList<string> toolCallLocations, CancellationToken cancellationToken)
+    {
+        if (Path.IsPathRooted(reference)) return reference;
+
+        var underRoot = Path.Combine(workspaceRoot, reference);
+        if (WorkspacePathGuard.TryResolveWithinWorkspace(workspaceRoot, underRoot, out var resolvedUnderRoot) && File.Exists(resolvedUnderRoot))
+            return underRoot;
+
+        var suffix = Path.DirectorySeparatorChar + reference.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
+        // Keyed on the resolved path, so one file reported under two spellings counts once.
+        var matches = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var refused = false;
+        foreach (var location in toolCallLocations)
+        {
+            if (!location.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar).EndsWith(suffix, StringComparison.OrdinalIgnoreCase)) continue;
+            // Unparseable, it names no file - no namesake, like a location with no file behind it.
+            if (!TryAnchorLocation(workspaceRoot, location, out var anchored)) continue;
+            if (!WorkspacePathGuard.TryResolveWithinWorkspace(workspaceRoot, anchored, out var fullPath))
+                refused = true;
+            else if (File.Exists(fullPath))
+                matches.Add(fullPath);
+        }
+
+        if (matches.Count > 1)
+            throw new IOException("more than one file Claude worked on matches it; ask Claude for the full path.");
+        if (matches.Count == 1) return matches.First();
+        if (refused)
+            throw new UnauthorizedAccessException("the file Claude worked on by that name is outside the workspace or cannot be resolved safely.");
+
+        foreach (var found in WorkspaceFileSearch.FindBySuffix(workspaceRoot, suffix, cancellationToken))
+        {
+            if (WorkspacePathGuard.TryResolveWithinWorkspace(workspaceRoot, found, out var fullPath) && File.Exists(fullPath))
+                matches.Add(fullPath);
+        }
+
+        if (matches.Count > 1)
+            throw new IOException("more than one file in the workspace has that name; ask Claude for the full path.");
+        return matches.Count == 1 ? matches.First() : underRoot;
+    }
+
+    // Checked for invalid characters first because on .NET Framework Path.IsPathRooted and
+    // Path.Combine themselves throw for them.
+    private static bool TryAnchorLocation(string workspaceRoot, string location, out string anchored)
+    {
+        anchored = string.Empty;
+        if (location.IndexOfAny(Path.GetInvalidPathChars()) >= 0) return false;
+        anchored = Path.IsPathRooted(location) ? location : Path.Combine(workspaceRoot, location);
+        return true;
     }
 
     private async Task RejectChangeAsync(ChangedFileViewModel file)

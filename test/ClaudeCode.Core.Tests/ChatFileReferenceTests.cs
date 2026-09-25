@@ -40,30 +40,73 @@ public sealed class ChatFileReferenceTests
         return fastest;
     }
 
+    // The reader sees only the file name; the full path the agent wrote rides in the href and is
+    // used for nothing but navigation.
     [Fact]
-    public void Linkify_PathInProse_BecomesALink() =>
+    public void Linkify_PathInProse_ShowsTheFileNameAndLinksTheFullPath() =>
         Assert.Equal(
-            "See [src/Foo.cs](" + Link("src%2FFoo.cs") + ") for details.",
+            "See [Foo.cs](" + Link("src%2FFoo.cs") + ") for details.",
             ChatFileReference.LinkifyFileReferences("See src/Foo.cs for details."));
 
     // The overwhelmingly common shape in agent answers: the path is already marked as a literal.
     // The link has to wrap the code span rather than replace it, or the reference stops looking
-    // like a path and the surrounding prose reflows.
+    // like code and the surrounding prose reflows.
     [Fact]
     public void Linkify_PathInCodeSpan_KeepsTheCodeSpanInsideTheLink() =>
         Assert.Equal(
-            "See [`src/Foo.cs`](" + Link("src%2FFoo.cs") + ").",
+            "See [`Foo.cs`](" + Link("src%2FFoo.cs") + ").",
             ChatFileReference.LinkifyFileReferences("See `src/Foo.cs`."));
+
+    // An absolute path shows the same way, and the line the agent gave stays next to the name:
+    // it is where the click puts the caret.
+    [Fact]
+    public void Linkify_AbsolutePathWithLineInCodeSpan_ShowsTheFileNameAndTheLine() =>
+        Assert.Equal(
+            "At [`Program.cs:12`](" + Link("C%3A%5Crepo%5Csrc%5CProgram.cs", 12) + ").",
+            ChatFileReference.LinkifyFileReferences(@"At `C:\repo\src\Program.cs:12`."));
+
+    // Agents often emphasise the reference itself - "1. **`src\Acp\Factory.cs`** — the factory".
+    // The emphasis delimiters glued to the code span must not hide it: the link goes inside the
+    // emphasis, so the reference renders both bold and clickable.
+    [Theory]
+    [InlineData(@"**`src\Acp\Factory.cs`**", "**[`Factory.cs`](", "src%5CAcp%5CFactory.cs", ")**")]
+    [InlineData("__`src/Foo.cs`__", "__[`Foo.cs`](", "src%2FFoo.cs", ")__")]
+    [InlineData("*`Foo.cs`*", "*[`Foo.cs`](", "Foo.cs", ")*")]
+    [InlineData("***`Foo.cs`***.", "***[`Foo.cs`](", "Foo.cs", ")***.")]
+    public void Linkify_EmphasisedCodeSpan_LinksInsideTheEmphasis(string token, string before, string encodedPath, string after) =>
+        Assert.Equal(
+            "1. " + before + Link(encodedPath) + after + " — the factory",
+            ChatFileReference.LinkifyFileReferences("1. " + token + " — the factory"));
+
+    // The same for a path written as emphasised prose rather than a code span.
+    [Theory]
+    [InlineData(@"**src\Foo.cs**", "**[Foo.cs](", "src%5CFoo.cs", ")**")]
+    [InlineData("_Program.cs:42_,", "_[Program.cs:42](", "Program.cs&line=42", ")_,")]
+    public void Linkify_EmphasisedPathInProse_LinksInsideTheEmphasis(string token, string before, string encodedPathAndLine, string after) =>
+        Assert.Equal(
+            "See " + before + ChatFileReference.LinkPrefix + "path=" + encodedPathAndLine + after,
+            ChatFileReference.LinkifyFileReferences("See " + token));
+
+    // Underscores are file-name characters too: only a run wrapping the whole token on both sides
+    // is emphasis. A leading-only run belongs to the name and must stay part of it - escaped in the
+    // link text, where markdown would otherwise read "__init__" as bold "init".
+    [Theory]
+    [InlineData("pkg/__init__.py", @"\_\_init\_\_.py", "pkg%2F__init__.py")]
+    [InlineData("__init__.py:3", @"\_\_init\_\_.py:3", "__init__.py&line=3")]
+    public void Linkify_PathWithUnderscoresInTheName_ShowsThemLiterallyAndKeepsThemInThePath(string token, string shown, string encodedPathAndLine) =>
+        Assert.Equal(
+            "[" + shown + "](" + ChatFileReference.LinkPrefix + "path=" + encodedPathAndLine + ")",
+            ChatFileReference.LinkifyFileReferences(token));
 
     // The shape agent answers actually use most: a backticked path carrying a location suffix
     // ("Found it: `src\ClaudeCode.Vsix\EditorCaret.cs:1`"). The suffix has to come off before the
     // extension is judged, or the extension reads as "cs:1", matches nothing, and the single most
     // common real reference silently stays plain text.
     [Theory]
-    [InlineData("`src/Foo.cs:12`", "[`src/Foo.cs:12`]", "src%2FFoo.cs", 12)]
-    [InlineData("`src/Foo.cs:12:5`", "[`src/Foo.cs:12:5`]", "src%2FFoo.cs", 12)]
-    [InlineData("`src/Foo.cs(12,5)`", "[`src/Foo.cs(12,5)`]", "src%2FFoo.cs", 12)]
-    [InlineData(@"`src\ClaudeCode.Vsix\EditorCaret.cs:1`", @"[`src\ClaudeCode.Vsix\EditorCaret.cs:1`]", "src%5CClaudeCode.Vsix%5CEditorCaret.cs", 1)]
+    [InlineData("`src/Foo.cs:12`", "[`Foo.cs:12`]", "src%2FFoo.cs", 12)]
+    [InlineData("`src/Foo.cs:12:5`", "[`Foo.cs:12:5`]", "src%2FFoo.cs", 12)]
+    [InlineData("`src/Foo.cs(12,5)`", "[`Foo.cs(12,5)`]", "src%2FFoo.cs", 12)]
+    [InlineData(@"`src\ClaudeCode.Vsix\EditorCaret.cs:1`", "[`EditorCaret.cs:1`]", "src%5CClaudeCode.Vsix%5CEditorCaret.cs", 1)]
     public void Linkify_CodeSpanWithLocationSuffix_LinksThePathAndKeepsTheLine(
         string span, string expectedText, string encodedPath, int line) =>
         Assert.Equal(
@@ -95,28 +138,28 @@ public sealed class ChatFileReferenceTests
 
     [Theory]
     // path:line, path:line:column, and the VS/MSBuild path(line,column) diagnostic form.
-    [InlineData("src/Foo.cs:12", "src%2FFoo.cs", 12)]
-    [InlineData("src/Foo.cs:12:5", "src%2FFoo.cs", 12)]
-    [InlineData("src/Foo.cs(12,5)", "src%2FFoo.cs", 12)]
-    public void Linkify_CommonLocationSuffixes_YieldThePathAndTheLine(string token, string encoded, int line) =>
+    [InlineData("src/Foo.cs:12", "Foo.cs:12", "src%2FFoo.cs", 12)]
+    [InlineData("src/Foo.cs:12:5", "Foo.cs:12:5", "src%2FFoo.cs", 12)]
+    [InlineData("src/Foo.cs(12,5)", "Foo.cs(12,5)", "src%2FFoo.cs", 12)]
+    public void Linkify_CommonLocationSuffixes_YieldThePathAndTheLine(string token, string shown, string encoded, int line) =>
         Assert.Equal(
-            "[" + token + "](" + Link(encoded, line) + ")",
+            "[" + shown + "](" + Link(encoded, line) + ")",
             ChatFileReference.LinkifyFileReferences(token));
 
-    // A Windows separator is a markdown escape character in link text: unescaped, "src\.editorconfig"
-    // would render as "src.editorconfig" and "\F" would be one backslash the reader cannot trust.
+    // A Windows separator splits the name off like a forward slash does; the path it belongs to
+    // survives only in the href.
     [Fact]
-    public void Linkify_WindowsPathInProse_EscapesTheSeparatorInTheLinkText() =>
+    public void Linkify_WindowsPathInProse_ShowsTheFileNameAndLinksTheFullPath() =>
         Assert.Equal(
-            @"Edit [src\\Foo.cs](" + Link("src%5CFoo.cs") + ").",
+            "Edit [Foo.cs](" + Link("src%5CFoo.cs") + ").",
             ChatFileReference.LinkifyFileReferences(@"Edit src\Foo.cs."));
 
     // Square brackets are link-text delimiters, so a path carrying one breaks the emitted link:
     // "docs/a].md" ends the text at the "]" and markdown-it renders the rest - including the raw
     // "/__claudecode/open?..." destination - as visible text in the answer.
     [Theory]
-    [InlineData("docs/a].md", @"docs/a\].md", "docs%2Fa%5D.md")]
-    [InlineData("docs/[a].md", @"docs/\[a\].md", "docs%2F%5Ba%5D.md")]
+    [InlineData("docs/a].md", @"a\].md", "docs%2Fa%5D.md")]
+    [InlineData("docs/[a].md", @"\[a\].md", "docs%2F%5Ba%5D.md")]
     public void Linkify_PathWithBracketsInProse_EscapesThemInTheLinkText(
         string path, string expectedText, string encodedPath) =>
         Assert.Equal(
@@ -133,7 +176,7 @@ public sealed class ChatFileReferenceTests
     {
         var markdown = ChatFileReference.LinkifyFileReferences("Open src/a(1)!'*.cs:7.");
 
-        Assert.Equal("Open [src/a(1)!'*.cs:7](" + Link("src%2Fa%281%29%21%27%2A.cs", 7) + ").", markdown);
+        Assert.Equal("Open [a(1)!'*.cs:7](" + Link("src%2Fa%281%29%21%27%2A.cs", 7) + ").", markdown);
 
         var start = markdown.IndexOf(ChatFileReference.LinkPrefix, StringComparison.Ordinal);
         var href = markdown.Substring(start, markdown.Length - start - 2);
@@ -147,7 +190,7 @@ public sealed class ChatFileReferenceTests
     [Fact]
     public void Linkify_TrailingSentencePunctuation_StaysOutsideTheLink() =>
         Assert.Equal(
-            "Look at [src/Foo.cs](" + Link("src%2FFoo.cs") + "), then stop.",
+            "Look at [Foo.cs](" + Link("src%2FFoo.cs") + "), then stop.",
             ChatFileReference.LinkifyFileReferences("Look at src/Foo.cs, then stop."));
 
     // Rewriting inside a fence would show the reader "[src/Foo.cs](/__claudecode/open?...)" as code.
@@ -156,7 +199,7 @@ public sealed class ChatFileReferenceTests
     {
         const string markdown = "Before src/A.cs\n```\nusing src/Foo.cs;\n```\nafter";
         Assert.Equal(
-            "Before [src/A.cs](" + Link("src%2FA.cs") + ")\n```\nusing src/Foo.cs;\n```\nafter",
+            "Before [A.cs](" + Link("src%2FA.cs") + ")\n```\nusing src/Foo.cs;\n```\nafter",
             ChatFileReference.LinkifyFileReferences(markdown));
     }
 
@@ -169,7 +212,7 @@ public sealed class ChatFileReferenceTests
     [InlineData("~~~", "   ")]
     public void Linkify_FenceMarkerVariants_LeaveTheBlockAloneAndStillClose(string fence, string indent) =>
         Assert.Equal(
-            indent + fence + "\nusing src/Foo.cs;\n" + indent + fence + "\nsee [src/A.cs](" + Link("src%2FA.cs") + ")",
+            indent + fence + "\nusing src/Foo.cs;\n" + indent + fence + "\nsee [A.cs](" + Link("src%2FA.cs") + ")",
             ChatFileReference.LinkifyFileReferences(
                 indent + fence + "\nusing src/Foo.cs;\n" + indent + fence + "\nsee src/A.cs"));
 
@@ -178,7 +221,7 @@ public sealed class ChatFileReferenceTests
     [Fact]
     public void Linkify_ForeignFenceMarkerInsideAFence_DoesNotCloseIt() =>
         Assert.Equal(
-            "~~~\n```\nusing src/Foo.cs;\n~~~\nsee [src/A.cs](" + Link("src%2FA.cs") + ")",
+            "~~~\n```\nusing src/Foo.cs;\n~~~\nsee [A.cs](" + Link("src%2FA.cs") + ")",
             ChatFileReference.LinkifyFileReferences("~~~\n```\nusing src/Foo.cs;\n~~~\nsee src/A.cs"));
 
     // Four leading spaces is an indented code block to markdown-it; the same mangling applies.
@@ -204,7 +247,7 @@ public sealed class ChatFileReferenceTests
     {
         var destination = new string('a', 600) + "/b.md";
         Assert.Equal(
-            "[text](" + destination + " \"T\") and [src/A.cs](" + Link("src%2FA.cs") + ")",
+            "[text](" + destination + " \"T\") and [A.cs](" + Link("src%2FA.cs") + ")",
             ChatFileReference.LinkifyFileReferences("[text](" + destination + " \"T\") and src/A.cs"));
     }
 

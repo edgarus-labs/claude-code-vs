@@ -18,4 +18,12 @@ public sealed class ToolCallUpdate
     public bool IsSubagent { get; set; }
 
     public IReadOnlyList<ToolCallContent> Content { get; set; } = Array.Empty<ToolCallContent>();
+
+    /// <summary>The paths the call touches: ACP <c>locations[].path</c> - for claude-agent-acp the file
+    /// a Read/Edit/Write works on, a Glob's search folder, recalled memory files, forwarded from the
+    /// tool input so usually but not necessarily absolute - plus the files a Glob or Grep found,
+    /// from claude-agent-acp's <c>_meta.claudeCode.toolResponse</c>, relative to the session cwd.
+    /// Empty when the notification carries none. Agent-supplied, so untrusted: validate before
+    /// touching the filesystem.</summary>
+    public IReadOnlyList<string> Locations { get; set; } = Array.Empty<string>();
 }

@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -609,6 +610,7 @@ public sealed partial class AcpProcessConnection
         Kind = GetOptionalString(obj, "kind"),
         Status = ParseToolCallStatus(GetOptionalString(obj, "status")),
         Content = ParseToolCallContentArray(obj["content"] as JsonArray),
+        Locations = ParseToolCallLocationPaths(obj["locations"] as JsonArray, obj["_meta"] as JsonObject),
         // claude-agent-acp: _meta.claudeCode.toolName is the Claude Code tool behind the call.
         IsSubagent = obj["_meta"] is JsonObject meta && meta["claudeCode"] is JsonObject claudeCode
             && GetOptionalString(claudeCode, "toolName") is "Agent" or "Task",
@@ -641,6 +643,66 @@ public sealed partial class AcpProcessConnection
 
         return list;
     }
+
+    private static IReadOnlyList<string> ParseToolCallLocationPaths(JsonArray? locations, JsonObject? meta)
+    {
+        var list = new List<string>();
+        if (locations is not null)
+        {
+            foreach (JsonNode? item in locations)
+            {
+                if (item is JsonObject obj && GetOptionalString(obj, "path") is { Length: > 0 } path)
+                {
+                    list.Add(path);
+                }
+            }
+        }
+
+        AddSearchResultPaths(meta, list);
+        return list.Count == 0 ? Array.Empty<string>() : list;
+    }
+
+    // claude-agent-acp: a Glob's locations name only the folder it searched, and a Grep carries
+    // none; the files they found arrive only in the PostToolUse update's
+    // _meta.claudeCode.toolResponse - `filenames` for Glob and Grep's file
+    // modes, and for Grep's default content mode only "path:line:text" lines (count mode:
+    // "path:count"). Other tools' toolResponse has other shapes and is not read here.
+    private static void AddSearchResultPaths(JsonObject? meta, List<string> paths)
+    {
+        if (meta?["claudeCode"] is not JsonObject claudeCode
+            || GetOptionalString(claudeCode, "toolName") is not ("Glob" or "Grep")
+            || claudeCode["toolResponse"] is not JsonObject response)
+        {
+            return;
+        }
+
+        if (response["filenames"] is JsonArray filenames)
+        {
+            foreach (JsonNode? item in filenames)
+            {
+                if (item is JsonValue value && value.TryGetValue(out string? path) && path.Length > 0)
+                {
+                    paths.Add(path);
+                }
+            }
+        }
+
+        if (GetOptionalString(response, "content") is { Length: > 0 } content)
+        {
+            foreach (var line in content.Split('\n'))
+            {
+                if (GrepLinePathPrefix.Match(line) is { Success: true } match)
+                {
+                    paths.Add(match.Groups[1].Value);
+                }
+            }
+        }
+    }
+
+    // The shortest prefix followed by ":<digits>" and then ':' or the end: skips a drive colon
+    // ("C:\a.cs:5:x" yields "C:\a.cs"); context lines ("a.cs-4-x") and lines without a number
+    // carry no path to take.
+    private static readonly Regex GrepLinePathPrefix = new Regex(@"^(.+?):\d+(?::|\r?$)", RegexOptions.CultureInvariant);
 
     private static ToolCallContent ParseToolCallContent(JsonObject obj)
     {
