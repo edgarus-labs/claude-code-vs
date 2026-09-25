@@ -1074,17 +1074,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // into a turn that is being cancelled, since the agent would settle it unstarted.
     private bool _isStopping;
 
-    // Sent-ahead messages whose send failed (refused, or the agent died) before they started. Once
-    // nothing is running they go back to the front of the queue, in order - or into the message box
-    // if the last prompt failed too (see RunTurnAsync). Never sent twice; dropped only with their
-    // session (DiscardQueuedMessages), which tells the user.
+    // Sent-ahead messages that came back before they were confirmed started: refused, the agent
+    // died, or Stop answered them "cancelled". Once nothing is running they go back to the front of
+    // the queue, in order, and are sent again - Stop stops the work, not the conversation. (Claude
+    // Code may already have folded a stopped one into the cancelled turn; the agent answers both the
+    // same way, and the user asked for it to be answered.) If the last prompt failed too they go into
+    // the message box instead (see RunTurnAsync). Dropped only with their session
+    // (DiscardQueuedMessages), which tells the user.
     private readonly List<QueuedMessage> _returnedUnstarted = new List<QueuedMessage>();
-
-    // Sent-ahead messages Stop answered "cancelled" before they were confirmed started. Claude Code
-    // may already have folded one into the stopped turn and answered it - the agent answers both the
-    // same way - so it is not re-sent (it could run twice): once nothing is running its text and
-    // attachments go back into the composer for the user to send again or drop.
-    private readonly List<QueuedMessage> _stoppedUnconfirmed = new List<QueuedMessage>();
 
     private Task SendCoreAsync()
     {
@@ -1279,27 +1276,19 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 // A stopped or failed turn sends no final status for the subagents it cut short.
                 if (_isStopping || failed) ClearRunningSubagents();
                 _isStopping = false;
-                // What must not be re-sent automatically goes back into the message box: follow-ups
-                // Stop answered "cancelled" before they were confirmed started (_stoppedUnconfirmed),
-                // and - when the last prompt failed, meaning the agent errored or died - those that
-                // came back unstarted: resending could go to a dead pipe, and waiting for a disconnect
-                // that may never come would strand them. Anything queued behind them follows them
-                // there in order, so a later message never reaches Claude without an earlier one.
-                var toComposer = _stoppedUnconfirmed.Concat(failed ? _returnedUnstarted : Enumerable.Empty<QueuedMessage>()).ToList();
-                if (toComposer.Count > 0)
+                // When the last prompt failed - the agent errored or died - follow-ups that came back
+                // unstarted go back into the message box: resending could go to a dead pipe, and
+                // waiting for a disconnect that may never come would strand them. Anything queued
+                // behind them follows them there in order, so a later message never reaches Claude
+                // without an earlier one. Otherwise (Stop included) they are sent again.
+                if (failed && _returnedUnstarted.Count > 0)
                 {
-                    bool stopped = _stoppedUnconfirmed.Count > 0;
-                    _stoppedUnconfirmed.Clear();
-                    if (failed) _returnedUnstarted.Clear();
-                    toComposer.AddRange(_queuedMessages);
+                    var toComposer = _returnedUnstarted.Concat(_queuedMessages).ToList();
+                    _returnedUnstarted.Clear();
                     _queuedMessages.Clear();
                     RestoreToComposer(toComposer,
-                        stopped
-                            ? "Stopped before Claude confirmed your queued message - it is back in the message box."
-                            : "Your queued message was not delivered - it is back in the message box.",
-                        stopped
-                            ? "Stopped before Claude confirmed {0} queued messages - they are back in the message box."
-                            : "{0} queued messages were not delivered - they are back in the message box.");
+                        "Your queued message was not delivered - it is back in the message box.",
+                        "{0} queued messages were not delivered - they are back in the message box.");
                 }
                 RequeueReturnedUnstarted();
             }
@@ -1313,9 +1302,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // Whether a returning prompt ran is decided here, when its answer arrives, not when Stop is
     // pressed. A prompt runs once it is confirmed started: sent while nothing else was in flight, or
     // taken in by a hand-off - either way its bubble stops reading as pending. One still pending that
-    // comes back "cancelled" (Stop) goes back to the composer (_stoppedUnconfirmed); one that failed
-    // (refused, or the agent died) never ran: once nothing is running it is sent again, or goes back
-    // into the message box if the last prompt failed too (see RunTurnAsync). A hand-off is only a
+    // comes back "cancelled" (Stop) or failed (refused, or the agent died) is held in
+    // _returnedUnstarted: once nothing is running it is sent again, or goes back into the message
+    // box if the last prompt failed too (see RunTurnAsync). A hand-off is only a
     // real end of the running prompt (not "cancelled", not a failure) while others wait: the agent
     // has taken the next one in and carries on, so it stays one turn - what follows gets its own
     // assistant bubble below that message, and the turn stats keep running. A prompt dropped with its
@@ -1328,11 +1317,6 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         bool endedNormally = stopReason is not null and not "cancelled";
         if (queued is not null && queued.Bubble.IsPending)
         {
-            if (stopReason == "cancelled")
-            {
-                _stoppedUnconfirmed.Add(queued);
-                return;
-            }
             if (!endedNormally)
             {
                 _returnedUnstarted.Add(queued);
@@ -1366,7 +1350,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     }
 
     // Called once nothing is running, for messages that must not be re-sent automatically (see
-    // _stoppedUnconfirmed, and RunTurnAsync for a failed turn). The bubbles leave the transcript and
+    // RunTurnAsync for a failed turn). The bubbles leave the transcript and
     // the texts go into the composer in the order they were sent, ahead of whatever is typed there.
     private void RestoreToComposer(List<QueuedMessage> pending, string one, string many)
     {
@@ -1482,9 +1466,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         if (_disposed || _connection is null || _sessionId is null) return;
         // Stop cancels the running turn, not the follow-ups the user has already written. Those still
-        // held here stay queued; those the agent was holding come back "cancelled" and go into the
-        // message box with everything queued behind them (OnPromptReturned, _stoppedUnconfirmed).
-        // RunTurnAsync's tail does both once every cancelled prompt has returned.
+        // held here stay queued; those the agent was holding come back "cancelled" and are queued
+        // again ahead of them (OnPromptReturned). RunTurnAsync's tail sends them once every
+        // cancelled prompt has returned.
         if (IsBusy) _isStopping = true;
         try
         {

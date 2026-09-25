@@ -878,6 +878,14 @@ public partial class ChatPanelView : UserControl, IDisposable
             return;
         }
 
+        // While Claude works, Esc stops it - the Stop button is the only action button shown then.
+        if (e.Key == Key.Escape && Keyboard.Modifiers == ModifierKeys.None && _viewModel.CancelCommand.CanExecute(null))
+        {
+            e.Handled = true;
+            _viewModel.CancelCommand.Execute(null);
+            return;
+        }
+
         // Leave Shift+Enter and IME composition to the native TextBox.
         if (e.Key != Key.Enter || Keyboard.Modifiers != ModifierKeys.None)
         {

@@ -1011,13 +1011,14 @@
                            Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" /></Viewbox>
               </Button>
               <Button Width="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=28}" Height="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=28}" Padding="0" Margin="0,0,4,0" Command="{Binding CancelCommand}"
-                      Style="{StaticResource ChatButtonStyle}" ToolTip="Stop response" AutomationProperties.Name="Stop response"
+                      Style="{StaticResource ChatButtonStyle}" ToolTip="Stop response (Esc)" AutomationProperties.Name="Stop response"
                       Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibilityConverter}}">
                 <Viewbox Width="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=10}" Height="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=10}"><Rectangle Width="10" Height="10" RadiusX="1.5" RadiusY="1.5"
                            Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" /></Viewbox>
               </Button>
               <Button Width="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=28}" Height="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=28}" Padding="0" Command="{Binding SendCommand}" Click="SendButton_Click"
-                      Style="{StaticResource ChatButtonStyle}" ToolTip="Send message (Enter)" AutomationProperties.Name="Send message">
+                      Style="{StaticResource ChatButtonStyle}" ToolTip="Send message (Enter)" AutomationProperties.Name="Send message"
+                      Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibilityConverter}, ConverterParameter=Invert}">
                 <Viewbox Width="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}" Height="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}"><Path Data="M 6,12 L 6,0 M 1,5 L 6,0 L 11,5" StrokeThickness="1.8"
                       Style="{StaticResource ButtonIconStrokeStyle}" /></Viewbox>
               </Button>

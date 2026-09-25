@@ -510,12 +510,11 @@ public sealed partial class ChatSessionStateTests
         Assert.All(vm.Messages.Where(message => message.Role == ChatRole.User), message => Assert.False(message.IsPending));
     }
 
-    // session/cancel answers every follow-up the agent was holding "cancelled" - also one Claude
-    // Code had already folded into the stopped turn and answered - so there is no telling whether it
-    // ran. It is neither lost nor sent twice: once the stop has landed its text goes
-    // back into the composer, in order, ahead of any draft, and the user decides.
+    // Stop stops the work, not the conversation: session/cancel answers every follow-up the agent
+    // was holding "cancelled", and once the stop has landed they are sent again, in order, to be
+    // answered - the draft being typed is left alone.
     [Fact]
-    public async Task QueueingAgent_Cancel_PutsFollowUpsTheAgentWasHolding_BackInTheComposer_InOrder()
+    public async Task QueueingAgent_Cancel_SendsTheFollowUpsTheAgentWasHolding_OnceTheStopLands_InOrder()
     {
         var turns = new PromptGate();
         var connection = new RecordingAcpAgentConnection { SupportsPromptQueueing = true, PromptHandler = turns.Handle };
@@ -537,13 +536,17 @@ public sealed partial class ChatSessionStateTests
 
         turns.Complete("first", "cancelled");
         await firstSend;
-        await WaitUntilAsync(() => !vm.IsBusy);
+        await WaitUntilAsync(() => connection.Prompts.Count == 5);
 
-        Assert.Equal(3, connection.Prompts.Count);
-        Assert.Equal("second" + Environment.NewLine + Environment.NewLine + "third" + Environment.NewLine + Environment.NewLine + "draft", vm.InputText);
-        Assert.DoesNotContain(vm.Messages, message => message.Text is "second" or "third");
-        Assert.Contains("message box", vm.StatusMessage, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("not sent", vm.StatusMessage!, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(["first", "second", "third", "second", "third"], connection.Prompts.Select(Text));
+        Assert.Equal("draft", vm.InputText);
+        Assert.Contains(vm.Messages, message => message.Text == "second");
+        Assert.Contains(vm.Messages, message => message.Text == "third");
+        Assert.DoesNotContain("not sent", vm.StatusMessage ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        turns.Complete("second");
+        turns.Complete("third");
+        await WaitUntilAsync(() => !vm.IsBusy);
+        Assert.All(vm.Messages.Where(message => message.Role == ChatRole.User), message => Assert.False(message.IsPending));
     }
 
     // A follow-up handed to the agent but not taken up yet still belongs to the session it was typed
@@ -661,11 +664,9 @@ public sealed partial class ChatSessionStateTests
     }
 
     // A message typed while a Stop is still landing is not sent ahead into the turn being cancelled
-    // (the agent would drop it). When an earlier follow-up comes back to the message box, the later
-    // one follows it there, in order - it must not reach Claude without the message before it
-    // (review round 4, item 2).
+    // (the agent would drop it). It goes out after the returned follow-up, never ahead of it.
     [Fact]
-    public async Task QueueingAgent_MessageSentWhileStopping_FollowsTheReturnedOneIntoTheComposer_InOrder()
+    public async Task QueueingAgent_MessageSentWhileStopping_IsSentAfterTheReturnedOne_InOrder()
     {
         var turns = new PromptGate();
         var connection = new RecordingAcpAgentConnection { SupportsPromptQueueing = true, PromptHandler = turns.Handle };
@@ -684,11 +685,12 @@ public sealed partial class ChatSessionStateTests
         turns.Complete("second", "cancelled");
         turns.Complete("first", "cancelled");
         await firstSend;
+        await WaitUntilAsync(() => connection.Prompts.Count == 4);
+        Assert.Equal(["first", "second", "second", "third"], connection.Prompts.Select(Text));
+        Assert.Equal(string.Empty, vm.InputText);
+        turns.Complete("second");
+        turns.Complete("third");
         await WaitUntilAsync(() => !vm.IsBusy);
-
-        Assert.Equal(["first", "second"], connection.Prompts.Select(Text));
-        Assert.Equal("second" + Environment.NewLine + Environment.NewLine + "third", vm.InputText);
-        Assert.DoesNotContain(vm.Messages, message => message.Text is "second" or "third");
     }
 
     // Same after a failed turn: a follow-up typed after one the agent refused is held behind it, and
@@ -792,6 +794,8 @@ public sealed partial class ChatSessionStateTests
         Assert.NotNull(stopped.DurationSeconds);
         turns.Complete("first", "cancelled");
         await firstSend;
+        await WaitUntilAsync(() => connection.Prompts.Count == 3); // the withdrawn "second", sent again
+        turns.Complete("second");
         await WaitUntilAsync(() => !vm.IsBusy);
     }
 
@@ -830,10 +834,10 @@ public sealed partial class ChatSessionStateTests
     }
 
     // If the agent answers Stop the other way round - the stopped turn first - the follow-up still
-    // behind it was not confirmed as started: it must not read as delivered, and comes back to the
-    // composer like any other.
+    // behind it was not confirmed as started: it must not read as delivered, and is sent again once
+    // both have returned, like any other.
     [Fact]
-    public async Task QueueingAgent_Cancel_StoppedTurnAnsweredFirst_FollowUpStillComesBackToTheComposer()
+    public async Task QueueingAgent_Cancel_StoppedTurnAnsweredFirst_FollowUpIsStillSentAgain()
     {
         var turns = new PromptGate();
         var connection = new RecordingAcpAgentConnection { SupportsPromptQueueing = true, PromptHandler = turns.Handle };
@@ -850,11 +854,14 @@ public sealed partial class ChatSessionStateTests
         await firstSend;
         Assert.True(second.IsPending);
         turns.Complete("second", "cancelled");
-        await WaitUntilAsync(() => !vm.IsBusy);
+        await WaitUntilAsync(() => connection.Prompts.Count == 3);
 
-        Assert.Equal(["first", "second"], connection.Prompts.Select(Text));
-        Assert.Equal("second", vm.InputText);
-        Assert.DoesNotContain(second, vm.Messages);
+        Assert.Equal(["first", "second", "second"], connection.Prompts.Select(Text));
+        Assert.Equal(string.Empty, vm.InputText);
+        Assert.Contains(second, vm.Messages);
+        Assert.False(second.IsPending);
+        turns.Complete("second");
+        await WaitUntilAsync(() => !vm.IsBusy);
     }
 
     // A message typed after a follow-up the agent refused goes out after it, not ahead of it.
@@ -1475,10 +1482,10 @@ public sealed partial class ChatSessionStateTests
         Assert.Contains("message box", vm.StatusMessage, StringComparison.Ordinal);
     }
 
-    // A follow-up that goes back into the message box takes its attachments with it: the user's
-    // screenshot must not vanish, nor land twice next to what they have attached since.
+    // A follow-up that goes back into the message box (the agent failed) takes its attachments with
+    // it: the user's screenshot must not vanish, nor land twice next to what they attached since.
     [Fact]
-    public async Task QueueingAgent_Cancel_PutsTheFollowUpsAttachmentsBackInTheComposer_BesideTheDrafts()
+    public async Task QueueingAgent_FailedTurn_PutsTheFollowUpsAttachmentsBackInTheComposer_BesideTheDrafts()
     {
         var turns = new PromptGate();
         var connection = new RecordingAcpAgentConnection { SupportsPromptQueueing = true, PromptHandler = turns.Handle };
@@ -1494,9 +1501,8 @@ public sealed partial class ChatSessionStateTests
         var drafted = new ChatAttachmentViewModel("drafted.png", "image/png", "BBBB");
         vm.Attachments.Add(drafted);
 
-        await vm.CancelCommand.ExecuteAsync(null);
-        turns.Complete("second", "cancelled");
-        turns.Complete("first", "cancelled");
+        turns.Fail("second", new InvalidOperationException("agent error"));
+        turns.Fail("first", new InvalidOperationException("agent error"));
         await firstSend;
         await WaitUntilAsync(() => !vm.IsBusy);
 
