@@ -225,7 +225,16 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         };
 
         JsonNode? result = await _rpc.SendRequestAsync("initialize", @params, cancellationToken).ConfigureAwait(false);
-        _supportsPromptQueueing = ReadsPromptQueueing(result);
+        // A repeated key anywhere in the response body throws ArgumentException when the object is
+        // first materialized; report it as a malformed response.
+        try
+        {
+            _supportsPromptQueueing = ReadsPromptQueueing(result);
+        }
+        catch (ArgumentException)
+        {
+            throw new AcpProtocolException("initialize response was malformed.");
+        }
         Volatile.Write(ref _isInitialized, 1);
     }
 
@@ -240,13 +249,6 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         && claudeCode["promptQueueing"] is JsonValue flag
         && flag.GetValueKind() == System.Text.Json.JsonValueKind.True;
 
-    /// <summary>
-    /// Starts a new ACP session rooted at <paramref name="cwd"/>. <paramref name="cwd"/> is sent to
-    /// the remote agent process as-is - this class does not validate, canonicalize, or sandbox it in
-    /// any way. The caller MUST pass only a path it already trusts (e.g. one already checked against
-    /// a workspace boundary); this class has no way to distinguish an intentionally-opened workspace
-    /// from an attacker-controlled path.
-    /// </summary>
     // Appended to Claude Code's own system prompt for every session, as the VS Code extension does
     // (its "Focus view in this editor" section): Claude Code's default assumes a terminal where text
     // between tool calls may not be seen, so without this Claude keeps its narration - including its
@@ -270,6 +272,13 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         ["systemPrompt"] = new JsonObject { ["append"] = ChatPanelSystemPromptSection },
     };
 
+    /// <summary>
+    /// Starts a new ACP session rooted at <paramref name="cwd"/>. <paramref name="cwd"/> is sent to
+    /// the remote agent process as-is - this class does not validate, canonicalize, or sandbox it in
+    /// any way. The caller MUST pass only a path it already trusts (e.g. one already checked against
+    /// a workspace boundary); this class has no way to distinguish an intentionally-opened workspace
+    /// from an attacker-controlled path.
+    /// </summary>
     public async Task<NewSessionResult> NewSessionAsync(string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken)
     {
         var @params = new JsonObject

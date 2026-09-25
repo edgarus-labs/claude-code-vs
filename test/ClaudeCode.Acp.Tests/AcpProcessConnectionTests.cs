@@ -259,6 +259,22 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         Assert.False(_connection.SupportsPromptQueueing);
     }
 
+    // Reading the capability materializes the response object, and System.Text.Json throws
+    // ArgumentException there for a repeated key: that is a malformed response, reported like every
+    // other one, not a raw collection error.
+    [Fact]
+    public async Task InitializeAsync_ResponseWithADuplicateKey_FaultsAsMalformed()
+    {
+        var pending = _connection.InitializeAsync(CancellationToken.None);
+        JsonObject request = await ReadRequestAsync("initialize");
+
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer,
+            "{\"jsonrpc\":\"2.0\",\"id\":" + request["id"]!.ToJsonString() + ",\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{},\"agentCapabilities\":{}}}");
+
+        await Assert.ThrowsAsync<AcpProtocolException>(() => pending.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.False(_connection.IsInitialized);
+    }
+
     [Fact]
     public async Task InboundElicitationCreateRequest_FormMode_ParsesFieldsAndRoundTripsAcceptedAnswer()
     {
