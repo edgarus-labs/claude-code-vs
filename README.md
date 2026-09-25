@@ -196,6 +196,10 @@ instance described above.
   assembly metadata (`-p:Version=X.Y.Z`), rebuilds, re-runs tests, and creates a **draft** GitHub Release with the
   built `.vsix` and its `SHA256SUMS` attached. A maintainer reviews the generated notes and the assets, then
   publishes the release by hand.
+- **CodeQL** (`.github/workflows/codeql.yml`): every PR to `develop`, every push to `develop`, and a weekly
+  schedule run GitHub CodeQL over C# (`build-mode: none`, no Windows build needed), the JavaScript transcript
+  renderer, and the GitHub Actions workflows. Results are uploaded to the repository's **Security → Code
+  scanning** tab; the job only needs `contents: read` and `security-events: write`.
 
 ## Security
 
