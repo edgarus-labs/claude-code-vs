@@ -1,0 +1,13 @@
+{
+  "$schema": "http://json.schemastore.org/vsix-publish",
+  "categories": [ "coding", "other" ],
+  "identity": {
+    "internalName": "ClaudeCodeForVisualStudio"
+  },
+  "overview": "../../README.md",
+  "priceCategory": "free",
+  "publisher": "edgarus-labs",
+  "private": false,
+  "qna": true,
+  "repo": "https://github.com/edgarus-labs/claude-code-vs"
+}
