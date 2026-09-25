@@ -29,6 +29,10 @@ jobs:
         shell: pwsh
         run: ./.github/tests/ReleaseVersion.Tests.ps1
 
+      - name: Test Marketplace publishing script
+        shell: pwsh
+        run: ./.github/tests/PublishMarketplace.Tests.ps1
+
       - name: Validate release version
         id: version
         shell: pwsh
@@ -105,6 +109,11 @@ jobs:
             ${{ steps.checksum.outputs.path }}
           if-no-files-found: error
 
+  # Post-build publishing: the GitHub Release and the Visual Studio Marketplace jobs each depend only
+  # on build, so a failure in one never blocks or masks the other, and any failure fails the run.
+  # The VSIX and SHA256SUMS stay downloadable as the run's release-vsix artifact either way. Recovery
+  # is "Re-run failed jobs": it reuses that artifact, so the published bits are the ones that were
+  # built and tested, and it repeats only the publishing that did not complete.
   release:
     needs: build
     runs-on: windows-latest
@@ -130,3 +139,36 @@ jobs:
           files: |
             release/*.vsix
             release/SHA256SUMS
+
+  marketplace:
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Download release payload
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-vsix
+          path: release
+
+      - name: Locate VsixPublisher
+        id: publisher
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          $publisher = & $vswhere -latest -products * -find "VSSDK\VisualStudioIntegration\Tools\Bin\VsixPublisher.exe" | Select-Object -First 1
+          if (-not $publisher) { throw "VsixPublisher.exe was not found in the runner's Visual Studio installation." }
+          "path=$publisher" >> $env:GITHUB_OUTPUT
+
+      - name: Publish to Visual Studio Marketplace
+        shell: pwsh
+        env:
+          VS_MARKETPLACE_PAT: ${{ secrets.VS_MARKETPLACE_PAT }}
+          PUBLISHER_PATH: ${{ steps.publisher.outputs.path }}
+        run: |
+          $vsix = @(Get-ChildItem -Path release -Filter *.vsix)
+          if ($vsix.Count -ne 1) { throw "Expected exactly one .vsix in the release payload, found $($vsix.Count)." }
+          ./.github/scripts/Publish-Marketplace.ps1 -VsixPath $vsix[0].FullName -PublishManifestPath src/ClaudeCode.Vsix/publishManifest.json -PublisherPath $env:PUBLISHER_PATH -PersonalAccessToken $env:VS_MARKETPLACE_PAT

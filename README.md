@@ -193,9 +193,18 @@ instance described above.
   in Release and runs all three test projects, on `windows-latest`.
 - **CD** (`.github/workflows/cd.yml`): pushing a tag matching `vX.Y.Z` stamps that version into both the
   `.vsixmanifest` `Identity/@Version` (what Visual Studio's Extensions & Updates dialog displays) and the .NET
-  assembly metadata (`-p:Version=X.Y.Z`), rebuilds, re-runs tests, and creates a **draft** GitHub Release with the
-  built `.vsix` and its `SHA256SUMS` attached. A maintainer reviews the generated notes and the assets, then
-  publishes the release by hand.
+  assembly metadata (`-p:Version=X.Y.Z`), rebuilds, re-runs tests, and uploads the `.vsix` and its `SHA256SUMS`
+  as the run's `release-vsix` artifact. Two independent jobs then publish that artifact:
+  - **release** creates a **draft** GitHub Release with both files attached. A maintainer reviews the generated
+    notes and the assets, then publishes the release by hand.
+  - **marketplace** publishes the `.vsix` to the Visual Studio Marketplace under the publisher ID
+    `edgarus-labs` (`src/ClaudeCode.Vsix/publishManifest.json`, which must match the `.vsixmanifest`
+    `Identity/@Publisher`), using a Marketplace personal access token stored in the `VS_MARKETPLACE_PAT`
+    repository secret. A missing token, a publisher mismatch or a rejected upload fails the job.
+
+  If either publishing job fails, the run fails while the `release-vsix` artifact stays available. Fix the
+  cause (for example the token) and use **Re-run failed jobs**: it republishes the same artifact and repeats
+  only the job that failed; a re-run of **release** reuses the existing draft for the tag.
 - **CodeQL** (`.github/workflows/codeql.yml`): every PR to `develop`, every push to `develop`, and a weekly
   schedule run GitHub CodeQL over C# (`build-mode: none`, no Windows build needed), the JavaScript transcript
   renderer, and the GitHub Actions workflows. Results are uploaded to the repository's **Security → Code

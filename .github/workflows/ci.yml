@@ -28,6 +28,10 @@ jobs:
         shell: pwsh
         run: ./.github/tests/ReleaseVersion.Tests.ps1
 
+      - name: Test Marketplace publishing script
+        shell: pwsh
+        run: ./.github/tests/PublishMarketplace.Tests.ps1
+
       # The transcript renderer is JavaScript running in WebView2, out of reach of the .NET test
       # projects; its pure render-diff logic is covered by Node's built-in runner instead.
       - name: Test transcript renderer
