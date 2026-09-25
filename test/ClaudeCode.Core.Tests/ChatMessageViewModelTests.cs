@@ -216,7 +216,7 @@ public sealed class ChatMessageViewModelTests
     }
 
     // Thinking is agent-supplied too: bounded in total across every thinking part of the message,
-    // and - like the reply text - the cut is said, not silent (review item 3).
+    // and - like the reply text - the cut is said, not silent.
     [Fact]
     public void AppendThought_CrossingTheLimit_EndsWithTheTruncationNotice_AndStopsGrowing()
     {

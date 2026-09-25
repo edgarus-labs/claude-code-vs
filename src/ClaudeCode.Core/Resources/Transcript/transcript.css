@@ -221,8 +221,8 @@ html, body {
   border-bottom-style: solid;
 }
 
-/* Mirrors the VS Code extension's thinking block (thinkingV2): chevron + label in the secondary
-   colour at .8 opacity (1 when open or hovered), content 4px below, 8px above and below the block. */
+/* Styled like the VS Code extension's thinking block: chevron + label in the secondary colour,
+   dimmed until the block is open or hovered. */
 .thinking {
   margin: 8px 0;
 }

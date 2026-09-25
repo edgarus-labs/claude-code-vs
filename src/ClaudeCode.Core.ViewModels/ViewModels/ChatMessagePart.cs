@@ -3,8 +3,8 @@ using System.Text;
 namespace ClaudeCode.Core.ViewModels;
 
 /// <summary>
-/// One ordered piece of an assistant turn: either a run of text or a tool call, in the actual
-/// sequence the agent emitted them. <see cref="ChatMessageViewModel.Text"/> and
+/// One ordered piece of an assistant turn: a run of text, a run of thinking, or a tool call, in the
+/// actual sequence the agent emitted them. <see cref="ChatMessageViewModel.Text"/> and
 /// <see cref="ChatMessageViewModel.ToolCalls"/> group everything by kind instead, which loses that
 /// interleaving (a chat rendered from them always shows "all text, then all tool calls" even when a
 /// tool call actually happened in between two text chunks). <see cref="ChatMessageViewModel.Parts"/>
@@ -12,9 +12,9 @@ namespace ClaudeCode.Core.ViewModels;
 /// tests already depend on their grouped-by-kind shape.
 /// </summary>
 /// <remarks>Deliberately not observable: nothing subscribes to a part. The transcript repaint is
-/// driven by <see cref="ChatMessageViewModel"/>'s own <c>Text</c> notification, which
-/// <c>TranscriptHostProtocol.AffectsTranscript</c> honours, and the page itself is re-rendered from
-/// the whole <see cref="ChatMessageViewModel.Parts"/> payload.</remarks>
+/// driven by <see cref="ChatMessageViewModel"/>'s own <c>Text</c> and <c>ThinkingVersion</c>
+/// notifications, which <c>TranscriptHostProtocol.AffectsTranscript</c> honours, and the page
+/// itself is re-rendered from the whole <see cref="ChatMessageViewModel.Parts"/> payload.</remarks>
 public abstract class ChatMessagePart
 {
 }
