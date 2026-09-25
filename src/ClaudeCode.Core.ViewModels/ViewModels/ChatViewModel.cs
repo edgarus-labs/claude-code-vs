@@ -1683,6 +1683,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         Messages.Clear();
         lock (_changedFilesByPath) _changedFilesByPath.Clear();
         _toolCallDiffsById.Clear();
+        _toolCallLocations.Clear();
         ClearRunningSubagents();
         ChangedFiles.Clear();
         ClearPendingRequests("The session was replaced.");
@@ -1882,6 +1883,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                     UpdateActivity("Thinking…");
                     break;
                 case SessionUpdate.ToolCall toolCall:
+                    RecordToolCallLocations(toolCall.Call);
                     UpsertToolCall(toolCall.Call);
                     break;
                 case SessionUpdate.Plan plan:
@@ -2208,6 +2210,25 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // UI thread only (UpsertToolCall and ResetTranscriptState), where notifications are serialized.
     private readonly Dictionary<string, List<ToolCallContent>> _toolCallDiffsById = new Dictionary<string, List<ToolCallContent>>(StringComparer.Ordinal);
 
+    // Every file a tool call of this transcript read or edited, by the absolute path claude-agent-acp
+    // reports as its location - what a bare "`Program.cs:12`" in the agent's answer refers to (see
+    // ResolveFileReference). Agent-supplied, so only a lookup key: opening still goes through the
+    // workspace guard. UI thread only, like _toolCallDiffsById.
+    private readonly HashSet<string> _toolCallLocations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    private void RecordToolCallLocations(ToolCallUpdate call)
+    {
+        foreach (var location in call.Locations)
+        {
+            // A relative location has no base the host can trust, and normalizing lets two spellings
+            // of one file count once rather than read as two namesakes. A path the framework cannot
+            // parse names no file to resolve against, so it is simply not recorded.
+            if (!Path.IsPathRooted(location)) continue;
+            try { _toolCallLocations.Add(Path.GetFullPath(location)); }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException) { }
+        }
+    }
+
     // Resolves, in notification order, the diffs a tool-call notification should be tracked against:
     // its own when it carries any, otherwise - for the content-less final update - the last ones it
     // reported. Deciding this here rather than inside the per-notification background task keeps a
@@ -2487,12 +2508,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             if (string.IsNullOrEmpty(workspaceRoot))
                 throw new InvalidOperationException("no folder or solution is open.");
 
-            // The agent writes workspace-relative paths, but WorkspacePathGuard resolves a relative
-            // candidate against the process working directory - devenv's, which has nothing to do
-            // with the workspace. Anchor it first so the guard judges the path the user meant.
-            var candidate = Path.IsPathRooted(reference) ? reference : Path.Combine(workspaceRoot!, reference);
+            // Snapshotted here, on the UI thread that owns it, before the lookup moves off it.
+            var toolCallLocations = _toolCallLocations.ToArray();
             await Task.Run(async () =>
             {
+                var candidate = ResolveFileReference(workspaceRoot!, reference, toolCallLocations);
                 using var pathLease = WorkspacePathGuard.AcquireFile(workspaceRoot, candidate);
                 using var document = pathLease.ProtectDocument();
                 if (document is null && RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
@@ -2505,6 +2525,37 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         {
             if (!_disposed) StatusMessage = $"Could not open {reference}: {ex.Message}";
         }
+    }
+
+    /// <summary>
+    /// Picks the path a transcript file reference names; the caller still confines it to the
+    /// workspace. An absolute reference is taken as written. The agent writes workspace-relative
+    /// paths, but WorkspacePathGuard resolves a relative candidate against the process working
+    /// directory - devenv's, which has nothing to do with the workspace - so a relative one is
+    /// anchored on <paramref name="workspaceRoot"/>, and when that file exists the reference is
+    /// taken as written too. Otherwise the agent usually named a file it read or edited elsewhere
+    /// by its bare name or a partial path ("`Program.cs:12`", issue #39): the reference then stands
+    /// for the one tool-call location ending in that path, and naming more than one is an error
+    /// rather than an arbitrary pick. Never a search of the solution by name.
+    /// </summary>
+    private static string ResolveFileReference(string workspaceRoot, string reference, IReadOnlyList<string> toolCallLocations)
+    {
+        if (Path.IsPathRooted(reference)) return reference;
+
+        var underRoot = Path.Combine(workspaceRoot, reference);
+        if (File.Exists(underRoot)) return underRoot;
+
+        var suffix = Path.DirectorySeparatorChar + reference.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
+        string? match = null;
+        foreach (var location in toolCallLocations)
+        {
+            if (!location.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)) continue;
+            if (match is not null)
+                throw new IOException("more than one file Claude worked on matches it; ask Claude for the full path.");
+            match = location;
+        }
+
+        return match ?? underRoot;
     }
 
     private async Task RejectChangeAsync(ChangedFileViewModel file)

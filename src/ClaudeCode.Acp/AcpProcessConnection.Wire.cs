@@ -609,6 +609,7 @@ public sealed partial class AcpProcessConnection
         Kind = GetOptionalString(obj, "kind"),
         Status = ParseToolCallStatus(GetOptionalString(obj, "status")),
         Content = ParseToolCallContentArray(obj["content"] as JsonArray),
+        Locations = ParseToolCallLocationPaths(obj["locations"] as JsonArray),
         // claude-agent-acp: _meta.claudeCode.toolName is the Claude Code tool behind the call.
         IsSubagent = obj["_meta"] is JsonObject meta && meta["claudeCode"] is JsonObject claudeCode
             && GetOptionalString(claudeCode, "toolName") is "Agent" or "Task",
@@ -636,6 +637,25 @@ public sealed partial class AcpProcessConnection
             if (item is JsonObject obj)
             {
                 list.Add(ParseToolCallContent(obj));
+            }
+        }
+
+        return list;
+    }
+
+    private static IReadOnlyList<string> ParseToolCallLocationPaths(JsonArray? array)
+    {
+        if (array is null || array.Count == 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        var list = new List<string>(array.Count);
+        foreach (JsonNode? item in array)
+        {
+            if (item is JsonObject obj && GetOptionalString(obj, "path") is { Length: > 0 } path)
+            {
+                list.Add(path);
             }
         }
 

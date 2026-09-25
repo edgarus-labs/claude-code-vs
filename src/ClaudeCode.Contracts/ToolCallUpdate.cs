@@ -18,4 +18,8 @@ public sealed class ToolCallUpdate
     public bool IsSubagent { get; set; }
 
     public IReadOnlyList<ToolCallContent> Content { get; set; } = Array.Empty<ToolCallContent>();
+
+    /// <summary>The file paths the call reads or edits (ACP <c>locations[].path</c>) - absolute for
+    /// claude-agent-acp. Agent-supplied, so untrusted: validate before touching the filesystem.</summary>
+    public IReadOnlyList<string> Locations { get; set; } = Array.Empty<string>();
 }

@@ -1211,6 +1211,22 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         Assert.Equal(isSubagent, call.IsSubagent);
     }
 
+    // claude-agent-acp reports the file a Read/Edit/Write works on as locations[].path. The chat
+    // resolves a bare file name the agent later writes ("`Program.cs:12`") against those paths, so
+    // they must survive parsing; entries without a string path carry nothing to resolve against.
+    [Fact]
+    public async Task SessionUpdate_ToolCall_ReportsTheLocationPaths()
+    {
+        var received = new TaskCompletionSource<SessionUpdateEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _connection.SessionUpdate += (_, update) => received.TrySetResult(update);
+
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer,
+            """{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"t1","title":"Read Program.cs","kind":"read","status":"pending","locations":[{"path":"C:\\repo\\src\\Program.cs","line":3},{"line":1},{"path":7},"junk"]}}}""");
+
+        var call = Assert.IsType<SessionUpdate.ToolCall>((await received.Task.WaitAsync(TimeSpan.FromSeconds(5))).Update).Call;
+        Assert.Equal(new[] { @"C:\repo\src\Program.cs" }, call.Locations);
+    }
+
     [Fact]
     public async Task SessionUpdate_ToolCallWithoutAToolCallId_DropsThatNotificationAndKeepsThePumpAlive()
     {
