@@ -215,6 +215,27 @@ public sealed class ChatMessageViewModelTests
         Assert.Contains("truncated", textPart.Text, StringComparison.Ordinal);
     }
 
+    // Thinking is agent-supplied too: bounded in total across every thinking part of the message,
+    // and - like the reply text - the cut is said, not silent.
+    [Fact]
+    public void AppendThought_CrossingTheLimit_EndsWithTheTruncationNotice_AndStopsGrowing()
+    {
+        var message = new ChatMessageViewModel(ChatRole.Assistant);
+        message.AppendThought(new string('a', MarkdownSafetyLimits.MaxMarkdownLength - 10));
+        message.AppendToolCall(new ToolCallCardViewModel(new ToolCallUpdate { ToolCallId = "t", Title = "Read" }));
+        message.AppendThought(new string('b', 20));
+        var version = message.ThinkingVersion;
+
+        message.AppendThought("more");
+
+        var thoughts = message.Parts.OfType<ChatThinkingPart>().ToList();
+        Assert.Equal(2, thoughts.Count);
+        Assert.EndsWith(MarkdownSafetyLimits.TruncationNotice, thoughts[1].Text, StringComparison.Ordinal);
+        Assert.Equal(MarkdownSafetyLimits.MaxMarkdownLength,
+            thoughts.Sum(part => part.Text.Length) - MarkdownSafetyLimits.TruncationNotice.Length);
+        Assert.Equal(version, message.ThinkingVersion);
+    }
+
     [Fact]
     public void Images_Assigned_NotifiesWithTheNewValueAlreadyReadable()
     {

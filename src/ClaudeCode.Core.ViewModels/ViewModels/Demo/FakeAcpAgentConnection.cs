@@ -20,6 +20,9 @@ public sealed class FakeAcpAgentConnection : IAcpAgentConnection
 
     public bool IsInitialized { get; private set; }
 
+    // The demo turn loop runs one prompt at a time; a concurrent prompt would interleave its echo.
+    public bool SupportsPromptQueueing => false;
+
     public Task InitializeAsync(CancellationToken cancellationToken)
     {
         IsInitialized = true;
@@ -55,7 +58,7 @@ public sealed class FakeAcpAgentConnection : IAcpAgentConnection
         }),
     };
 
-    public async Task SendPromptAsync(string sessionId, IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken)
+    public async Task<string> SendPromptAsync(string sessionId, IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken)
     {
         var text = string.Concat(content.OfType<ContentBlock.Text>().Select(t => t.Value));
         using var turnCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -76,10 +79,14 @@ public sealed class FakeAcpAgentConnection : IAcpAgentConnection
             }
 
             SessionUpdate?.Invoke(this, new SessionUpdateEventArgs(sessionId, new SessionUpdate.TurnEnded("end_turn")));
+            return "end_turn";
         }
-        catch (OperationCanceledException)
+        // Only a stop by CancelAsync ends the turn "cancelled"; a cancelled caller token throws, as it
+        // does on the real connection.
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             SessionUpdate?.Invoke(this, new SessionUpdateEventArgs(sessionId, new SessionUpdate.TurnEnded("cancelled")));
+            return "cancelled";
         }
         finally
         {

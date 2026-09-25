@@ -96,6 +96,7 @@ public sealed class TranscriptHostProtocolTests
     // claude.ai/code never sets IsBusy, so these are the only signals that it changed.
     [Theory]
     [InlineData(nameof(ChatMessageViewModel.Text))]
+    [InlineData(nameof(ChatMessageViewModel.ThinkingVersion))]
     [InlineData(nameof(ChatMessageViewModel.DurationSeconds))]
     [InlineData(nameof(ChatMessageViewModel.TokensUsed))]
     [InlineData(nameof(ToolCallCardViewModel.Title))]

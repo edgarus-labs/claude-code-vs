@@ -226,6 +226,55 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         await pending.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
+    // claude-agent-acp advertises that it queues a session/prompt sent while another is running;
+    // the chat view model only sends one mid-turn when the agent said so.
+    [Fact]
+    public async Task InitializeAsync_ReportsPromptQueueing_WhenTheAgentAdvertisesIt()
+    {
+        Assert.False(_connection.SupportsPromptQueueing);
+        var pending = _connection.InitializeAsync(CancellationToken.None);
+        JsonObject request = await ReadRequestAsync("initialize");
+
+        await ReplyAsync(request, """{"protocolVersion":1,"agentCapabilities":{"_meta":{"claudeCode":{"promptQueueing":true}}}}""");
+        await pending.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(_connection.SupportsPromptQueueing);
+    }
+
+    // Agent-supplied and therefore untrusted: only a literal JSON true opts in, so an agent that
+    // says nothing (or something malformed) keeps the one-prompt-at-a-time behavior.
+    [Theory]
+    [InlineData("""{"protocolVersion":1}""")]
+    [InlineData("""{"protocolVersion":1,"agentCapabilities":{"_meta":{"claudeCode":{"promptQueueing":"true"}}}}""")]
+    [InlineData("""{"protocolVersion":1,"agentCapabilities":{"_meta":{"claudeCode":true}}}""")]
+    [InlineData("""{"protocolVersion":1,"agentCapabilities":[]}""")]
+    public async Task InitializeAsync_DoesNotReportPromptQueueing_UnlessTheAgentSaysExactlyTrue(string result)
+    {
+        var pending = _connection.InitializeAsync(CancellationToken.None);
+        JsonObject request = await ReadRequestAsync("initialize");
+
+        await ReplyAsync(request, result);
+        await pending.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.False(_connection.SupportsPromptQueueing);
+    }
+
+    // Reading the capability materializes the response object, and System.Text.Json throws
+    // ArgumentException there for a repeated key: that is a malformed response, reported like every
+    // other one, not a raw collection error.
+    [Fact]
+    public async Task InitializeAsync_ResponseWithADuplicateKey_FaultsAsMalformed()
+    {
+        var pending = _connection.InitializeAsync(CancellationToken.None);
+        JsonObject request = await ReadRequestAsync("initialize");
+
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer,
+            "{\"jsonrpc\":\"2.0\",\"id\":" + request["id"]!.ToJsonString() + ",\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{},\"agentCapabilities\":{}}}");
+
+        await Assert.ThrowsAsync<AcpProtocolException>(() => pending.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.False(_connection.IsInitialized);
+    }
+
     [Fact]
     public async Task InboundElicitationCreateRequest_FormMode_ParsesFieldsAndRoundTripsAcceptedAnswer()
     {
@@ -667,6 +716,27 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         }
     }
 
+    // Like the VS Code extension, every session (new or resumed) appends a section to Claude Code's
+    // own system prompt telling Claude that its text between tool calls is shown to the user in this
+    // chat panel - so it replies to a message sent mid-turn in visible text, not only in its thinking.
+    [Fact]
+    public async Task NewAndLoadSession_AppendTheChatPanelSectionToTheSystemPrompt()
+    {
+        Task<NewSessionResult> created = _connection.NewSessionAsync("/workspace", null, CancellationToken.None);
+        JsonObject newRequest = await ReadRequestAsync("session/new");
+        Assert.Contains("between tool calls", newRequest["params"]!["_meta"]!["systemPrompt"]!["append"]!.GetValue<string>(), StringComparison.Ordinal);
+        await ReplyAsync(newRequest, """{"sessionId":"s1"}""");
+        await created.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Task<NewSessionResult> loaded = _connection.LoadSessionAsync("s1", "/workspace", null, CancellationToken.None);
+        JsonObject loadRequest = await ReadRequestAsync("session/load");
+        Assert.Equal(
+            newRequest["params"]!["_meta"]!["systemPrompt"]!["append"]!.GetValue<string>(),
+            loadRequest["params"]!["_meta"]!["systemPrompt"]!["append"]!.GetValue<string>());
+        await ReplyAsync(loadRequest, "{}");
+        await loaded.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
     [Fact]
     public async Task NewSessionAsync_ReadsCurrentConfigOptions_AndFlattensGroupedChoices()
     {
@@ -927,6 +997,21 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         Assert.Equal(0, disconnected);
     }
 
+    // The chat view model tells a queued prompt the agent never started ("cancelled" by Stop) from
+    // one that ran by this value, so it must be the agent's own stopReason.
+    [Theory]
+    [InlineData("""{"stopReason":"cancelled"}""", "cancelled")]
+    [InlineData("""{"stopReason":"end_turn"}""", "end_turn")]
+    [InlineData("""{}""", "end_turn")]
+    public async Task SendPromptAsync_ReturnsTheAgentsStopReason(string result, string expected)
+    {
+        Task<string> pending = _connection.SendPromptAsync("s1", new ContentBlock[] { new ContentBlock.Text("hi") }, CancellationToken.None);
+        JsonObject request = await ReadRequestAsync("session/prompt");
+        await ReplyAsync(request, result);
+
+        Assert.Equal(expected, await pending.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
     [Fact]
     public async Task SendPromptAsync_PreservesImageOnlyContent_AndCompletesTheTurn()
     {
@@ -1105,6 +1190,25 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
             """)!.ToJsonString());
         JsonObject accepted = await ReadResponseWithIdAsync(_toAgent.Reader, 28);
         Assert.Equal("accept", accepted["result"]!["action"]!.GetValue<string>());
+    }
+
+    // claude-agent-acp names the underlying Claude Code tool in _meta.claudeCode.toolName; a subagent
+    // is the Agent (formerly Task) tool. The composer counts those while they run.
+    [Theory]
+    [InlineData("Agent", true)]
+    [InlineData("Task", true)]
+    [InlineData("TaskCreate", false)]
+    [InlineData("Read", false)]
+    public async Task SessionUpdate_ToolCall_MarksSubagentsByTheirClaudeCodeToolName(string toolName, bool isSubagent)
+    {
+        var received = new TaskCompletionSource<SessionUpdateEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _connection.SessionUpdate += (_, update) => received.TrySetResult(update);
+
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer,
+            "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"tool_call\",\"toolCallId\":\"t1\",\"title\":\"x\",\"kind\":\"think\",\"status\":\"in_progress\",\"_meta\":{\"claudeCode\":{\"toolName\":\"" + toolName + "\"}}}}}");
+
+        var call = Assert.IsType<SessionUpdate.ToolCall>((await received.Task.WaitAsync(TimeSpan.FromSeconds(5))).Update).Call;
+        Assert.Equal(isSubagent, call.IsSubagent);
     }
 
     [Fact]

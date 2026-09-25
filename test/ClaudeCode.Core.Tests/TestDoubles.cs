@@ -10,10 +10,12 @@ internal sealed class RecordingAcpAgentConnection : IAcpAgentConnection
 {
     public const string SessionId = "session-1";
     public List<IReadOnlyList<ContentBlock>> Prompts { get; } = [];
+    public List<string> PromptSessionIds { get; } = [];
     public List<(string Id, string Value)> ConfigChanges { get; } = [];
     public int CancelCount { get; private set; }
     public int DisposeCount { get; private set; }
     public bool IsInitialized { get; private set; }
+    public bool SupportsPromptQueueing { get; set; }
     public IReadOnlyList<SessionConfigOption> ConfigOptions { get; set; } = [];
     public Func<CancellationToken, Task>? InitializeHandler { get; set; }
     public Func<CancellationToken, Task<NewSessionResult>>? NewSessionHandler { get; set; }
@@ -55,16 +57,25 @@ internal sealed class RecordingAcpAgentConnection : IAcpAgentConnection
         return ConfigHandler?.Invoke(configId, value, cancellationToken) ?? Task.FromResult(ConfigOptions);
     }
 
-    public Task SendPromptAsync(string sessionId, IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken)
+    // A handler returning Task<string> supplies the stop reason; any other Task (or a null reason)
+    // ends as "end_turn". Like AcpProcessConnection, TurnEnded is raised just before returning.
+    public async Task<string> SendPromptAsync(string sessionId, IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken)
     {
         Prompts.Add(content);
-        return PromptHandler?.Invoke(content) ?? Task.CompletedTask;
+        PromptSessionIds.Add(sessionId);
+        var turn = PromptHandler?.Invoke(content) ?? Task.CompletedTask;
+        await turn;
+        var stopReason = (turn as Task<string>)?.Result ?? "end_turn";
+        RaiseSessionUpdate(new SessionUpdate.TurnEnded(stopReason), sessionId);
+        return stopReason;
     }
+
+    public Func<Task>? CancelHandler { get; set; }
 
     public Task CancelAsync(string sessionId, CancellationToken cancellationToken)
     {
         CancelCount++;
-        return Task.CompletedTask;
+        return CancelHandler?.Invoke() ?? Task.CompletedTask;
     }
 
     public List<(string SessionId, bool Enabled, string? Name)> RemoteControlCalls { get; } = [];

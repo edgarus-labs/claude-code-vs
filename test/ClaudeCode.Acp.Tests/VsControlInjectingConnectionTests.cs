@@ -198,6 +198,8 @@ public sealed class VsControlInjectingConnectionTests
 
         public bool IsInitialized => true;
 
+        public bool SupportsPromptQueueing => false;
+
         public Task InitializeAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
         public Task<NewSessionResult> NewSessionAsync(string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken)
@@ -220,7 +222,7 @@ public sealed class VsControlInjectingConnectionTests
         public Task<IReadOnlyList<SessionConfigOption>> SetSessionConfigOptionAsync(string sessionId, string configId, string value, CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<SessionConfigOption>>(Array.Empty<SessionConfigOption>());
 
-        public Task SendPromptAsync(string sessionId, IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task<string> SendPromptAsync(string sessionId, IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken) => Task.FromResult("end_turn");
 
         public Task CancelAsync(string sessionId, CancellationToken cancellationToken) => Task.CompletedTask;
 

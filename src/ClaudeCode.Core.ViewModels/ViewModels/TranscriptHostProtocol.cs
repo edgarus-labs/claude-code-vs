@@ -105,6 +105,7 @@ public static class TranscriptHostProtocol
     /// </summary>
     public static bool AffectsTranscript(string? propertyName) => propertyName is
         nameof(ChatMessageViewModel.Text) or
+        nameof(ChatMessageViewModel.ThinkingVersion) or
         nameof(ChatMessageViewModel.DurationSeconds) or
         nameof(ChatMessageViewModel.TokensUsed) or
         nameof(ChatMessageViewModel.Images) or

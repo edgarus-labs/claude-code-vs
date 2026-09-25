@@ -9,6 +9,13 @@ public interface IAcpAgentConnection : IAsyncDisposable
 {
     bool IsInitialized { get; }
 
+    /// <summary>True when the agent advertised, in its <c>initialize</c> response, that it accepts a
+    /// further <see cref="SendPromptAsync"/> while one is still running and queues it itself -
+    /// taking it up at its next input boundary instead of rejecting it or interrupting the running
+    /// turn. False until <see cref="InitializeAsync"/> completes, and whenever the agent did not
+    /// say so.</summary>
+    bool SupportsPromptQueueing { get; }
+
     Task InitializeAsync(CancellationToken cancellationToken);
 
     Task<NewSessionResult> NewSessionAsync(string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken);
@@ -37,7 +44,12 @@ public interface IAcpAgentConnection : IAsyncDisposable
 
     Task<IReadOnlyList<SessionConfigOption>> SetSessionConfigOptionAsync(string sessionId, string configId, string value, CancellationToken cancellationToken);
 
-    Task SendPromptAsync(string sessionId, IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken);
+    /// <summary>Runs one prompt turn and returns the agent's <c>stopReason</c> for it once the turn
+    /// has ended (<c>"end_turn"</c> when the agent gave none). <c>"cancelled"</c> means the turn was
+    /// stopped by <see cref="CancelAsync"/>. For a prompt still waiting in the agent's queue (see
+    /// <see cref="SupportsPromptQueueing"/>) it does not say whether the agent had already folded it
+    /// into the stopped turn, so a caller must not assume it never ran.</summary>
+    Task<string> SendPromptAsync(string sessionId, IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken);
 
     Task CancelAsync(string sessionId, CancellationToken cancellationToken);
 

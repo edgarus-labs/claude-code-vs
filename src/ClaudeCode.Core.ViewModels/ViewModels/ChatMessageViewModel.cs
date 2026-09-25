@@ -8,7 +8,7 @@ namespace ClaudeCode.Core.ViewModels;
 
 public sealed class ChatMessageViewModel : ObservableObject
 {
-    /// <param name="isPending">True for a message queued locally while an earlier turn is still in
+    /// <param name="isPending">True for a message sent while an earlier turn is still in
     /// flight; see <see cref="IsPending"/>. Only a <see cref="ChatRole.User"/> message is ever
     /// queued, because only the composer can produce one.</param>
     public ChatMessageViewModel(ChatRole role, string text = "", bool isPending = false)
@@ -27,21 +27,30 @@ public sealed class ChatMessageViewModel : ObservableObject
 
     public ChatRole Role { get; }
 
+    private static int _nextId;
+
+    /// <summary>Unique for the life of the process; lets the transcript key per-message UI state (a
+    /// collapsed thinking block) to the message itself rather than its position, which shifts when a
+    /// bubble is removed.</summary>
+    public int Id { get; } = System.Threading.Interlocked.Increment(ref _nextId);
+
     private readonly StringBuilder _textBuilder;
     private string? _text;
     private bool _isTruncated;
     private bool _isPending;
 
-    /// <summary>True while this message is queued locally - typed and sent while a previous turn was
-    /// still in flight - and has not been handed to the agent yet. The transcript dims a pending
-    /// bubble so it cannot be mistaken for one that was delivered.</summary>
+    /// <summary>True while the agent has not started on this message yet - typed and sent while a
+    /// previous turn was still in flight, and either held locally or already waiting in the agent's own
+    /// prompt queue. The transcript dims a pending bubble so it cannot be mistaken for one that was
+    /// delivered.</summary>
     public bool IsPending
     {
         get => _isPending;
         private set => SetProperty(ref _isPending, value);
     }
 
-    /// <summary>Records that this message has now been submitted to the agent. One-way on purpose:
+    /// <summary>Records that this message no longer waits to go out: the agent is running it, or
+    /// has answered it. One-way on purpose:
     /// a message that has gone out can never become pending again, so the flag is not a setter
     /// anyone outside can flip back.</summary>
     public void MarkSent() => IsPending = false;
@@ -122,4 +131,40 @@ public sealed class ChatMessageViewModel : ObservableObject
     /// <see cref="ToolCallCardViewModel"/> instance already referenced by its part, so they need no
     /// separate Parts entry.</summary>
     public void AppendToolCall(ToolCallCardViewModel card) => Parts.Add(new ChatToolCallPart(card));
+
+    private int _thinkingLength;
+
+    /// <summary>Bumped on every thought appended, so the transcript repaints (see
+    /// TranscriptHostProtocol.AffectsTranscript); the thinking itself lives in <see cref="Parts"/>.</summary>
+    public int ThinkingVersion { get; private set; }
+
+    /// <summary>Appends a chunk of Claude's thinking to the ordered sequence - see
+    /// <see cref="ChatThinkingPart"/>. Agent-supplied, so it has the same total bound as the reply's
+    /// own text.</summary>
+    public void AppendThought(string chunk)
+    {
+        if (string.IsNullOrEmpty(chunk) || _thinkingLength >= MarkdownSafetyLimits.MaxMarkdownLength)
+        {
+            return;
+        }
+
+        var remaining = MarkdownSafetyLimits.MaxMarkdownLength - _thinkingLength;
+        var appended = chunk.Substring(0, Math.Min(chunk.Length, remaining));
+        _thinkingLength += appended.Length;
+        // Said, not silent - same as the reply text's cut (AppendText).
+        if (chunk.Length > remaining) appended += MarkdownSafetyLimits.TruncationNotice;
+        if (Parts.Count > 0 && Parts[Parts.Count - 1] is ChatThinkingPart lastThought)
+        {
+            lastThought.Append(appended);
+        }
+        else
+        {
+            var part = new ChatThinkingPart();
+            part.Append(appended);
+            Parts.Add(part);
+        }
+
+        ThinkingVersion++;
+        OnPropertyChanged(nameof(ThinkingVersion));
+    }
 }

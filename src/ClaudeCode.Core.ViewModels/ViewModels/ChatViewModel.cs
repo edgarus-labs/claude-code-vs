@@ -369,7 +369,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     // Same admission checks as CanEditDraft, minus IsBusy: a turn already in flight must not block
     // composing and sending the next message - it gets queued (see SendCoreAsync/EnqueueDraft) and
-    // dispatched once the current turn ends, instead of being blocked until then.
+    // dispatched straight away to an agent that queues prompts itself, otherwise once the current
+    // turn ends - instead of being blocked until then.
     private bool CanQueueOrSendDraft => !_disposed && !NeedsAuthentication && !IsConnecting
         && !IsConfigBusy && !_isSwitchingSession;
 
@@ -1040,7 +1041,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     // A message typed and sent while a turn is already in flight: shown in the transcript right
     // away (dimmed, see ChatMessageViewModel.IsPending) so the user can see it was captured, held
-    // here until the in-flight turn ends, then dispatched exactly like a normal send.
+    // here until it can be dispatched exactly like a normal send - straight away when the agent
+    // queues prompts itself (IAcpAgentConnection.SupportsPromptQueueing), otherwise once the
+    // in-flight turn ends.
     private sealed class QueuedMessage
     {
         public QueuedMessage(ChatMessageViewModel bubble, string text, IReadOnlyList<ChatAttachmentViewModel> attachments)
@@ -1056,6 +1059,35 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     }
 
     private readonly Queue<QueuedMessage> _queuedMessages = new Queue<QueuedMessage>();
+
+    // Every prompt handed to the agent whose session/prompt has not returned yet, oldest first
+    // (null = a live send, which only ever starts when nothing else is in flight). Only the oldest
+    // is running; the rest wait in the agent's own queue, and the agent settles the running one when
+    // it takes the next one in.
+    private readonly List<QueuedMessage?> _submittedPrompts = new List<QueuedMessage?>();
+
+    // RunTurnAsync calls not yet finished - including prompts dropped from _submittedPrompts with their
+    // session whose session/prompt is still to return. IsBusy covers all of them.
+    private int _runningTurns;
+
+    // Set by Stop until every running turn has returned (or the cancel fails): nothing is sent ahead
+    // into a turn that is being cancelled, since the agent would settle it unstarted.
+    private bool _isStopping;
+
+    // Whether a prompt that was running (not one still waiting in the agent's queue) failed since the
+    // panel last went idle. Decides, once every prompt has returned, whether the messages held in
+    // _returnedUnstarted are sent again or go back into the message box - whichever prompt answers
+    // last. Reset when the last running turn ends.
+    private bool _runningFailed;
+
+    // Messages that came back before they were confirmed started: refused, the agent died, Stop
+    // answered them "cancelled", or their turn failed before they reached the agent. Once nothing is
+    // running they go back to the front of the queue, in order, and are sent again - Stop stops the
+    // work, not the conversation. A stopped message may already have been seen by Claude in the
+    // cancelled turn; it is sent again anyway because the user asked for an answer. If a running
+    // prompt failed they go into the message box instead (see RunTurnAsync). Dropped only with their
+    // session (DiscardQueuedMessages), which tells the user.
+    private readonly List<QueuedMessage> _returnedUnstarted = new List<QueuedMessage>();
 
     private Task SendCoreAsync()
     {
@@ -1084,7 +1116,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             return Task.CompletedTask;
         }
 
-        return RunTurnAsync(() =>
+        return RunTurnAsync(null, () =>
         {
             // Acquire before consuming the draft: failed startup must not lose text or attachments.
             // RunTurnAsync's own EnsureConnectedAsync has already succeeded by the time this runs.
@@ -1162,6 +1194,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         UpdateSessionTitleFromFirstUserMessage();
         ConsumeDraft(text, attachments);
         _queuedMessages.Enqueue(new QueuedMessage(bubble, text, attachments));
+        DispatchNextQueuedMessage();
     }
 
     // Images render as thumbnails on the bubble; only documents keep a text placeholder.
@@ -1187,15 +1220,19 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     }
 
     // Mirrors SendCoreAsync's live-send path for a message that was queued earlier: the bubble
-    // already exists in the transcript, so this only has to stop it reading as pending at the same
-    // point the live path commits - once the connection is in hand and the prompt is about to go.
-    private Task DispatchQueuedMessageAsync(QueuedMessage queued)
+    // already exists in the transcript, and RunTurnAsync stops it reading as pending once the agent
+    // is actually running it. Nobody awaits a queued dispatch, so an exception escaping RunTurnAsync
+    // (an observer throwing in its bookkeeping) is reported here instead of vanishing with the task.
+    private async Task DispatchQueuedMessageAsync(QueuedMessage queued)
     {
-        return RunTurnAsync(() =>
+        try
         {
-            queued.Bubble.MarkSent();
-            return (queued.Text, queued.Attachments);
-        });
+            await RunTurnAsync(queued, () => (queued.Text, queued.Attachments)).ConfigureAwait(true);
+        }
+        catch (Exception ex)
+        {
+            if (!_disposed) StatusMessage = $"Error: {ex.Message}";
+        }
     }
 
     // Shared by SendCoreAsync and DispatchQueuedMessageAsync: everything from connecting through
@@ -1203,15 +1240,24 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // and a queued dispatch - only how (text, attachments) is obtained differs, which is why that
     // step is the one thing left to the caller. `prepare` runs only after EnsureConnectedAsync has
     // already succeeded, preserving the live-send path's "acquire before consuming the draft" rule.
-    private async Task RunTurnAsync(Func<(string Text, IReadOnlyList<ChatAttachmentViewModel> Attachments)> prepare)
+    // A call made while another turn is running (only ever a queued message sent ahead to an agent
+    // that queues prompts) joins that turn's busy state instead of starting a new one.
+    private async Task RunTurnAsync(QueuedMessage? queued, Func<(string Text, IReadOnlyList<ChatAttachmentViewModel> Attachments)> prepare)
     {
-        ActivityText = "Working…";
-        IsBusy = true;
-        _turnStartedAt = DateTimeOffset.UtcNow;
-        _turnStartUsedTokens = _sessionUsedTokens;
-        TurnTokens = null;
+        bool joining = _runningTurns++ > 0;
+        bool submitted = false;
+        bool failed = false;
+        string? stopReason = null;
         try
         {
+            if (!joining)
+            {
+                ActivityText = "Working…";
+                IsBusy = true;
+                _turnStartedAt = DateTimeOffset.UtcNow;
+                _turnStartUsedTokens = _sessionUsedTokens;
+                TurnTokens = null;
+            }
             var (connection, sessionId) = await EnsureConnectedAsync(_lifetime.Token).ConfigureAwait(true);
             if (_disposed) return;
             var (text, attachments) = prepare();
@@ -1220,51 +1266,169 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             foreach (var attachment in attachments)
                 content.Add(attachment.ToContentBlock());
 
-            _currentAssistantMessage = null;
-            // Once submitted, acceptance is ambiguous on transport failure. Do not restore/resend it.
-            await connection.SendPromptAsync(sessionId, content, _lifetime.Token).ConfigureAwait(true);
+            // A joining prompt waits in the agent's queue: the running turn keeps its bubble.
+            if (!joining) _currentAssistantMessage = null;
+            _submittedPrompts.Add(queued);
+            submitted = true;
+            if (_submittedPrompts.Count == 1) queued?.Bubble.MarkSent();
+            // Once the running prompt is submitted, acceptance is ambiguous on transport failure: it is
+            // not restored or resent. (A sent-ahead prompt is judged in OnPromptReturned.)
+            stopReason = await connection.SendPromptAsync(sessionId, content, _lifetime.Token).ConfigureAwait(true);
         }
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex)
         {
+            failed = true;
             if (!_disposed) StatusMessage = $"Error: {ex.Message}";
         }
         finally
         {
-            IsBusy = false;
-            ActivityText = string.Empty;
-            _currentAssistantMessage = null;
+            try
+            {
+                if (failed) _runningFailed |= !submitted || queued is null || !queued.Bubble.IsPending;
+                if (submitted) OnPromptReturned(queued, stopReason);
+                // Taken off the queue but never handed to the agent: nothing else holds it now.
+                else if (queued is not null && !_disposed) _returnedUnstarted.Add(queued);
+            }
+            finally
+            {
+                // Its own finally: an observer throwing above must not leave the panel busy for good.
+                if (--_runningTurns == 0)
+                {
+                    IsBusy = false;
+                    ActivityText = string.Empty;
+                    _currentAssistantMessage = null;
+                    // A stopped or failed turn sends no final status for the subagents it cut short.
+                    if (_isStopping || failed) ClearRunningSubagents();
+                    _isStopping = false;
+                    // When a prompt that was running failed - the agent errored or died - follow-ups
+                    // that came back unstarted go back into the message box: resending could go to a
+                    // dead pipe, and waiting for a disconnect that may never come would strand them.
+                    // Anything queued behind them follows them there in order, so a later message
+                    // never reaches Claude without an earlier one. Otherwise (Stop, or the agent only
+                    // refused a follow-up) they are sent again.
+                    bool runningFailed = _runningFailed;
+                    _runningFailed = false;
+                    if (runningFailed && _returnedUnstarted.Count > 0)
+                    {
+                        var toComposer = _returnedUnstarted.Concat(_queuedMessages).ToList();
+                        _returnedUnstarted.Clear();
+                        _queuedMessages.Clear();
+                        RestoreToComposer(toComposer,
+                            "Your queued message was not delivered - it is back in the message box.",
+                            "{0} queued messages were not delivered - they are back in the message box.");
+                    }
+                    RequeueReturnedUnstarted();
+                }
+            }
         }
 
+        if (_runningTurns > 0) return;
         SendPendingPlanReview();
         DispatchNextQueuedMessage();
     }
+
+    // Decided when a prompt's answer arrives, not when Stop is pressed:
+    // - Ran: a prompt confirmed started (sent while nothing else was in flight, or taken in by a
+    //   hand-off) or one still pending that ended normally. Its bubble stops reading as pending.
+    // - Returned unstarted: one still pending that came back "cancelled" (Stop) or failed (refused,
+    //   or the agent died). Held in _returnedUnstarted until nothing is running (see RunTurnAsync).
+    // - Hand-off: the running prompt ended normally while others wait. The agent has taken the next
+    //   one in and carries on, so it stays one turn - what follows gets its own assistant bubble below
+    //   that message, and the turn stats keep running.
+    // A prompt dropped with its session is no longer tracked.
+    private void OnPromptReturned(QueuedMessage? queued, string? stopReason)
+    {
+        int index = _submittedPrompts.IndexOf(queued);
+        if (index < 0) return;
+        _submittedPrompts.RemoveAt(index);
+        bool endedNormally = stopReason is not null and not "cancelled";
+        if (queued is not null && queued.Bubble.IsPending)
+        {
+            if (!endedNormally)
+            {
+                _returnedUnstarted.Add(queued);
+                return;
+            }
+            queued.Bubble.MarkSent();
+        }
+        if (index != 0 || _submittedPrompts.Count == 0 || !endedNormally) return;
+        // One continuing turn: the timer and token count keep running from its start.
+        _currentAssistantMessage = null;
+        _submittedPrompts[0]?.Bubble.MarkSent();
+    }
+
+    // Sent ahead only to an agent that advertised it queues prompts itself: it takes them in at its
+    // next input boundary, between the running turn's operations, without interrupting any of them.
+    // Held back while a returned-unstarted message waits to go out again, so it keeps its place.
+    private bool CanSendAhead => !_isStopping && _returnedUnstarted.Count == 0 && _connection?.SupportsPromptQueueing == true;
 
     // Auto-dispatch answers to the same admission gates as a message the user sends by hand: a queue
     // entry that outlives the state it was typed in is exactly the hazard CanQueueOrSendDraft
     // documents (a prompt landing in a session that is being torn down, swapped, signed out of, or
     // reconfigured). Every gate that can close here reopens by either discarding the queue with the
     // session it belonged to (DiscardQueuedMessages) or calling this again when it lifts - see the
-    // config-change path - so a queued message is never stranded pending forever.
+    // config-change path - so a queued message is never stranded pending forever. RunTurnAsync sets
+    // IsBusy before its first await, so after the first dispatch the rest go only as sends-ahead,
+    // in queue order.
     private void DispatchNextQueuedMessage()
     {
-        if (IsBusy || !CanQueueOrSendDraft || _queuedMessages.Count == 0) return;
-        _ = DispatchQueuedMessageAsync(_queuedMessages.Dequeue());
+        while (_queuedMessages.Count > 0 && CanQueueOrSendDraft && (!IsBusy || CanSendAhead))
+            _ = DispatchQueuedMessageAsync(_queuedMessages.Dequeue());
     }
 
-    /// <summary>Drops every message still waiting to go out, taking its bubble out of the transcript
-    /// with it: the message never reached the agent, so a bubble left behind would read as delivered.
-    /// Returns how many were dropped so the caller can tell the user - they wrote them, and this is
-    /// the only notice they will get.</summary>
+    // Called once nothing is running, for messages that must not be re-sent automatically (see
+    // RunTurnAsync for a failed turn). The bubbles leave the transcript and
+    // the texts go into the composer in the order they were sent, ahead of whatever is typed there.
+    private void RestoreToComposer(List<QueuedMessage> pending, string one, string many)
+    {
+        if (pending.Count == 0) return;
+        var restored = pending.ToList();
+        pending.Clear();
+        var texts = restored.Select(message => message.Text).Where(text => text.Length > 0).ToList();
+        if (InputText.Trim().Length > 0) texts.Add(InputText);
+        InputText = string.Join(Environment.NewLine + Environment.NewLine, texts);
+        foreach (var message in restored)
+        {
+            Messages.Remove(message.Bubble);
+            foreach (var attachment in message.Attachments)
+                if (!Attachments.Contains(attachment)) Attachments.Add(attachment);
+        }
+        var notice = restored.Count == 1 ? one : string.Format(System.Globalization.CultureInfo.InvariantCulture, many, restored.Count);
+        // Appended, not replacing: after a failed turn the error that caused this must stay readable.
+        StatusMessage = string.IsNullOrEmpty(StatusMessage) ? notice : StatusMessage + " " + notice;
+    }
+
+    // Called once nothing is running: messages the agent returned unstarted go back to the front of
+    // the queue, in the order they were sent, ahead of anything typed since. Returns whether any did.
+    private bool RequeueReturnedUnstarted()
+    {
+        if (_returnedUnstarted.Count == 0) return false;
+        var ordered = _returnedUnstarted.Concat(_queuedMessages).ToList();
+        _returnedUnstarted.Clear();
+        _queuedMessages.Clear();
+        foreach (var message in ordered) _queuedMessages.Enqueue(message);
+        return true;
+    }
+
+    /// <summary>Drops every message still waiting to go out - including any the agent was holding
+    /// but had not started, or had returned unstarted - taking its bubble out of the transcript with
+    /// it: the message never ran, so a bubble left behind would read as delivered. Returns how many
+    /// were dropped so the caller can tell the user - they wrote them, and this is the only notice
+    /// they will get.</summary>
     private int DiscardQueuedMessages()
     {
-        int discarded = _queuedMessages.Count;
-        while (_queuedMessages.Count > 0) Messages.Remove(_queuedMessages.Dequeue().Bubble);
-        return discarded;
+        var dropped = _submittedPrompts.Skip(1).Select(prompt => prompt!)
+            .Concat(_returnedUnstarted).Concat(_queuedMessages).ToList();
+        if (_submittedPrompts.Count > 1) _submittedPrompts.RemoveRange(1, _submittedPrompts.Count - 1);
+        _returnedUnstarted.Clear();
+        _queuedMessages.Clear();
+        foreach (var message in dropped) Messages.Remove(message.Bubble);
+        return dropped.Count;
     }
 
     /// <summary>Adds the "queued messages were lost" clause to whatever the caller is already
-    /// reporting, so neither the cause (disconnect, sign-out, workspace change, Stop) nor the
+    /// reporting, so neither the cause (disconnect, sign-out, workspace change) nor the
     /// consequence is dropped. Returns <paramref name="status"/> unchanged when nothing was lost.</summary>
     private static string? WithQueueNotice(string? status, int discarded)
     {
@@ -1329,11 +1493,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private async Task CancelCoreAsync()
     {
         if (_disposed || _connection is null || _sessionId is null) return;
-        // Stop means stop: a follow-up queued behind the turn being cancelled would otherwise be
-        // fired the instant that cancellation lands, which is the opposite of what Stop asks for.
-        // Only reported when something was actually dropped - Stop is not a "clear the status" button.
-        int discarded = DiscardQueuedMessages();
-        if (discarded > 0) StatusMessage = WithQueueNotice(null, discarded);
+        // Stop cancels the running turn, not the follow-ups the user has already written. Those still
+        // held here stay queued; those the agent was holding come back "cancelled" and are queued
+        // again ahead of them (OnPromptReturned). RunTurnAsync's tail sends them once every
+        // cancelled prompt has returned.
+        if (IsBusy) _isStopping = true;
         try
         {
             await _connection.CancelAsync(_sessionId, _lifetime.Token).ConfigureAwait(true);
@@ -1341,7 +1505,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex)
         {
+            // The turn goes on, so sending ahead into it is safe again - including what was typed
+            // while the stop was in flight.
+            _isStopping = false;
             if (!_disposed) StatusMessage = $"Cancel failed: {ex.Message}";
+            DispatchNextQueuedMessage();
         }
     }
 
@@ -1515,6 +1683,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         Messages.Clear();
         lock (_changedFilesByPath) _changedFilesByPath.Clear();
         _toolCallDiffsById.Clear();
+        ClearRunningSubagents();
         ChangedFiles.Clear();
         ClearPendingRequests("The session was replaced.");
         _explicitSessionTitle = null;
@@ -1708,7 +1877,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                     EnsureAssistantMessage().AppendText(chunk.Text);
                     UpdateActivity("Responding…");
                     break;
-                case SessionUpdate.AgentThoughtChunk:
+                case SessionUpdate.AgentThoughtChunk thought:
+                    EnsureAssistantMessage().AppendThought(thought.Text);
                     UpdateActivity("Thinking…");
                     break;
                 case SessionUpdate.ToolCall toolCall:
@@ -1728,8 +1898,20 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                     OnPropertyChanged(nameof(ContextUsagePercent));
                     OnPropertyChanged(nameof(ContextUsageLabel));
                     break;
-                case SessionUpdate.TurnEnded:
-                    // The prompt task owns IsBusy, preventing a new send/config before it returns.
+                case SessionUpdate.TurnEnded turnEnded:
+                    // Raised just before its prompt returns, so that prompt is still in
+                    // _submittedPrompts. While another prompt is listed the turn goes on: either the
+                    // agent has taken a queued message in and carries on working (hand-off - the
+                    // reply so far is closed off so what follows lands below that message, but the
+                    // turn is not finished and gets no stats yet), or Stop settled a prompt still
+                    // waiting in its queue "cancelled" before the running one (nothing to show).
+                    if (_submittedPrompts.Count > 1)
+                    {
+                        if (turnEnded.StopReason != "cancelled") _currentAssistantMessage = null;
+                        break;
+                    }
+                    // IsBusy is owned by the running RunTurnAsync calls and clears only when the last
+                    // of them returns, not here.
                     if (_currentAssistantMessage is not null && _turnStartedAt is DateTimeOffset startedAt)
                     {
                         _currentAssistantMessage.DurationSeconds = Math.Max(0, (int)(DateTimeOffset.UtcNow - startedAt).TotalSeconds);
@@ -1750,6 +1932,30 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         });
     }
 
+    // Subagent tool calls that have not finished, by id; see RunningAgentCount.
+    private readonly HashSet<string> _runningSubagents = new HashSet<string>(StringComparer.Ordinal);
+
+    /// <summary>How many subagents (Claude Code's Agent tool) are running - the composer's
+    /// "N agents" pill, like the VS Code extension's.</summary>
+    public int RunningAgentCount => _runningSubagents.Count;
+
+    /// <summary>The pill's text: "1 agent", "3 agents".</summary>
+    public string RunningAgentsLabel => RunningAgentCount == 1 ? "1 agent" : RunningAgentCount + " agents";
+
+    private void NotifyRunningAgents()
+    {
+        OnPropertyChanged(nameof(RunningAgentCount));
+        OnPropertyChanged(nameof(RunningAgentsLabel));
+    }
+
+    // A dead agent, a stopped turn or a replaced transcript sends no final status for its subagents.
+    private void ClearRunningSubagents()
+    {
+        if (_runningSubagents.Count == 0) return;
+        _runningSubagents.Clear();
+        NotifyRunningAgents();
+    }
+
     private void UpsertToolCall(ToolCallUpdate call)
     {
         // File-system work (path canonicalization, whole-file reads) must never run on the WPF
@@ -1762,16 +1968,24 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             if (diffs.Count > 0) _ = Task.Run(() => TrackToolCallFileChangesAsync(call, diffs));
         }
         var message = EnsureAssistantMessage();
-        var existing = message.ToolCalls.FirstOrDefault(t => t.ToolCallId == call.ToolCallId);
-        if (existing is not null)
+        var card = message.ToolCalls.FirstOrDefault(t => t.ToolCallId == call.ToolCallId);
+        if (card is not null)
         {
-            existing.Apply(call);
+            card.Apply(call);
         }
         else
         {
-            var card = new ToolCallCardViewModel(call);
+            card = new ToolCallCardViewModel(call);
             message.ToolCalls.Add(card);
             message.AppendToolCall(card);
+        }
+        // A later update can land on a new card (its bubble was closed off) without naming the tool.
+        if (card.IsSubagent || _runningSubagents.Contains(card.ToolCallId))
+        {
+            bool changed = card.Status is ToolCallStatus.Completed or ToolCallStatus.Failed
+                ? _runningSubagents.Remove(card.ToolCallId)
+                : _runningSubagents.Add(card.ToolCallId);
+            if (changed) NotifyRunningAgents();
         }
         // Deliberately not the tool's own title/command text here: the activity indicator is a
         // generic "something is happening" status, not a live command echo.
@@ -1851,8 +2065,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                         _pendingPlanReviewComments = comments;
                         plan.MarkResolved("Sent back for revision");
                         Choose(reject);
-                        // A locally driven turn owns IsBusy, so SendCoreAsync's tail delivers the
-                        // review once the prompt RPC returns. A turn driven from claude.ai/code
+                        // A locally driven turn owns IsBusy, so RunTurnAsync's tail delivers the
+                        // review once the last in-flight prompt returns. A turn driven from claude.ai/code
                         // never sets it, and there is nothing to wait for: SessionUpdate.TurnEnded
                         // is raised from our own session/prompt response, so a remote turn produces
                         // none. Deferring on it would strand the user's typed review indefinitely,
@@ -2388,6 +2602,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         ActivityText = string.Empty;
         IsSignedIn = _services.AuthService.CurrentState == AuthState.SignedIn;
         ClearPendingRequests("The agent connection was closed.");
+        ClearRunningSubagents();
         CurrentPlan = null;
         IsRemoteControlEnabled = false;
         RemoteControlUrl = null;

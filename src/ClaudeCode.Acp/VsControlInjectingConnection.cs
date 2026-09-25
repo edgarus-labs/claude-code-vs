@@ -43,6 +43,8 @@ public sealed class VsControlInjectingConnection : IAcpAgentConnection
 
     public bool IsInitialized => _inner.IsInitialized;
 
+    public bool SupportsPromptQueueing => _inner.SupportsPromptQueueing;
+
     public Task InitializeAsync(CancellationToken cancellationToken) => _inner.InitializeAsync(cancellationToken);
 
     public async Task<NewSessionResult> NewSessionAsync(string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken)
@@ -91,7 +93,7 @@ public sealed class VsControlInjectingConnection : IAcpAgentConnection
     public Task<IReadOnlyList<SessionConfigOption>> SetSessionConfigOptionAsync(string sessionId, string configId, string value, CancellationToken cancellationToken) =>
         _inner.SetSessionConfigOptionAsync(sessionId, configId, value, cancellationToken);
 
-    public Task SendPromptAsync(string sessionId, IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken) =>
+    public Task<string> SendPromptAsync(string sessionId, IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken) =>
         _inner.SendPromptAsync(sessionId, content, cancellationToken);
 
     public Task CancelAsync(string sessionId, CancellationToken cancellationToken) =>

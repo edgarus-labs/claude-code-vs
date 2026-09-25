@@ -42,6 +42,7 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
     private int _disposed;
     private int _disconnected;
     private int _isInitialized;
+    private volatile bool _supportsPromptQueueing;
 
     public AcpProcessConnection(
         string executableFileName,
@@ -155,6 +156,8 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
 
     public bool IsInitialized => Volatile.Read(ref _isInitialized) != 0;
 
+    public bool SupportsPromptQueueing => _supportsPromptQueueing;
+
     public event EventHandler<SessionUpdateEventArgs>? SessionUpdate;
 
     public event EventHandler<PermissionRequestEventArgs>? PermissionRequested;
@@ -221,9 +224,53 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
             },
         };
 
-        await _rpc.SendRequestAsync("initialize", @params, cancellationToken).ConfigureAwait(false);
+        JsonNode? result = await _rpc.SendRequestAsync("initialize", @params, cancellationToken).ConfigureAwait(false);
+        // A repeated key anywhere in the response body throws ArgumentException when the object is
+        // first materialized; report it as a malformed response.
+        try
+        {
+            _supportsPromptQueueing = ReadsPromptQueueing(result);
+        }
+        catch (ArgumentException)
+        {
+            throw new AcpProtocolException("initialize response was malformed.");
+        }
         Volatile.Write(ref _isInitialized, 1);
     }
+
+    // claude-agent-acp's extension marker (agentCapabilities._meta.claudeCode.promptQueueing): a
+    // session/prompt sent while one is running is queued by the agent and taken up at its next input
+    // boundary. Agent-supplied, so only a literal JSON true counts.
+    private static bool ReadsPromptQueueing(JsonNode? result) =>
+        result is JsonObject response
+        && response["agentCapabilities"] is JsonObject capabilities
+        && capabilities["_meta"] is JsonObject meta
+        && meta["claudeCode"] is JsonObject claudeCode
+        && claudeCode["promptQueueing"] is JsonValue flag
+        && flag.GetValueKind() == System.Text.Json.JsonValueKind.True;
+
+    // Appended to Claude Code's own system prompt for every session, as the VS Code extension does
+    // (its "Focus view in this editor" section): Claude Code's default assumes a terminal where text
+    // between tool calls may not be seen, so without this Claude keeps its narration - including its
+    // reply to a message the user sends mid-turn - in its thinking.
+    private const string ChatPanelSystemPromptSection =
+        "# Claude Code chat panel in Visual Studio\n" +
+        "You are running inside the Claude Code chat panel in Visual Studio. Guidance above that text between tool " +
+        "calls may not be shown to the user, or that you should close with a recap that stands on its own, does not " +
+        "apply here. In this panel tool calls, tool results, and thinking are shown as separate, collapsible items, and " +
+        "every text message you write stays visible in order, including text between tool calls, so the user can see " +
+        "it. Brief updates between tool calls are fine. When the user sends a message while you are working, reply to " +
+        "it in a visible text message, then carry on with your work. Do not repeat what you already said in your final " +
+        "message; if the tool calls since your last text message did not change what you said, a brief closing note is " +
+        "enough. Still end each turn with a text message, even a short one, rather than ending on a tool call. If you " +
+        "are running as a subagent, ignore this section.";
+
+    // claude-agent-acp: `_meta.systemPrompt` as an object keeps the claude_code preset and forwards
+    // `append`. Built per request - a JsonNode can only have one parent.
+    private static JsonObject SessionMeta() => new JsonObject
+    {
+        ["systemPrompt"] = new JsonObject { ["append"] = ChatPanelSystemPromptSection },
+    };
 
     /// <summary>
     /// Starts a new ACP session rooted at <paramref name="cwd"/>. <paramref name="cwd"/> is sent to
@@ -240,6 +287,7 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
             // ACP marks `mcpServers` required on NewSessionRequest (possibly empty); always send an array
             // even when the caller passed null/empty, rather than the task-literal "only if non-empty".
             ["mcpServers"] = BuildMcpServersArray(mcpServers),
+            ["_meta"] = SessionMeta(),
         };
 
         JsonNode? result = await _rpc.SendRequestAsync("session/new", @params, cancellationToken).ConfigureAwait(false);
@@ -297,6 +345,7 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
             // ACP marks `mcpServers` required on LoadSessionRequest (possibly empty); always send an
             // array, mirroring NewSessionAsync's convention above.
             ["mcpServers"] = BuildMcpServersArray(mcpServers),
+            ["_meta"] = SessionMeta(),
         };
 
         JsonNode? result = await _rpc.SendRequestAsync("session/load", @params, cancellationToken).ConfigureAwait(false);
@@ -337,7 +386,7 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
     }
 
-    public async Task SendPromptAsync(string sessionId, IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken)
+    public async Task<string> SendPromptAsync(string sessionId, IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken)
     {
         var promptArray = new JsonArray();
         foreach (ContentBlock block in content)
@@ -356,6 +405,7 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         JsonNode? result = await _rpc.SendRequestAsync("session/prompt", @params, cancellationToken).ConfigureAwait(false);
         string stopReason = result is JsonObject obj ? GetOptionalString(obj, "stopReason") ?? "end_turn" : "end_turn";
         SessionUpdate?.Invoke(this, new SessionUpdateEventArgs(sessionId, new SessionUpdate.TurnEnded(stopReason)));
+        return stopReason;
     }
 
     public async Task CancelAsync(string sessionId, CancellationToken cancellationToken)

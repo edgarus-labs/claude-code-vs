@@ -609,6 +609,9 @@ public sealed partial class AcpProcessConnection
         Kind = GetOptionalString(obj, "kind"),
         Status = ParseToolCallStatus(GetOptionalString(obj, "status")),
         Content = ParseToolCallContentArray(obj["content"] as JsonArray),
+        // claude-agent-acp: _meta.claudeCode.toolName is the Claude Code tool behind the call.
+        IsSubagent = obj["_meta"] is JsonObject meta && meta["claudeCode"] is JsonObject claudeCode
+            && GetOptionalString(claudeCode, "toolName") is "Agent" or "Task",
     };
 
     private static ToolCallStatus ParseToolCallStatus(string? status) => status switch
