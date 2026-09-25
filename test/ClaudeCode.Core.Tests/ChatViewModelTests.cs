@@ -347,14 +347,15 @@ public sealed class ChatViewModelTests
     [Fact]
     public async Task AttentionRequested_FiresForFinishedTurn_PermissionPlanReviewAndElicitation()
     {
-        var connection = new RecordingAcpAgentConnection();
+        var turn = new TaskCompletionSource<bool>();
+        var connection = new RecordingAcpAgentConnection { PromptHandler = _ => turn.Task };
         using var vm = new ChatViewModel(new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService()));
         await vm.InitializeAsync();
         var raised = new List<ChatAttentionEventArgs>();
         vm.AttentionRequested += (_, e) => raised.Add(e);
 
         vm.InputText = "do something";
-        await vm.SendAsync();
+        var sending = vm.SendAsync();
         connection.RaisePermissionRequested(
             new ToolCallUpdate { ToolCallId = "t1", Title = "Edit Program.cs", Status = ToolCallStatus.Pending },
             [new PermissionOption { OptionId = "allow-once", Label = "Yes", Outcome = PermissionOutcome.AllowOnce }]);
@@ -362,7 +363,8 @@ public sealed class ChatViewModelTests
         // \r alone is a line break to WPF and to a Windows toast, so the one-line notification
         // text must stop at it just as it stops at \n.
         connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("All done.\rDetails follow.\nMore."));
-        connection.RaiseSessionUpdate(new SessionUpdate.TurnEnded("end_turn"));
+        turn.SetResult(true); // the prompt returns, and with it the turn's TurnEnded
+        await sending;
         var (planCall, planOptions) = PlanApprovalRequest("# Plan");
         connection.RaisePermissionRequested(planCall, planOptions);
         // A form blocks the turn exactly as a permission request does, so it needs the same nudge.

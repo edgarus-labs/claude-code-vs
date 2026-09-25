@@ -718,8 +718,7 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("second" + Environment.NewLine + Environment.NewLine + "third", vm.InputText);
     }
 
-    // A turn that fails without a disconnect sends no final status for its subagents either
-    // (review round 4, item 4).
+    // A turn that fails without a disconnect sends no final status for its subagents either.
     [Fact]
     public async Task RunningAgentCount_DropsToZero_WhenTheTurnFails()
     {
@@ -737,7 +736,7 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(0, vm.RunningAgentCount);
     }
 
-    // F-42-1: the agent settles the first prompt when it takes the follow-up in, so that prompt's
+    // The agent settles the first prompt when it takes the follow-up in, so that prompt's
     // TurnEnded arrives while Claude is still working on the follow-up. "Claude finished" is only
     // true once nothing is left running.
     [Fact]
@@ -755,19 +754,17 @@ public sealed partial class ChatSessionStateTests
         vm.InputText = "follow-up";
         await vm.SendAsync();
 
-        connection.RaiseSessionUpdate(new SessionUpdate.TurnEnded("end_turn"));
         turns.Complete("first");
         await firstSend;
         Assert.Empty(finished);
 
         connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("two"));
-        connection.RaiseSessionUpdate(new SessionUpdate.TurnEnded("end_turn"));
         turns.Complete("follow-up");
         await WaitUntilAsync(() => !vm.IsBusy);
         Assert.Equal("two", Assert.Single(finished).Message);
     }
 
-    // F-42-2: a withdrawn prompt's "cancelled" answer arrives before the stopped turn's own; it must
+    // A withdrawn prompt's "cancelled" answer arrives before the stopped turn's own; it must
     // not close off the stopped turn's bubble, which still gets its duration when that turn ends.
     [Fact]
     public async Task QueueingAgent_Cancel_WithdrawnPromptsTurnEnd_DoesNotCloseTheStoppedTurnsBubble()
@@ -784,15 +781,13 @@ public sealed partial class ChatSessionStateTests
         var stopped = Assert.Single(vm.Messages, message => message.Role == ChatRole.Assistant);
 
         await vm.CancelCommand.ExecuteAsync(null);
-        connection.RaiseSessionUpdate(new SessionUpdate.TurnEnded("cancelled")); // the withdrawn "second"
-        turns.Complete("second", "cancelled");
+        turns.Complete("second", "cancelled"); // the withdrawn "second"
         connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk(" answer"));
         Assert.Null(stopped.DurationSeconds);
         Assert.Equal("partial answer", stopped.Text);
 
-        connection.RaiseSessionUpdate(new SessionUpdate.TurnEnded("cancelled")); // the stopped "first"
+        turns.Complete("first", "cancelled"); // the stopped "first"
         Assert.NotNull(stopped.DurationSeconds);
-        turns.Complete("first", "cancelled");
         await firstSend;
         await WaitUntilAsync(() => connection.Prompts.Count == 3); // the withdrawn "second", sent again
         turns.Complete("second");
@@ -815,13 +810,11 @@ public sealed partial class ChatSessionStateTests
         await vm.SendAsync();
         connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("one"));
         connection.RaiseSessionUpdate(new SessionUpdate.UsageUpdate(1_000, null, null, null));
-        connection.RaiseSessionUpdate(new SessionUpdate.TurnEnded("end_turn"));
         turns.Complete("first");
         await firstSend;
 
         connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("two"));
         connection.RaiseSessionUpdate(new SessionUpdate.UsageUpdate(1_300, null, null, null));
-        connection.RaiseSessionUpdate(new SessionUpdate.TurnEnded("end_turn"));
         turns.Complete("follow-up");
         await WaitUntilAsync(() => !vm.IsBusy);
 
@@ -946,6 +939,171 @@ public sealed partial class ChatSessionStateTests
         await WaitUntilAsync(() => connection.Prompts.Count == 2);
         turns.Complete("follow-up");
         await WaitUntilAsync(() => !vm.IsBusy);
+    }
+
+    // A queued message leaves the queue before its turn starts. If that start fails before the
+    // message reaches the agent - here an observer of IsBusy throws - nothing else holds it: it must
+    // come back to the message box, not sit pending forever with its text gone.
+    [Fact]
+    public async Task QueuedMessage_StartFailsBeforeItReachesTheAgent_GoesBackToTheComposer()
+    {
+        var firstTurn = new TaskCompletionSource<bool>();
+        var connection = new RecordingAcpAgentConnection { PromptHandler = _ => firstTurn.Task };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "first";
+        var firstSend = vm.SendAsync();
+        vm.InputText = "second";
+        await vm.SendAsync();
+        var second = Assert.Single(vm.Messages, message => message.Text == "second");
+        bool armed = true;
+        vm.PropertyChanged += (_, e) =>
+        {
+            if (!armed || e.PropertyName != nameof(ChatViewModel.IsBusy) || !vm.IsBusy) return;
+            armed = false;
+            throw new InvalidOperationException("observer failed");
+        };
+
+        firstTurn.SetResult(true);
+        await firstSend;
+        await WaitUntilAsync(() => !vm.IsBusy);
+
+        Assert.Single(connection.Prompts);
+        Assert.DoesNotContain(second, vm.Messages);
+        Assert.Equal("second", vm.InputText);
+        Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
+    }
+
+    // Whether follow-ups that came back unstarted are sent again depends on the prompt that was
+    // running: once it failed the agent may be gone, whichever prompt happens to answer last.
+    [Fact]
+    public async Task QueueingAgent_RunningPromptFails_ThenAFollowUpEndsLast_RefusedFollowUpGoesBackToTheComposer()
+    {
+        var turns = new PromptGate();
+        var connection = new RecordingAcpAgentConnection { SupportsPromptQueueing = true, PromptHandler = turns.Handle };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "first";
+        var firstSend = vm.SendAsync();
+        vm.InputText = "second";
+        await vm.SendAsync();
+        vm.InputText = "third";
+        await vm.SendAsync();
+        Assert.Equal(["first", "second", "third"], connection.Prompts.Select(Text));
+
+        turns.Fail("second", new InvalidOperationException("prompt rejected"));
+        turns.Fail("first", new InvalidOperationException("agent error"));
+        await firstSend;
+        turns.Complete("third");
+        await WaitUntilAsync(() => !vm.IsBusy);
+
+        Assert.Equal(["first", "second", "third"], connection.Prompts.Select(Text));
+        Assert.Equal("second", vm.InputText);
+    }
+
+    // The mirror case: the running prompt ended cleanly (here: stopped), so a follow-up the agent
+    // refused is sent again like any other - even when its refusal is the last answer to arrive.
+    [Fact]
+    public async Task QueueingAgent_Stop_RefusedFollowUpAnswersLast_IsStillSentAgain()
+    {
+        var turns = new PromptGate();
+        var connection = new RecordingAcpAgentConnection { SupportsPromptQueueing = true, PromptHandler = turns.Handle };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "first";
+        var firstSend = vm.SendAsync();
+        vm.InputText = "second";
+        await vm.SendAsync();
+
+        await vm.CancelCommand.ExecuteAsync(null);
+        turns.Complete("first", "cancelled");
+        await firstSend;
+        turns.Fail("second", new InvalidOperationException("prompt rejected"));
+        await WaitUntilAsync(() => connection.Prompts.Count == 3);
+
+        Assert.Equal(["first", "second", "second"], connection.Prompts.Select(Text));
+        Assert.Equal(string.Empty, vm.InputText);
+        turns.Complete("second");
+        await WaitUntilAsync(() => !vm.IsBusy);
+    }
+
+    // A returning prompt's bookkeeping raises notifications host code observes. An observer that
+    // throws there must not leave the panel busy for good, and the error must be shown - not lost
+    // with the background task that sent the queued prompt.
+    [Fact]
+    public async Task QueueingAgent_ObserverThrowsWhileAPromptReturns_PanelStillGoesIdle_AndShowsTheError()
+    {
+        var turns = new PromptGate();
+        var connection = new RecordingAcpAgentConnection { SupportsPromptQueueing = true, PromptHandler = turns.Handle };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "first";
+        var firstSend = vm.SendAsync();
+        vm.InputText = "second";
+        await vm.SendAsync();
+        vm.InputText = "third";
+        await vm.SendAsync();
+        var third = Assert.Single(vm.Messages, message => message.Text == "third");
+        third.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(ChatMessageViewModel.IsPending)) throw new InvalidOperationException("observer failed");
+        };
+
+        turns.Complete("first"); // hand-off: "second" is taken in
+        await firstSend;
+        turns.Complete("second"); // hand-off: "third" is taken in, and its observer throws
+        turns.Complete("third");
+        await WaitUntilAsync(() => !vm.IsBusy);
+
+        Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
+    }
+
+    // While Stop is in flight nothing is sent ahead. If the cancel fails the turn goes on, so a
+    // message typed meanwhile goes to the agent then - not only once the whole turn has ended.
+    [Fact]
+    public async Task QueueingAgent_StopFails_MessageTypedMeanwhileIsSentAhead()
+    {
+        var turns = new PromptGate();
+        var cancel = new TaskCompletionSource<bool>();
+        var connection = new RecordingAcpAgentConnection { SupportsPromptQueueing = true, PromptHandler = turns.Handle, CancelHandler = () => cancel.Task };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "first";
+        var firstSend = vm.SendAsync();
+        var stopping = vm.CancelCommand.ExecuteAsync(null);
+        vm.InputText = "second";
+        await vm.SendAsync();
+        Assert.Single(connection.Prompts);
+
+        cancel.SetException(new InvalidOperationException("pipe closed"));
+        await stopping;
+
+        Assert.Equal(["first", "second"], connection.Prompts.Select(Text));
+        turns.Complete("first");
+        await firstSend;
+        turns.Complete("second");
+        await WaitUntilAsync(() => !vm.IsBusy);
+    }
+
+    // The running-agents pill belongs to the session: a new chat or another session never inherits
+    // agents from the one it replaced (e.g. a turn driven from claude.ai/code that sent no final status).
+    [Theory]
+    [InlineData("new chat")]
+    [InlineData("open session")]
+    public async Task RunningAgentCount_DropsToZero_WhenTheSessionIsReplaced(string replacement)
+    {
+        var connection = new RecordingAcpAgentConnection();
+        connection.NewSessionHandler = _ => Task.FromResult(new NewSessionResult(RecordingAcpAgentConnection.SessionId, []));
+        using var vm = Create(connection);
+        await vm.Initialization;
+        connection.RaiseSessionUpdate(new SessionUpdate.ToolCall(new ToolCallUpdate { ToolCallId = "a1", Title = "Explore", IsSubagent = true, Status = ToolCallStatus.InProgress }));
+        Assert.Equal(1, vm.RunningAgentCount);
+
+        connection.NewSessionHandler = _ => Task.FromResult(new NewSessionResult("session-2", []));
+        if (replacement == "new chat") await vm.NewSessionAsync();
+        else await vm.OpenSessionAsync(new SessionSummary("session-2", "/workspace", "Older chat", null));
+
+        Assert.Equal(0, vm.RunningAgentCount);
     }
 
     private static string Text(IReadOnlyList<ContentBlock> content) => Assert.IsType<ContentBlock.Text>(Assert.Single(content)).Value;
@@ -1373,7 +1531,7 @@ public sealed partial class ChatSessionStateTests
     }
 
     // A dead agent or a stopped turn sends no final status for its subagents: the pill must not keep
-    // claiming agents are running (review item 1).
+    // claiming agents are running.
     [Fact]
     public async Task RunningAgentCount_DropsToZero_WhenTheAgentDisconnects()
     {
@@ -1414,7 +1572,7 @@ public sealed partial class ChatSessionStateTests
 
     // A subagent's final status can arrive after the assistant bubble it started in was closed off
     // (a hand-off, a TurnEnded): it lands on a new card that the update alone does not name a
-    // subagent, and must still end the count (review item 2).
+    // subagent, and must still end the count.
     [Fact]
     public async Task RunningAgentCount_DropsWhenTheFinalStatusArrivesInALaterBubble()
     {
@@ -1456,7 +1614,7 @@ public sealed partial class ChatSessionStateTests
 
     // When the running prompt fails but the connection stays up (the agent answered with an error),
     // no disconnect follows to drop the follow-ups that came back unstarted: they must not sit
-    // pending with nothing to send them - they go back into the message box (review item 4).
+    // pending with nothing to send them - they go back into the message box.
     [Fact]
     public async Task QueueingAgent_RunningPromptFails_WithoutADisconnect_FollowUpGoesBackToTheComposer()
     {
@@ -1602,7 +1760,6 @@ public sealed partial class ChatSessionStateTests
         await vm.SendAsync();
         var firstReply = Assert.Single(vm.Messages, message => message.Role == ChatRole.Assistant);
 
-        connection.RaiseSessionUpdate(new SessionUpdate.TurnEnded("end_turn"));
         turns.Complete("first");
         await firstSend;
         connection.RaiseSessionUpdate(new SessionUpdate.AgentThoughtChunk("about the second message"));
