@@ -683,9 +683,10 @@ public static class ChatFileReference
     /// <summary>
     /// Escapes the characters markdown reads specially inside link text. A square bracket delimits
     /// the link text itself: <c>a].md</c> emitted raw ends the text at the <c>]</c>, so markdown-it
-    /// renders the rest, destination included, as visible text. The text is a file name, so it
-    /// never holds a backslash - that is a path separator. The code-span branch needs none of this
-    /// because a code span binds tighter than the brackets.
+    /// renders the rest, destination included, as visible text. An underscore pair is emphasis:
+    /// <c>__init__.py</c> emitted raw renders as a bold <c>init</c> with the underscores gone. The
+    /// text is a file name, so it never holds a backslash - that is a path separator. The code-span
+    /// branch needs none of this because a code span binds tighter than the brackets and emphasis.
     /// </summary>
     private static string EscapeLinkText(string fileName)
     {
@@ -718,7 +719,7 @@ public static class ChatFileReference
         return builder.ToString();
     }
 
-    private static bool IsLinkTextEscape(char c) => c == '[' || c == ']';
+    private static bool IsLinkTextEscape(char c) => c == '[' || c == ']' || c == '_';
 
     private static string BuildHref(string path, int? line)
     {

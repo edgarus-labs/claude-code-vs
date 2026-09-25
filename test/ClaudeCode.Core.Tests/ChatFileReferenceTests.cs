@@ -88,11 +88,12 @@ public sealed class ChatFileReferenceTests
             ChatFileReference.LinkifyFileReferences("See " + token));
 
     // Underscores are file-name characters too: only a run wrapping the whole token on both sides
-    // is emphasis. A leading-only run belongs to the name and must stay part of it.
+    // is emphasis. A leading-only run belongs to the name and must stay part of it - escaped in the
+    // link text, where markdown would otherwise read "__init__" as bold "init".
     [Theory]
-    [InlineData("pkg/__init__.py", "__init__.py", "pkg%2F__init__.py")]
-    [InlineData("__init__.py:3", "__init__.py:3", "__init__.py&line=3")]
-    public void Linkify_PathWithUnderscoresInTheName_KeepsThemInThePath(string token, string shown, string encodedPathAndLine) =>
+    [InlineData("pkg/__init__.py", @"\_\_init\_\_.py", "pkg%2F__init__.py")]
+    [InlineData("__init__.py:3", @"\_\_init\_\_.py:3", "__init__.py&line=3")]
+    public void Linkify_PathWithUnderscoresInTheName_ShowsThemLiterallyAndKeepsThemInThePath(string token, string shown, string encodedPathAndLine) =>
         Assert.Equal(
             "[" + shown + "](" + ChatFileReference.LinkPrefix + "path=" + encodedPathAndLine + ")",
             ChatFileReference.LinkifyFileReferences(token));
