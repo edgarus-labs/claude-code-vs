@@ -700,6 +700,27 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         }
     }
 
+    // Like the VS Code extension, every session (new or resumed) appends a section to Claude Code's
+    // own system prompt telling Claude that its text between tool calls is shown to the user in this
+    // chat panel - so it replies to a message sent mid-turn in visible text, not only in its thinking.
+    [Fact]
+    public async Task NewAndLoadSession_AppendTheChatPanelSectionToTheSystemPrompt()
+    {
+        Task<NewSessionResult> created = _connection.NewSessionAsync("/workspace", null, CancellationToken.None);
+        JsonObject newRequest = await ReadRequestAsync("session/new");
+        Assert.Contains("between tool calls", newRequest["params"]!["_meta"]!["systemPrompt"]!["append"]!.GetValue<string>(), StringComparison.Ordinal);
+        await ReplyAsync(newRequest, """{"sessionId":"s1"}""");
+        await created.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Task<NewSessionResult> loaded = _connection.LoadSessionAsync("s1", "/workspace", null, CancellationToken.None);
+        JsonObject loadRequest = await ReadRequestAsync("session/load");
+        Assert.Equal(
+            newRequest["params"]!["_meta"]!["systemPrompt"]!["append"]!.GetValue<string>(),
+            loadRequest["params"]!["_meta"]!["systemPrompt"]!["append"]!.GetValue<string>());
+        await ReplyAsync(loadRequest, "{}");
+        await loaded.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
     [Fact]
     public async Task NewSessionAsync_ReadsCurrentConfigOptions_AndFlattensGroupedChoices()
     {

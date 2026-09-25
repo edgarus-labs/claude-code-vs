@@ -1263,7 +1263,8 @@ public sealed partial class ChatSessionStateTests
         var thinking = vm.ActivityText;
         Assert.False(string.IsNullOrWhiteSpace(thinking));
         Assert.NotEqual(working, thinking);
-        Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.Assistant);
+        // Shown as thinking (like the VS Code extension), never as the answer's text.
+        Assert.Equal(string.Empty, Assert.Single(vm.Messages, message => message.Role == ChatRole.Assistant).Text);
         connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("visible "));
         var responding = vm.ActivityText;
         Assert.NotEqual(thinking, responding);
@@ -1288,6 +1289,34 @@ public sealed partial class ChatSessionStateTests
 
         Assert.False(vm.IsBusy);
         Assert.Equal("visible answer", Assert.Single(vm.Messages, message => message.Role == ChatRole.Assistant).Text);
+    }
+
+    // Like the VS Code extension, Claude's thinking is shown in the transcript, where it happened -
+    // Claude often settles a message sent mid-turn there, and what is not shown was never said. It
+    // stays separate from the reply's Text.
+    [Fact]
+    public async Task ThoughtChunks_AreShownInTheTranscript_InOrder_ButNotInTheReplyText()
+    {
+        var completed = new TaskCompletionSource<bool>();
+        var connection = new RecordingAcpAgentConnection { PromptHandler = _ => completed.Task };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "go";
+        var prompt = vm.SendAsync();
+
+        connection.RaiseSessionUpdate(new SessionUpdate.AgentThoughtChunk("The branch is "));
+        connection.RaiseSessionUpdate(new SessionUpdate.AgentThoughtChunk("fix/38."));
+        connection.RaiseSessionUpdate(new SessionUpdate.ToolCall(new ToolCallUpdate { ToolCallId = "read", Title = "Read a.cs", Status = ToolCallStatus.Completed }));
+        connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("done"));
+
+        var reply = Assert.Single(vm.Messages, message => message.Role == ChatRole.Assistant);
+        Assert.Collection(reply.Parts,
+            part => Assert.Equal("The branch is fix/38.", Assert.IsType<ChatThinkingPart>(part).Text),
+            part => Assert.IsType<ChatToolCallPart>(part),
+            part => Assert.Equal("done", Assert.IsType<ChatTextPart>(part).Text));
+        Assert.Equal("done", reply.Text);
+        completed.SetResult(true);
+        await prompt;
     }
 
     [Fact]

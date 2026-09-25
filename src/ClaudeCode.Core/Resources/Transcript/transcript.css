@@ -221,6 +221,48 @@ html, body {
   border-bottom-style: solid;
 }
 
+/* Mirrors the VS Code extension's thinking block (thinkingV2): chevron + label in the secondary
+   colour at .8 opacity (1 when open or hovered), content 4px below, 8px above and below the block. */
+.thinking {
+  margin: 8px 0;
+}
+
+.thinking-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  color: var(--chat-subtle-fg);
+  opacity: 0.8;
+  list-style: none;
+  user-select: none;
+}
+
+.thinking-summary::-webkit-details-marker {
+  display: none;
+}
+
+.thinking[open] > .thinking-summary,
+.thinking-summary:hover {
+  opacity: 1;
+}
+
+.thinking-toggle {
+  width: 16px;
+  height: 16px;
+  transition: transform 0.15s;
+}
+
+.thinking[open] .thinking-toggle {
+  transform: rotate(90deg);
+}
+
+.thinking-content {
+  color: var(--chat-subtle-fg);
+  margin-top: 4px;
+  font-weight: 400;
+}
+
 .msg-footer {
   color: var(--chat-subtle-fg);
   font-size: 0.78em;

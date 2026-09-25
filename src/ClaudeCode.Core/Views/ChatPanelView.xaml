@@ -753,16 +753,21 @@
                 </ControlTemplate>
               </TextBox.Template>
             </TextBox>
-            <TextBlock Text="Type / for commands" Margin="5,0,5,0"
+            <TextBlock Margin="5,0,5,0"
                        FontSize="{Binding ChatTextFontSize, ElementName=ChatPanel}"
                        TextWrapping="Wrap" IsHitTestVisible="False" VerticalAlignment="Center"
                        Foreground="{DynamicResource ChatSubtleForegroundBrush}">
               <TextBlock.Style>
                 <Style TargetType="TextBlock">
                   <Setter Property="Visibility" Value="Collapsed" />
+                  <Setter Property="Text" Value="Type / for commands" />
                   <Style.Triggers>
                     <DataTrigger Binding="{Binding Text.Length, ElementName=ComposerBox}" Value="0">
                       <Setter Property="Visibility" Value="Visible" />
+                    </DataTrigger>
+                    <!-- While Claude works, what is typed here is queued for it (see ChatViewModel.EnqueueDraft). -->
+                    <DataTrigger Binding="{Binding IsBusy}" Value="True">
+                      <Setter Property="Text" Value="Queue another message" />
                     </DataTrigger>
                   </Style.Triggers>
                 </Style>

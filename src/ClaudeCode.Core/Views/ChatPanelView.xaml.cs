@@ -619,6 +619,11 @@ public partial class ChatPanelView : UserControl, IDisposable
             };
         }
 
+        if (part is ChatThinkingPart thinkingPart)
+        {
+            return new { type = "thinking", text = thinkingPart.Text };
+        }
+
         var call = ((ChatToolCallPart)part).Card;
         return new
         {

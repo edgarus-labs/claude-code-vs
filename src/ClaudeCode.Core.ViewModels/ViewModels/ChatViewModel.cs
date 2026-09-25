@@ -1841,7 +1841,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                     EnsureAssistantMessage().AppendText(chunk.Text);
                     UpdateActivity("Responding…");
                     break;
-                case SessionUpdate.AgentThoughtChunk:
+                case SessionUpdate.AgentThoughtChunk thought:
+                    EnsureAssistantMessage().AppendThought(thought.Text);
                     UpdateActivity("Thinking…");
                     break;
                 case SessionUpdate.ToolCall toolCall:

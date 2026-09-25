@@ -247,6 +247,29 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
     /// a workspace boundary); this class has no way to distinguish an intentionally-opened workspace
     /// from an attacker-controlled path.
     /// </summary>
+    // Appended to Claude Code's own system prompt for every session, as the VS Code extension does
+    // (its "Focus view in this editor" section): Claude Code's default assumes a terminal where text
+    // between tool calls may not be seen, so without this Claude keeps its narration - including its
+    // reply to a message the user sends mid-turn - in its thinking.
+    private const string ChatPanelSystemPromptSection =
+        "# Claude Code chat panel in Visual Studio\n" +
+        "You are running inside the Claude Code chat panel in Visual Studio. Guidance above that text between tool " +
+        "calls may not be shown to the user, or that you should close with a recap that stands on its own, does not " +
+        "apply here. In this panel tool calls, tool results, and thinking are shown as separate, collapsible items, and " +
+        "every text message you write stays visible in order, including text between tool calls, so the user can see " +
+        "it. Brief updates between tool calls are fine. When the user sends a message while you are working, reply to " +
+        "it in a visible text message, then carry on with your work. Do not repeat what you already said in your final " +
+        "message; if the tool calls since your last text message did not change what you said, a brief closing note is " +
+        "enough. Still end each turn with a text message, even a short one, rather than ending on a tool call. If you " +
+        "are running as a subagent, ignore this section.";
+
+    // claude-agent-acp: `_meta.systemPrompt` as an object keeps the claude_code preset and forwards
+    // `append`. Built per request - a JsonNode can only have one parent.
+    private static JsonObject SessionMeta() => new JsonObject
+    {
+        ["systemPrompt"] = new JsonObject { ["append"] = ChatPanelSystemPromptSection },
+    };
+
     public async Task<NewSessionResult> NewSessionAsync(string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken)
     {
         var @params = new JsonObject
@@ -255,6 +278,7 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
             // ACP marks `mcpServers` required on NewSessionRequest (possibly empty); always send an array
             // even when the caller passed null/empty, rather than the task-literal "only if non-empty".
             ["mcpServers"] = BuildMcpServersArray(mcpServers),
+            ["_meta"] = SessionMeta(),
         };
 
         JsonNode? result = await _rpc.SendRequestAsync("session/new", @params, cancellationToken).ConfigureAwait(false);
@@ -312,6 +336,7 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
             // ACP marks `mcpServers` required on LoadSessionRequest (possibly empty); always send an
             // array, mirroring NewSessionAsync's convention above.
             ["mcpServers"] = BuildMcpServersArray(mcpServers),
+            ["_meta"] = SessionMeta(),
         };
 
         JsonNode? result = await _rpc.SendRequestAsync("session/load", @params, cancellationToken).ConfigureAwait(false);

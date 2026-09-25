@@ -124,4 +124,37 @@ public sealed class ChatMessageViewModel : ObservableObject
     /// <see cref="ToolCallCardViewModel"/> instance already referenced by its part, so they need no
     /// separate Parts entry.</summary>
     public void AppendToolCall(ToolCallCardViewModel card) => Parts.Add(new ChatToolCallPart(card));
+
+    private int _thinkingLength;
+
+    /// <summary>Bumped on every thought appended, so the transcript repaints (see
+    /// TranscriptHostProtocol.AffectsTranscript); the thinking itself lives in <see cref="Parts"/>.</summary>
+    public int ThinkingVersion { get; private set; }
+
+    /// <summary>Appends a chunk of Claude's thinking to the ordered sequence - see
+    /// <see cref="ChatThinkingPart"/>. Agent-supplied, so it has the same total bound as the reply's
+    /// own text.</summary>
+    public void AppendThought(string chunk)
+    {
+        if (string.IsNullOrEmpty(chunk) || _thinkingLength >= MarkdownSafetyLimits.MaxMarkdownLength)
+        {
+            return;
+        }
+
+        var appended = chunk.Substring(0, Math.Min(chunk.Length, MarkdownSafetyLimits.MaxMarkdownLength - _thinkingLength));
+        _thinkingLength += appended.Length;
+        if (Parts.Count > 0 && Parts[Parts.Count - 1] is ChatThinkingPart lastThought)
+        {
+            lastThought.Append(appended);
+        }
+        else
+        {
+            var part = new ChatThinkingPart();
+            part.Append(appended);
+            Parts.Add(part);
+        }
+
+        ThinkingVersion++;
+        OnPropertyChanged(nameof(ThinkingVersion));
+    }
 }

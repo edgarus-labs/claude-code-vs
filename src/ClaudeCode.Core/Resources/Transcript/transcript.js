@@ -256,6 +256,47 @@
   var expandedToolCalls = Object.create(null);
   var untruncatedToolCalls = Object.create(null);
 
+  // Thinking blocks the user collapsed, by "messageIndex:partIndex" - a streaming repaint rebuilds
+  // the block, and must not reopen what the user closed.
+  var collapsedThinking = {};
+
+  // Claude's thinking, shown where it happened and styled like the VS Code extension's thinking
+  // block (chevron + "Thinking..." while live). Unlike VS Code it starts open: Claude often answers a
+  // message sent mid-turn only there, and what is not shown was never said. Same markdown pipeline
+  // (and budget) as the reply text.
+  function buildThinking(part, budget, key, isLive) {
+    var block = document.createElement("details");
+    block.className = "thinking";
+    block.open = !collapsedThinking[key];
+    block.addEventListener("toggle", function () {
+      if (block.open) delete collapsedThinking[key];
+      else collapsedThinking[key] = true;
+    });
+
+    var summary = document.createElement("summary");
+    summary.className = "thinking-summary";
+    var svgNs = "http://www.w3.org/2000/svg";
+    var chevron = document.createElementNS(svgNs, "svg");
+    chevron.setAttribute("class", "thinking-toggle");
+    chevron.setAttribute("viewBox", "0 0 20 20");
+    chevron.setAttribute("aria-hidden", "true");
+    var path = document.createElementNS(svgNs, "path");
+    path.setAttribute("fill", "currentColor");
+    path.setAttribute("d", "M7.13 5.16a.5.5 0 0 1 .7-.04l5 4.5a.5.5 0 0 1 0 .75l-5 4.5a.5.5 0 1 1-.67-.75L11.75 10 7.16 5.87a.5.5 0 0 1-.03-.71Z");
+    chevron.appendChild(path);
+    summary.appendChild(chevron);
+    var label = document.createElement("span");
+    label.textContent = isLive ? "Thinking..." : "Thinking";
+    summary.appendChild(label);
+    block.appendChild(summary);
+
+    var content = document.createElement("div");
+    content.className = "thinking-content";
+    content.appendChild(renderMarkdown(part.text, budget));
+    block.appendChild(content);
+    return block;
+  }
+
   function buildToolCard(toolCall, budget) {
     var card = document.createElement("div");
     var toolId = toolCall.id || "";
@@ -456,7 +497,7 @@
     });
   }
 
-  function buildMessage(message) {
+  function buildMessage(message, messageIndex) {
     // One highlight budget per message, not per render pass: a message is the unit the host caps
     // at MarkdownSafetyLimits.MaxMarkdownLength and the unit it rebuilds while streaming, so a
     // budget here bounds the cost of a rebuild without leaving later messages unhighlighted when
@@ -513,8 +554,9 @@
     // all tool calls" - so a tool call that ran between two paragraphs renders between them too.
     for (var j = 0; j < parts.length; j++) {
       var part = parts[j];
-      wrap.appendChild(part.type === "tool"
-        ? buildToolCard(part, budget)
+      wrap.appendChild(part.type === "tool" ? buildToolCard(part, budget)
+        : part.type === "thinking" ? buildThinking(part, budget, messageIndex + ":" + j,
+            j === parts.length - 1 && typeof message.durationSeconds !== "number")
         : renderMarkdown(part.text, budget));
     }
 
@@ -784,7 +826,7 @@
       }
 
       var isUser = message.role === "User" || message.role === "user";
-      var node = buildMessage(message);
+      var node = buildMessage(message, i);
       if (existing) {
         root.replaceChild(node, existing.node);
       } else {
