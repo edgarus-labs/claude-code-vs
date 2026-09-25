@@ -81,7 +81,9 @@ public sealed class FakeAcpAgentConnection : IAcpAgentConnection
             SessionUpdate?.Invoke(this, new SessionUpdateEventArgs(sessionId, new SessionUpdate.TurnEnded("end_turn")));
             return "end_turn";
         }
-        catch (OperationCanceledException)
+        // Only a stop by CancelAsync ends the turn "cancelled"; a cancelled caller token throws, as it
+        // does on the real connection.
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             SessionUpdate?.Invoke(this, new SessionUpdateEventArgs(sessionId, new SessionUpdate.TurnEnded("cancelled")));
             return "cancelled";
