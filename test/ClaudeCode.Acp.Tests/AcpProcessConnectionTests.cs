@@ -1227,6 +1227,22 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         Assert.Equal(new[] { @"C:\repo\src\Program.cs" }, call.Locations);
     }
 
+    // Most tool_call_update notifications carry no locations at all; the chat iterates the list on
+    // the UI thread for every one of them, so "none" has to be an empty list, never null.
+    [Fact]
+    public async Task SessionUpdate_ToolCallUpdateWithoutLocations_ReportsNoLocations()
+    {
+        var received = new TaskCompletionSource<SessionUpdateEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _connection.SessionUpdate += (_, update) => received.TrySetResult(update);
+
+        await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer,
+            """{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"t1","status":"completed"}}}""");
+
+        var call = Assert.IsType<SessionUpdate.ToolCall>((await received.Task.WaitAsync(TimeSpan.FromSeconds(5))).Update).Call;
+        Assert.NotNull(call.Locations);
+        Assert.Empty(call.Locations);
+    }
+
     [Fact]
     public async Task SessionUpdate_ToolCallWithoutAToolCallId_DropsThatNotificationAndKeepsThePumpAlive()
     {

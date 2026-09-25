@@ -19,7 +19,9 @@ public sealed class ToolCallUpdate
 
     public IReadOnlyList<ToolCallContent> Content { get; set; } = Array.Empty<ToolCallContent>();
 
-    /// <summary>The file paths the call reads or edits (ACP <c>locations[].path</c>) - absolute for
-    /// claude-agent-acp. Agent-supplied, so untrusted: validate before touching the filesystem.</summary>
+    /// <summary>The paths the call touches (ACP <c>locations[].path</c>): for claude-agent-acp the file
+    /// a Read/Edit/Write works on, a Glob's search folder, recalled memory files. Forwarded from the
+    /// tool input unchanged, so usually but not necessarily absolute. Empty when the notification
+    /// carries none. Agent-supplied, so untrusted: validate before touching the filesystem.</summary>
     public IReadOnlyList<string> Locations { get; set; } = Array.Empty<string>();
 }
