@@ -1519,6 +1519,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         if (!CanEditDraft) return;
         _isSwitchingSession = true;
+        // session/new makes the agent start a fresh Claude Code process and wait for it to load the
+        // user's settings and plugins (SessionStart hooks included) - seconds, not a UI-thread cost -
+        // so say so at once (#40). Every exit replaces this: success clears it, failure and
+        // disconnect report instead.
+        StatusMessage = "Starting a new chat…";
         NotifyStateChanged();
         try
         {
@@ -1597,7 +1602,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         if (session is null || !CanEditDraft) return;
         IsHistoryOpen = false;
-        StatusMessage = null;
+        // Same agent-side process start as session/new (see NewSessionCoreAsync).
+        StatusMessage = "Opening the chat…";
         // Kept so the failure path below can put it all back: an id the agent never loaded would
         // keep routing every later prompt and config change to a session that does not exist, and
         // a transient session/load failure must not destroy the conversation the user was in. That
@@ -1636,6 +1642,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             var result = await connection.LoadSessionAsync(session.SessionId, WorkspaceCwd, null, _lifetime.Token).ConfigureAwait(true);
             if (_disposed || !ReferenceEquals(connection, _connection)) return;
             ApplyConfigOptions(result.ConfigOptions);
+            StatusMessage = null;
             OnSessionStarted();
         }
         catch (OperationCanceledException) when (_disposed) { }

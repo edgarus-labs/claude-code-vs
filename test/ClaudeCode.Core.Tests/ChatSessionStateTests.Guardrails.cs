@@ -320,6 +320,65 @@ public sealed partial class ChatSessionStateTests
         Assert.True(vm.ToggleRemoteControlCommand.CanExecute(null));
     }
 
+    // #40: session/new and session/load each make the agent start a fresh Claude Code process and
+    // wait for it to load the user's settings and plugins, so they take seconds. The click must be
+    // acknowledged at once instead of looking like it did nothing.
+    [Fact]
+    public async Task NewChat_ReportsProgressUntilTheAgentHasStartedTheSession()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        var pending = new TaskCompletionSource<NewSessionResult>();
+        connection.NewSessionHandler = _ => pending.Task;
+
+        var switching = vm.NewSessionAsync();
+        Assert.False(string.IsNullOrEmpty(vm.StatusMessage));
+
+        pending.SetResult(new NewSessionResult("session-2", Options()));
+        await switching;
+        Assert.Null(vm.StatusMessage);
+    }
+
+    [Fact]
+    public async Task OpenSession_ReportsProgressUntilTheAgentHasLoadedTheSession()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        var pending = new TaskCompletionSource<NewSessionResult>();
+        connection.LoadSessionHandler = (_, _, _, _) => pending.Task;
+
+        var opening = vm.OpenSessionAsync(new SessionSummary("session-2", "/workspace", "Older chat", null));
+        Assert.False(string.IsNullOrEmpty(vm.StatusMessage));
+
+        pending.SetResult(new NewSessionResult("session-2", Options()));
+        await opening;
+        Assert.Null(vm.StatusMessage);
+    }
+
+    // Rapid clicks while a history item is still loading: each extra click would otherwise start
+    // another session/load or session/new whose replies race to become the panel's session.
+    [Fact]
+    public async Task SessionLoadInFlight_FurtherOpenAndNewChatClicks_StartNoSecondSession()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        var pending = new TaskCompletionSource<NewSessionResult>();
+        connection.LoadSessionHandler = (_, _, _, _) => pending.Task;
+
+        var opening = vm.OpenSessionAsync(new SessionSummary("session-2", "/workspace", "Older chat", null));
+        var secondOpen = vm.OpenSessionAsync(new SessionSummary("session-3", "/workspace", "Other chat", null));
+        var newChat = vm.NewSessionAsync();
+
+        pending.SetResult(new NewSessionResult("session-2", Options()));
+        await Task.WhenAll(opening, secondOpen, newChat).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal("session-2", Assert.Single(connection.LoadedSessions).SessionId);
+        Assert.Single(connection.NewSessionCwds);
+        Assert.Equal("Older chat", vm.SessionTitle);
+    }
+
     // C-D3 for the other session path: session/new is issued on every connect and every New Chat,
     // and both must carry the client's own workspace root, never anything that came off the wire.
     [Fact]
