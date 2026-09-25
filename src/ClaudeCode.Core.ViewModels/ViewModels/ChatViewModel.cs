@@ -2535,7 +2535,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     /// that path, matched on whole path segments. A location is absolute (a Read/Edit/Write file)
     /// or relative to the session cwd - the workspace root - (a file Glob or Grep found), so a
     /// relative one is anchored there too. A location with no file behind it - a failed
-    /// guess Claude read before finding the file, or one it later deleted - is no namesake. More
+    /// guess Claude read before finding the file, or one it later deleted - is no namesake, and
+    /// neither is one the runtime cannot parse. More
     /// than one such file throws rather than picking arbitrarily; matches that
     /// are all outside the workspace throw as refused rather than as missing. When no location
     /// names the file at all - Claude saw the name only in a shell command's output - it is the one
@@ -2559,7 +2560,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         foreach (var location in toolCallLocations)
         {
             if (!location.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar).EndsWith(suffix, StringComparison.OrdinalIgnoreCase)) continue;
-            if (!TryAnchorLocation(workspaceRoot, location, out var anchored) || !WorkspacePathGuard.TryResolveWithinWorkspace(workspaceRoot, anchored, out var fullPath))
+            // Unparseable, it names no file - no namesake, like a location with no file behind it.
+            if (!TryAnchorLocation(workspaceRoot, location, out var anchored)) continue;
+            if (!WorkspacePathGuard.TryResolveWithinWorkspace(workspaceRoot, anchored, out var fullPath))
                 refused = true;
             else if (File.Exists(fullPath))
                 matches.Add(fullPath);

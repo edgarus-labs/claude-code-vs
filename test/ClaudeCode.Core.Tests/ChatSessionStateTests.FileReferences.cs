@@ -417,6 +417,26 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(Path.GetFullPath(target), Assert.Single(services.OpenedDocumentPaths), ignoreCase: true);
     }
 
+    // A location the runtime cannot parse names no file at all, so it is no namesake - like a
+    // location with no file behind it - and must not turn the click into a refusal that skips the
+    // workspace search for the file that does exist.
+    [Fact]
+    public async Task OpenFileReference_OnlyAnUnparseableLocationMatches_OpensTheWorkspaceFileOfThatName()
+    {
+        using var workspace = new TempWorkspace();
+        Directory.CreateDirectory(workspace.PathUnder("src"));
+        var target = workspace.PathUnder(Path.Combine("src", "Program.cs"));
+        File.WriteAllText(target, "x");
+        var (vm, connection, services) = await ConnectWithWorkspaceAsync(workspace.Root);
+        using var _vm = vm;
+
+        RaiseToolCallOn(connection, "read-1", workspace.PathUnder(Path.Combine("a\0b", "Program.cs")));
+        await vm.OpenFileReferenceAsync(Href("Program.cs"));
+
+        Assert.Null(vm.StatusMessage);
+        Assert.Equal(Path.GetFullPath(target), Assert.Single(services.OpenedDocumentPaths), ignoreCase: true);
+    }
+
     // What the agent read belongs to the conversation that read it: after a new session the name
     // no longer picks the file the previous one read out of its namesakes.
     [Fact]
