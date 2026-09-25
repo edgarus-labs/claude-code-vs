@@ -73,6 +73,93 @@ function loadTranscript() {
 
 const transcript = loadTranscript();
 
+// A DOM just real enough for render()/setActivity() to run end to end: nodes keep their children and
+// parent, so a test can read what the page shows. Loaded fresh per test - the renderer keeps state.
+function loadTranscriptWithDom() {
+  function node(tagName) {
+    const element = {
+      tagName: tagName,
+      children: [],
+      parentNode: null,
+      className: "",
+      textContent: "",
+      style: { setProperty() {} },
+      dataset: {},
+      classList: { contains() { return false; }, add() {}, remove() {}, toggle() {} },
+      setAttribute() {},
+      addEventListener() {},
+      appendChild(child) { child.parentNode = element; element.children.push(child); return child; },
+      removeChild(child) { element.children.splice(element.children.indexOf(child), 1); child.parentNode = null; return child; },
+      replaceChild(child, old) {
+        element.children[element.children.indexOf(old)] = child;
+        child.parentNode = element;
+        old.parentNode = null;
+        return old;
+      },
+      insertBefore(child, reference) {
+        const index = reference ? element.children.indexOf(reference) : -1;
+        if (index < 0) element.children.push(child); else element.children.splice(index, 0, child);
+        child.parentNode = element;
+        return child;
+      },
+      querySelector(selector) { return findAll(element, (n) => n.className === selector.slice(1))[0] || null; },
+      get lastElementChild() { return element.children[element.children.length - 1] || null; },
+    };
+    return element;
+  }
+
+  const root = node("div");
+  const context = {
+    document: {
+      getElementById() { return root; },
+      createElement: node,
+      createElementNS(_, tagName) { return node(tagName); },
+      createTextNode(text) { const n = node("#text"); n.textContent = text; return n; },
+      addEventListener() {},
+      documentElement: node("html"),
+    },
+    addEventListener() {},
+    requestAnimationFrame() { return 0; },
+    cancelAnimationFrame() {},
+    markdownit() { return { render: (text) => String(text == null ? "" : text) }; },
+    DOMPurify: { sanitize: (html) => html },
+    hljs: { getLanguage: () => null, highlight: () => ({ value: "" }), highlightAuto: () => ({ language: null }) },
+    claudeTranscriptCommon: {
+      purifyConfig: {},
+      notifyHost() {},
+      newHighlightBudget() { return { remaining: 20000 }; },
+      highlightInto() {},
+      highlightWithin() {},
+      applyTheme() {},
+      installLinkHandler() {},
+    },
+  };
+  context.window = context;
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync(transcriptSource, "utf8"), context, { filename: transcriptSource });
+  return { transcript: context.claudeTranscript, root: root };
+}
+
+function findAll(start, predicate) {
+  const found = [];
+  (function walk(n) {
+    for (const child of n.children) {
+      if (predicate(child)) found.push(child);
+      walk(child);
+    }
+  })(start);
+  return found;
+}
+
+// What each thinking block's label reads, in transcript order.
+function thinkingLabels(root) {
+  return findAll(root, (n) => n.className === "thinking-summary").map((summary) => summary.lastElementChild.textContent);
+}
+
+function thinkingMessage() {
+  return { id: 1, role: "Assistant", parts: [{ type: "thinking", text: "Checking the branch" }], images: [], pending: false };
+}
+
 function streamingMessage(parts) {
   return { role: "Assistant", parts: parts, images: [], pending: false };
 }
@@ -195,4 +282,30 @@ test("a thinking block's key survives streaming and messages being removed befor
   assert.strictEqual(transcript.thinkingState(before, 0, true, true).key, transcript.thinkingState(after, 0, true, true).key);
   assert.notStrictEqual(transcript.thinkingState({ id: 8, parts: after.parts }, 0, true, true).key,
     transcript.thinkingState(after, 0, true, true).key);
+});
+
+// The message payload is identical before and after the turn ends - only the activity changes - so
+// the renderer must treat "drawn live" as part of what it drew, or it keeps the stale label.
+test("a full render after the turn ends redraws the live thinking label as finished", () => {
+  const { transcript: page, root } = loadTranscriptWithDom();
+
+  page.render({ messages: [thinkingMessage()], activity: { text: "Working…" } });
+  assert.deepStrictEqual(thinkingLabels(root), ["Thinking..."]);
+
+  page.render({ messages: [thinkingMessage()], activity: null });
+  assert.deepStrictEqual(thinkingLabels(root), ["Thinking"]);
+});
+
+// The host can end a turn by clearing the activity alone, without re-posting the messages.
+test("clearing the activity alone settles the last message in place", () => {
+  const { transcript: page, root } = loadTranscriptWithDom();
+  page.render({ messages: [thinkingMessage()], activity: { text: "Working…" } });
+
+  page.setActivity(null);
+
+  assert.deepStrictEqual(thinkingLabels(root), ["Thinking"]);
+  assert.strictEqual(root.children.length, 1, "the message is replaced, not drawn twice, and the indicator is gone");
+  const settled = root.children[0];
+  page.render({ messages: [thinkingMessage()], activity: null });
+  assert.strictEqual(root.children[0], settled, "a settled message is not rebuilt again by the next render");
 });
