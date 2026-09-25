@@ -163,3 +163,36 @@ test("partsEqual compares payload parts by value", () => {
     transcript.partsEqual({ type: "tool", id: "t1", status: "InProgress" }, { type: "tool", id: "t1", status: "Completed" }),
     false);
 });
+
+// A growing thinking part is rendered as a chevron + label block, not as a markdown tail: patching
+// it as if it were reply text would replace that whole block with bare markdown.
+test("a growing thinking part forces a rebuild instead of a text patch", () => {
+  const thinking = (value) => ({ type: "thinking", text: value });
+  const before = streamingMessage([thinking("The branch is ")]);
+  const after = streamingMessage([thinking("The branch is fix/38.")]);
+
+  assert.strictEqual(transcript.isTrailingTextGrowth(before, after), false);
+});
+
+// "Thinking..." (live) only on the last part of the message still being produced - the last one,
+// while the host shows activity. A finished bubble - an earlier one after a hand-off, one whose
+// turn failed, or history replayed from a resumed session - never keeps the live label.
+test("a thinking block is live only at the end of the message still being produced", () => {
+  const message = { id: 7, parts: [{ type: "thinking", text: "a" }, { type: "text", text: "b" }, { type: "thinking", text: "c" }] };
+
+  assert.strictEqual(transcript.thinkingState(message, 2, true, true).live, true);
+  assert.strictEqual(transcript.thinkingState(message, 2, true, false).live, false); // turn over
+  assert.strictEqual(transcript.thinkingState(message, 2, false, true).live, false); // not the last message
+  assert.strictEqual(transcript.thinkingState(message, 0, true, true).live, false);  // not the last part
+});
+
+// The collapsed state is keyed to the message and the block's place in it - not the transcript
+// position (shifts when a bubble is removed) nor the text (changes while the block streams).
+test("a thinking block's key survives streaming and messages being removed before it", () => {
+  const before = { id: 7, parts: [{ type: "thinking", text: "The br" }] };
+  const after = { id: 7, parts: [{ type: "thinking", text: "The branch is fix/38." }] };
+
+  assert.strictEqual(transcript.thinkingState(before, 0, true, true).key, transcript.thinkingState(after, 0, true, true).key);
+  assert.notStrictEqual(transcript.thinkingState({ id: 8, parts: after.parts }, 0, true, true).key,
+    transcript.thinkingState(after, 0, true, true).key);
+});

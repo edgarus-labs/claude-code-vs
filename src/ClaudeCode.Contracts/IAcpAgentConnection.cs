@@ -46,8 +46,9 @@ public interface IAcpAgentConnection : IAsyncDisposable
 
     /// <summary>Runs one prompt turn and returns the agent's <c>stopReason</c> for it once the turn
     /// has ended (<c>"end_turn"</c> when the agent gave none). <c>"cancelled"</c> means the turn was
-    /// stopped by <see cref="CancelAsync"/> - for a prompt still waiting in the agent's queue (see
-    /// <see cref="SupportsPromptQueueing"/>) that it never started at all.</summary>
+    /// stopped by <see cref="CancelAsync"/>. For a prompt still waiting in the agent's queue (see
+    /// <see cref="SupportsPromptQueueing"/>) it does not say whether the agent had already folded it
+    /// into the stopped turn, so a caller must not assume it never ran.</summary>
     Task<string> SendPromptAsync(string sessionId, IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken);
 
     Task CancelAsync(string sessionId, CancellationToken cancellationToken);

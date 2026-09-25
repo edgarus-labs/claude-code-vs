@@ -8,7 +8,7 @@ namespace ClaudeCode.Core.ViewModels;
 
 public sealed class ChatMessageViewModel : ObservableObject
 {
-    /// <param name="isPending">True for a message queued locally while an earlier turn is still in
+    /// <param name="isPending">True for a message sent while an earlier turn is still in
     /// flight; see <see cref="IsPending"/>. Only a <see cref="ChatRole.User"/> message is ever
     /// queued, because only the composer can produce one.</param>
     public ChatMessageViewModel(ChatRole role, string text = "", bool isPending = false)
@@ -27,15 +27,22 @@ public sealed class ChatMessageViewModel : ObservableObject
 
     public ChatRole Role { get; }
 
+    private static int _nextId;
+
+    /// <summary>Unique for the life of the process; lets the transcript key per-message UI state (a
+    /// collapsed thinking block) to the message itself rather than its position, which shifts when a
+    /// bubble is removed.</summary>
+    public int Id { get; } = System.Threading.Interlocked.Increment(ref _nextId);
+
     private readonly StringBuilder _textBuilder;
     private string? _text;
     private bool _isTruncated;
     private bool _isPending;
 
-    /// <summary>True while this message is queued locally - typed and sent while a previous turn was
-    /// still in flight - and the agent has not started on it yet (it may already be waiting in the
-    /// agent's own prompt queue). The transcript dims a pending
-    /// bubble so it cannot be mistaken for one that was delivered.</summary>
+    /// <summary>True while the agent has not started on this message yet - typed and sent while a
+    /// previous turn was still in flight, and either held locally or already waiting in the agent's own
+    /// prompt queue. The transcript dims a pending bubble so it cannot be mistaken for one that was
+    /// delivered.</summary>
     public bool IsPending
     {
         get => _isPending;
@@ -141,8 +148,11 @@ public sealed class ChatMessageViewModel : ObservableObject
             return;
         }
 
-        var appended = chunk.Substring(0, Math.Min(chunk.Length, MarkdownSafetyLimits.MaxMarkdownLength - _thinkingLength));
+        var remaining = MarkdownSafetyLimits.MaxMarkdownLength - _thinkingLength;
+        var appended = chunk.Substring(0, Math.Min(chunk.Length, remaining));
         _thinkingLength += appended.Length;
+        // Said, not silent - same as the reply text's cut (AppendText).
+        if (chunk.Length > remaining) appended += MarkdownSafetyLimits.TruncationNotice;
         if (Parts.Count > 0 && Parts[Parts.Count - 1] is ChatThinkingPart lastThought)
         {
             lastThought.Append(appended);

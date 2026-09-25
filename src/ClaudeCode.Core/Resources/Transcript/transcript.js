@@ -256,15 +256,30 @@
   var expandedToolCalls = Object.create(null);
   var untruncatedToolCalls = Object.create(null);
 
-  // Thinking blocks the user collapsed, by "messageIndex:partIndex" - a streaming repaint rebuilds
-  // the block, and must not reopen what the user closed.
-  var collapsedThinking = {};
+  // Thinking blocks the user collapsed, keyed by message id and the block's place in it (see
+  // thinkingState) - so a streaming repaint (which rebuilds the block) does not reopen what the user
+  // closed. Forgotten when the transcript empties.
+  var collapsedThinking = Object.create(null);
+
+  // Pure, for test/transcript/render-diff.test.js. `key`: stable while the block streams and when
+  // bubbles before it are removed (a position is not; the text changes). `live` ("Thinking..."): only
+  // the last part of the message still being produced - the last message, while the host shows
+  // activity. A finished bubble (an earlier one after a hand-off, a failed turn, resumed history)
+  // never keeps the live label.
+  function thinkingState(message, partIndex, isLastMessage, busy) {
+    var parts = message.parts || [];
+    return {
+      key: message.id + ":" + partIndex,
+      live: !!(isLastMessage && busy && partIndex === parts.length - 1),
+    };
+  }
 
   // Claude's thinking, shown where it happened and styled like the VS Code extension's thinking
   // block (chevron + "Thinking..." while live). Unlike VS Code it starts open: Claude often answers a
   // message sent mid-turn only there, and what is not shown was never said. Same markdown pipeline
   // (and budget) as the reply text.
-  function buildThinking(part, budget, key, isLive) {
+  function buildThinking(part, budget, state) {
+    var key = state.key;
     var block = document.createElement("details");
     block.className = "thinking";
     block.open = !collapsedThinking[key];
@@ -286,7 +301,7 @@
     chevron.appendChild(path);
     summary.appendChild(chevron);
     var label = document.createElement("span");
-    label.textContent = isLive ? "Thinking..." : "Thinking";
+    label.textContent = state.live ? "Thinking..." : "Thinking";
     summary.appendChild(label);
     block.appendChild(summary);
 
@@ -497,7 +512,7 @@
     });
   }
 
-  function buildMessage(message, messageIndex) {
+  function buildMessage(message, isLastMessage, busy) {
     // One highlight budget per message, not per render pass: a message is the unit the host caps
     // at MarkdownSafetyLimits.MaxMarkdownLength and the unit it rebuilds while streaming, so a
     // budget here bounds the cost of a rebuild without leaving later messages unhighlighted when
@@ -555,8 +570,7 @@
     for (var j = 0; j < parts.length; j++) {
       var part = parts[j];
       wrap.appendChild(part.type === "tool" ? buildToolCard(part, budget)
-        : part.type === "thinking" ? buildThinking(part, budget, messageIndex + ":" + j,
-            j === parts.length - 1 && typeof message.durationSeconds !== "number")
+        : part.type === "thinking" ? buildThinking(part, budget, thinkingState(message, j, isLastMessage, busy))
         : renderMarkdown(part.text, budget));
     }
 
@@ -795,9 +809,12 @@
         activityNode = buildActivity(activity);
         root.appendChild(activityNode);
       }
-    } else if (activityNode) {
-      root.removeChild(activityNode);
-      activityNode = null;
+    } else {
+      if (activityNode) {
+        root.removeChild(activityNode);
+        activityNode = null;
+      }
+      settleLiveMessage();
     }
 
     if (wasAtBottom) {
@@ -805,13 +822,28 @@
     }
   }
 
+  // The host can end a turn through this entry point alone (no new messages payload), so the last
+  // message drawn as still being produced is redrawn as finished here - otherwise its "Thinking..."
+  // would stay until something else changed it.
+  function settleLiveMessage() {
+    var last = rendered[rendered.length - 1];
+    if (!last || last.signature.slice(-5) !== "#live") return;
+    var node = buildMessage(last.message, true, false);
+    if (last.node.parentNode === root) root.replaceChild(node, last.node);
+    rendered[rendered.length - 1] = { signature: JSON.stringify(last.message), node: node, message: last.message, isUser: last.isUser };
+  }
+
   function render(payload) {
     var wasAtBottom = isAtBottom();
     var messages = (payload && payload.messages) || [];
+    if (messages.length === 0) collapsedThinking = Object.create(null);
+    var busy = !!(payload && payload.activity);
 
     for (var i = 0; i < messages.length; i++) {
       var message = messages[i];
-      var signature = JSON.stringify(message);
+      var isLastMessage = i === messages.length - 1;
+      // Liveness is part of what is drawn ("Thinking..."), so it is part of the signature.
+      var signature = JSON.stringify(message) + (isLastMessage && busy ? "#live" : "");
       var existing = rendered[i];
       if (existing && existing.signature === signature) {
         continue;
@@ -826,7 +858,7 @@
       }
 
       var isUser = message.role === "User" || message.role === "user";
-      var node = buildMessage(message, i);
+      var node = buildMessage(message, isLastMessage, busy);
       if (existing) {
         root.replaceChild(node, existing.node);
       } else {
@@ -929,5 +961,6 @@
     // piece of this renderer that can be proven correct without a browser.
     partsEqual: partsEqual,
     isTrailingTextGrowth: isTrailingTextGrowth,
+    thinkingState: thinkingState,
   };
 })();

@@ -482,6 +482,7 @@ public partial class ChatPanelView : UserControl, IDisposable
         {
             _messagesJson = JsonConvert.SerializeObject(_viewModel.Messages.Select(message => new
             {
+                id = message.Id,
                 role = message.Role.ToString(),
                 // Ordered so text and tool calls interleave exactly as the agent emitted them,
                 // rather than "all text, then all tool calls" (message.Text/.ToolCalls group by
@@ -838,6 +839,30 @@ public partial class ChatPanelView : UserControl, IDisposable
         _viewModel.Dispose();
         TranscriptView.Dispose();
         GC.SuppressFinalize(this);
+    }
+
+    // The draft and caret as the user last left them, so a view-model rewrite of the draft (a queued
+    // message put back in front of it, ChatViewModel.RestoreToComposer) keeps the caret where the user
+    // was typing instead of jumping to the start.
+    private string _composerTextSeen = string.Empty;
+    private int _composerCaretSeen;
+
+    private void ComposerBox_SelectionChanged(object sender, RoutedEventArgs e)
+    {
+        _composerTextSeen = ComposerBox.Text;
+        _composerCaretSeen = ComposerBox.CaretIndex;
+    }
+
+    // Raised only for source-to-target updates (the view model setting InputText), never for typing.
+    private void ComposerBox_TargetUpdated(object sender, DataTransferEventArgs e)
+    {
+        var text = ComposerBox.Text;
+        if (_composerTextSeen.Length > 0 && text.Length > _composerTextSeen.Length && text.EndsWith(_composerTextSeen, StringComparison.Ordinal))
+        {
+            ComposerBox.CaretIndex = text.Length - _composerTextSeen.Length + _composerCaretSeen;
+        }
+        _composerTextSeen = text;
+        _composerCaretSeen = ComposerBox.CaretIndex;
     }
 
     private void ComposerBox_PreviewKeyDown(object sender, KeyEventArgs e)

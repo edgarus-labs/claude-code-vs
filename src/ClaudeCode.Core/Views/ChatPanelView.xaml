@@ -697,7 +697,8 @@
 
           <Grid Grid.Row="1" Margin="3,0,3,0">
             <!-- No MinHeight: one line tall initially, grows with the text up to MaxHeight (VS Code behavior). -->
-            <TextBox x:Name="ComposerBox" Text="{Binding InputText, UpdateSourceTrigger=PropertyChanged}"
+            <TextBox x:Name="ComposerBox" Text="{Binding InputText, UpdateSourceTrigger=PropertyChanged, NotifyOnTargetUpdated=True}"
+                     TargetUpdated="ComposerBox_TargetUpdated" SelectionChanged="ComposerBox_SelectionChanged"
                      Style="{StaticResource ComposerStyle}" AcceptsReturn="True" AcceptsTab="False"
                      TextWrapping="Wrap" MaxHeight="220" VerticalScrollBarVisibility="Auto"
                      HorizontalScrollBarVisibility="Disabled" Padding="3" VerticalAlignment="Center"
@@ -952,7 +953,7 @@
                         </Style>
                       </Ellipse.Style>
                     </Ellipse>
-                    <TextBlock Text="{Binding RunningAgentCount, StringFormat='{}{0} agents'}" VerticalAlignment="Center"
+                    <TextBlock Text="{Binding RunningAgentsLabel}" VerticalAlignment="Center"
                                Foreground="{DynamicResource ChatForegroundBrush}"
                                FontSize="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}" />
                   </StackPanel>
