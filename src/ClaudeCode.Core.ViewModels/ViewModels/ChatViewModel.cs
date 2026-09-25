@@ -2504,14 +2504,16 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             // Snapshotted here, before the lookup moves off the UI thread that owns the set - the
             // thread WebView2 raises the message callback on.
             var toolCallLocations = _toolCallLocations.ToArray();
+            // Read before the walk: Dispose() cancels, then disposes the source.
+            var cancellationToken = _lifetime.Token;
             await Task.Run(async () =>
             {
-                var candidate = ResolveFileReference(workspaceRoot!, reference, toolCallLocations);
+                var candidate = ResolveFileReference(workspaceRoot!, reference, toolCallLocations, cancellationToken);
                 using var pathLease = WorkspacePathGuard.AcquireFile(workspaceRoot, candidate);
                 using var document = pathLease.ProtectDocument();
                 if (document is null && RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
                     throw new FileNotFoundException("the file does not exist.", pathLease.FullPath);
-                await _services.OpenDocumentAsync(pathLease.FullPath, line, _lifetime.Token).ConfigureAwait(true);
+                await _services.OpenDocumentAsync(pathLease.FullPath, line, cancellationToken).ConfigureAwait(true);
             }).ConfigureAwait(true);
         }
         catch (OperationCanceledException) when (_disposed) { }
@@ -2542,7 +2544,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     /// reports as missing. Every candidate is validated here, off the UI thread, before the
     /// filesystem sees it.
     /// </summary>
-    private static string ResolveFileReference(string workspaceRoot, string reference, IReadOnlyList<string> toolCallLocations)
+    private static string ResolveFileReference(string workspaceRoot, string reference, IReadOnlyList<string> toolCallLocations, CancellationToken cancellationToken)
     {
         if (Path.IsPathRooted(reference)) return reference;
 
@@ -2569,7 +2571,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         if (refused)
             throw new UnauthorizedAccessException("the file Claude worked on by that name is outside the workspace or cannot be resolved safely.");
 
-        foreach (var found in WorkspaceFileSearch.FindBySuffix(workspaceRoot, suffix))
+        foreach (var found in WorkspaceFileSearch.FindBySuffix(workspaceRoot, suffix, cancellationToken))
         {
             if (WorkspacePathGuard.TryResolveWithinWorkspace(workspaceRoot, found, out var fullPath) && File.Exists(fullPath))
                 matches.Add(fullPath);

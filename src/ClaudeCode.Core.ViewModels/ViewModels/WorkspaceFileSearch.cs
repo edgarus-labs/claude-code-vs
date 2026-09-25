@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Security;
+using System.Threading;
 
 namespace ClaudeCode.Core.ViewModels;
 
@@ -24,21 +25,35 @@ internal static class WorkspaceFileSearch
     /// <summary>
     /// Returns the files whose full path ends in <paramref name="suffix"/> (a separator followed by
     /// the reference, separators normalized to <see cref="Path.DirectorySeparatorChar"/>): those
-    /// outside build/tool folders when there are any, otherwise those inside them. Git's object
-    /// store and reparse points (junctions, symlinks) are not walked - the latter could lead out of
-    /// the workspace or into a cycle.
+    /// outside build/tool folders when there are any, otherwise those inside them. The build/tool
+    /// folders are walked only after the rest, so their size cannot keep a source file from being
+    /// found. Git's object store and reparse points (junctions, symlinks) are not walked - the
+    /// latter could lead out of the workspace or into a cycle. A walk that reaches the entry cap
+    /// with fewer than two matches cannot tell a unique file from the first of several, so it
+    /// throws <see cref="IOException"/> rather than return them.
     /// </summary>
-    public static IReadOnlyList<string> FindBySuffix(string workspaceRoot, string suffix)
+    public static IReadOnlyList<string> FindBySuffix(string workspaceRoot, string suffix, CancellationToken cancellationToken) =>
+        FindBySuffix(workspaceRoot, suffix, MaxEntries, cancellationToken);
+
+    internal static IReadOnlyList<string> FindBySuffix(string workspaceRoot, string suffix, int maxEntries, CancellationToken cancellationToken)
     {
-        var sources = new List<string>();
-        var copies = new List<string>();
-        var pending = new Stack<(string Path, bool IsCopyFolder)>();
-        pending.Push((workspaceRoot, false));
-        var visited = 0;
+        var budget = maxEntries;
+        var copyFolders = new List<string>();
+        var sources = Walk(new[] { workspaceRoot }, suffix, copyFolders, ref budget, cancellationToken);
+        return sources.Count > 0 ? sources : Walk(copyFolders, suffix, deferredCopyFolders: null, ref budget, cancellationToken);
+    }
+
+    // Walks the roots; a build/tool folder goes into deferredCopyFolders instead of being walked,
+    // unless that is null (the roots already are such folders).
+    private static List<string> Walk(IEnumerable<string> roots, string suffix, List<string>? deferredCopyFolders, ref int budget, CancellationToken cancellationToken)
+    {
+        var found = new List<string>();
+        var pending = new Stack<string>(roots);
 
         while (pending.Count > 0)
         {
-            var (directory, isCopyFolder) = pending.Pop();
+            cancellationToken.ThrowIfCancellationRequested();
+            var directory = pending.Pop();
             IEnumerable<FileSystemInfo> entries;
             try
             {
@@ -49,13 +64,15 @@ internal static class WorkspaceFileSearch
                 continue;
             }
 
+            var exhausted = false;
             try
             {
                 foreach (var entry in entries)
                 {
-                    if (++visited > MaxEntries)
+                    if (--budget < 0)
                     {
-                        return sources.Count > 0 ? sources : copies;
+                        exhausted = true;
+                        break;
                     }
 
                     if ((entry.Attributes & FileAttributes.ReparsePoint) != 0)
@@ -65,14 +82,23 @@ internal static class WorkspaceFileSearch
 
                     if (entry is DirectoryInfo)
                     {
-                        if (!entry.Name.Equals(".git", StringComparison.OrdinalIgnoreCase))
+                        if (entry.Name.Equals(".git", StringComparison.OrdinalIgnoreCase))
                         {
-                            pending.Push((entry.FullName, isCopyFolder || CopyFolders.Contains(entry.Name)));
+                            continue;
+                        }
+
+                        if (deferredCopyFolders is not null && CopyFolders.Contains(entry.Name))
+                        {
+                            deferredCopyFolders.Add(entry.FullName);
+                        }
+                        else
+                        {
+                            pending.Push(entry.FullName);
                         }
                     }
                     else if (entry.FullName.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
                     {
-                        (isCopyFolder ? copies : sources).Add(entry.FullName);
+                        found.Add(entry.FullName);
                     }
                 }
             }
@@ -80,8 +106,16 @@ internal static class WorkspaceFileSearch
             {
                 // A directory that vanished or locked mid-walk: keep what it yielded, go on.
             }
+
+            if (exhausted)
+            {
+                // Two matches already make the reference ambiguous, however many more there are.
+                return found.Count > 1
+                    ? found
+                    : throw new IOException("the workspace holds too many files to search for it; ask Claude for the full path.");
+            }
         }
 
-        return sources.Count > 0 ? sources : copies;
+        return found;
     }
 }
