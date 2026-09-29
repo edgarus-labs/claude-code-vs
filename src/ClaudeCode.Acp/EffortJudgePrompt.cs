@@ -77,16 +77,18 @@ public static class EffortJudgePrompt
             withoutEnvelopes = shortened;
         }
 
-        var stripped = BlankLines.Replace(HorizontalSpace.Replace(FencedCodeBlock.Replace(withoutEnvelopes, " "), " "), "\n\n").Trim();
-        return Truncate(LeavesAlmostNothing(stripped, shortened) ? shortened : stripped, MaxStateChars);
+        // The task itself may sit in a tag (a share of the message under a quarter is left when
+        // the envelopes go): then nothing is stripped, unless the message is beyond the bound anyway.
+        var withoutEnvelopesTidy = Tidy(withoutEnvelopes);
+        if (shortened.Length <= MaxStateChars && withoutEnvelopesTidy.Length * 4 < shortened.Length) return shortened;
+
+        // Code is dropped whatever share of the message it is; only a result that is almost nothing
+        // (noise only) is discarded in favour of the unstripped message.
+        var stripped = Tidy(FencedCodeBlock.Replace(withoutEnvelopes, " "));
+        return Truncate(stripped.Length < MinStrippedChars ? shortened : stripped, MaxStateChars);
     }
 
-    // Stripping is worth losing text only for noise: it left under a dozen characters, or (when the
-    // whole message would have fitted anyway) under a quarter of it, as when the task itself sits in
-    // a tag. Beyond the bound the cut would drop text anyway, so only the first test applies.
-    private static bool LeavesAlmostNothing(string stripped, string original) =>
-        stripped.Length < MinStrippedChars
-        || (original.Length <= MaxStateChars && stripped.Length * 4 < original.Length);
+    private static string Tidy(string text) => BlankLines.Replace(HorizontalSpace.Replace(text, " "), "\n\n").Trim();
 
     // Room for noise the cleanup removes, while keeping the pattern cost bounded.
     private const int PreCleanChars = 8 * MaxStateChars;

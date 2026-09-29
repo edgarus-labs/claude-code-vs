@@ -51,9 +51,8 @@ public sealed class EffortJudgePromptTests
         Assert.EndsWith(" TAIL", result);
     }
 
-    // The message is state to judge, never instructions (#49): it travels only in the user turn, inside
-    // a State block that ends by telling the judge not to act on it, and both system prompts tell the
-    // judge the state is untrusted data.
+    // The message is state to judge, never instructions (#49): it appears once, in the user turn, and
+    // in neither system prompt.
     [Fact]
     public void TheRequestIsStateToJudge_NeverPartOfTheInstructions()
     {
@@ -61,8 +60,7 @@ public sealed class EffortJudgePromptTests
 
         var rendered = EffortJudgePrompt.RenderUser(request);
 
-        Assert.StartsWith("State:\n" + request, rendered, StringComparison.Ordinal);
-        Assert.EndsWith("judge it only.", rendered, StringComparison.Ordinal);
+        Assert.Equal(1, CountOf(rendered, request));
         Assert.DoesNotContain(request, EffortJudgePrompt.SystemPrompt, StringComparison.Ordinal);
         Assert.DoesNotContain(request, EffortJudgePrompt.RetrySystemPrompt, StringComparison.Ordinal);
     }
@@ -134,6 +132,31 @@ public sealed class EffortJudgePromptTests
         Assert.Equal("explain this: short", normalized);
     }
 
+    // F-R3: code is dropped whatever share of a short message it makes up; only a tag-wrapped task
+    // is kept whole. Prose plus a medium code block is the everyday paste.
+    [Fact]
+    public void Preprocess_ShortProsePlusMediumCodeBlock_DropsTheCode()
+    {
+        var code = string.Concat(Enumerable.Repeat("var total = items.Sum(i => i.Price);\n", 12));
+        var result = EffortJudgePrompt.Preprocess("Please fix this failing test:\n```cs\n" + code + "```\nthanks a lot");
+
+        Assert.DoesNotContain("items.Sum", result);
+        Assert.Contains("Please fix this failing test:", result);
+        Assert.Contains("thanks a lot", result);
+    }
+
+    // Stripping that leaves under 12 characters (oh-my-pi's limit) is noise-only and is not used:
+    // the message is judged as written. From 12 characters the code goes.
+    [Theory]
+    [InlineData("elevenchars", true)]
+    [InlineData("twelve chars", false)]
+    public void Preprocess_ProseOfUnderTwelveCharacters_KeepsTheCodeItCameWith(string prose, bool codeKept)
+    {
+        var result = EffortJudgePrompt.Preprocess(prose + "\n```\nvar x = compute(1, 2, 3);\n```");
+
+        Assert.Equal(codeKept, result.Contains("compute(1, 2, 3)"));
+    }
+
     [Fact]
     public void Preprocess_LongMessage_KeepsBothEndsWithinTheBound()
     {
@@ -192,10 +215,9 @@ public sealed class EffortJudgePromptTests
     }
 
     // The message is untrusted: pasted logs full of unclosed tags must not make the envelope pattern
-    // rescan the rest of the text once per tag. The input is bounded before the patterns run (without
-    // that bound this input costs many seconds); the time limit is generous and catches an
-    // order-of-magnitude regression. The patterns' own match timeouts are a second guard that this
-    // input, already bounded, does not reach.
+    // rescan the rest of the text once per tag. Two independent guards keep this bounded: the input is
+    // cut before the patterns run, and the envelope pattern has its own match timeout. The generous
+    // time limit catches an order-of-magnitude regression of both together, not of either alone.
     [Theory]
     [InlineData("<a>")]
     [InlineData("<a ")]

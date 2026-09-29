@@ -30,7 +30,8 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
     // The CLI is given no output cap of its own: a capped reply that runs over makes it fail instead
     // of returning the label it already wrote first.
     private const int MaxReplyChars = 16 * 1024;
-    private const int MaxErrorChars = 4 * 1024;
+    // Bound on the retained stderr, which is drained so the CLI cannot block on a full pipe, and then dropped.
+    private const int MaxDrainedStderrChars = 4 * 1024;
     private static readonly Encoding Utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
 
     private readonly Func<CancellationToken, Task<AcpExecutableSpec>> _resolveExecutable;
@@ -47,7 +48,9 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
     public async Task<EffortLevel> ClassifyAsync(string prompt, CancellationToken cancellationToken)
     {
         if (prompt is null) throw new ArgumentNullException(nameof(prompt));
-        return await JudgeAsync(EffortJudgePrompt.RenderUser(prompt), cancellationToken).ConfigureAwait(false);
+        // The caller is the UI thread: cleaning an adversarial message costs it up to a regex timeout.
+        var user = await Task.Run(() => EffortJudgePrompt.RenderUser(prompt), CancellationToken.None).ConfigureAwait(false);
+        return await JudgeAsync(user, cancellationToken).ConfigureAwait(false);
     }
 
     // Judges an already rendered user turn. ClassifyAsync bounds a message to a few KB, so this is
@@ -166,9 +169,10 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
         try
         {
             var reply = BoundedProcessOutput.ReadBoundedAsync(new StreamReader(output, Utf8), MaxReplyChars);
-            var stderr = BoundedProcessOutput.ReadBoundedAsync(new StreamReader(error, Utf8), MaxErrorChars);
+            // Only drained, never reported: the CLI can echo the user's message, and a full stderr pipe would block it.
+            var stderrDrain = BoundedProcessOutput.ReadBoundedAsync(new StreamReader(error, Utf8), MaxDrainedStderrChars);
             // Observed even when the wait below is abandoned, so a late pipe fault is never unobserved.
-            var drained = Task.WhenAll(reply, stderr);
+            var drained = Task.WhenAll(reply, stderrDrain);
             _ = drained.ContinueWith(task => { _ = task.Exception; }, CancellationToken.None,
                 TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
 

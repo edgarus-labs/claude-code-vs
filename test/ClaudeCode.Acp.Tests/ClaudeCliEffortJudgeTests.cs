@@ -84,6 +84,32 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
     private ClaudeCliEffortJudge Judge(string mode, TimeSpan? timeout = null) =>
         new(_ => Task.FromResult(new AcpExecutableSpec(NodePath(), new[] { _script, mode, _log })), timeout);
 
+    // F-R11: cleaning a message runs regexes over up to 16,000 characters (one has a 100 ms timeout),
+    // work the UI thread that calls the judge must not do. The adapter is resolved once the message is
+    // rendered, so the thread that resolves it shows where the rendering ran.
+    [Fact]
+    public async Task Classify_PreparesTheMessageOffTheCallersThread()
+    {
+        int callerThread = -1, resolverThread = -2;
+        var judge = new ClaudeCliEffortJudge(_ =>
+        {
+            resolverThread = Environment.CurrentManagedThreadId;
+            return Task.FromResult(new AcpExecutableSpec(NodePath(), new[] { _script, "high", _log }));
+        });
+        Task<EffortLevel>? classifying = null;
+        var caller = new Thread(() =>
+        {
+            callerThread = Environment.CurrentManagedThreadId;
+            classifying = judge.ClassifyAsync("ok", CancellationToken.None);
+        });
+        caller.Start();
+        caller.Join();
+
+        await classifying!;
+
+        Assert.NotEqual(callerThread, resolverThread);
+    }
+
     private List<(string[] Args, string Stdin, string? MaxThinking)> Calls() =>
         File.ReadAllLines(_log).Select(line =>
         {
