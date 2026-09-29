@@ -714,4 +714,65 @@ public sealed partial class ChatSessionStateTests
         Assert.Empty(classifier.Prompts);
         Assert.Equal(new[] { "prompt:go" }, log);
     }
+
+    // F-50-1: the judgment locks the settings, not the composer. A message written meanwhile is
+    // queued like one written during any running turn, and goes out after this turn, in order.
+    [Fact]
+    public async Task AutoTurn_WhileJudging_ComposerStaysUsable_AndTheNextMessageIsQueued()
+    {
+        var (connection, log) = AutoConnection("medium");
+        var verdict = new TaskCompletionSource<EffortLevel>();
+        var classifier = new FakeEffortClassifier { Handler = _ => verdict.Task };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+
+        var sending = SendTextAsync(vm, "first");
+        await WaitUntilAsync(() => classifier.Prompts.Count == 1);
+        Assert.False(vm.IsConfigBusy);
+        Assert.False(vm.CanConfigure);
+
+        await SendTextAsync(vm, "second");
+        Assert.Equal(string.Empty, vm.InputText);
+        Assert.Contains(vm.Messages, message => message.Role == ChatRole.User && message.Text == "second");
+
+        classifier.Handler = _ => Task.FromResult(EffortLevel.Low);
+        verdict.SetResult(EffortLevel.Low);
+        await sending;
+        await WaitUntilAsync(() => log.Contains("prompt:second"));
+
+        Assert.Equal(new[] { "effort=low", "prompt:first", "prompt:second" }, log);
+    }
+
+    // V-50-1: Stop during the agent's effort change abandons the wait, not necessarily the change.
+    // The agent may now run the verdict, so the next Auto turn must set its own level again even
+    // when it equals the level last acknowledged.
+    [Fact]
+    public async Task AutoTurn_StopWhileSettingEffort_NextTurnSetsItsEffortAgain()
+    {
+        var (connection, log) = AutoConnection("medium");
+        var inner = connection.ConfigHandler!;
+        var calls = 0;
+        connection.ConfigHandler = async (session, value, token) =>
+        {
+            if (calls++ > 0) return await inner(session, value, token);
+            log.Add("effort=" + value); // applied by the agent, acknowledgement never arrives
+            await Task.Delay(Timeout.Infinite, token);
+            return connection.ConfigOptions;
+        };
+        var classifier = new FakeEffortClassifier { Handler = prompt => Task.FromResult(prompt == "hard" ? EffortLevel.High : EffortLevel.Medium) };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+
+        var sending = SendTextAsync(vm, "hard");
+        await WaitUntilAsync(() => connection.ConfigChanges.Count == 1);
+        await WithinAsync(vm.CancelAsync());
+        await WithinAsync(sending);
+        log.Clear();
+
+        await SendTextAsync(vm, "easy");
+
+        Assert.Equal(new[] { "effort=medium", "prompt:easy" }, log);
+    }
 }

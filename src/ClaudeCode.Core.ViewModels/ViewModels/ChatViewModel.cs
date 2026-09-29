@@ -40,6 +40,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // Whether an Auto turn has set the agent's effort since Auto was picked: only then is the
     // agent's current level the one Auto chose, and shown next to "Auto".
     private bool _autoEffortInEffect;
+    // Held from the start of a judgment until the effort change is acknowledged: locks the settings
+    // only, unlike IsConfigBusy, which also locks the composer.
+    private bool _isJudgingEffort;
+    // Set when an effort change was abandoned by Stop, so the agent's level is not known.
+    private bool _effortUncertain;
     private ChatMessageViewModel? _currentAssistantMessage;
     private DateTimeOffset? _turnStartedAt;
     private ChatMessageViewModel? _currentUserMessage;
@@ -398,7 +403,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // can't change mid-turn, and other clients (the reference VS Code extension, the CLI) let you.
     // It does require the switch to be over: session/load publishes _sessionId up front while the
     // previous session's pickers are still populated, and the load can still fail and roll back.
-    public bool CanConfigure => !_disposed && !NeedsAuthentication && !IsConnecting && !IsConfigBusy &&
+    public bool CanConfigure => !_disposed && !NeedsAuthentication && !IsConnecting && !IsConfigBusy && !_isJudgingEffort &&
         !_isCapturingDocument && !_isSwitchingSession && _sessionId is not null;
     public bool HasEffort => AvailableEfforts.Count > 0;
     public bool HasModes => AvailableModes.Count > 0;
@@ -981,14 +986,15 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     }
 
     // Runs ahead of the turn's prompt with nothing else in flight (Auto never sends ahead, see
-    // CanSendAhead), so the effort it sets is the effort this prompt runs under. IsConfigBusy is held
-    // from classification to acknowledgement, so a manual model/effort change cannot interleave with
-    // it and queued messages wait. A failed judgment costs only the choice (the last judged level,
-    // else High, and the user is told); a rejected effort change fails the turn before its draft is
-    // consumed.
+    // CanSendAhead), so the effort it sets is the effort this prompt runs under. Settings are locked
+    // (CanConfigure) from classification to acknowledgement, so a manual model/effort change cannot
+    // interleave with it; the composer is not, so messages written meanwhile queue and wait. A failed
+    // judgment costs only the choice (the last judged level, else High, and the user is told); a
+    // rejected effort change fails the turn before its draft is consumed.
     private async Task ApplyAutoEffortAsync(IAcpAgentConnection connection, string sessionId, string prompt)
     {
-        IsConfigBusy = true;
+        _isJudgingEffort = true;
+        NotifyStateChanged();
         var previousActivity = ActivityText;
         ActivityText = "Judging effort…";
         // Stop has no prompt to cancel yet, so it cancels this instead (CancelCoreAsync).
@@ -1017,14 +1023,20 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             var option = _effortOption;
             var value = AutoEffortValues[(int)level];
             if (_disposed || option is null) return;
-            if (option.CurrentValue != value)
+            if (option.CurrentValue != value || _effortUncertain)
             {
                 IReadOnlyList<SessionConfigOption> options;
                 try
                 {
                     options = await connection.SetSessionConfigOptionAsync(sessionId, option.Id, value, stop.Token).ConfigureAwait(true);
                 }
-                catch (OperationCanceledException) when (_isStopping && !_disposed) { return; }
+                catch (OperationCanceledException) when (_isStopping && !_disposed)
+                {
+                    // The agent may already have applied the change: the local level is unknown
+                    // until it reports one, so the next Auto turn sets its own again.
+                    _effortUncertain = true;
+                    return;
+                }
                 if (!_disposed && ReferenceEquals(connection, _connection) && sessionId == _sessionId)
                     ApplyConfigOptions(options);
             }
@@ -1034,7 +1046,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         {
             _autoEffortStop = null;
             if (!_disposed) ActivityText = previousActivity;
-            IsConfigBusy = false;
+            _isJudgingEffort = false;
+            NotifyStateChanged();
             NotifySelectionsChanged();
         }
     }
@@ -1941,6 +1954,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private void ApplyConfigOptions(IReadOnlyList<SessionConfigOption> options)
     {
+        _effortUncertain = false;
         _modelOption = options.FirstOrDefault(option => option.Category == "model")
             ?? options.FirstOrDefault(option => option.Id == "model");
         _effortOption = options.FirstOrDefault(option => option.Category == "thought_level")
