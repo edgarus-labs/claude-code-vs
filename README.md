@@ -25,6 +25,7 @@ adapter's advertised capabilities — this is not a claim of feature parity with
 
 ## Features at a glance
 
+- **Auto effort** — an **Auto** entry in the Effort picker judges each message and runs it at Low, Medium or High.
 - **Native chat sidebar** — streaming Markdown, live diffs, session history, and Manual / Accept Edits
   / Plan / Auto modes.
 - **Plan mode** — review an Implementation Plan as a document tab, approve it or send comments back
@@ -43,6 +44,7 @@ adapter's advertised capabilities — this is not a claim of feature parity with
 - [Requirements](#requirements)
 - [Getting started](#getting-started)
 - [Using the sidebar](#using-the-sidebar)
+- [Auto effort](#auto-effort)
 - [Installing and debugging](#installing-and-debugging)
 - [Solution layout](#solution-layout)
 - [Building](#building)
@@ -143,6 +145,59 @@ tools (see `docs/VsControlProtocol.md` for the exact wire contract).
   them unprompted. See [docs/VsControlProtocol.md](docs/VsControlProtocol.md) for the full list and the
   trust boundary.
 
+## Auto effort
+
+Effort is how much reasoning Claude spends on a message. A fixed level is either wasteful — High for
+`git status` — or too shallow — Low for a deadlock hunt — and switching it by hand for every message is
+tedious. **Auto** picks the level per message, so simple requests come back fast and hard problems get
+the reasoning they need.
+
+**What it chooses.** Auto answers one question about the current message: how open-ended is the
+problem — is the fix or design already given, or which causes or designs remain open?
+
+| Level | When | Examples |
+|---|---|---|
+| Low | One obvious solution, applied mechanically: target, mapping or fix given. | `git status`, commit and push, rename a variable |
+| Medium | A few candidates in one place, or one small trap. | which line breaks a test, one boundary case |
+| High | Several viable designs or candidate causes. | authentication, a deadlock, a flaky integration test |
+
+Volume of work and wording never raise the level, and when torn between two levels Auto picks the
+lower one. It is not tied to one language: the judge reads the message as written and its prompt does
+not name a language. Auto never goes above High; higher levels (such as Extra High or
+Max) stay an explicit choice, and picking any explicit level behaves exactly as before. Auto is offered
+only when the adapter advertises `low`, `medium` and `high`.
+
+**How it decides.** The approach follows the `auto` thinking level of
+[oh-my-pi](https://github.com/can1357/oh-my-pi) (`packages/coding-agent/src/auto-thinking`). A judge —
+Claude Haiku (the `haiku` model alias, as your Claude Code resolves it), run through the adapter's bundled Claude Code CLI
+(`claude-agent-acp --cli -p --model haiku`) with your existing sign-in — answers `low`, `medium` or
+`high`. The judge has no tools, no settings, no saved session and no reasoning budget; only the current
+message is judged, never the conversation. The message is cleaned first to cut noise (ANSI escapes,
+tool/XML envelopes and closed fenced code removed, whitespace collapsed, commit hashes shortened, at
+most 2,000 characters keeping both ends; when that would leave almost nothing, only the escapes are
+removed and the hashes shortened; this is not redaction) and passed on standard input as data to
+judge, never as instructions.
+The Auto choice survives an agent reconnect but is not remembered beyond the tool window: a new tool
+window or Visual Studio session starts on a manual level.
+
+**What it costs.** Each Auto message makes one small Haiku request — up to three when the judge's
+reply has no usable level and is retried — and adds a few seconds (a CLI start plus the model round
+trip) before the message is sent. No API key and no extra configuration are needed. The judge reads no
+Claude Code settings: it uses your sign-in and Visual Studio's environment variables, so a provider or
+gateway configured only in `settings.json` (`env` block, `apiKeyHelper`) is not used for it. With such
+a setup Auto falls back as described below, or, if you are also signed in to Anthropic, the message
+goes to Anthropic.
+
+**How it stays correct.** Auto is a client-side mode: the adapter never receives an `auto` value. The
+chosen level is set through ACP and acknowledged before the message is sent. Effort applies to the
+whole session, so messages typed while an Auto message is running wait for it and then go one at a
+time, each with its own level. If the judge gives no usable answer (after two retries), fails, or takes
+longer than 15 seconds, the message runs at the last level Auto chose — High before the first — and the
+status line says why. A judge that keeps failing therefore costs up to 15 seconds per message before
+it falls back; picking a level by hand avoids the wait until it works again.
+
+Auto effort decides *how much reasoning* a message gets; the **Auto** permission mode decides whether Claude asks before acting. They are independent.
+
 ## Installing and debugging
 
 For everyday use, open the built or release `.vsix`, select your regular Visual Studio installation in
@@ -214,7 +269,7 @@ instance described above.
 
 The extension handles prompts, attached documents/images, editor contents (including unsaved edits),
 file paths and tool results — potentially sensitive data that is passed to the ACP agent and its
-configured model provider. See [SECURITY.md](SECURITY.md) for the full scope and how to report a
+configured model provider; with Auto effort each message is also sent to Claude Haiku to judge its effort. See [SECURITY.md](SECURITY.md) for the full scope and how to report a
 vulnerability.
 
 ## Contributing

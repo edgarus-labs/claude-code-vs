@@ -7,7 +7,7 @@ using System.Threading.Tasks;
 
 namespace ClaudeCode.Core.Tests;
 
-internal sealed class StubChatSessionServices : IChatSessionServices
+internal sealed class StubChatSessionServices : IChatSessionServices, IAutoEffortServices
 {
     public StubChatSessionServices(IAcpAgentConnectionFactory connectionFactory, IAcpAuthService authService, string? workspaceRoot = null, IUsageService? usageService = null)
     {
@@ -25,6 +25,8 @@ internal sealed class StubChatSessionServices : IChatSessionServices
 
     public IUsageService UsageService { get; }
 
+    public IEffortClassifier? EffortClassifier { get; set; }
+
     /// <summary>Injects a failure for the VSIX host's <c>WorkspaceRoot</c>, which is a live
     /// callback into solution state and throws while a solution is closing or reloading.</summary>
     public Func<string?>? WorkspaceRootHandler { get; set; }
@@ -34,6 +36,10 @@ internal sealed class StubChatSessionServices : IChatSessionServices
     public bool HasActiveDocument { get; private set; } = true;
 
     public bool RemoteControlAtStartup { get; set; }
+
+    public List<(string Message, Exception Exception)> LoggedErrors { get; } = [];
+
+    public void LogError(string message, Exception exception) => LoggedErrors.Add((message, exception));
 
     public event EventHandler? ActiveDocumentChanged;
 

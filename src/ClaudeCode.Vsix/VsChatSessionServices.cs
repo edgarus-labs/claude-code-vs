@@ -12,13 +12,13 @@ using System.Threading.Tasks;
 
 namespace ClaudeCode.Vsix;
 
-internal sealed class VsChatSessionServices : IChatSessionServices
+internal sealed class VsChatSessionServices : IChatSessionServices, IAutoEffortServices
 {
     private readonly WorkspaceRootTracker _workspaceRootTracker;
     private readonly ActiveEditorDocumentTracker _editorDocumentTracker;
     private readonly Func<bool> _remoteControlAtStartup;
 
-    public VsChatSessionServices(IAcpAgentConnectionFactory connectionFactory, IAcpAuthService authService, IUsageService usageService, WorkspaceRootTracker workspaceRootTracker, ActiveEditorDocumentTracker editorDocumentTracker, Func<bool> remoteControlAtStartup)
+    public VsChatSessionServices(IAcpAgentConnectionFactory connectionFactory, IAcpAuthService authService, IUsageService usageService, WorkspaceRootTracker workspaceRootTracker, ActiveEditorDocumentTracker editorDocumentTracker, Func<bool> remoteControlAtStartup, IEffortClassifier effortClassifier)
     {
         ConnectionFactory = connectionFactory ?? throw new ArgumentNullException(nameof(connectionFactory));
         AuthService = authService ?? throw new ArgumentNullException(nameof(authService));
@@ -26,6 +26,7 @@ internal sealed class VsChatSessionServices : IChatSessionServices
         _workspaceRootTracker = workspaceRootTracker ?? throw new ArgumentNullException(nameof(workspaceRootTracker));
         _editorDocumentTracker = editorDocumentTracker ?? throw new ArgumentNullException(nameof(editorDocumentTracker));
         _remoteControlAtStartup = remoteControlAtStartup ?? throw new ArgumentNullException(nameof(remoteControlAtStartup));
+        EffortClassifier = effortClassifier ?? throw new ArgumentNullException(nameof(effortClassifier));
     }
 
     public IAcpAgentConnectionFactory ConnectionFactory { get; }
@@ -39,6 +40,33 @@ internal sealed class VsChatSessionServices : IChatSessionServices
     public bool HasActiveDocument => _editorDocumentTracker.HasActiveDocument;
 
     public bool RemoteControlAtStartup => _remoteControlAtStartup();
+
+    public IEffortClassifier? EffortClassifier { get; }
+
+    // Errors go to the "Claude Code" Output pane (Output > Show output from) as well as the ActivityLog,
+    // which is only written when Visual Studio runs with /log. Only errors are logged here.
+    private static OutputWindowPane? _outputPane;
+
+    public void LogError(string message, Exception exception)
+    {
+        var line = "[Error] " + message + " " + exception.GetType().Name + ": " + exception.Message;
+        ActivityLog.TryLogError("Claude Code", message + " " + exception);
+        // Failures are logged inside, and FileAndForget reports the fault to VS telemetry.
+#pragma warning disable VSSDK007
+        ThreadHelper.JoinableTaskFactory.RunAsync(async () =>
+        {
+            try
+            {
+                _outputPane ??= await VS.Windows.CreateOutputWindowPaneAsync("Claude Code");
+                await _outputPane.WriteLineAsync(line);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                ActivityLog.TryLogError("Claude Code", "Could not write to the Output pane: " + ex);
+            }
+        }).FileAndForget("claudecode/output-log");
+    }
+#pragma warning restore VSSDK007
 
     public event EventHandler? ActiveDocumentChanged
     {

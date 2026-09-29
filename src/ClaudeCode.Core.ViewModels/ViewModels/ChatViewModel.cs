@@ -28,6 +28,32 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private SessionConfigValue? _selectedModel;
     private SessionConfigValue? _selectedEffort;
     private SessionConfigValue? _selectedMode;
+    // Auto effort is a client-side choice, never a value sent to the agent: each turn is judged
+    // (IEffortClassifier) and gets the agent's own low/medium/high value (EffortLevel order) just
+    // before its prompt. A failed judgment keeps the last judged level, or High before the first.
+    private static readonly string[] AutoEffortValues =
+        Enum.GetValues(typeof(EffortLevel)).Cast<EffortLevel>().Select(level => level.ToAgentValue()).ToArray();
+    // Only a host that implements IAutoEffortServices offers Auto effort.
+    private IAutoEffortServices? AutoServices => _services as IAutoEffortServices;
+    private readonly SessionConfigValue _autoEffort = new SessionConfigValue(
+        "auto", "Auto", "Low, Medium or High for each message, judged per message");
+    // Whether the user picked Auto, and whether it is in force: it is only while the session offers
+    // it (ApplyConfigOptions), and a session that does not - none yet, while reconnecting - suspends
+    // the choice without forgetting it.
+    private bool _autoEffortSelected;
+    private bool _isAutoEffort;
+    private EffortLevel? _lastAutoEffort;
+    private CancellationTokenSource? _autoEffortStop;
+    // The level an Auto turn last set on the agent since Auto was picked or the session (re)started.
+    // It is shown next to "Auto" only while the agent still runs it: a model switch moves the agent's
+    // effort to that model's own default, which Auto did not choose.
+    private string? _autoEffortSetTo;
+    // Held from the start of a judgment until the effort change is acknowledged: locks the settings
+    // only, unlike IsConfigBusy, which also locks the composer.
+    private bool _isJudgingEffort;
+    // Held while an explicit level is being picked. The pick's own request would release the queue
+    // before the pick has settled whether Auto is left, so the release waits for that (SelectEffortCoreAsync).
+    private bool _isPickingEffort;
     private ChatMessageViewModel? _currentAssistantMessage;
     private DateTimeOffset? _turnStartedAt;
     private ChatMessageViewModel? _currentUserMessage;
@@ -305,8 +331,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     }
 
     // A new or resumed session starts with Remote Control off; the option turns it on right away.
+    // Auto starts over too: an earlier session's verdict says nothing about this one.
     private void OnSessionStarted()
     {
+        ForgetAutoVerdict();
+        NotifySelectionsChanged();
         IsRemoteControlEnabled = false;
         RemoteControlUrl = null;
         if (_services.RemoteControlAtStartup) _ = SetRemoteControlAsync(true);
@@ -383,12 +412,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // can't change mid-turn, and other clients (the reference VS Code extension, the CLI) let you.
     // It does require the switch to be over: session/load publishes _sessionId up front while the
     // previous session's pickers are still populated, and the load can still fail and roll back.
-    public bool CanConfigure => !_disposed && !NeedsAuthentication && !IsConnecting && !IsConfigBusy &&
+    public bool CanConfigure => !_disposed && !NeedsAuthentication && !IsConnecting && !IsConfigBusy && !_isJudgingEffort &&
         !_isCapturingDocument && !_isSwitchingSession && _sessionId is not null;
     public bool HasEffort => AvailableEfforts.Count > 0;
     public bool HasModes => AvailableModes.Count > 0;
     public string ActiveModelName => _selectedModel?.Name ?? "Model unavailable";
-    public string ActiveEffortName => _selectedEffort?.Name ?? string.Empty;
+    public string ActiveEffortName => !_isAutoEffort ? _selectedEffort?.Name ?? string.Empty
+        : _selectedEffort is { } inEffect && inEffect.Value == _autoEffortSetTo ? _autoEffort.Name + " · " + inEffect.Name
+        : _autoEffort.Name;
     public string ModelEffortLabel => HasEffort && ActiveEffortName.Length > 0 ? ActiveModelName + " · " + ActiveEffortName : ActiveModelName;
     public string ActiveModeName => _selectedMode?.Name ?? "Mode unavailable";
 
@@ -400,7 +431,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     public SessionConfigValue? SelectedEffort
     {
-        get => _selectedEffort;
+        get => _isAutoEffort ? _autoEffort : _selectedEffort;
         set => _ = SelectEffortAsync(value);
     }
 
@@ -929,8 +960,143 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     }
 
     public Task SelectModelAsync(SessionConfigValue? value) => OnUiAsync(() => ChangeConfigAsync(_modelOption, value));
-    public Task SelectEffortAsync(SessionConfigValue? value) => OnUiAsync(() => ChangeConfigAsync(_effortOption, value));
+    public Task SelectEffortAsync(SessionConfigValue? value) => OnUiAsync(() => SelectEffortCoreAsync(value));
     public Task SelectModeAsync(SessionConfigValue? value) => OnUiAsync(() => ChangeConfigAsync(_modeOption, value));
+
+    private async Task SelectEffortCoreAsync(SessionConfigValue? value)
+    {
+        if (!CanConfigure || value is null || !AvailableEfforts.Contains(value))
+        {
+            await ChangeConfigAsync(_effortOption, value).ConfigureAwait(true);
+            return;
+        }
+        if (ReferenceEquals(value, _autoEffort))
+        {
+            _autoEffortSelected = _isAutoEffort = true;
+            ForgetAutoVerdict();
+            NotifySelectionsChanged();
+            return;
+        }
+        _isPickingEffort = true;
+        try
+        {
+            await ChangeConfigAsync(_effortOption, value).ConfigureAwait(true);
+        }
+        finally
+        {
+            _isPickingEffort = false;
+        }
+        // Auto is left only once the agent runs the picked level - acknowledged now, or already
+        // current (no round trip). A rejected change keeps Auto, like any unacknowledged selection.
+        if (_autoEffortSelected && _effortOption?.CurrentValue == value.Value)
+        {
+            _autoEffortSelected = _isAutoEffort = false;
+            NotifySelectionsChanged();
+        }
+        // Only now is it known whether follow-ups are judged (Auto kept) or run under the picked level.
+        DispatchNextQueuedMessage();
+    }
+
+    // A verdict belongs to one Auto selection in one session.
+    private void ForgetAutoVerdict()
+    {
+        _lastAutoEffort = null;
+        _autoEffortSetTo = null;
+    }
+
+    // Runs ahead of the turn's prompt with nothing else in flight (Auto never sends ahead, see
+    // CanSendAhead), so the effort it sets is the effort this prompt runs under. Settings are locked
+    // (CanConfigure) from classification to acknowledgement, so a manual model/effort change cannot
+    // interleave with it; the composer is not, so messages written meanwhile queue and wait. A failed
+    // judgment costs only the choice (the last judged level, else High, and the user is told); a
+    // rejected effort change fails the turn before its draft is consumed.
+    // Returns whether the turn goes on: false once Stop ended the judgment or the session it was
+    // judged for is gone.
+    private async Task<bool> ApplyAutoEffortAsync(IAcpAgentConnection connection, string sessionId, string prompt)
+    {
+        var classifier = AutoServices?.EffortClassifier;
+        if (classifier is null) return true;
+        _isJudgingEffort = true;
+        NotifyStateChanged();
+        var previousActivity = ActivityText;
+        ActivityText = "Judging effort…";
+        // Stop has no prompt to cancel yet, so it cancels this instead (CancelCoreAsync).
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        _autoEffortStop = stop;
+        try
+        {
+            // An attachment-only message gives the judge nothing to weigh.
+            EffortLevel? judged = null;
+            string? failure = null;
+            if (!string.IsNullOrWhiteSpace(prompt))
+            {
+                try
+                {
+                    judged = await classifier.ClassifyAsync(prompt, stop.Token).ConfigureAwait(true);
+                    // A classifier is a public contract: a value outside the enum is no verdict.
+                    if (judged is { } verdict && !Enum.IsDefined(typeof(EffortLevel), verdict))
+                        throw new System.IO.InvalidDataException("The effort judge returned an unknown level (" + (int)verdict + ").");
+                }
+                // Only Stop and dispose cancel `stop`, so this is Stop's answer whatever becomes of the
+                // agent's own cancel request; a cancellation the judge ends in by itself is a failure.
+                catch (OperationCanceledException) when (stop.IsCancellationRequested) { return false; }
+                catch (Exception ex)
+                {
+                    judged = null;
+                    failure = Describe(ex);
+                    AutoServices?.LogError("Auto effort could not judge a message.", ex);
+                }
+                if (stop.IsCancellationRequested) return false;
+            }
+
+            // The judgment took seconds: the session this turn was headed for may be gone.
+            if (!IsCurrentSession(connection, sessionId)) return false;
+            EffortLevel level = judged ?? _lastAutoEffort ?? EffortLevel.High;
+            if (judged is not null) _lastAutoEffort = level;
+            if (failure is not null) StatusMessage = $"Auto effort could not judge this message, so it runs at {level}: {failure}";
+            var option = _effortOption;
+            // The agent stopped offering an effort while judging: nothing to set, the turn goes as it is.
+            if (option is null) return true;
+            var value = level.ToAgentValue();
+            // ... or stopped offering this level (a config update meanwhile, which also ended Auto).
+            if (!option.Options.Any(candidate => candidate.Value == value)) return true;
+            if (option.CurrentValue != value)
+            {
+                IReadOnlyList<SessionConfigOption> options;
+                try
+                {
+                    // Not `stop`'s token: a request cancelled in flight makes the connection drop the
+                    // whole session. Stop takes effect once the agent has answered (below); dispose
+                    // still cancels the request.
+                    options = await connection.SetSessionConfigOptionAsync(sessionId, option.Id, value, _lifetime.Token).ConfigureAwait(true);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    throw new InvalidOperationException($"Auto effort could not set the effort to {value}: {Describe(ex)}", ex);
+                }
+                if (!IsCurrentSession(connection, sessionId)) return false;
+                ApplyConfigOptions(options);
+            }
+            _autoEffortSetTo = value;
+            // Stop pressed while the agent was setting the level: its answer is the level it runs now,
+            // but the turn ends here without sending.
+            return !stop.IsCancellationRequested;
+        }
+        finally
+        {
+            _autoEffortStop = null;
+            if (!_disposed) ActivityText = previousActivity;
+            _isJudgingEffort = false;
+            NotifyStateChanged();
+            NotifySelectionsChanged();
+        }
+    }
+
+    private static string Describe(Exception exception) =>
+        string.IsNullOrEmpty(exception.Message) ? exception.GetType().Name : exception.Message;
+
+    private bool IsCurrentSession(IAcpAgentConnection connection, string sessionId) =>
+        !_disposed && ReferenceEquals(connection, _connection) && sessionId == _sessionId;
 
     private async Task ChangeConfigAsync(SessionConfigOption? option, SessionConfigValue? value)
     {
@@ -948,7 +1114,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         try
         {
             var options = await connection.SetSessionConfigOptionAsync(sessionId, option.Id, value.Value, _lifetime.Token).ConfigureAwait(true);
-            if (!_disposed && ReferenceEquals(connection, _connection) && sessionId == _sessionId)
+            if (IsCurrentSession(connection, sessionId))
                 ApplyConfigOptions(options);
         }
         catch (OperationCanceledException) when (_disposed) { }
@@ -963,8 +1129,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             NotifySelectionsChanged();
             SendPendingPlanReview();
             // A turn can end while this RPC is still in flight, and the queue refuses to dispatch
-            // into a config change; this is the blocker lifting, so whatever it held back goes now.
-            DispatchNextQueuedMessage();
+            // into a config change; this is the blocker lifting, so whatever it held back goes now -
+            // except during an effort pick, which releases it itself once it has settled Auto.
+            if (!_isPickingEffort) DispatchNextQueuedMessage();
         }
     }
 
@@ -1089,6 +1256,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // session (DiscardQueuedMessages), which tells the user.
     private readonly List<QueuedMessage> _returnedUnstarted = new List<QueuedMessage>();
 
+    // The live draft SendCoreAsync handed to RunTurnAsync, until prepare() takes it out of the
+    // composer. Auto's judgment makes that a window of seconds in which the composer still holds the
+    // message, and sending it again (a second Enter) would queue a copy that runs the prompt twice.
+    private (string Text, ChatAttachmentViewModel[] Attachments)? _draftInFlight;
+    // Whether sending another message emptied the composer of the draft in flight (as opposed to the
+    // user clearing it): only then does a draft that never went out come back.
+    private bool _draftDisplaced;
+
     private Task SendCoreAsync()
     {
         if (!CanSend()) return Task.CompletedTask;
@@ -1104,11 +1279,16 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             return RunClientCommandAsync(clientCommand);
         }
 
+        var attachments = Attachments.ToArray();
+        // The draft being judged is still in the composer: sending it again changes nothing. Anything
+        // else there is a new message and queues like any other.
+        if (IsBusy && _draftInFlight is { } inFlight && text == inFlight.Text && attachments.SequenceEqual(inFlight.Attachments))
+            return Task.CompletedTask;
+
         // Sending is the user's own action, so it is what clears a stale error - not the start of
         // every turn, which would wipe the failure of the turn that just ended before it could be
         // read (an auto-dispatched queue would erase its own predecessor's error).
         StatusMessage = null;
-        var attachments = Attachments.ToArray();
 
         if (IsBusy)
         {
@@ -1116,13 +1296,21 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             return Task.CompletedTask;
         }
 
-        return RunTurnAsync(null, () =>
+        _draftInFlight = (text, attachments);
+        _draftDisplaced = false;
+        return RunTurnAsync(null, text, () =>
         {
             // Acquire before consuming the draft: failed startup must not lose text or attachments.
             // RunTurnAsync's own EnsureConnectedAsync has already succeeded by the time this runs.
-            Messages.Add(BuildUserBubble(text, attachments, isPending: false));
+            // Under Auto the judgment took seconds, in which messages sent meanwhile were queued with
+            // their bubbles already: this earlier message goes above them.
+            var bubble = BuildUserBubble(text, attachments, isPending: false);
+            var firstQueued = Messages.FirstOrDefault(message => message.Role == ChatRole.User && message.IsPending);
+            if (firstQueued is null) Messages.Add(bubble);
+            else Messages.Insert(Messages.IndexOf(firstQueued), bubble);
             UpdateSessionTitleFromFirstUserMessage();
             ConsumeDraft(text, attachments);
+            _draftInFlight = null;
             return (text, (IReadOnlyList<ChatAttachmentViewModel>)attachments);
         });
     }
@@ -1192,6 +1380,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         var bubble = BuildUserBubble(text, attachments, isPending: true);
         Messages.Add(bubble);
         UpdateSessionTitleFromFirstUserMessage();
+        // A draft still in flight loses the composer to this message: that is what it is restored for.
+        if (_draftInFlight is not null) _draftDisplaced = true;
         ConsumeDraft(text, attachments);
         _queuedMessages.Enqueue(new QueuedMessage(bubble, text, attachments));
         DispatchNextQueuedMessage();
@@ -1227,7 +1417,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         try
         {
-            await RunTurnAsync(queued, () => (queued.Text, queued.Attachments)).ConfigureAwait(true);
+            await RunTurnAsync(queued, queued.Text, () => (queued.Text, queued.Attachments)).ConfigureAwait(true);
         }
         catch (Exception ex)
         {
@@ -1241,12 +1431,15 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // step is the one thing left to the caller. `prepare` runs only after EnsureConnectedAsync has
     // already succeeded, preserving the live-send path's "acquire before consuming the draft" rule.
     // A call made while another turn is running (only ever a queued message sent ahead to an agent
-    // that queues prompts) joins that turn's busy state instead of starting a new one.
-    private async Task RunTurnAsync(QueuedMessage? queued, Func<(string Text, IReadOnlyList<ChatAttachmentViewModel> Attachments)> prepare)
+    // that queues prompts) joins that turn's busy state instead of starting a new one. Under Auto
+    // effort, `promptText` is classified and the turn's effort set before `prepare` runs.
+    private async Task RunTurnAsync(QueuedMessage? queued, string promptText, Func<(string Text, IReadOnlyList<ChatAttachmentViewModel> Attachments)> prepare)
     {
         bool joining = _runningTurns++ > 0;
         bool submitted = false;
         bool failed = false;
+        bool abandoned = false;
+        bool sessionLost = false;
         string? stopReason = null;
         try
         {
@@ -1260,20 +1453,40 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             }
             var (connection, sessionId) = await EnsureConnectedAsync(_lifetime.Token).ConfigureAwait(true);
             if (_disposed) return;
-            var (text, attachments) = prepare();
-            var content = new List<ContentBlock>(attachments.Count + 1);
-            if (text.Length > 0) content.Add(new ContentBlock.Text(text));
-            foreach (var attachment in attachments)
-                content.Add(attachment.ToContentBlock());
+            // Only a turn that starts alone is judged: a joining one (a message sent ahead into a
+            // running turn, which Auto never does) shares that turn's effort.
+            if (_isAutoEffort && !joining)
+            {
+                var ready = await ApplyAutoEffortAsync(connection, sessionId, promptText).ConfigureAwait(true);
+                if (_disposed) return;
+                // A session lost while judging (agent died, sign-out, workspace switch) took with it
+                // whatever this turn was going to be sent to. A live draft stays in the composer; a
+                // queued message goes with its queue (see the tail below).
+                sessionLost = !IsCurrentSession(connection, sessionId);
+                if (sessionLost && queued is null && string.IsNullOrEmpty(StatusMessage))
+                    StatusMessage = "The session changed while judging effort, so your message was not sent.";
+                // Stop pressed while judging had no prompt to cancel: the turn ends here, before
+                // prepare() takes the draft, instead of starting once the verdict arrives. Control
+                // still reaches the tail below, which sends the follow-ups Stop leaves queued.
+                abandoned = !ready || sessionLost;
+            }
+            if (!abandoned)
+            {
+                var (text, attachments) = prepare();
+                var content = new List<ContentBlock>(attachments.Count + 1);
+                if (text.Length > 0) content.Add(new ContentBlock.Text(text));
+                foreach (var attachment in attachments)
+                    content.Add(attachment.ToContentBlock());
 
-            // A joining prompt waits in the agent's queue: the running turn keeps its bubble.
-            if (!joining) _currentAssistantMessage = null;
-            _submittedPrompts.Add(queued);
-            submitted = true;
-            if (_submittedPrompts.Count == 1) queued?.Bubble.MarkSent();
-            // Once the running prompt is submitted, acceptance is ambiguous on transport failure: it is
-            // not restored or resent. (A sent-ahead prompt is judged in OnPromptReturned.)
-            stopReason = await connection.SendPromptAsync(sessionId, content, _lifetime.Token).ConfigureAwait(true);
+                // A joining prompt waits in the agent's queue: the running turn keeps its bubble.
+                if (!joining) _currentAssistantMessage = null;
+                _submittedPrompts.Add(queued);
+                submitted = true;
+                if (_submittedPrompts.Count == 1) queued?.Bubble.MarkSent();
+                // Once the running prompt is submitted, acceptance is ambiguous on transport failure: it is
+                // not restored or resent. (A sent-ahead prompt is judged in OnPromptReturned.)
+                stopReason = await connection.SendPromptAsync(sessionId, content, _lifetime.Token).ConfigureAwait(true);
+            }
         }
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex)
@@ -1283,12 +1496,42 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
         finally
         {
+            // A live turn that ended before prepare() took its draft (Stop, a lost session, a rejected
+            // effort change) leaves the draft in the composer, no longer in flight.
+            if (queued is null)
+            {
+                // Sending another message meanwhile took the composer over from this draft: it must not
+                // vanish. A draft the user cleared on purpose stays gone.
+                if (_draftInFlight is { } left && _draftDisplaced && !_disposed) RestoreDraftToEmptyComposer(left.Text, left.Attachments);
+                _draftInFlight = null;
+                _draftDisplaced = false;
+                // A draft that failed before it was sent: what was written after it must not overtake it.
+                if (failed && !submitted && !_disposed && _queuedMessages.Count > 0)
+                {
+                    var behind = _queuedMessages.ToList();
+                    _queuedMessages.Clear();
+                    RestoreToComposer(behind,
+                        "Your queued message was not sent because the message before it failed - it is back in the message box, after that one.",
+                        "{0} queued messages were not sent because the message before them failed - they are back in the message box, after it.",
+                        behindDraft: true);
+                }
+            }
             try
             {
                 if (failed) _runningFailed |= !submitted || queued is null || !queued.Bubble.IsPending;
                 if (submitted) OnPromptReturned(queued, stopReason);
                 // Taken off the queue but never handed to the agent: nothing else holds it now.
-                else if (queued is not null && !_disposed) _returnedUnstarted.Add(queued);
+                else if (queued is not null && !_disposed)
+                {
+                    // Unless its session is gone: the queue died with it (DiscardQueuedMessages), and
+                    // this message, taken off the queue for its judgment, was in none of the lists.
+                    if (sessionLost)
+                    {
+                        Messages.Remove(queued.Bubble);
+                        StatusMessage = WithQueueNotice(StatusMessage, 1);
+                    }
+                    else _returnedUnstarted.Add(queued);
+                }
             }
             finally
             {
@@ -1361,7 +1604,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // Sent ahead only to an agent that advertised it queues prompts itself: it takes them in at its
     // next input boundary, between the running turn's operations, without interrupting any of them.
     // Held back while a returned-unstarted message waits to go out again, so it keeps its place.
-    private bool CanSendAhead => !_isStopping && _returnedUnstarted.Count == 0 && _connection?.SupportsPromptQueueing == true;
+    // Never under Auto effort: effort is session-wide, so a prompt sent ahead would run under the
+    // running turn's effort, or retune it - each Auto turn waits for the one before it.
+    private bool CanSendAhead => !_isStopping && _returnedUnstarted.Count == 0 && !_isAutoEffort && _connection?.SupportsPromptQueueing == true;
 
     // Auto-dispatch answers to the same admission gates as a message the user sends by hand: a queue
     // entry that outlives the state it was typed in is exactly the hazard CanQueueOrSendDraft
@@ -1380,13 +1625,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // Called once nothing is running, for messages that must not be re-sent automatically (see
     // RunTurnAsync for a failed turn). The bubbles leave the transcript and
     // the texts go into the composer in the order they were sent, ahead of whatever is typed there.
-    private void RestoreToComposer(List<QueuedMessage> pending, string one, string many)
+    private void RestoreToComposer(List<QueuedMessage> pending, string one, string many, bool behindDraft = false)
     {
         if (pending.Count == 0) return;
         var restored = pending.ToList();
         pending.Clear();
         var texts = restored.Select(message => message.Text).Where(text => text.Length > 0).ToList();
-        if (InputText.Trim().Length > 0) texts.Add(InputText);
+        // Ahead of what is typed, except behind a draft that failed before it was sent: it was written first.
+        if (InputText.Trim().Length > 0) { if (behindDraft) texts.Insert(0, InputText); else texts.Add(InputText); }
         InputText = string.Join(Environment.NewLine + Environment.NewLine, texts);
         foreach (var message in restored)
         {
@@ -1397,6 +1643,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         var notice = restored.Count == 1 ? one : string.Format(System.Globalization.CultureInfo.InvariantCulture, many, restored.Count);
         // Appended, not replacing: after a failed turn the error that caused this must stay readable.
         StatusMessage = string.IsNullOrEmpty(StatusMessage) ? notice : StatusMessage + " " + notice;
+    }
+
+    private void RestoreDraftToEmptyComposer(string text, ChatAttachmentViewModel[] attachments)
+    {
+        if (InputText.Trim().Length == 0) InputText = text;
+        foreach (var attachment in attachments)
+            if (!Attachments.Contains(attachment)) Attachments.Add(attachment);
     }
 
     // Called once nothing is running: messages the agent returned unstarted go back to the front of
@@ -1498,6 +1751,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         // again ahead of them (OnPromptReturned). RunTurnAsync's tail sends them once every
         // cancelled prompt has returned.
         if (IsBusy) _isStopping = true;
+        var judging = _autoEffortStop;
+        judging?.Cancel();
+        // A turn being judged has no prompt in flight at the agent, so there is nothing to cancel
+        // there: the judgment ends and, with it, the turn (RunTurnAsync).
+        if (judging is not null) return;
         try
         {
             await _connection.CancelAsync(_sessionId, _lifetime.Token).ConfigureAwait(true);
@@ -1825,6 +2083,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             ?? options.FirstOrDefault(option => option.Id == "mode");
         ReplaceOptions(AvailableModels, _modelOption);
         ReplaceOptions(AvailableEfforts, _effortOption);
+        // Offered only when the agent has all three levels Auto chooses from, and a classifier exists.
+        var autoOffered = AutoServices?.EffortClassifier is not null && _effortOption is { } effort &&
+            AutoEffortValues.All(value => effort.Options.Any(candidate => candidate.Value == value));
+        if (autoOffered) AvailableEfforts.Insert(0, _autoEffort);
+        _isAutoEffort = _autoEffortSelected && autoOffered;
         ReplaceOptions(AvailableModes, _modeOption);
         _selectedModel = AvailableModels.FirstOrDefault(option => option.Value == _modelOption?.CurrentValue);
         _selectedEffort = AvailableEfforts.FirstOrDefault(option => option.Value == _effortOption?.CurrentValue);
@@ -2682,6 +2945,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task ReleaseConnectionAsync()
     {
+        // A judgment still running belongs to the session being released: end it (and its CLI process)
+        // now instead of holding the panel busy for a session that is gone.
+        _autoEffortStop?.Cancel();
         var connection = _connection;
         _connection = null;
         _sessionId = null;

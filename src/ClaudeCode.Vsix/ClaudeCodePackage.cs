@@ -1,3 +1,4 @@
+using ClaudeCode.Acp;
 using ClaudeCode.Vsix.Auth;
 using ClaudeCode.Vsix.Connections;
 using ClaudeCode.Vsix.Options;
@@ -49,6 +50,8 @@ public sealed class ClaudeCodePackage : AsyncPackage
             "Resources", "Scripts", "fetch-usage.cjs");
         var usageService = new ClaudeUsageService(usageScriptPath);
         _vsControlSessionRegistry = new VsControlSessionRegistry();
+        // Auto effort's judge: a short Haiku call through the adapter's bundled CLI, made only on Auto turns.
+        var effortClassifier = new ClaudeCliEffortJudge(ResolveAdapterAsync);
 
         // Seed the workspace-root cache once on the UI thread, then keep it current via solution
         // events instead of blocking every GetWorkspaceRoot() call on JoinableTaskFactory.Run.
@@ -67,9 +70,32 @@ public sealed class ClaudeCodePackage : AsyncPackage
 
         ClaudeCode.Core.Views.ChatPanelView.ServicesFactory =
             () => new VsChatSessionServices(ClaudeCodeServices.ConnectionFactory!, ClaudeCodeServices.AuthService!, ClaudeCodeServices.UsageService!, _workspaceRootTracker, editorDocumentTracker,
-                ReadRemoteControlAtStartup);
+                ReadRemoteControlAtStartup, effortClassifier);
 
         await this.RegisterCommandsAsync();
+    }
+
+    // Same adapter the chat runs on (ClaudeCodeConnectionFactory): the option is UI-thread affine,
+    // the filesystem probing is not allowed there.
+    private async Task<AcpExecutableSpec> ResolveAdapterAsync(CancellationToken cancellationToken)
+    {
+        await JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
+        string overridePath;
+        try
+        {
+            overridePath = GetOptions().CliExecutablePath;
+        }
+        catch (COMException exception)
+        {
+            // After IVsPackage.Close the option page can no longer be read (see ReadRemoteControlAtStartup).
+            throw new InvalidOperationException("Visual Studio is shutting down, so Auto effort cannot ask its judge.", exception);
+        }
+        var resolved = await Task.Run(() => string.IsNullOrWhiteSpace(overridePath)
+            ? AcpExecutableResolver.TryResolveDefault()
+            : AcpExecutableResolver.TryResolve(overridePath), cancellationToken).ConfigureAwait(false);
+        return resolved ?? throw new InvalidOperationException(
+            "The Claude ACP adapter could not be resolved, so Auto effort cannot ask its judge. Install it with "
+            + "'npm install -g @agentclientprotocol/claude-agent-acp' or set Tools > Options > Claude Code > ACP executable path.");
     }
 
     /// <summary>Opens (or activates) the "Implementation Plan" document tab showing <paramref name="plan"/>.</summary>
