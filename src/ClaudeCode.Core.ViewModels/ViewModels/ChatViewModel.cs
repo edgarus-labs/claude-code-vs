@@ -33,6 +33,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // before its prompt. A failed judgment keeps the last judged level, or High before the first.
     private static readonly string[] AutoEffortValues =
         Enum.GetValues(typeof(EffortLevel)).Cast<EffortLevel>().Select(level => level.ToAgentValue()).ToArray();
+    // Only a host that implements IAutoEffortServices offers Auto effort.
+    private IAutoEffortServices? AutoServices => _services as IAutoEffortServices;
     private readonly SessionConfigValue _autoEffort = new SessionConfigValue(
         "auto", "Auto", "Low, Medium or High for each message, judged per message");
     // Whether the user picked Auto, and whether it is in force: it is only while the session offers
@@ -42,9 +44,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private bool _isAutoEffort;
     private EffortLevel? _lastAutoEffort;
     private CancellationTokenSource? _autoEffortStop;
-    // Whether an Auto turn has set the agent's effort since Auto was picked or the session (re)started:
-    // only then is the agent's current level the one Auto chose, and shown next to "Auto".
-    private bool _autoEffortInEffect;
+    // The level an Auto turn last set on the agent since Auto was picked or the session (re)started.
+    // It is shown next to "Auto" only while the agent still runs it: a model switch moves the agent's
+    // effort to that model's own default, which Auto did not choose.
+    private string? _autoEffortSetTo;
     // Held from the start of a judgment until the effort change is acknowledged: locks the settings
     // only, unlike IsConfigBusy, which also locks the composer.
     private bool _isJudgingEffort;
@@ -415,7 +418,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     public bool HasModes => AvailableModes.Count > 0;
     public string ActiveModelName => _selectedModel?.Name ?? "Model unavailable";
     public string ActiveEffortName => !_isAutoEffort ? _selectedEffort?.Name ?? string.Empty
-        : _autoEffortInEffect && _selectedEffort is { } inEffect ? _autoEffort.Name + " · " + inEffect.Name
+        : _selectedEffort is { } inEffect && inEffect.Value == _autoEffortSetTo ? _autoEffort.Name + " · " + inEffect.Name
         : _autoEffort.Name;
     public string ModelEffortLabel => HasEffort && ActiveEffortName.Length > 0 ? ActiveModelName + " · " + ActiveEffortName : ActiveModelName;
     public string ActiveModeName => _selectedMode?.Name ?? "Mode unavailable";
@@ -998,7 +1001,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private void ForgetAutoVerdict()
     {
         _lastAutoEffort = null;
-        _autoEffortInEffect = false;
+        _autoEffortSetTo = null;
     }
 
     // Runs ahead of the turn's prompt with nothing else in flight (Auto never sends ahead, see
@@ -1011,7 +1014,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // judged for is gone.
     private async Task<bool> ApplyAutoEffortAsync(IAcpAgentConnection connection, string sessionId, string prompt)
     {
-        var classifier = _services.EffortClassifier;
+        var classifier = AutoServices?.EffortClassifier;
         if (classifier is null) return true;
         _isJudgingEffort = true;
         NotifyStateChanged();
@@ -1041,7 +1044,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 {
                     judged = null;
                     failure = Describe(ex);
-                    _services.LogError("Auto effort could not judge a message.", ex);
+                    AutoServices?.LogError("Auto effort could not judge a message.", ex);
                 }
                 if (stop.IsCancellationRequested) return false;
             }
@@ -1074,7 +1077,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 if (!IsCurrentSession(connection, sessionId)) return false;
                 ApplyConfigOptions(options);
             }
-            _autoEffortInEffect = true;
+            _autoEffortSetTo = value;
             // Stop pressed while the agent was setting the level: its answer is the level it runs now,
             // but the turn ends here without sending.
             return !stop.IsCancellationRequested;
@@ -1257,6 +1260,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // composer. Auto's judgment makes that a window of seconds in which the composer still holds the
     // message, and sending it again (a second Enter) would queue a copy that runs the prompt twice.
     private (string Text, ChatAttachmentViewModel[] Attachments)? _draftInFlight;
+    // Whether sending another message emptied the composer of the draft in flight (as opposed to the
+    // user clearing it): only then does a draft that never went out come back.
+    private bool _draftDisplaced;
 
     private Task SendCoreAsync()
     {
@@ -1291,6 +1297,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
 
         _draftInFlight = (text, attachments);
+        _draftDisplaced = false;
         return RunTurnAsync(null, text, () =>
         {
             // Acquire before consuming the draft: failed startup must not lose text or attachments.
@@ -1373,6 +1380,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         var bubble = BuildUserBubble(text, attachments, isPending: true);
         Messages.Add(bubble);
         UpdateSessionTitleFromFirstUserMessage();
+        // A draft still in flight loses the composer to this message: that is what it is restored for.
+        if (_draftInFlight is not null) _draftDisplaced = true;
         ConsumeDraft(text, attachments);
         _queuedMessages.Enqueue(new QueuedMessage(bubble, text, attachments));
         DispatchNextQueuedMessage();
@@ -1491,9 +1500,21 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             // effort change) leaves the draft in the composer, no longer in flight.
             if (queued is null)
             {
-                // Sending another message meanwhile emptied the composer of this draft: it must not vanish.
-                if (_draftInFlight is { } left && !_disposed) RestoreDraftToEmptyComposer(left.Text, left.Attachments);
+                // Sending another message meanwhile took the composer over from this draft: it must not
+                // vanish. A draft the user cleared on purpose stays gone.
+                if (_draftInFlight is { } left && _draftDisplaced && !_disposed) RestoreDraftToEmptyComposer(left.Text, left.Attachments);
                 _draftInFlight = null;
+                _draftDisplaced = false;
+                // A draft that failed before it was sent: what was written after it must not overtake it.
+                if (failed && !submitted && !_disposed && _queuedMessages.Count > 0)
+                {
+                    var behind = _queuedMessages.ToList();
+                    _queuedMessages.Clear();
+                    RestoreToComposer(behind,
+                        "Your queued message was not sent because the message before it failed - it is back in the message box, after that one.",
+                        "{0} queued messages were not sent because the message before them failed - they are back in the message box, after it.",
+                        behindDraft: true);
+                }
             }
             try
             {
@@ -1604,13 +1625,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // Called once nothing is running, for messages that must not be re-sent automatically (see
     // RunTurnAsync for a failed turn). The bubbles leave the transcript and
     // the texts go into the composer in the order they were sent, ahead of whatever is typed there.
-    private void RestoreToComposer(List<QueuedMessage> pending, string one, string many)
+    private void RestoreToComposer(List<QueuedMessage> pending, string one, string many, bool behindDraft = false)
     {
         if (pending.Count == 0) return;
         var restored = pending.ToList();
         pending.Clear();
         var texts = restored.Select(message => message.Text).Where(text => text.Length > 0).ToList();
-        if (InputText.Trim().Length > 0) texts.Add(InputText);
+        // Ahead of what is typed, except behind a draft that failed before it was sent: it was written first.
+        if (InputText.Trim().Length > 0) { if (behindDraft) texts.Insert(0, InputText); else texts.Add(InputText); }
         InputText = string.Join(Environment.NewLine + Environment.NewLine, texts);
         foreach (var message in restored)
         {
@@ -2062,7 +2084,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         ReplaceOptions(AvailableModels, _modelOption);
         ReplaceOptions(AvailableEfforts, _effortOption);
         // Offered only when the agent has all three levels Auto chooses from, and a classifier exists.
-        var autoOffered = _services.EffortClassifier is not null && _effortOption is { } effort &&
+        var autoOffered = AutoServices?.EffortClassifier is not null && _effortOption is { } effort &&
             AutoEffortValues.All(value => effort.Options.Any(candidate => candidate.Value == value));
         if (autoOffered) AvailableEfforts.Insert(0, _autoEffort);
         _isAutoEffort = _autoEffortSelected && autoOffered;

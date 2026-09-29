@@ -7,7 +7,7 @@ using System.Threading.Tasks;
 
 namespace ClaudeCode.Core.Tests;
 
-internal sealed class StubChatSessionServices : IChatSessionServices
+internal sealed class StubChatSessionServices : IChatSessionServices, IAutoEffortServices
 {
     public StubChatSessionServices(IAcpAgentConnectionFactory connectionFactory, IAcpAuthService authService, string? workspaceRoot = null, IUsageService? usageService = null)
     {

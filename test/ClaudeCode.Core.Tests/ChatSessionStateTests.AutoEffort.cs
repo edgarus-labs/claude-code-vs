@@ -243,6 +243,33 @@ public sealed partial class ChatSessionStateTests
         Assert.False(vm.IsBusy);
     }
 
+    // F-R2: a message written while an earlier draft is judged is queued behind it. If the earlier
+    // draft then fails before it is sent, the later one must not overtake it: both go back to the
+    // composer, in the order they were written, and nothing reaches the agent.
+    [Fact]
+    public async Task AutoTurn_DraftFailsBeforeItIsSent_QueuedFollowUpDoesNotOvertakeIt()
+    {
+        var (connection, log) = AutoConnection("medium");
+        connection.ConfigHandler = (_, _, _) => Task.FromException<IReadOnlyList<SessionConfigOption>>(new InvalidOperationException("rejected"));
+        var verdict = new TaskCompletionSource<EffortLevel>();
+        var classifier = new FakeEffortClassifier { Handler = _ => verdict.Task };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+
+        var sending = SendTextAsync(vm, "first message");
+        await WaitUntilAsync(() => classifier.Prompts.Count == 1);
+        await SendTextAsync(vm, "second message");
+        verdict.SetResult(EffortLevel.High);
+        await WithinAsync(sending);
+        await WaitUntilAsync(() => !vm.IsBusy);
+
+        Assert.Empty(log);
+        Assert.Empty(connection.Prompts);
+        Assert.Equal("first message" + Environment.NewLine + Environment.NewLine + "second message", vm.InputText);
+        Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User);
+    }
+
     [Fact]
     public async Task ExplicitEffort_AfterAuto_LeavesAuto_AndTurnsNeverConsultTheClassifier()
     {
@@ -347,6 +374,30 @@ public sealed partial class ChatSessionStateTests
         Assert.Empty(connection.ConfigChanges);
         Assert.Empty(connection.Prompts);
         Assert.Equal("hard work", vm.InputText);
+        Assert.False(vm.IsBusy);
+    }
+
+    // F-R6: only a draft displaced by sending another message comes back after Stop. One the user
+    // cleared on purpose stays gone.
+    [Fact]
+    public async Task AutoTurn_DraftClearedOnPurposeWhileJudging_IsNotBroughtBackByStop()
+    {
+        var (connection, log) = AutoConnection("medium");
+        var verdict = new TaskCompletionSource<EffortLevel>();
+        var classifier = new FakeEffortClassifier { Handler = _ => verdict.Task };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+
+        var sending = SendTextAsync(vm, "a draft I will delete");
+        await WaitUntilAsync(() => classifier.Prompts.Count == 1);
+        vm.InputText = string.Empty;
+        await vm.CancelAsync();
+        verdict.SetResult(EffortLevel.High);
+        await sending;
+
+        Assert.Empty(log);
+        Assert.Equal(string.Empty, vm.InputText);
         Assert.False(vm.IsBusy);
     }
 
@@ -884,6 +935,38 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { 1, 2 }, connection.Prompts.Select(prompt => prompt.Count));
     }
 
+    // A draft displaced from the composer by another message comes back with its attachments when Stop
+    // ends its judgment.
+    [Fact]
+    public async Task AutoTurn_DisplacedDraftStoppedWhileJudging_ComesBackWithItsAttachments()
+    {
+        var (connection, _) = AutoConnection("medium");
+        var classifier = new FakeEffortClassifier
+        {
+            TokenHandler = async (prompt, token) =>
+            {
+                if (prompt == "look at this") await Task.Delay(Timeout.Infinite, token);
+                return EffortLevel.Medium;
+            },
+        };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+        var attachment = new ChatAttachmentViewModel("a.png", "image/png", "AAAA");
+        vm.Attachments.Add(attachment);
+
+        var sending = SendTextAsync(vm, "look at this");
+        await WaitUntilAsync(() => classifier.Prompts.Count == 1);
+        await SendTextAsync(vm, "and then this");
+        Assert.Empty(vm.Attachments);
+        await WithinAsync(vm.CancelAsync());
+        await WithinAsync(sending);
+        await WaitUntilAsync(() => !vm.IsBusy);
+
+        Assert.Equal("look at this", vm.InputText);
+        Assert.Contains(attachment, vm.Attachments);
+    }
+
     // A draft whose judgment Stop ended is no longer being judged: the same text sent again while
     // another message is judged is a message like any other.
     [Fact]
@@ -1389,6 +1472,24 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { "effort=low", "prompt:quick" }, log);
         Assert.Equal(new[] { "git push", "quick" }, classifier.Prompts);
         Assert.Equal("Auto · low", vm.ActiveEffortName);
+    }
+
+    // F-R12: "Auto · x" names a level Auto set. After a model switch the agent's own default is not one,
+    // so the picker shows plain "Auto" until the next judgment.
+    [Fact]
+    public async Task ModelSwitch_MovesTheAgentsEffort_PickerNamesNoLevelAutoDidNotSet()
+    {
+        var (connection, _) = ModelSwitchingConnection(AdvertisedEfforts, "high");
+        var classifier = new FakeEffortClassifier { Handler = _ => Task.FromResult(EffortLevel.Low) };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+        await SendTextAsync(vm, "git push");
+        Assert.Equal("Auto · low", vm.ActiveEffortName);
+
+        await vm.SelectModelAsync(vm.AvailableModels.Single(value => value.Value == "opus"));
+
+        Assert.Equal("Auto", vm.ActiveEffortName);
     }
 
     // Dispose while the agent is applying the judged effort cancels that request (the one thing that

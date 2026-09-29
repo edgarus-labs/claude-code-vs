@@ -12,7 +12,7 @@ using System.Threading.Tasks;
 
 namespace ClaudeCode.Vsix;
 
-internal sealed class VsChatSessionServices : IChatSessionServices
+internal sealed class VsChatSessionServices : IChatSessionServices, IAutoEffortServices
 {
     private readonly WorkspaceRootTracker _workspaceRootTracker;
     private readonly ActiveEditorDocumentTracker _editorDocumentTracker;
@@ -43,8 +43,30 @@ internal sealed class VsChatSessionServices : IChatSessionServices
 
     public IEffortClassifier? EffortClassifier { get; }
 
-    public void LogError(string message, Exception exception) =>
+    // Errors go to the "Claude Code" Output pane (Output > Show output from) as well as the ActivityLog,
+    // which is only written when Visual Studio runs with /log. Only errors are logged here.
+    private static OutputWindowPane? _outputPane;
+
+    public void LogError(string message, Exception exception)
+    {
+        var line = "[Error] " + message + " " + exception.GetType().Name + ": " + exception.Message;
         ActivityLog.TryLogError("Claude Code", message + " " + exception);
+        // Failures are logged inside, and FileAndForget reports the fault to VS telemetry.
+#pragma warning disable VSSDK007
+        ThreadHelper.JoinableTaskFactory.RunAsync(async () =>
+        {
+            try
+            {
+                _outputPane ??= await VS.Windows.CreateOutputWindowPaneAsync("Claude Code");
+                await _outputPane.WriteLineAsync(line);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                ActivityLog.TryLogError("Claude Code", "Could not write to the Output pane: " + ex);
+            }
+        }).FileAndForget("claudecode/output-log");
+    }
+#pragma warning restore VSSDK007
 
     public event EventHandler? ActiveDocumentChanged
     {
