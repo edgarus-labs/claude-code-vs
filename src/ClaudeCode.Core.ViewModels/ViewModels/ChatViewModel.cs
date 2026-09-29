@@ -1292,7 +1292,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         {
             // Acquire before consuming the draft: failed startup must not lose text or attachments.
             // RunTurnAsync's own EnsureConnectedAsync has already succeeded by the time this runs.
-            Messages.Add(BuildUserBubble(text, attachments, isPending: false));
+            // Under Auto the judgment took seconds, in which messages sent meanwhile were queued with
+            // their bubbles already: this earlier message goes above them.
+            var bubble = BuildUserBubble(text, attachments, isPending: false);
+            var firstQueued = Messages.FirstOrDefault(message => message.Role == ChatRole.User && message.IsPending);
+            if (firstQueued is null) Messages.Add(bubble);
+            else Messages.Insert(Messages.IndexOf(firstQueued), bubble);
             UpdateSessionTitleFromFirstUserMessage();
             ConsumeDraft(text, attachments);
             _draftInFlight = null;
@@ -1482,7 +1487,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         {
             // A live turn that ended before prepare() took its draft (Stop, a lost session, a rejected
             // effort change) leaves the draft in the composer, no longer in flight.
-            if (queued is null) _draftInFlight = null;
+            if (queued is null)
+            {
+                // Sending another message meanwhile emptied the composer of this draft: it must not vanish.
+                if (_draftInFlight is { } left && !_disposed) RestoreDraftToEmptyComposer(left.Text, left.Attachments);
+                _draftInFlight = null;
+            }
             try
             {
                 if (failed) _runningFailed |= !submitted || queued is null || !queued.Bubble.IsPending;
@@ -1609,6 +1619,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         var notice = restored.Count == 1 ? one : string.Format(System.Globalization.CultureInfo.InvariantCulture, many, restored.Count);
         // Appended, not replacing: after a failed turn the error that caused this must stay readable.
         StatusMessage = string.IsNullOrEmpty(StatusMessage) ? notice : StatusMessage + " " + notice;
+    }
+
+    private void RestoreDraftToEmptyComposer(string text, ChatAttachmentViewModel[] attachments)
+    {
+        if (InputText.Trim().Length == 0) InputText = text;
+        foreach (var attachment in attachments)
+            if (!Attachments.Contains(attachment)) Attachments.Add(attachment);
     }
 
     // Called once nothing is running: messages the agent returned unstarted go back to the front of
@@ -2904,6 +2921,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task ReleaseConnectionAsync()
     {
+        // A judgment still running belongs to the session being released: end it (and its CLI process)
+        // now instead of holding the panel busy for a session that is gone.
+        _autoEffortStop?.Cancel();
         var connection = _connection;
         _connection = null;
         _sessionId = null;
@@ -2921,9 +2941,6 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         ClearPendingRequests("The agent connection was closed.");
         ClearRunningSubagents();
         CurrentPlan = null;
-        // A judgment still running belongs to the session being released: end it (and its CLI process)
-        // now instead of holding the panel busy for a session that is gone.
-        _autoEffortStop?.Cancel();
         IsRemoteControlEnabled = false;
         RemoteControlUrl = null;
         ApplyConfigOptions(Array.Empty<SessionConfigOption>());

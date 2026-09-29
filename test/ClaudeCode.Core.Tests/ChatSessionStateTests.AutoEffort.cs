@@ -1026,6 +1026,60 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("hard work", vm.InputText);
     }
 
+    // Written while the first is still being judged, the second message is queued at once; the
+    // first one's bubble, added only when its turn starts, still belongs above it.
+    [Fact]
+    public async Task AutoTurn_WhileJudging_TheJudgedDraftKeepsItsPlaceAboveALaterQueuedMessage()
+    {
+        var (connection, log) = AutoConnection("medium");
+        var verdict = new TaskCompletionSource<EffortLevel>();
+        var classifier = new FakeEffortClassifier { Handler = _ => verdict.Task };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+
+        var sending = SendTextAsync(vm, "first");
+        await WaitUntilAsync(() => classifier.Prompts.Count == 1);
+        await SendTextAsync(vm, "second");
+        classifier.Handler = _ => Task.FromResult(EffortLevel.Medium);
+        verdict.SetResult(EffortLevel.Medium);
+        await WithinAsync(sending);
+        await WaitUntilAsync(() => log.Contains("prompt:second") && !vm.IsBusy);
+
+        Assert.Equal(new[] { "first", "second" },
+            vm.Messages.Where(message => message.Role == ChatRole.User).Select(message => message.Text).ToArray());
+    }
+
+    // Sending another message while the first is judged empties the composer, so when Stop ends the
+    // first one's judgment it must not vanish: its text is back in the message box.
+    [Fact]
+    public async Task AutoTurn_JudgedDraftStoppedAfterALaterMessageWasQueued_ReturnsToTheComposer()
+    {
+        var (connection, log) = AutoConnection("medium");
+        var classifier = new FakeEffortClassifier
+        {
+            TokenHandler = async (prompt, token) =>
+            {
+                if (prompt == "first") await Task.Delay(Timeout.Infinite, token);
+                return EffortLevel.Medium;
+            },
+        };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+
+        var sending = SendTextAsync(vm, "first");
+        await WaitUntilAsync(() => classifier.Prompts.Count == 1);
+        await SendTextAsync(vm, "second");
+        await WithinAsync(vm.CancelAsync());
+        await WithinAsync(sending);
+        await WaitUntilAsync(() => log.Contains("prompt:second") && !vm.IsBusy);
+
+        Assert.Equal(new[] { "prompt:second" }, log);
+        Assert.Equal("first", vm.InputText);
+        Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User && message.Text == "first");
+    }
+
     // A queued message being judged is held by nobody else, so a session lost meanwhile
     // takes it too: it is reported like every other queued message the session drops, and its
     // bubble does not stay behind as pending.
