@@ -238,6 +238,8 @@ public sealed partial class ChatSessionStateTests
         Assert.Empty(log);
         Assert.Equal("hard work", vm.InputText);
         Assert.Contains("rejected", vm.StatusMessage);
+        // The turn's failure says Auto effort caused it, not just what the agent answered.
+        Assert.Contains("Auto effort could not set the effort to high", vm.StatusMessage);
         Assert.False(vm.IsBusy);
     }
 
@@ -336,6 +338,7 @@ public sealed partial class ChatSessionStateTests
         await vm.SelectEffortAsync(Auto(vm));
 
         var sending = SendTextAsync(vm, "hard work");
+        await WaitUntilAsync(() => classifier.Prompts.Count == 1);
         await vm.CancelAsync();
         verdict.SetResult(EffortLevel.High);
         await sending;
@@ -402,6 +405,7 @@ public sealed partial class ChatSessionStateTests
         await vm.SelectEffortAsync(Auto(vm));
 
         var sending = SendTextAsync(vm, "easy");
+        await WaitUntilAsync(() => classifier.Prompts.Count == 1);
         Assert.False(vm.CanConfigure);
         await vm.SelectEffortAsync(vm.AvailableEfforts.Single(value => value.Value == "xhigh"));
         Assert.Empty(connection.ConfigChanges);
@@ -622,6 +626,12 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { "small" }, classifier.Prompts);
         Assert.Equal(new[] { "prompt:1" }, log);
         Assert.Equal("Auto · low", vm.ActiveEffortName);
+
+        // Whitespace beside an attachment is no more to judge than nothing.
+        vm.Attachments.Add(new ChatAttachmentViewModel("c.png", "image/png", "CCCC"));
+        await SendTextAsync(vm, "   ");
+        Assert.Equal(2, log.Count);
+        Assert.Equal(new[] { "small" }, classifier.Prompts);
     }
 
     // A queued Auto turn whose effort change is refused has no live draft to keep: like any turn
@@ -707,7 +717,7 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { "prompt:go" }, log);
     }
 
-    // F-50-1: the judgment locks the settings, not the composer. A message written meanwhile is
+    // The judgment locks the settings, not the composer. A message written meanwhile is
     // queued like one written during any running turn, and goes out after this turn, in order.
     [Fact]
     public async Task AutoTurn_WhileJudging_ComposerStaysUsable_AndTheNextMessageIsQueued()
@@ -738,7 +748,7 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { "effort=low", "prompt:first", "effort=high", "prompt:second" }, log);
     }
 
-    // V-50-1: Stop during the agent's effort change abandons the wait, not necessarily the change.
+    // Stop during the agent's effort change abandons the wait, not necessarily the change.
     // The agent may now run the verdict, so the next Auto turn must set its own level again even
     // when it equals the level last acknowledged.
     [Fact]
@@ -770,7 +780,7 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { "effort=medium", "prompt:easy" }, log);
     }
 
-    // F-50-25: the judgment is a multi-second await between connecting and sending. A session lost in
+    // The judgment is a multi-second await between connecting and sending. A session lost in
     // that window (agent died, sign-out, workspace switch) must not have the draft consumed and
     // sent to the connection that was released.
     [Fact]
@@ -797,7 +807,7 @@ public sealed partial class ChatSessionStateTests
         Assert.False(vm.IsBusy);
     }
 
-    // F-50-25: a queued message being judged is held by nobody else, so a session lost meanwhile
+    // A queued message being judged is held by nobody else, so a session lost meanwhile
     // takes it too: it is reported like every other queued message the session drops, and its
     // bubble does not stay behind as pending.
     [Fact]
@@ -837,7 +847,7 @@ public sealed partial class ChatSessionStateTests
         Assert.Contains("A queued message was not sent.", vm.StatusMessage);
     }
 
-    // F-50-26: Auto is the user's choice, not a property of one connection. A disconnect, sign-out or
+    // Auto is the user's choice, not a property of one connection. A disconnect, sign-out or
     // workspace switch tears the session down and empties the pickers, but the reconnected session
     // is still on Auto.
     [Fact]
@@ -857,7 +867,7 @@ public sealed partial class ChatSessionStateTests
         Assert.Same(Auto(vm), vm.SelectedEffort);
     }
 
-    // F-50-26: picking a level ends the Auto choice for good, also while Auto is not on offer.
+    // Picking a level ends the Auto choice for good, also while Auto is not on offer.
     [Fact]
     public async Task ExplicitEffort_EndsTheAutoChoice_AlsoAcrossAReconnect()
     {
@@ -878,7 +888,7 @@ public sealed partial class ChatSessionStateTests
         Assert.NotEqual("Auto", vm.ActiveEffortName);
     }
 
-    // F-50-28: after Stop abandoned Auto's effort change the agent's level is unknown, so a manual
+    // After Stop abandoned Auto's effort change the agent's level is unknown, so a manual
     // pick equal to the last acknowledged level must still reach the agent instead of being taken
     // for "already current".
     [Fact]
@@ -910,11 +920,10 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("medium", vm.SelectedEffort!.Value);
     }
 
-    // F-50-29: the judge was cancelled by Stop whatever becomes of the agent's own cancel request.
-    // If that request fails, the cancelled judgment must not be reported as a failed judgment and
-    // the turn must not start after all.
+    // The judgment has no prompt in flight, so Stop has nothing to cancel at the agent: it ends the
+    // judgment and the turn, and an agent that would refuse a cancel is never asked.
     [Fact]
-    public async Task AutoTurn_StopWhileJudging_EndsTheTurnEvenWhenTheAgentsCancelFails()
+    public async Task AutoTurn_StopWhileJudging_NeverAsksTheAgentToCancel_AndEndsTheTurn()
     {
         var (connection, log) = AutoConnection("medium");
         connection.CancelHandler = () => Task.FromException(new InvalidOperationException("cancel refused"));
@@ -948,11 +957,12 @@ public sealed partial class ChatSessionStateTests
         Assert.Empty(log);
         Assert.Empty(connection.ConfigChanges);
         Assert.Equal("hard work", vm.InputText);
-        Assert.Equal("Cancel failed: cancel refused", vm.StatusMessage);
+        Assert.Equal(0, connection.CancelCount);
+        Assert.True(string.IsNullOrEmpty(vm.StatusMessage), vm.StatusMessage);
         Assert.False(vm.IsBusy);
     }
 
-    // F-50-35: only Stop or dispose cancel a judgment on purpose. A judge that ends in a cancellation
+    // Only Stop or dispose cancel a judgment on purpose. A judge that ends in a cancellation
     // or throws on its own is a failed judgment: the turn is not silently dropped, it falls back and
     // is sent, with the reason shown.
     [Theory]
@@ -1043,5 +1053,261 @@ public sealed partial class ChatSessionStateTests
 
         Assert.Empty(connection.Prompts);
         Assert.Empty(log);
+    }
+
+    // A manual pick made while an Auto follow-up waits governs that follow-up: the queue is released
+    // by the pick's own request finishing, and Auto must not judge and retune over it.
+    [Fact]
+    public async Task ExplicitEffort_PickedWhileAnAutoFollowUpWaits_IsNotOverriddenByTheJudge()
+    {
+        var (connection, log) = AutoConnection("medium");
+        connection.SupportsPromptQueueing = true;
+        var firstTurn = new TaskCompletionSource();
+        connection.PromptHandler = content =>
+        {
+            var text = ((ContentBlock.Text)content[0]).Value;
+            log.Add("prompt:" + text);
+            return text == "first" ? firstTurn.Task : Task.CompletedTask;
+        };
+        var inner = connection.ConfigHandler!;
+        var holdRequests = false;
+        var release = new TaskCompletionSource();
+        connection.ConfigHandler = async (session, value, token) =>
+        {
+            if (holdRequests) await release.Task;
+            return await inner(session, value, token);
+        };
+        var classifier = new FakeEffortClassifier { Handler = _ => Task.FromResult(EffortLevel.Low) };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+
+        var running = SendTextAsync(vm, "first");
+        await WaitUntilAsync(() => log.Contains("prompt:first"));
+        await SendTextAsync(vm, "second");
+        holdRequests = true;
+        var picking = vm.SelectEffortAsync(vm.AvailableEfforts.Single(value => value.Value == "xhigh"));
+        await WaitUntilAsync(() => connection.ConfigChanges.Count == 2);
+        firstTurn.SetResult();
+        await WithinAsync(running);
+        release.SetResult();
+        await WithinAsync(picking);
+        await WaitUntilAsync(() => log.Contains("prompt:second") && !vm.IsBusy);
+
+        Assert.Equal(new[] { "first" }, classifier.Prompts);
+        Assert.Equal(new[] { "effort=low", "prompt:first", "effort=xhigh", "prompt:second" }, log);
+        Assert.Equal("xhigh", vm.SelectedEffort!.Value);
+    }
+
+    // The verdict is only applied while the agent still offers its level: if an update took the
+    // levels away meanwhile, Auto is off and the turn goes out under the agent's own level.
+    [Fact]
+    public async Task AutoTurn_LevelsWithdrawnWhileJudging_SendsTheTurnWithoutSettingEffort()
+    {
+        var (connection, log) = AutoConnection("medium");
+        var verdict = new TaskCompletionSource<EffortLevel>();
+        var classifier = new FakeEffortClassifier { Handler = _ => verdict.Task };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+
+        var sending = SendTextAsync(vm, "hard work");
+        await WaitUntilAsync(() => classifier.Prompts.Count == 1);
+        connection.RaiseSessionUpdate(new SessionUpdate.ConfigOptionsChanged(Options("sonnet", "xhigh", "xhigh", "max")));
+        verdict.SetResult(EffortLevel.High);
+        await WithinAsync(sending);
+
+        Assert.Empty(connection.ConfigChanges);
+        Assert.Equal(new[] { "prompt:hard work" }, log);
+        Assert.Equal("xhigh", vm.SelectedEffort!.Value);
+    }
+
+    // A failed judgment leaves a trace beyond the status line, and the status never ends in an empty
+    // reason.
+    [Theory]
+    [InlineData("judge blew up", "judge blew up")]
+    [InlineData("", "InvalidOperationException")]
+    public async Task AutoTurn_JudgeFails_LogsTheException_AndNeverShowsAnEmptyReason(string message, string shown)
+    {
+        var (connection, _) = AutoConnection("low");
+        var error = new InvalidOperationException(message);
+        var classifier = new FakeEffortClassifier { Handler = _ => Task.FromException<EffortLevel>(error) };
+        var services = new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService())
+        {
+            EffortClassifier = classifier,
+        };
+        using var vm = new ChatViewModel(services);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+
+        await SendTextAsync(vm, "hello");
+
+        var logged = Assert.Single(services.LoggedErrors);
+        Assert.Same(error, logged.Exception);
+        Assert.EndsWith(": " + shown, vm.StatusMessage);
+    }
+
+    // Once Stop has made the agent's level unknown, the picker must not go on naming the level of an
+    // earlier turn as the one Auto is running at.
+    [Fact]
+    public async Task AutoTurn_StopWhileSettingALaterEffort_NoLongerNamesTheStaleLevel()
+    {
+        var (connection, _) = AutoConnection("medium");
+        var inner = connection.ConfigHandler!;
+        var calls = 0;
+        connection.ConfigHandler = async (session, value, token) =>
+        {
+            if (calls++ == 0) return await inner(session, value, token);
+            await Task.Delay(Timeout.Infinite, token);
+            return connection.ConfigOptions;
+        };
+        var classifier = new FakeEffortClassifier { Handler = prompt => Task.FromResult(prompt == "easy" ? EffortLevel.Low : EffortLevel.High) };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+        await SendTextAsync(vm, "easy");
+        Assert.Equal("Auto · low", vm.ActiveEffortName);
+
+        var sending = SendTextAsync(vm, "hard");
+        await WaitUntilAsync(() => connection.ConfigChanges.Count == 2);
+        await WithinAsync(vm.CancelAsync());
+        await WithinAsync(sending);
+
+        Assert.Equal("Auto", vm.ActiveEffortName);
+    }
+
+    // Whatever the agent's request ends in after Stop, the user stopped it: not an error to report.
+    [Fact]
+    public async Task AutoTurn_StopWhileSettingEffort_AnyFailureAfterStopIsTheStop_NotAnError()
+    {
+        var (connection, log) = AutoConnection("medium");
+        connection.ConfigHandler = async (_, _, token) =>
+        {
+            try { await Task.Delay(Timeout.Infinite, token); }
+            catch (OperationCanceledException) { throw new System.IO.IOException("pipe closed"); }
+            return connection.ConfigOptions;
+        };
+        var classifier = new FakeEffortClassifier { Handler = _ => Task.FromResult(EffortLevel.High) };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+
+        var sending = SendTextAsync(vm, "hard work");
+        await WaitUntilAsync(() => connection.ConfigChanges.Count == 1);
+        await WithinAsync(vm.CancelAsync());
+        await WithinAsync(sending);
+
+        Assert.Empty(log);
+        Assert.Equal("hard work", vm.InputText);
+        Assert.True(string.IsNullOrEmpty(vm.StatusMessage), vm.StatusMessage);
+        Assert.False(vm.IsBusy);
+    }
+
+    // A message that silently does not go out is explained even when nothing else reported why
+    // (here a workspace switch, which clears the status before it tears the session down).
+    [Fact]
+    public async Task AutoTurn_WorkspaceSwitchedWhileJudging_SaysTheMessageWasNotSent()
+    {
+        var (connection, _) = AutoConnection("medium");
+        var factory = new SingleConnectionFactory(connection);
+        var verdict = new TaskCompletionSource<EffortLevel>();
+        var classifier = new FakeEffortClassifier { Handler = _ => verdict.Task };
+        var services = new StubChatSessionServices(factory, new AlwaysSignedInAuthService(), "/solution-a")
+        {
+            EffortClassifier = classifier,
+        };
+        using var vm = new ChatViewModel(services);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+
+        var sending = SendTextAsync(vm, "hard work");
+        await WaitUntilAsync(() => classifier.Prompts.Count == 1);
+        factory.ConnectHandler = async token =>
+        {
+            await Task.Delay(Timeout.Infinite, token);
+            return connection;
+        };
+        services.SetWorkspaceRoot("/solution-b");
+        verdict.SetResult(EffortLevel.High);
+        await WithinAsync(sending);
+
+        Assert.Empty(connection.Prompts);
+        Assert.Equal("hard work", vm.InputText);
+        Assert.Contains("was not sent", vm.StatusMessage);
+    }
+
+    // Auto is suspended, not lost, while the agent does not offer it - a config update without the
+    // levels, or a model with no effort setting - and is back when it does.
+    [Fact]
+    public async Task Auto_ComesBack_WhenTheAgentOffersTheThreeLevelsAgain()
+    {
+        var (connection, log) = AutoConnection("medium");
+        var classifier = new FakeEffortClassifier { Handler = _ => Task.FromResult(EffortLevel.Low) };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+        var withLevels = Options("sonnet", "medium", AdvertisedEfforts);
+
+        connection.RaiseSessionUpdate(new SessionUpdate.ConfigOptionsChanged(Options("sonnet", "xhigh", "xhigh", "max")));
+        Assert.DoesNotContain(vm.AvailableEfforts, value => value.Name == "Auto");
+        connection.RaiseSessionUpdate(new SessionUpdate.ConfigOptionsChanged(withLevels));
+        Assert.Same(Auto(vm), vm.SelectedEffort);
+
+        connection.RaiseSessionUpdate(new SessionUpdate.ConfigOptionsChanged(new[] { withLevels[0] }));
+        Assert.False(vm.HasEffort);
+        connection.RaiseSessionUpdate(new SessionUpdate.ConfigOptionsChanged(withLevels));
+        Assert.Same(Auto(vm), vm.SelectedEffort);
+
+        await SendTextAsync(vm, "git status");
+        Assert.Equal(new[] { "git status" }, classifier.Prompts);
+        Assert.Equal(new[] { "effort=low", "prompt:git status" }, log);
+    }
+
+    // A session lost after the judgment, while the agent applies the level, is lost like one lost
+    // during the judgment: nothing is sent and the draft stays.
+    [Fact]
+    public async Task AutoTurn_SessionLostWhileSettingEffort_SendsNothingAndKeepsTheDraft()
+    {
+        var (connection, log) = AutoConnection("medium");
+        var release = new TaskCompletionSource();
+        connection.ConfigHandler = async (_, _, _) =>
+        {
+            await release.Task;
+            return connection.ConfigOptions;
+        };
+        var classifier = new FakeEffortClassifier { Handler = _ => Task.FromResult(EffortLevel.High) };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+
+        var sending = SendTextAsync(vm, "hard work");
+        await WaitUntilAsync(() => connection.ConfigChanges.Count == 1);
+        connection.RaiseDisconnected();
+        release.SetResult();
+        await WithinAsync(sending);
+
+        Assert.Empty(connection.Prompts);
+        Assert.Empty(log);
+        Assert.Equal("hard work", vm.InputText);
+        Assert.False(vm.IsBusy);
+        // The released session's acknowledgement is not applied to the emptied pickers.
+        Assert.False(vm.HasEffort);
+    }
+
+    // IEffortClassifier is a public contract: a value that is no level is no verdict, the turn falls
+    // back like for any failed judgment instead of failing on the way to the agent.
+    [Fact]
+    public async Task AutoTurn_ClassifierReturnsAValueThatIsNoLevel_IsAFailedJudgment()
+    {
+        var (connection, log) = AutoConnection("low");
+        var classifier = new FakeEffortClassifier { Handler = _ => Task.FromResult((EffortLevel)5) };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+
+        await SendTextAsync(vm, "hello");
+
+        Assert.Equal(new[] { "effort=high", "prompt:hello" }, log);
+        Assert.Contains("unknown level", vm.StatusMessage);
     }
 }

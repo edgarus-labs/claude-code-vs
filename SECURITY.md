@@ -33,12 +33,13 @@ stderr is written to the Visual Studio ActivityLog for diagnosis (never shown in
 With **Auto effort** selected, each message is also judged before it is sent: the extension runs
 the same resolved adapter executable's bundled CLI in print mode (`--cli -p --model haiku`, so
 Claude Haiku by default) with no tools, no settings files, no MCP servers and no saved session,
-from a working directory outside the workspace. The CLI inherits Visual Studio's environment, so
+from the system temporary directory rather than your workspace (the CLI may still read user-level
+instruction files such as a CLAUDE.md in your home directory or above the temporary directory). The CLI inherits Visual Studio's environment, so
 the message goes to whichever model provider your Claude Code is configured for. The message
 (shortened to at most 2,000 characters) goes to the CLI on standard input as untrusted data to
 judge, never on the command line; only the current message is sent, without attachments or
-conversation history. The shortening removes noise such as ANSI escapes, XML envelopes and fenced
-code; it is not a redaction step, so anything else you type is sent as written. The judge's only
+conversation history. The shortening removes noise such as ANSI escapes, XML envelopes and closed
+fenced code (unless that would leave almost nothing); it is not a redaction step, so anything else you type is sent as written. The judge's only
 effect is choosing the `low`/`medium`/`high` effort for that message.
 
 In-scope concerns include (but are not limited to): the Visual Studio extension

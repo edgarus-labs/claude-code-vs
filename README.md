@@ -196,32 +196,36 @@ problem — is the fix or design already given, or which causes or designs remai
 | High | Several viable designs or candidate causes. | authentication, a deadlock, a flaky integration test |
 
 Volume of work and wording never raise the level, and when torn between two levels Auto picks the
-lower one. It works in any language. Auto never goes above High; higher levels (such as Extra High or
+lower one. It is not tied to one language: the judge reads the message as written (tried on English
+and Polish). Auto never goes above High; higher levels (such as Extra High or
 Max) stay an explicit choice, and picking any explicit level behaves exactly as before. Auto is offered
 only when the adapter advertises `low`, `medium` and `high`.
 
 **How it decides.** The approach follows the `auto` thinking level of
 [oh-my-pi](https://github.com/can1357/oh-my-pi) (`packages/coding-agent/src/auto-thinking`). A judge —
-Claude Haiku, run through the adapter's bundled Claude Code CLI
+Claude Haiku (the `haiku` model alias, as your Claude Code resolves it), run through the adapter's bundled Claude Code CLI
 (`claude-agent-acp --cli -p --model haiku`) with your existing sign-in — answers `low`, `medium` or
 `high`. The judge has no tools, no settings, no saved session and no reasoning budget; only the current
 message is judged, never the conversation. The message is cleaned first to cut noise (ANSI escapes,
-tool/XML envelopes and fenced code removed, commit hashes shortened, at most 2,000 characters keeping
-both ends; this is not redaction) and passed on standard input as data to judge, never as instructions.
+tool/XML envelopes and closed fenced code removed, whitespace collapsed, commit hashes shortened, at
+most 2,000 characters keeping both ends; when that would leave almost nothing, only the escapes are
+removed and the hashes shortened; this is not redaction) and passed on standard input as data to
+judge, never as instructions.
 The Auto choice survives an agent reconnect but is not remembered beyond the tool window: a new tool
 window or Visual Studio session starts on a manual level.
 
-**What it costs.** Each Auto message makes one small Haiku request against your Claude plan — up to
-three when the judge's reply has no usable level and is retried — and adds a few seconds (a CLI start
-plus the model round trip) before the message is sent. No API key and no extra configuration are
-needed.
+**What it costs.** Each Auto message makes one small Haiku request against whichever account or
+provider your Claude Code is set up with — up to three when the judge's reply has no usable level and
+is retried — and adds a few seconds (a CLI start plus the model round trip) before the message is
+sent. No API key and no extra configuration are needed.
 
 **How it stays correct.** Auto is a client-side mode: the adapter never receives an `auto` value. The
 chosen level is set through ACP and acknowledged before the message is sent. Effort applies to the
 whole session, so messages typed while an Auto message is running wait for it and then go one at a
 time, each with its own level. If the judge gives no usable answer (after two retries), fails, or takes
-longer than 15 seconds, the message keeps the last level Auto chose — High before the first — and the
-status line says why.
+longer than 15 seconds, the message runs at the last level Auto chose — High before the first — and the
+status line says why. A judge that keeps failing therefore costs up to 15 seconds per message before
+it falls back; picking a level by hand avoids the wait until it works again.
 
 ## How it works
 
@@ -302,7 +306,7 @@ rebuilt version normally, install the new `.vsix` as described in [Installation]
 
 The extension handles prompts, attached documents and images, editor contents (including unsaved
 edits), file paths and tool results. They are passed to the ACP agent and on to its model provider;
-with Auto effort, each message is additionally sent to Claude Haiku to judge its effort. The extension
+with Auto effort, each message is additionally sent to a Claude Haiku model to judge its effort. The extension
 never reads or stores your Claude credentials: sign-in and sign-out run Claude Code's own CLI, and the
 one component that reads an OAuth token — the usage-limit lookup — does so in a short-lived
 subprocess that returns only the trimmed usage JSON. See [SECURITY.md](SECURITY.md) for the full scope

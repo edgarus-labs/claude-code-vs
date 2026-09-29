@@ -29,6 +29,9 @@ public sealed class NullChatSessionServices : IChatSessionServices
     /// <summary>The design-time double has no judge to ask, so Auto effort is not offered.</summary>
     public IEffortClassifier? EffortClassifier => null;
 
+    /// <summary>The design-time double has nowhere to record to.</summary>
+    public void LogError(string message, Exception exception) { }
+
     public event EventHandler? ActiveDocumentChanged { add { } remove { } }
 
     public event EventHandler? WorkspaceRootChanged { add { } remove { } }

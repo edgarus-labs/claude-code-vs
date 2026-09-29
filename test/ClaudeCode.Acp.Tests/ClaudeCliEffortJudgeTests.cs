@@ -24,16 +24,29 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
         fs.writeFileSync(log + '.pid', String(process.pid));
         // Modes that never read stdin: the CLI failing at startup, or stalling before it reads.
         if (mode === 'fail-early') { process.stderr.write('Not logged in · Please run /login'); process.exit(1); }
+        // Exits cleanly without ever reading its input, like a CLI that ignores stdin.
+        if (mode === 'ignore-input-ok') process.exit(0);
         if (mode === 'stall') { setInterval(() => {}, 1000); return; }
+        // The real adapter runs the native CLI as a child: a tree, not one process.
+        if (mode === 'grandchild') {
+          const grandchild = require('child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+          fs.writeFileSync(log + '.grandchild.pid', String(grandchild.pid));
+          setInterval(() => {}, 1000);
+          return;
+        }
         let stdin = '';
         process.stdin.setEncoding('utf8');
         process.stdin.on('data', d => stdin += d);
         process.stdin.on('end', () => {
-          fs.appendFileSync(log, JSON.stringify({ args, stdin, maxThinking: process.env.MAX_THINKING_TOKENS ?? null }) + '\n');
+          fs.appendFileSync(log, JSON.stringify({ args, stdin, maxThinking: process.env.MAX_THINKING_TOKENS ?? null, cwd: process.cwd() }) + '\n');
           const calls = fs.readFileSync(log, 'utf8').trim().split('\n').length;
           switch (mode) {
             case 'high': process.stdout.write('`high`\n\nSeveral candidate causes remain open.'); break;
             case 'retry': process.stdout.write(calls === 1 ? 'Nie mam kontekstu.' : 'low'); break;
+            // Every run takes 900 ms, the first answering without a level.
+            case 'slow-retry': setTimeout(() => process.stdout.write(calls === 1 ? 'Nie mam kontekstu.' : 'low'), 900); break;
+            // Exits 0 with nothing on stdout.
+            case 'silent-ok': break;
             case 'never': process.stdout.write('I cannot help with that.'); break;
             case 'fail': process.stderr.write('Not logged in · Please run /login'); process.exit(1);
             case 'fail-stdout': process.stdout.write('API Error: overloaded'); process.exit(1);
@@ -62,7 +75,7 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
 
     public void Dispose()
     {
-        try { Directory.Delete(_directory, recursive: true); } catch (IOException) { }
+        try { Directory.Delete(_directory, recursive: true); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
     }
 
     private ClaudeCliEffortJudge Judge(string mode, TimeSpan? timeout = null) =>
@@ -83,8 +96,16 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
         return (Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
             .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
             .Select(directory => Path.Combine(directory, name))
-            .First(File.Exists);
+            .FirstOrDefault(File.Exists)
+            ?? throw new InvalidOperationException("These tests need node on PATH to stand in for the ACP adapter.");
     }
+
+    private List<string> Cwds() =>
+        File.ReadAllLines(_log).Select(line =>
+        {
+            using var document = JsonDocument.Parse(line);
+            return document.RootElement.GetProperty("cwd").GetString()!;
+        }).ToList();
 
     [Fact]
     public async Task Classify_AsksTheBundledCliOnceAsAToolLessHaikuJudge_WithTheStateOnStdin()
@@ -99,9 +120,14 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
         Assert.Equal("", args[Array.IndexOf(args, "--setting-sources") + 1]);
         Assert.Contains("--no-session-persistence", args);
         Assert.Contains("--strict-mcp-config", args);
+        Assert.Equal("1", args[Array.IndexOf(args, "--max-turns") + 1]);
+        Assert.Equal("text", args[Array.IndexOf(args, "--output-format") + 1]);
+        // Outside any workspace: the temp directory, never the caller's own.
+        static string Normalized(string path) => Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        Assert.Equal(Normalized(Path.GetTempPath()), Normalized(Assert.Single(Cwds())), ignoreCase: OperatingSystem.IsWindows());
         // The untrusted message never reaches the command line, and survives as UTF-8.
         Assert.DoesNotContain(args, arg => arg.Contains("zakleszczenia"));
-        // Reasoning off, as oh-my-pi's judge: with thinking a single judgment took 22-42 s, without ~4 s.
+        // Reasoning off, as oh-my-pi's judge.
         Assert.Equal("0", maxThinking);
         Assert.Equal(EffortJudgePrompt.RenderUser("znajdź przyczynę zakleszczenia między workerami"), stdin);
     }
@@ -192,7 +218,7 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
         await AssertChildGone();
     }
 
-    // F-50-33: the 15 s bound covers the whole judgment. Resolving the adapter probes the filesystem
+    // The 15 s bound covers the whole judgment. Resolving the adapter probes the filesystem
     // and cannot observe the token, so a probe stuck on an unreachable path must not hold the turn
     // past the deadline.
     [Fact]
@@ -208,7 +234,7 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
         await Assert.ThrowsAsync<TimeoutException>(() => classifying);
     }
 
-    // F-50-33: caller cancellation is honoured while the adapter is being resolved too.
+    // Caller cancellation is honoured while the adapter is being resolved too.
     [Fact]
     public async Task Classify_CallerCancelsWhileTheAdapterIsBeingResolved_EndsAtOnce()
     {
@@ -224,7 +250,7 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => classifying);
     }
 
-    // F-50-42: a deadline that expires before the child has written its pid leaves nothing to
+    // A deadline that expires before the child has written its pid leaves nothing to
     // check; it must not read as a failure of the judge.
     [Fact]
     public async Task Classify_DeadlineExpiresBeforeTheChildStarts_TimesOutAndLeavesNoChild()
@@ -233,6 +259,105 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
             () => Judge("stall", TimeSpan.FromMilliseconds(1)).ClassifyAsync("ok", CancellationToken.None));
 
         await AssertChildGone();
+    }
+
+    // The 15 s default is the issue's bound; one deadline covers every attempt, so a slow first run
+    // leaves the retries less time rather than each getting a fresh 15 s.
+    [Fact]
+    public void DefaultTimeout_IsFifteenSeconds() =>
+        Assert.Equal(TimeSpan.FromSeconds(15), ClaudeCliEffortJudge.DefaultTimeout);
+
+    [Fact]
+    public async Task Classify_OneDeadlineCoversEveryAttempt()
+    {
+        // 900 ms per run against 1.5 s: each run alone fits, the first plus the retry does not.
+        await Assert.ThrowsAsync<TimeoutException>(
+            () => Judge("slow-retry", TimeSpan.FromMilliseconds(1500)).ClassifyAsync("ok", CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Constructor_RejectsANonPositiveTimeout(int milliseconds) =>
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => new ClaudeCliEffortJudge(_ => Task.FromResult(new AcpExecutableSpec("x", Array.Empty<string>())), TimeSpan.FromMilliseconds(milliseconds)));
+
+    // Something under the judge (the host, while resolving the adapter) cancelled it, but neither
+    // the caller nor the deadline did: that is a failed judgment, not the caller's cancellation.
+    [Fact]
+    public async Task Classify_ResolverCancelledByItsHost_IsAFailureNotACancellation()
+    {
+        var judge = new ClaudeCliEffortJudge(_ => Task.FromException<AcpExecutableSpec>(new OperationCanceledException()));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => judge.ClassifyAsync("ok", CancellationToken.None));
+    }
+
+    // An empty reply within the limit is not retried (the bounded reader reports it like an oversize
+    // one, and retrying that would only repeat it); the error names both possibilities.
+    [Fact]
+    public async Task Classify_EmptyReply_FailsOnceAndSaysItWasEmpty()
+    {
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() => Judge("silent-ok").ClassifyAsync("ok", CancellationToken.None));
+
+        Assert.Contains("empty", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Single(Calls());
+    }
+
+    // A message larger than any pipe buffer, to a CLI that exits without reading it: the broken pipe
+    // must be reported as that, not as an empty reply. (RenderUser bounds real messages to a few KB,
+    // so this goes in below it.)
+    [Fact]
+    public async Task Judge_ChildClosesItsInputWithoutReadingIt_SaysSo()
+    {
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => Judge("ignore-input-ok").JudgeAsync(new string('x', 1 << 20), CancellationToken.None));
+
+        Assert.Contains("before reading", error.Message);
+    }
+
+    // The write of a large message must not hold the judgment past its deadline when the CLI never
+    // reads: with a 1 MB payload the pipe fills on every platform, so a write on the awaiting path
+    // would block here.
+    [Fact]
+    public async Task Judge_LargeMessageToACliThatNeverReadsIt_StillTimesOut_AndTheChildIsGone()
+    {
+        // Off the test's own thread, so a write that blocked the awaiting path fails the wait below
+        // instead of hanging the test.
+        var judging = Task.Run(() => Judge("stall", TimeSpan.FromSeconds(1)).JudgeAsync(new string('x', 1 << 20), CancellationToken.None));
+        var finished = await Task.WhenAny(judging, Task.Delay(TimeSpan.FromSeconds(10)));
+
+        Assert.Same(judging, finished);
+        await Assert.ThrowsAsync<TimeoutException>(() => judging);
+        await AssertChildGone();
+    }
+
+    // The adapter runs the native CLI as its child. On Windows the job object owns the whole tree,
+    // so cancelling the judgment ends the grandchild too. (Other platforms kill only the wrapper, as
+    // AcpProcessConnection does, so the tree is not asserted there.)
+    [Fact]
+    public async Task Classify_CallerCancels_TheWholeProcessTreeIsGone()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var cancel = new CancellationTokenSource();
+        var classifying = Judge("grandchild").ClassifyAsync("ok", cancel.Token);
+        var grandchildPidFile = _log + ".grandchild.pid";
+        var giveUp = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (!(File.Exists(grandchildPidFile) && File.ReadAllText(grandchildPidFile).Length > 0))
+        {
+            Assert.True(DateTime.UtcNow < giveUp, "the fake adapter never started its child");
+            await Task.Delay(20);
+        }
+
+        var grandchild = int.Parse(File.ReadAllText(grandchildPidFile), System.Globalization.CultureInfo.InvariantCulture);
+        cancel.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => classifying);
+
+        await AssertChildGone();
+        await AssertGone(grandchild);
     }
 
     private int? ReadPid() =>
@@ -253,6 +378,11 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
     private async Task AssertChildGone()
     {
         if (ReadPid() is not { } pid) return;
+        await AssertGone(pid);
+    }
+
+    private static async Task AssertGone(int pid)
+    {
         var giveUp = DateTime.UtcNow + TimeSpan.FromSeconds(5);
         while (IsAlive(pid))
         {
@@ -283,7 +413,7 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => Judge("flood").ClassifyAsync("ok", CancellationToken.None));
 
         Assert.True(watch.Elapsed < TimeSpan.FromSeconds(10), watch.Elapsed.ToString());
-        Assert.True(error.Message.Length < 1000, error.Message.Length.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        Assert.Equal("The effort judge exited with code 1.", error.Message);
     }
 
     // Over the reply bound the reader keeps nothing, so the reply is indistinguishable from an
@@ -303,7 +433,6 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => Judge("fail-silent").ClassifyAsync("ok", CancellationToken.None));
 
         Assert.Contains("code 1", error.Message);
-        Assert.Equal(error.Message.TrimEnd(), error.Message);
         Assert.False(error.Message.EndsWith(':'), error.Message);
     }
 

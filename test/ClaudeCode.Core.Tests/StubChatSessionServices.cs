@@ -37,6 +37,10 @@ internal sealed class StubChatSessionServices : IChatSessionServices
 
     public bool RemoteControlAtStartup { get; set; }
 
+    public List<(string Message, Exception Exception)> LoggedErrors { get; } = [];
+
+    public void LogError(string message, Exception exception) => LoggedErrors.Add((message, exception));
+
     public event EventHandler? ActiveDocumentChanged;
 
     public event EventHandler? WorkspaceRootChanged;

@@ -30,6 +30,10 @@ public interface IChatSessionServices
     /// <summary>Whether every new session should have Remote Control (claude.ai/code) turned on automatically.</summary>
     bool RemoteControlAtStartup { get; }
 
+    /// <summary>Records a failure that is otherwise only shown to the user as a one-line status, so a
+    /// bug report has more to go on than that line. Must not throw.</summary>
+    void LogError(string message, Exception exception);
+
     /// <summary>The judge behind the Auto effort option, asked once per Auto turn; null when the host
     /// has none, in which case Auto is not offered.</summary>
     IEffortClassifier? EffortClassifier { get; }

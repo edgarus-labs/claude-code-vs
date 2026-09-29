@@ -18,16 +18,17 @@ namespace ClaudeCode.Acp;
 /// <see cref="EffortJudgePrompt"/> question about one message. Tool-less, settings-less and not
 /// persisted; the message goes in on stdin, never on the command line. Like oh-my-pi's text judge
 /// it retries an unparseable reply twice; unlike its 4 s API call, a CLI start plus a model round
-/// trip takes seconds, so the whole judgment is bounded by <see cref="DefaultTimeout"/>.
+/// trip takes seconds, so the whole judgment - resolving the adapter and every attempt - is bounded
+/// by one <see cref="DefaultTimeout"/> (a slow first run leaves the retries less time).
 /// </summary>
 public sealed class ClaudeCliEffortJudge : IEffortClassifier
 {
     public static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(15);
     public const string JudgeModel = "haiku";
     private const int ParseRetries = 2;
-    // Reasoning off, as oh-my-pi's judge (disableReasoning). With Haiku's default thinking one
-    // judgment took 22-42 s; without it about 4 s (measured). No output cap: a capped reply that
-    // runs over makes the CLI fail instead of returning the label it already wrote first.
+    // A reply longer than this is discarded whole by the bounded reader, so it reads as an empty one.
+    // The CLI is given no output cap of its own: a capped reply that runs over makes it fail instead
+    // of returning the label it already wrote first.
     private const int MaxReplyChars = 16 * 1024;
     private const int MaxErrorChars = 4 * 1024;
     private static readonly Encoding Utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
@@ -40,29 +41,36 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
     {
         _resolveExecutable = resolveExecutable ?? throw new ArgumentNullException(nameof(resolveExecutable));
         _timeout = timeout ?? DefaultTimeout;
+        if (_timeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(timeout), timeout, "The judgment deadline must be positive.");
     }
 
     public async Task<EffortLevel> ClassifyAsync(string prompt, CancellationToken cancellationToken)
     {
         if (prompt is null) throw new ArgumentNullException(nameof(prompt));
+        return await JudgeAsync(EffortJudgePrompt.RenderUser(prompt), cancellationToken).ConfigureAwait(false);
+    }
+
+    // Judges an already rendered user turn. ClassifyAsync bounds a message to a few KB, so this is
+    // also how a test hands the judge more than any pipe buffer holds.
+    internal async Task<EffortLevel> JudgeAsync(string user, CancellationToken cancellationToken)
+    {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(_timeout);
         try
         {
             var executable = await WithinDeadlineAsync(_resolveExecutable(deadline.Token), deadline.Token).ConfigureAwait(false);
-            var user = EffortJudgePrompt.RenderUser(prompt);
             string reply = string.Empty;
             for (int attempt = 0; attempt <= ParseRetries; attempt++)
             {
                 var system = attempt == 0 ? EffortJudgePrompt.SystemPrompt : EffortJudgePrompt.RetrySystemPrompt;
                 reply = await RunAsync(executable, system, user, deadline.Token).ConfigureAwait(false);
                 if (EffortJudgePrompt.ParseReply(reply) is { } level) return level;
-                // A reply over MaxReplyChars is discarded to "" by the bounded reader: retrying would
-                // only repeat it, so it fails once, saying why.
+                // The bounded reader reports an empty reply and one over MaxReplyChars alike, as "":
+                // retrying the second would only repeat it, so neither is retried and the error names both.
                 if (reply.Trim().Length == 0)
                 {
                     throw new InvalidDataException(string.Format(CultureInfo.InvariantCulture,
-                        "The effort judge reply was empty or exceeded the {0}-character limit.", MaxReplyChars));
+                        "The effort judge gave no usable reply: it was empty or longer than the {0}-character limit.", MaxReplyChars));
                 }
             }
             throw new InvalidDataException("The effort judge replied without a level: " + Excerpt(reply));
@@ -71,6 +79,12 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
         {
             throw new TimeoutException(string.Format(CultureInfo.InvariantCulture,
                 "The effort judge did not answer within {0:0} s.", _timeout.TotalSeconds));
+        }
+        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            // Neither the caller nor the deadline cancelled: something under the judge did (the host,
+            // while resolving the adapter). That is a failed judgment, not the caller's cancellation.
+            throw new InvalidOperationException("The effort judge was cancelled by its host before it answered.", exception);
         }
     }
 
@@ -127,6 +141,8 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
             UseShellExecute = false,
             CreateNoWindow = true,
         };
+        // Reasoning off, as oh-my-pi's judge (disableReasoning): with Haiku's default thinking a
+        // judgment took 22-42 s in the measurements for PR #50, against about 4 s without it.
         startInfo.Environment["MAX_THINKING_TOKENS"] = "0";
 
         WindowsJobProcess? job = null;
@@ -175,13 +191,15 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
             _ = writing.ContinueWith(task => { _ = task.Exception; }, CancellationToken.None,
                 TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
             await ProcessExitWait.WaitForExitAsync(writing, cancellationToken).ConfigureAwait(false);
+            var inputRefused = false;
             try
             {
                 await writing.ConfigureAwait(false);
             }
             catch (IOException)
             {
-                // Broken pipe: reported through the exit code below.
+                // Broken pipe: a non-zero exit code below explains it.
+                inputRefused = true;
             }
 
             await ProcessExitWait.WaitForExitAsync(drained, cancellationToken).ConfigureAwait(false);
@@ -199,6 +217,8 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
                 throw new InvalidOperationException(string.Format(CultureInfo.InvariantCulture,
                     "The effort judge exited with code {0}{1}", process.ExitCode, excerpt.Length == 0 ? "." : ": " + excerpt));
             }
+            // Exit 0 with a broken pipe: it never read the message, so the reply below answers nothing.
+            if (inputRefused) throw new InvalidOperationException("The effort judge exited before reading the message.");
             return await reply.ConfigureAwait(false);
         }
         finally
@@ -209,8 +229,10 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
             }
             else
             {
-                Terminate(process);
-                process.Dispose();
+                // Dispose must run whatever the kill does, or the handle leaks and the kill's own
+                // failure would replace the outcome being reported.
+                try { Terminate(process); }
+                finally { process.Dispose(); }
             }
         }
     }
@@ -225,9 +247,10 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
         {
             // No live process is associated any more.
         }
-        catch (Win32Exception) when (process.HasExited)
+        catch (Win32Exception)
         {
-            // It exited between the check and the kill.
+            // Exited between the check and the kill, or cannot be killed by this user: either way
+            // this runs in a finally, where throwing would replace the outcome being reported.
         }
     }
 

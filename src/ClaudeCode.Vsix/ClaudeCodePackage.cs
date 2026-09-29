@@ -80,11 +80,22 @@ public sealed class ClaudeCodePackage : AsyncPackage
     private async Task<AcpExecutableSpec> ResolveAdapterAsync(CancellationToken cancellationToken)
     {
         await JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
-        var overridePath = GetOptions().CliExecutablePath;
+        string overridePath;
+        try
+        {
+            overridePath = GetOptions().CliExecutablePath;
+        }
+        catch (COMException exception)
+        {
+            // After IVsPackage.Close the option page can no longer be read (see ReadRemoteControlAtStartup).
+            throw new InvalidOperationException("Visual Studio is shutting down, so Auto effort cannot ask its judge.", exception);
+        }
         var resolved = await Task.Run(() => string.IsNullOrWhiteSpace(overridePath)
             ? AcpExecutableResolver.TryResolveDefault()
             : AcpExecutableResolver.TryResolve(overridePath), cancellationToken).ConfigureAwait(false);
-        return resolved ?? throw new InvalidOperationException("The Claude ACP adapter could not be resolved, so Auto effort cannot ask its judge.");
+        return resolved ?? throw new InvalidOperationException(
+            "The Claude ACP adapter could not be resolved, so Auto effort cannot ask its judge. Install it with "
+            + "'npm install -g @agentclientprotocol/claude-agent-acp' or set Tools > Options > Claude Code > ACP executable path.");
     }
 
     /// <summary>Opens (or activates) the "Implementation Plan" document tab showing <paramref name="plan"/>.</summary>

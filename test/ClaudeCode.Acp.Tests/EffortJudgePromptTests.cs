@@ -22,21 +22,46 @@ public sealed class EffortJudgePromptTests
         foreach (var name in LevelNames) Assert.Contains("`" + name.ToLowerInvariant() + "`", prompt);
         Assert.DoesNotContain("xhigh", prompt, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("`max`", prompt, StringComparison.OrdinalIgnoreCase);
-        // The state is guarded as untrusted data (issue #49 test 7); the exact sentence is not pinned.
+        // The state is guarded as untrusted data; the exact sentence is not pinned.
         Assert.Contains("untrusted", prompt, StringComparison.OrdinalIgnoreCase);
     }
 
-    // Callers index by ordinal (labels here, the effort values in the view model): each level's
-    // lowercase name must parse back to that very level.
+    // The one place a level becomes the agent's string is ToAgentValue; the judge's labels come from
+    // it, so each level's value must parse back to that very level.
     [Fact]
-    public void ParseReply_EveryEffortLevelName_ParsesToThatLevel()
+    public void ToAgentValue_IsTheLowercaseLevelName_AndParsesBackToThatLevel()
     {
         foreach (EffortLevel level in Enum.GetValues<EffortLevel>())
         {
-            Assert.Equal(level, EffortJudgePrompt.ParseReply(level.ToString().ToLowerInvariant()));
+            Assert.Equal(level.ToString().ToLowerInvariant(), level.ToAgentValue());
+            Assert.Equal(level, EffortJudgePrompt.ParseReply(level.ToAgentValue()));
         }
 
         Assert.Equal(new[] { 0, 1, 2 }, new[] { EffortLevel.Low, EffortLevel.Medium, EffortLevel.High }.Select(level => (int)level));
+    }
+
+    // A classifier is a public contract and can return a value that is no level.
+    [Fact]
+    public void ToAgentValue_ForAValueThatIsNoLevel_Faults() =>
+        Assert.Throws<ArgumentOutOfRangeException>(() => ((EffortLevel)5).ToAgentValue());
+
+    // Runs of 12 or more hex digits are shortened, whatever they are: a commit hash, or a long
+    // number. Shorter ones are left alone.
+    [Theory]
+    [InlineData("see 0123456789a here", "see 0123456789a here")]
+    [InlineData("see 0123456789ab here", "see 0123456 here")]
+    [InlineData("order 1234567890123 now", "order 1234567 now")]
+    public void Preprocess_ShortensHexRunsOfTwelveOrMoreDigits(string raw, string expected) =>
+        Assert.Equal(expected, EffortJudgePrompt.Preprocess(raw));
+
+    // Beyond the pre-clean bound the cut is marked like the final one, and the tail survives it.
+    [Fact]
+    public void Preprocess_PastThePreCleanBound_KeepsTheTailAndMarksTheOmission()
+    {
+        var result = EffortJudgePrompt.Preprocess("HEAD " + new string('x', 60_000) + " TAIL");
+
+        Assert.Contains("chars omitted", result);
+        Assert.EndsWith(" TAIL", result);
     }
 
     [Fact]

@@ -1,3 +1,4 @@
+using System;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -9,6 +10,20 @@ public enum EffortLevel
     Low = 0,
     Medium = 1,
     High = 2,
+}
+
+public static class EffortLevelExtensions
+{
+    /// <summary>The value the agent uses for this level: the one place a level becomes a string, so
+    /// reordering or extending <see cref="EffortLevel"/> cannot silently mis-map. Faults for a value
+    /// that is not a defined level, as a misbehaving <see cref="IEffortClassifier"/> could return.</summary>
+    public static string ToAgentValue(this EffortLevel level) => level switch
+    {
+        EffortLevel.Low => "low",
+        EffortLevel.Medium => "medium",
+        EffortLevel.High => "high",
+        _ => throw new ArgumentOutOfRangeException(nameof(level), level, "Not an effort level Auto may choose."),
+    };
 }
 
 /// <summary>Decides, per turn, how much reasoning effort a prompt needs.</summary>

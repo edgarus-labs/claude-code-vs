@@ -31,7 +31,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // Auto effort is a client-side choice, never a value sent to the agent: each turn is judged
     // (IEffortClassifier) and gets the agent's own low/medium/high value (EffortLevel order) just
     // before its prompt. A failed judgment keeps the last judged level, or High before the first.
-    private static readonly string[] AutoEffortValues = { "low", "medium", "high" };
+    private static readonly string[] AutoEffortValues =
+        Enum.GetValues(typeof(EffortLevel)).Cast<EffortLevel>().Select(level => level.ToAgentValue()).ToArray();
     private readonly SessionConfigValue _autoEffort = new SessionConfigValue(
         "auto", "Auto", "Low, Medium or High for each message, judged per message");
     // Whether the user picked Auto, and whether it is in force: it is only while the session offers
@@ -41,14 +42,17 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private bool _isAutoEffort;
     private EffortLevel? _lastAutoEffort;
     private CancellationTokenSource? _autoEffortStop;
-    // Whether an Auto turn has set the agent's effort since Auto was picked: only then is the
-    // agent's current level the one Auto chose, and shown next to "Auto".
+    // Whether an Auto turn has set the agent's effort since Auto was picked or the session (re)started:
+    // only then is the agent's current level the one Auto chose, and shown next to "Auto".
     private bool _autoEffortInEffect;
     // Held from the start of a judgment until the effort change is acknowledged: locks the settings
     // only, unlike IsConfigBusy, which also locks the composer.
     private bool _isJudgingEffort;
     // Set when an effort change was abandoned by Stop, so the agent's level is not known.
     private bool _effortUncertain;
+    // Held while an explicit level is being picked. The pick's own request releases the queue when it
+    // ends, before the pick has left Auto, so a follow-up released then must not be judged over it.
+    private bool _isPickingEffort;
     private ChatMessageViewModel? _currentAssistantMessage;
     private DateTimeOffset? _turnStartedAt;
     private ChatMessageViewModel? _currentUserMessage;
@@ -972,7 +976,15 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             NotifySelectionsChanged();
             return;
         }
-        await ChangeConfigAsync(_effortOption, value).ConfigureAwait(true);
+        _isPickingEffort = true;
+        try
+        {
+            await ChangeConfigAsync(_effortOption, value).ConfigureAwait(true);
+        }
+        finally
+        {
+            _isPickingEffort = false;
+        }
         // Auto is left only once the agent runs the picked level - acknowledged now, or already
         // current (no round trip). A rejected change keeps Auto, like any unacknowledged selection.
         if (_autoEffortSelected && _effortOption?.CurrentValue == value.Value)
@@ -999,6 +1011,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // judged for is gone.
     private async Task<bool> ApplyAutoEffortAsync(IAcpAgentConnection connection, string sessionId, string prompt)
     {
+        var classifier = _services.EffortClassifier;
+        if (classifier is null) return true;
         _isJudgingEffort = true;
         NotifyStateChanged();
         var previousActivity = ActivityText;
@@ -1015,12 +1029,20 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             {
                 try
                 {
-                    judged = await _services.EffortClassifier!.ClassifyAsync(prompt, stop.Token).ConfigureAwait(true);
+                    judged = await classifier.ClassifyAsync(prompt, stop.Token).ConfigureAwait(true);
+                    // A classifier is a public contract: a value outside the enum is no verdict.
+                    if (judged is { } verdict && !Enum.IsDefined(typeof(EffortLevel), verdict))
+                        throw new System.IO.InvalidDataException("The effort judge returned an unknown level (" + (int)verdict + ").");
                 }
                 // Only Stop and dispose cancel `stop`, so this is Stop's answer whatever becomes of the
                 // agent's own cancel request; a cancellation the judge ends in by itself is a failure.
                 catch (OperationCanceledException) when (stop.IsCancellationRequested) { return false; }
-                catch (Exception ex) { failure = ex.Message; }
+                catch (Exception ex)
+                {
+                    judged = null;
+                    failure = Describe(ex);
+                    _services.LogError("Auto effort could not judge a message.", ex);
+                }
                 if (stop.IsCancellationRequested) return false;
             }
 
@@ -1028,11 +1050,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             if (!IsCurrentSession(connection, sessionId)) return false;
             EffortLevel level = judged ?? _lastAutoEffort ?? EffortLevel.High;
             if (judged is not null) _lastAutoEffort = level;
-            if (failure is not null) StatusMessage = $"Auto effort could not judge this message, so it stays at {level}: {failure}";
+            if (failure is not null) StatusMessage = $"Auto effort could not judge this message, so it runs at {level}: {failure}";
             var option = _effortOption;
             // The agent stopped offering an effort while judging: nothing to set, the turn goes as it is.
             if (option is null) return true;
-            var value = AutoEffortValues[(int)level];
+            var value = level.ToAgentValue();
+            // ... or stopped offering this level (a config update meanwhile, which also ended Auto).
+            if (!option.Options.Any(candidate => candidate.Value == value)) return true;
             if (option.CurrentValue != value || _effortUncertain)
             {
                 IReadOnlyList<SessionConfigOption> options;
@@ -1040,12 +1064,18 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 {
                     options = await connection.SetSessionConfigOptionAsync(sessionId, option.Id, value, stop.Token).ConfigureAwait(true);
                 }
-                catch (OperationCanceledException) when (stop.IsCancellationRequested && !_disposed)
+                catch (Exception) when (stop.IsCancellationRequested && !_disposed)
                 {
-                    // The agent may already have applied the change: the local level is unknown
-                    // until it reports one, so the next Auto turn sets its own again.
+                    // Whatever the request ends in after Stop, the user stopped it. The agent may
+                    // already have applied the change: the local level is unknown until it reports
+                    // one, so the next Auto turn sets its own again and the picker names no level.
                     _effortUncertain = true;
+                    _autoEffortInEffect = false;
                     return false;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    throw new InvalidOperationException($"Auto effort could not set the effort to {value}: {Describe(ex)}", ex);
                 }
                 if (!IsCurrentSession(connection, sessionId)) return false;
                 ApplyConfigOptions(options);
@@ -1062,6 +1092,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             NotifySelectionsChanged();
         }
     }
+
+    private static string Describe(Exception exception) =>
+        string.IsNullOrEmpty(exception.Message) ? exception.GetType().Name : exception.Message;
 
     private bool IsCurrentSession(IAcpAgentConnection connection, string sessionId) =>
         !_disposed && ReferenceEquals(connection, _connection) && sessionId == _sessionId;
@@ -1084,7 +1117,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         try
         {
             var options = await connection.SetSessionConfigOptionAsync(sessionId, option.Id, value.Value, _lifetime.Token).ConfigureAwait(true);
-            if (!_disposed && ReferenceEquals(connection, _connection) && sessionId == _sessionId)
+            if (IsCurrentSession(connection, sessionId))
                 ApplyConfigOptions(options);
         }
         catch (OperationCanceledException) when (_disposed) { }
@@ -1399,13 +1432,19 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             }
             var (connection, sessionId) = await EnsureConnectedAsync(_lifetime.Token).ConfigureAwait(true);
             if (_disposed) return;
-            if (_isAutoEffort && !joining)
+            // Only a turn that starts alone is judged: a joining one (a message sent ahead into a
+            // running turn, which Auto never does) shares that turn's effort. Not while an explicit
+            // level is being picked either: that pick, not the judge, governs this turn.
+            if (_isAutoEffort && !_isPickingEffort && !joining)
             {
                 var ready = await ApplyAutoEffortAsync(connection, sessionId, promptText).ConfigureAwait(true);
                 if (_disposed) return;
                 // A session lost while judging (agent died, sign-out, workspace switch) took with it
-                // whatever this turn was going to be sent to; the draft stays where it is.
+                // whatever this turn was going to be sent to. A live draft stays in the composer; a
+                // queued message goes with its queue (see the tail below).
                 sessionLost = !IsCurrentSession(connection, sessionId);
+                if (sessionLost && queued is null && string.IsNullOrEmpty(StatusMessage))
+                    StatusMessage = "The session changed while judging effort, so your message was not sent.";
                 // Stop pressed while judging had no prompt to cancel: the turn ends here, before
                 // prepare() takes the draft, instead of starting once the verdict arrives. Control
                 // still reaches the tail below, which sends the follow-ups Stop leaves queued.
@@ -1664,7 +1703,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         // again ahead of them (OnPromptReturned). RunTurnAsync's tail sends them once every
         // cancelled prompt has returned.
         if (IsBusy) _isStopping = true;
-        _autoEffortStop?.Cancel();
+        var judging = _autoEffortStop;
+        judging?.Cancel();
+        // A turn being judged has no prompt in flight at the agent, so there is nothing to cancel
+        // there: the judgment ends and, with it, the turn (RunTurnAsync).
+        if (judging is not null) return;
         try
         {
             await _connection.CancelAsync(_sessionId, _lifetime.Token).ConfigureAwait(true);
@@ -1984,6 +2027,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private void ApplyConfigOptions(IReadOnlyList<SessionConfigOption> options)
     {
+        // Whatever the agent reports is its level now; only that clears the doubt Stop left behind.
         _effortUncertain = false;
         _modelOption = options.FirstOrDefault(option => option.Category == "model")
             ?? options.FirstOrDefault(option => option.Id == "model");

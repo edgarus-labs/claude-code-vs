@@ -43,6 +43,9 @@ internal sealed class VsChatSessionServices : IChatSessionServices
 
     public IEffortClassifier? EffortClassifier { get; }
 
+    public void LogError(string message, Exception exception) =>
+        ActivityLog.TryLogError("Claude Code", message + " " + exception);
+
     public event EventHandler? ActiveDocumentChanged
     {
         add => _editorDocumentTracker.ActiveDocumentChanged += value;
