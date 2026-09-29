@@ -30,12 +30,16 @@ reads, logs, or stores the resulting credentials; only the process exit code and
 status probe's JSON cross back into the extension. When `auth logout` fails, the last 4 KB of its
 stderr is written to the Visual Studio ActivityLog for diagnosis (never shown in the UI).
 
-With **Auto effort** selected, each message is also judged by Claude Haiku before it is sent:
-the extension runs the same resolved adapter executable's bundled CLI in print mode
-(`--cli -p --model haiku`) with no tools, no settings, no MCP servers and no saved session,
-from a working directory outside the workspace. The cleaned message (at most 2,000 characters)
-goes to the CLI on standard input as untrusted data to judge, never on the command line, and
-the judge's only effect is choosing the `low`/`medium`/`high` effort for that message.
+With **Auto effort** selected, each message is also judged before it is sent: the extension runs
+the same resolved adapter executable's bundled CLI in print mode (`--cli -p --model haiku`, so
+Claude Haiku by default) with no tools, no settings files, no MCP servers and no saved session,
+from a working directory outside the workspace. The CLI inherits Visual Studio's environment, so
+the message goes to whichever model provider your Claude Code is configured for. The message
+(shortened to at most 2,000 characters) goes to the CLI on standard input as untrusted data to
+judge, never on the command line; only the current message is sent, without attachments or
+conversation history. The shortening removes noise such as ANSI escapes, XML envelopes and fenced
+code; it is not a redaction step, so anything else you type is sent as written. The judge's only
+effect is choosing the `low`/`medium`/`high` effort for that message.
 
 In-scope concerns include (but are not limited to): the Visual Studio extension
 (`ClaudeCode.Vsix`), the ACP transport (`ClaudeCode.Acp`), the VS-control MCP bridge

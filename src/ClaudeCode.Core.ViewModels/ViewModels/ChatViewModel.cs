@@ -36,6 +36,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         "auto", "Auto", "Low, Medium or High for each message, judged per message");
     private bool _isAutoEffort;
     private EffortLevel? _lastAutoEffort;
+    private CancellationTokenSource? _autoEffortStop;
     // Whether an Auto turn has set the agent's effort since Auto was picked: only then is the
     // agent's current level the one Auto chose, and shown next to "Auto".
     private bool _autoEffortInEffect;
@@ -988,27 +989,42 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private async Task ApplyAutoEffortAsync(IAcpAgentConnection connection, string sessionId, string prompt)
     {
         IsConfigBusy = true;
+        var previousActivity = ActivityText;
+        ActivityText = "Judging effort…";
+        // Stop has no prompt to cancel yet, so it cancels this instead (CancelCoreAsync).
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        _autoEffortStop = stop;
         try
         {
-            EffortLevel level;
-            try
+            // An attachment-only message gives the judge nothing to weigh.
+            EffortLevel? judged = null;
+            string? failure = null;
+            if (!string.IsNullOrWhiteSpace(prompt))
             {
-                level = await _services.EffortClassifier!.ClassifyAsync(prompt, _lifetime.Token).ConfigureAwait(true);
-                _lastAutoEffort = level;
-            }
-            catch (OperationCanceledException) when (_disposed) { throw; }
-            catch (Exception ex)
-            {
-                level = _lastAutoEffort ?? EffortLevel.High;
-                if (!_disposed) StatusMessage = $"Auto effort could not judge this message, so it stays at {level}: {ex.Message}";
+                try
+                {
+                    judged = await _services.EffortClassifier!.ClassifyAsync(prompt, stop.Token).ConfigureAwait(true);
+                }
+                catch (OperationCanceledException) when (_disposed) { throw; }
+                catch (OperationCanceledException) when (_isStopping) { return; }
+                catch (Exception ex) { failure = ex.Message; }
+                if (_disposed || _isStopping) return;
             }
 
+            EffortLevel level = judged ?? _lastAutoEffort ?? EffortLevel.High;
+            if (judged is not null) _lastAutoEffort = level;
+            if (failure is not null) StatusMessage = $"Auto effort could not judge this message, so it stays at {level}: {failure}";
             var option = _effortOption;
             var value = AutoEffortValues[(int)level];
             if (_disposed || option is null) return;
             if (option.CurrentValue != value)
             {
-                var options = await connection.SetSessionConfigOptionAsync(sessionId, option.Id, value, _lifetime.Token).ConfigureAwait(true);
+                IReadOnlyList<SessionConfigOption> options;
+                try
+                {
+                    options = await connection.SetSessionConfigOptionAsync(sessionId, option.Id, value, stop.Token).ConfigureAwait(true);
+                }
+                catch (OperationCanceledException) when (_isStopping && !_disposed) { return; }
                 if (!_disposed && ReferenceEquals(connection, _connection) && sessionId == _sessionId)
                     ApplyConfigOptions(options);
             }
@@ -1016,6 +1032,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
         finally
         {
+            _autoEffortStop = null;
+            if (!_disposed) ActivityText = previousActivity;
             IsConfigBusy = false;
             NotifySelectionsChanged();
         }
@@ -1337,6 +1355,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         bool joining = _runningTurns++ > 0;
         bool submitted = false;
         bool failed = false;
+        bool stoppedWhileJudging = false;
         string? stopReason = null;
         try
         {
@@ -1353,24 +1372,29 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             if (_isAutoEffort && !joining)
             {
                 await ApplyAutoEffortAsync(connection, sessionId, promptText).ConfigureAwait(true);
+                if (_disposed) return;
                 // Stop pressed while judging had no prompt to cancel: the turn ends here, before
-                // prepare() takes the draft, instead of starting once the verdict arrives.
-                if (_disposed || _isStopping) return;
+                // prepare() takes the draft, instead of starting once the verdict arrives. Control
+                // still reaches the tail below, which sends the follow-ups Stop leaves queued.
+                stoppedWhileJudging = _isStopping;
             }
-            var (text, attachments) = prepare();
-            var content = new List<ContentBlock>(attachments.Count + 1);
-            if (text.Length > 0) content.Add(new ContentBlock.Text(text));
-            foreach (var attachment in attachments)
-                content.Add(attachment.ToContentBlock());
+            if (!stoppedWhileJudging)
+            {
+                var (text, attachments) = prepare();
+                var content = new List<ContentBlock>(attachments.Count + 1);
+                if (text.Length > 0) content.Add(new ContentBlock.Text(text));
+                foreach (var attachment in attachments)
+                    content.Add(attachment.ToContentBlock());
 
-            // A joining prompt waits in the agent's queue: the running turn keeps its bubble.
-            if (!joining) _currentAssistantMessage = null;
-            _submittedPrompts.Add(queued);
-            submitted = true;
-            if (_submittedPrompts.Count == 1) queued?.Bubble.MarkSent();
-            // Once the running prompt is submitted, acceptance is ambiguous on transport failure: it is
-            // not restored or resent. (A sent-ahead prompt is judged in OnPromptReturned.)
-            stopReason = await connection.SendPromptAsync(sessionId, content, _lifetime.Token).ConfigureAwait(true);
+                // A joining prompt waits in the agent's queue: the running turn keeps its bubble.
+                if (!joining) _currentAssistantMessage = null;
+                _submittedPrompts.Add(queued);
+                submitted = true;
+                if (_submittedPrompts.Count == 1) queued?.Bubble.MarkSent();
+                // Once the running prompt is submitted, acceptance is ambiguous on transport failure: it is
+                // not restored or resent. (A sent-ahead prompt is judged in OnPromptReturned.)
+                stopReason = await connection.SendPromptAsync(sessionId, content, _lifetime.Token).ConfigureAwait(true);
+            }
         }
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex)
@@ -1597,6 +1621,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         // again ahead of them (OnPromptReturned). RunTurnAsync's tail sends them once every
         // cancelled prompt has returned.
         if (IsBusy) _isStopping = true;
+        _autoEffortStop?.Cancel();
         try
         {
             await _connection.CancelAsync(_sessionId, _lifetime.Token).ConfigureAwait(true);

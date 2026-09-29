@@ -205,9 +205,10 @@ only when the adapter advertises `low`, `medium` and `high`.
 Claude Haiku, run through the adapter's bundled Claude Code CLI
 (`claude-agent-acp --cli -p --model haiku`) with your existing sign-in — answers `low`, `medium` or
 `high`. The judge has no tools, no settings, no saved session and no reasoning budget; only the current
-message is judged, never the conversation. The message is cleaned first (ANSI escapes, tool/XML
-envelopes and fenced code removed, commit hashes shortened, at most 2,000 characters keeping both ends)
-and passed on standard input as data to judge, never as instructions.
+message is judged, never the conversation. The message is cleaned first to cut noise (ANSI escapes,
+tool/XML envelopes and fenced code removed, commit hashes shortened, at most 2,000 characters keeping
+both ends; this is not redaction) and passed on standard input as data to judge, never as instructions.
+The Auto choice is not remembered: a new tool window or Visual Studio session starts on a manual level.
 
 **What it costs.** Each Auto message makes one small Haiku request against your Claude plan and adds
 a few seconds (a CLI start plus the model round trip) before the message is sent. No API key and no

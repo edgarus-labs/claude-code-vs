@@ -54,9 +54,16 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
             string reply = string.Empty;
             for (int attempt = 0; attempt <= ParseRetries; attempt++)
             {
-                var system = attempt == 0 ? EffortJudgePrompt.System : EffortJudgePrompt.RetrySystem;
+                var system = attempt == 0 ? EffortJudgePrompt.SystemPrompt : EffortJudgePrompt.RetrySystemPrompt;
                 reply = await RunAsync(executable, system, user, deadline.Token).ConfigureAwait(false);
                 if (EffortJudgePrompt.ParseReply(reply) is { } level) return level;
+                // A reply over MaxReplyChars is discarded to "" by the bounded reader: retrying would
+                // only repeat it, so it fails once, saying why.
+                if (reply.Trim().Length == 0)
+                {
+                    throw new InvalidDataException(string.Format(CultureInfo.InvariantCulture,
+                        "The effort judge reply was empty or exceeded the {0}-character limit.", MaxReplyChars));
+                }
             }
             throw new InvalidDataException("The effort judge replied without a level: " + Excerpt(reply));
         }
@@ -91,7 +98,9 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
         {
             FileName = executable.FileName,
             Arguments = ProcessArgumentEscaping.ToArgumentsString(Arguments(executable, system)),
-            // Outside any project, so no workspace instructions or settings can colour the verdict.
+            // Outside any workspace, so the workspace's own instruction files are not picked up. The
+            // user's own settings are excluded by --setting-sources, but user-level memory (such as a
+            // home-directory CLAUDE.md) is not known to be, so the verdict is not proven uncoloured.
             WorkingDirectory = Path.GetTempPath(),
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
@@ -114,7 +123,15 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
         else
         {
             process = new Process { StartInfo = startInfo };
-            process.Start();
+            try
+            {
+                process.Start();
+            }
+            catch
+            {
+                process.Dispose();
+                throw;
+            }
             (input, output, error) = (process.StandardInput.BaseStream, process.StandardOutput.BaseStream, process.StandardError.BaseStream);
         }
 
@@ -149,14 +166,19 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
             }
 
             await ProcessExitWait.WaitForExitAsync(drained, cancellationToken).ConfigureAwait(false);
-            await ProcessExitWait.WaitForExitAsync(Task.Run(process.WaitForExit, CancellationToken.None), cancellationToken).ConfigureAwait(false);
+            var exited = Task.Run(process.WaitForExit, CancellationToken.None);
+            // Observed like the tasks above: Dispose in finally may race an abandoned wait.
+            _ = exited.ContinueWith(task => { _ = task.Exception; }, CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            await ProcessExitWait.WaitForExitAsync(exited, cancellationToken).ConfigureAwait(false);
             if (process.ExitCode != 0)
             {
                 // API errors arrive on stdout with nothing on stderr.
                 var details = await stderr.ConfigureAwait(false);
                 if (details.Trim().Length == 0) details = await reply.ConfigureAwait(false);
+                var excerpt = Excerpt(details);
                 throw new InvalidOperationException(string.Format(CultureInfo.InvariantCulture,
-                    "The effort judge exited with code {0}: {1}", process.ExitCode, Excerpt(details)));
+                    "The effort judge exited with code {0}{1}", process.ExitCode, excerpt.Length == 0 ? "." : ": " + excerpt));
             }
             return await reply.ConfigureAwait(false);
         }

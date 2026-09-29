@@ -21,6 +21,7 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
         const fs = require('fs');
         const [mode, log] = process.argv.slice(2, 4);
         const args = process.argv.slice(4);
+        fs.writeFileSync(log + '.pid', String(process.pid));
         // Modes that never read stdin: the CLI failing at startup, or stalling before it reads.
         if (mode === 'fail-early') { process.stderr.write('Not logged in · Please run /login'); process.exit(1); }
         if (mode === 'stall') { setInterval(() => {}, 1000); return; }
@@ -36,6 +37,11 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
             case 'never': process.stdout.write('I cannot help with that.'); break;
             case 'fail': process.stderr.write('Not logged in · Please run /login'); process.exit(1);
             case 'fail-stdout': process.stdout.write('API Error: overloaded'); process.exit(1);
+            case 'fail-silent': process.exit(1);
+            case 'oversize': process.stdout.write('x'.repeat(20000)); break;
+            case 'flood':
+              process.stderr.write('e'.repeat(100000), () => process.stdout.write('o'.repeat(20000), () => process.exit(1)));
+              break;
             case 'hang': setInterval(() => {}, 1000); break;
           }
         });
@@ -44,6 +50,7 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
     private readonly string _directory = Path.Combine(Path.GetTempPath(), "effort-judge-" + Guid.NewGuid().ToString("N"));
     private readonly string _script;
     private readonly string _log;
+    private string _pidFile => _log + ".pid";
 
     public ClaudeCliEffortJudgeTests()
     {
@@ -87,7 +94,7 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
         Assert.Equal(EffortLevel.High, level);
         var (args, stdin, maxThinking) = Assert.Single(Calls());
         Assert.Equal(new[] { "--cli", "-p", "--model", "haiku" }, args.Take(4));
-        Assert.Equal(EffortJudgePrompt.System, args[Array.IndexOf(args, "--system-prompt") + 1]);
+        Assert.Equal(EffortJudgePrompt.SystemPrompt, args[Array.IndexOf(args, "--system-prompt") + 1]);
         Assert.Equal("", args[Array.IndexOf(args, "--tools") + 1]);
         Assert.Equal("", args[Array.IndexOf(args, "--setting-sources") + 1]);
         Assert.Contains("--no-session-persistence", args);
@@ -107,7 +114,7 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
         Assert.Equal(EffortLevel.Low, level);
         var calls = Calls();
         Assert.Equal(2, calls.Count);
-        Assert.Equal(EffortJudgePrompt.RetrySystem, calls[1].Args[Array.IndexOf(calls[1].Args, "--system-prompt") + 1]);
+        Assert.Equal(EffortJudgePrompt.RetrySystemPrompt, calls[1].Args[Array.IndexOf(calls[1].Args, "--system-prompt") + 1]);
     }
 
     [Fact]
@@ -140,35 +147,122 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
 
         Assert.Contains("2 s", error.Message);
         Assert.True(watch.Elapsed < TimeSpan.FromSeconds(10), watch.Elapsed.ToString());
+        await AssertChildGone();
     }
 
-    [Fact]
-    public async Task Classify_CallerCancels_IsCancellationNotTimeout()
-    {
-        using var cancel = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Judge("hang").ClassifyAsync("ok", cancel.Token));
-    }
-
-    // A large message fills the stdin pipe; the CLI exiting (or stalling) before it reads stdin
-    // must still surface its own error, or the timeout, never a broken pipe or a hang.
-    private static readonly string LargeMessage = new string('ż', 5000);
+    // RenderUser bounds the state to 2,000 chars, so through the public API the stdin payload stays
+    // near 4 KB and does not fill a Linux (64 KB) pipe, at most Windows' small one; the blocked-write
+    // path in RunAsync is therefore not reliably reachable here. This pins that a CLI which exits or
+    // stalls before reading stdin surfaces its own error, or the timeout, never a broken pipe or a hang.
+    private static readonly string OversizedMessage = new string('ż', 5000);
 
     [Fact]
     public async Task Classify_CliExitsBeforeReadingStdin_ReportsItsErrorNotABrokenPipe()
     {
         var error = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => Judge("fail-early").ClassifyAsync(LargeMessage, CancellationToken.None));
+            () => Judge("fail-early").ClassifyAsync(OversizedMessage, CancellationToken.None));
 
         Assert.Contains("Not logged in", error.Message);
     }
 
     [Fact]
-    public async Task Classify_CliNeverReadsStdin_TimesOut()
+    public async Task Classify_CliNeverReadsStdin_TimesOut_AndTheChildIsGone()
     {
         var watch = Stopwatch.StartNew();
         await Assert.ThrowsAsync<TimeoutException>(
-            () => Judge("stall", TimeSpan.FromSeconds(2)).ClassifyAsync(LargeMessage, CancellationToken.None));
+            () => Judge("stall", TimeSpan.FromSeconds(2)).ClassifyAsync(OversizedMessage, CancellationToken.None));
 
         Assert.True(watch.Elapsed < TimeSpan.FromSeconds(10), watch.Elapsed.ToString());
+        await AssertChildGone();
+    }
+
+    [Fact]
+    public async Task Classify_CallerCancels_TheChildIsGone()
+    {
+        using var cancel = new CancellationTokenSource();
+        var classifying = Judge("hang").ClassifyAsync("ok", cancel.Token);
+        await WaitForPidFile();
+        cancel.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => classifying);
+        await AssertChildGone();
+    }
+
+    private int ReadPid() => int.Parse(File.ReadAllText(_pidFile), System.Globalization.CultureInfo.InvariantCulture);
+
+    private async Task WaitForPidFile()
+    {
+        var giveUp = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (!(File.Exists(_pidFile) && File.ReadAllText(_pidFile).Length > 0))
+        {
+            Assert.True(DateTime.UtcNow < giveUp, "the fake adapter never started");
+            await Task.Delay(20);
+        }
+    }
+
+    // The kill/dispose has run by the time ClassifyAsync throws, but the OS may take a moment.
+    private async Task AssertChildGone()
+    {
+        int pid = ReadPid();
+        var giveUp = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (IsAlive(pid))
+        {
+            Assert.True(DateTime.UtcNow < giveUp, $"child {pid} is still running");
+            await Task.Delay(50);
+        }
+    }
+
+    private static bool IsAlive(int pid)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(pid);
+            return !process.HasExited;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    // Output far beyond the reply/error bounds while both pipes are open: the judge must keep
+    // draining (no deadlock on a full pipe), finish long before its deadline and report bounded text.
+    [Fact]
+    public async Task Classify_CliFloodsBothPipesAndFails_FinishesWithBoundedError()
+    {
+        var watch = Stopwatch.StartNew();
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => Judge("flood").ClassifyAsync("ok", CancellationToken.None));
+
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(10), watch.Elapsed.ToString());
+        Assert.True(error.Message.Length < 1000, error.Message.Length.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    // Over the reply bound the reader keeps nothing, so the reply is indistinguishable from an
+    // empty one: retrying would only repeat it, and the error must say why.
+    [Fact]
+    public async Task Classify_ReplyOverTheLimit_FailsOnceAndSaysSo()
+    {
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() => Judge("oversize").ClassifyAsync("ok", CancellationToken.None));
+
+        Assert.Contains("limit", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Single(Calls());
+    }
+
+    [Fact]
+    public async Task Classify_CliFailsWithoutAnyOutput_ReportsTheExitCodeWithoutATrailingColon()
+    {
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => Judge("fail-silent").ClassifyAsync("ok", CancellationToken.None));
+
+        Assert.Contains("code 1", error.Message);
+        Assert.Equal(error.Message.TrimEnd(), error.Message);
+        Assert.False(error.Message.EndsWith(':'), error.Message);
+    }
+
+    [Fact]
+    public async Task Classify_AdapterCannotStart_SurfacesTheStartFailure()
+    {
+        var judge = new ClaudeCliEffortJudge(_ => Task.FromResult(new AcpExecutableSpec(Path.Combine(_directory, "no-such-adapter"), Array.Empty<string>())));
+
+        await Assert.ThrowsAsync<System.ComponentModel.Win32Exception>(() => judge.ClassifyAsync("ok", CancellationToken.None));
     }
 }
