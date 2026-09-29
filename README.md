@@ -255,7 +255,7 @@ instance described above.
   - **marketplace** publishes the `.vsix` to the Visual Studio Marketplace under the publisher ID
     `edgarus-labs` (`src/ClaudeCode.Vsix/publishManifest.json`, which must match the `.vsixmanifest`
     `Identity/@Publisher`), using a Marketplace personal access token stored in the `VS_MARKETPLACE_PAT`
-    repository secret. A missing token, a publisher mismatch or a rejected upload fails the job.
+    secret of the `marketplace` GitHub environment. A missing token, a publisher mismatch or a rejected upload fails the job.
 
   If either publishing job fails, the run fails while the `release-vsix` artifact stays available. Fix the
   cause (for example the token) and use **Re-run failed jobs**: it republishes the same artifact and repeats

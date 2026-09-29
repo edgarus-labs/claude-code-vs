@@ -13,7 +13,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 if ([string]::IsNullOrWhiteSpace($PersonalAccessToken)) {
-    throw 'The Visual Studio Marketplace personal access token is empty; configure the VS_MARKETPLACE_PAT repository secret.'
+    throw 'The Visual Studio Marketplace personal access token is empty; configure the VS_MARKETPLACE_PAT secret in the marketplace environment.'
 }
 
 $marketplacePublisher = (Get-Content -Path $PublishManifestPath -Raw | ConvertFrom-Json).publisher
