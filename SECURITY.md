@@ -6,13 +6,18 @@ details.
 
 ## Reporting a vulnerability
 
-This repository is public. Report vulnerabilities privately through GitHub's
-[private vulnerability reporting](https://docs.github.com/en/code-security/how-tos/report-and-fix-vulnerabilities/configure-vulnerability-reporting/configure-for-a-repository):
-**Security → Report a vulnerability** on this repository. Never post exploit details,
-credentials, or personal data in a public issue.
+This repository is private. GitHub's
+[private vulnerability reporting](https://docs.github.com/en/code-security/how-tos/report-and-fix-vulnerabilities/configure-vulnerability-reporting/configure-for-a-repository)
+is available for public repositories, so it is not a reporting route for this repository.
+No dedicated private reporting address is currently published in this repository or the
+[Edgarus Labs organization profile](https://github.com/edgarus-labs). There is therefore no
+documented private reporting route at present; a maintainer must provide one before this
+gap can be resolved. Do not post exploit details, credentials, or personal data in an
+issue, and do not assume an issue is visible only to security maintainers.
 
-Include the affected version/commit, a description of the issue, and reproduction steps or a
-proof of concept, with unrelated sensitive data removed.
+Once a private channel is established, include the affected version/commit, a description
+of the issue, and reproduction steps or a proof of concept, with unrelated sensitive data
+removed.
 
 ## Scope
 
@@ -28,24 +33,9 @@ executable the sign-in status probe already uses (never a path or command derive
 untrusted input) to run its bundled CLI auth commands. The extension process itself never
 reads, logs, or stores the resulting credentials; only the process exit code and the existing
 status probe's JSON cross back into the extension. When `auth logout` fails, the last 4 KB of its
-stderr is written to the Visual Studio ActivityLog for diagnosis (never shown in the UI). Auto
-effort judge failures log the exception and show a status message with an error type or exit code,
-not raw judge stdout or stderr, which could echo the message.
+stderr is written to the Visual Studio ActivityLog for diagnosis (never shown in the UI).
 
-With **Auto effort** selected, each message is also judged before it is sent: the extension runs
-the same resolved adapter executable's bundled CLI in print mode (`--cli -p --model haiku`, so
-Claude Haiku by default) with no tools, no settings files, no MCP servers and no saved session,
-from the system temporary directory rather than your workspace (the CLI may still read user-level
-instruction files such as a CLAUDE.md in your home directory or above the temporary directory). The
-CLI reads no Claude Code settings; it inherits Visual Studio's environment and uses your sign-in, so
-a provider or gateway configured only in `settings.json` (`env` block, `apiKeyHelper`) is not used
-for the judge: Auto then falls back, or, if you are also signed in to Anthropic, the message goes to
-Anthropic. The message
-(shortened to at most 2,000 characters) goes to the CLI on standard input as untrusted data to
-judge, never on the command line; only the current message is sent, without attachments or
-conversation history. The shortening removes noise such as ANSI escapes, XML envelopes and closed
-fenced code (unless that would leave almost nothing); it is not a redaction step, so anything else you type is sent as written. The judge's only
-effect is choosing the `low`/`medium`/`high` effort for that message.
+With **Auto effort** selected, each message is also judged before it is sent: the extension runs the same resolved adapter executable's bundled CLI in print mode (`--cli -p --model haiku`, so Claude Haiku by default) with no tools, no settings files, no MCP servers and no saved session, from the system temporary directory rather than your workspace (the CLI may still read user-level instruction files such as a CLAUDE.md in your home directory or above the temporary directory). The CLI reads no Claude Code settings; it inherits Visual Studio's environment and uses your sign-in, so a provider or gateway configured only in `settings.json` (`env` block, `apiKeyHelper`) is not used for the judge: Auto then falls back, or, if you are also signed in to Anthropic, the message goes to Anthropic. The message (shortened to at most 2,000 characters) goes to the CLI on standard input as untrusted data to judge, never on the command line; only the current message is sent, without attachments or conversation history. The shortening removes noise such as ANSI escapes, XML envelopes and closed fenced code (unless that would leave almost nothing); it is not a redaction step, so anything else you type is sent as written. The judge's only effect is choosing the `low`/`medium`/`high` effort for that message. Judge failures are logged as an exception and shown as a status message with an error type or exit code, never raw judge stdout or stderr, which could echo the message.
 
 In-scope concerns include (but are not limited to): the Visual Studio extension
 (`ClaudeCode.Vsix`), the ACP transport (`ClaudeCode.Acp`), the VS-control MCP bridge
