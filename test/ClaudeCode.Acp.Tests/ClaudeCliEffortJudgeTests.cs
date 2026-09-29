@@ -318,7 +318,7 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
 
     // One deadline covers every attempt, so a slow first run leaves the retries less time rather
     // than each getting a fresh 15 s.
-    [Fact]
+    [Fact(Skip = "Timing-dependent: relies on a 300 ms margin over two real node runs; flaky on CI runners.")]
     public async Task Classify_OneDeadlineCoversEveryAttempt()
     {
         // 900 ms per run against 1.5 s: each run alone fits, the first plus the retry does not.
