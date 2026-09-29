@@ -18,17 +18,6 @@
 
   <ItemGroup>
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.3.2" />
-    <!-- Local inference for Auto effort (Effort\MiniLmEncoder.cs). The managed API is netstandard2.0 and
-         depends only on System.Memory; the package also carries the native win-x64/linux-x64 runtimes. -->
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.30.0" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <!-- Auto effort's local classifier: frozen all-MiniLM-L6-v2 (Apache-2.0) plus the trained
-         384 -> 3 head. Loaded lazily from beside the assembly, only when Auto is used. -->
-    <Content Include="Effort\Model\**\*.*">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
   </ItemGroup>
 
   <ItemGroup>

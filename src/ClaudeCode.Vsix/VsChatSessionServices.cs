@@ -1,5 +1,4 @@
 using ClaudeCode.Contracts;
-using ClaudeCode.Core.Effort;
 using ClaudeCode.Core.ViewModels;
 using Community.VisualStudio.Toolkit;
 using Microsoft.VisualStudio;

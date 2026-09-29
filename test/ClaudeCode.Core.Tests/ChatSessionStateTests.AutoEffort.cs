@@ -1,5 +1,4 @@
 using ClaudeCode.Contracts;
-using ClaudeCode.Core.Effort;
 using ClaudeCode.Core.ViewModels;
 using System;
 using System.Collections.Generic;
@@ -121,6 +120,47 @@ public sealed partial class ChatSessionStateTests
         Assert.Same(Auto(vm), vm.SelectedEffort);
     }
 
+    // The picker shows which level Auto is running at, not just "Auto", and the bound labels are
+    // told to refresh when the judgment lands. Re-selecting Auto forgets the previous verdict.
+    [Fact]
+    public async Task AutoTurn_ShowsTheChosenLevelInThePicker()
+    {
+        var (connection, _) = AutoConnection("medium");
+        var classifier = new FakeEffortClassifier { Handler = _ => Task.FromResult(EffortLevel.High) };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+        Assert.Equal("Auto", vm.ActiveEffortName);
+        var changed = new List<string?>();
+        vm.PropertyChanged += (_, e) => changed.Add(e.PropertyName);
+
+        await SendTextAsync(vm, "design the sync protocol");
+
+        Assert.Equal("Auto · high", vm.ActiveEffortName);
+        Assert.Equal("Sonnet · Auto · high", vm.ModelEffortLabel);
+        Assert.Contains(nameof(ChatViewModel.ActiveEffortName), changed);
+        Assert.Contains(nameof(ChatViewModel.ModelEffortLabel), changed);
+
+        await vm.SelectEffortAsync(vm.AvailableEfforts.Single(value => value.Value == "low"));
+        await vm.SelectEffortAsync(Auto(vm));
+        Assert.Equal("Auto", vm.ActiveEffortName);
+    }
+
+    // A fallback level is still the level the turn runs at, so it is shown too.
+    [Fact]
+    public async Task AutoTurn_JudgmentFails_ShowsTheFallbackLevel()
+    {
+        var (connection, _) = AutoConnection("medium");
+        var classifier = new FakeEffortClassifier { Handler = _ => Task.FromException<EffortLevel>(new TimeoutException("slow")) };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+
+        await SendTextAsync(vm, "hello");
+
+        Assert.Equal("Auto · high", vm.ActiveEffortName);
+    }
+
     [Fact]
     public async Task AutoTurn_EffortAlreadyInPlace_SendsOnlyThePrompt()
     {
@@ -149,13 +189,14 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { "effort=high", "prompt:design the sync protocol" }, log);
     }
 
+    // Before any verdict there is nothing better than the agent default Auto starts from: High.
     [Fact]
-    public async Task AutoTurn_ClassifierFailure_FallsBackToMediumAndStillSendsTheTurn()
+    public async Task AutoTurn_FirstJudgmentFails_FallsBackToHighAndStillSendsTheTurn()
     {
         var (connection, log) = AutoConnection("low");
         var classifier = new FakeEffortClassifier
         {
-            Handler = _ => Task.FromException<EffortLevel>(new System.IO.FileNotFoundException("model missing")),
+            Handler = _ => Task.FromException<EffortLevel>(new TimeoutException("judge timed out")),
         };
         using var vm = CreateWithClassifier(connection, classifier);
         await vm.Initialization;
@@ -163,9 +204,31 @@ public sealed partial class ChatSessionStateTests
 
         await SendTextAsync(vm, "hello");
 
-        Assert.Equal(new[] { "effort=medium", "prompt:hello" }, log);
-        Assert.Contains("model missing", vm.StatusMessage);
+        Assert.Equal(new[] { "effort=high", "prompt:hello" }, log);
+        Assert.Contains("judge timed out", vm.StatusMessage);
         Assert.Same(Auto(vm), vm.SelectedEffort);
+    }
+
+    // After a verdict, a failed judgment keeps the last level Auto chose.
+    [Fact]
+    public async Task AutoTurn_LaterJudgmentFails_KeepsTheLastJudgedLevel()
+    {
+        var (connection, log) = AutoConnection("medium");
+        var verdicts = new Queue<Task<EffortLevel>>(new[]
+        {
+            Task.FromResult(EffortLevel.Low),
+            Task.FromException<EffortLevel>(new InvalidOperationException("unparseable reply")),
+        });
+        var classifier = new FakeEffortClassifier { Handler = _ => verdicts.Dequeue() };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+
+        await SendTextAsync(vm, "git push");
+        await SendTextAsync(vm, "second");
+
+        Assert.Equal(new[] { "effort=low", "prompt:git push", "prompt:second" }, log);
+        Assert.Contains("unparseable reply", vm.StatusMessage);
     }
 
     [Fact]

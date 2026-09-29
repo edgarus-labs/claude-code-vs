@@ -1,5 +1,4 @@
 using ClaudeCode.Contracts;
-using ClaudeCode.Core.Effort;
 using System;
 using System.Threading;
 using System.Threading.Tasks;

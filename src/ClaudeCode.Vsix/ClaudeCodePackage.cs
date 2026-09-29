@@ -1,4 +1,4 @@
-using ClaudeCode.Core.Effort;
+using ClaudeCode.Acp;
 using ClaudeCode.Vsix.Auth;
 using ClaudeCode.Vsix.Connections;
 using ClaudeCode.Vsix.Options;
@@ -33,7 +33,6 @@ public sealed class ClaudeCodePackage : AsyncPackage
     private AcpAuthService? _authService;
     private VsControlSessionRegistry? _vsControlSessionRegistry;
     private ActiveEditorDocumentTracker? _editorDocumentTracker;
-    private MiniLmEffortClassifier? _effortClassifier;
     private SolutionEvents? _solutionEvents;
     private readonly WorkspaceRootTracker _workspaceRootTracker = new WorkspaceRootTracker();
 
@@ -51,10 +50,8 @@ public sealed class ClaudeCodePackage : AsyncPackage
             "Resources", "Scripts", "fetch-usage.cjs");
         var usageService = new ClaudeUsageService(usageScriptPath);
         _vsControlSessionRegistry = new VsControlSessionRegistry();
-        // Only records the model path: the ONNX model is loaded on the first Auto turn, never at startup.
-        var effortClassifier = new MiniLmEffortClassifier(Path.Combine(
-            Path.GetDirectoryName(typeof(ClaudeCodePackage).Assembly.Location) ?? string.Empty, "Effort", "Model"));
-        _effortClassifier = effortClassifier;
+        // Auto effort's judge: a short Haiku call through the adapter's bundled CLI, made only on Auto turns.
+        var effortClassifier = new ClaudeCliEffortJudge(ResolveAdapterAsync);
 
         // Seed the workspace-root cache once on the UI thread, then keep it current via solution
         // events instead of blocking every GetWorkspaceRoot() call on JoinableTaskFactory.Run.
@@ -76,6 +73,18 @@ public sealed class ClaudeCodePackage : AsyncPackage
                 ReadRemoteControlAtStartup, effortClassifier);
 
         await this.RegisterCommandsAsync();
+    }
+
+    // Same adapter the chat runs on (ClaudeCodeConnectionFactory): the option is UI-thread affine,
+    // the filesystem probing is not allowed there.
+    private async Task<AcpExecutableSpec> ResolveAdapterAsync(CancellationToken cancellationToken)
+    {
+        await JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
+        var overridePath = GetOptions().CliExecutablePath;
+        var resolved = await Task.Run(() => string.IsNullOrWhiteSpace(overridePath)
+            ? AcpExecutableResolver.TryResolveDefault()
+            : AcpExecutableResolver.TryResolve(overridePath), cancellationToken).ConfigureAwait(false);
+        return resolved ?? throw new InvalidOperationException("The Claude ACP adapter could not be resolved, so Auto effort cannot ask its judge.");
     }
 
     /// <summary>Opens (or activates) the "Implementation Plan" document tab showing <paramref name="plan"/>.</summary>
@@ -121,7 +130,6 @@ public sealed class ClaudeCodePackage : AsyncPackage
                 // Must run even if the UI-thread cleanup above throws, or the registry and the
                 // extension-scoped globals below would leak/outlive this package instance.
                 _vsControlSessionRegistry?.Dispose();
-                _effortClassifier?.Dispose();
 
                 ClaudeCodeServices.ConnectionFactory = null;
                 ClaudeCodeServices.AuthService = null;

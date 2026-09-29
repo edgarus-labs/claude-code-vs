@@ -1,5 +1,4 @@
 using ClaudeCode.Contracts;
-using ClaudeCode.Core.Effort;
 using ClaudeCode.Core.ViewModels;
 using System;
 using System.Collections.Generic;

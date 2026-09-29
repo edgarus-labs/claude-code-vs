@@ -1,5 +1,4 @@
 using ClaudeCode.Contracts;
-using ClaudeCode.Core.Effort;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using System;
@@ -29,12 +28,17 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private SessionConfigValue? _selectedModel;
     private SessionConfigValue? _selectedEffort;
     private SessionConfigValue? _selectedMode;
-    // Auto effort is a client-side choice, never a value sent to the agent: each turn is classified
-    // locally and gets the agent's own low/medium/high value (EffortLevel order) just before its prompt.
+    // Auto effort is a client-side choice, never a value sent to the agent: each turn is judged
+    // (IEffortClassifier) and gets the agent's own low/medium/high value (EffortLevel order) just
+    // before its prompt. A failed judgment keeps the last judged level, or High before the first.
     private static readonly string[] AutoEffortValues = { "low", "medium", "high" };
     private readonly SessionConfigValue _autoEffort = new SessionConfigValue(
-        "auto", "Auto", "Low, Medium or High for each message, chosen on this machine");
+        "auto", "Auto", "Low, Medium or High for each message, judged per message");
     private bool _isAutoEffort;
+    private EffortLevel? _lastAutoEffort;
+    // Whether an Auto turn has set the agent's effort since Auto was picked: only then is the
+    // agent's current level the one Auto chose, and shown next to "Auto".
+    private bool _autoEffortInEffect;
     private ChatMessageViewModel? _currentAssistantMessage;
     private DateTimeOffset? _turnStartedAt;
     private ChatMessageViewModel? _currentUserMessage;
@@ -395,7 +399,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     public bool HasEffort => AvailableEfforts.Count > 0;
     public bool HasModes => AvailableModes.Count > 0;
     public string ActiveModelName => _selectedModel?.Name ?? "Model unavailable";
-    public string ActiveEffortName => _isAutoEffort ? _autoEffort.Name : _selectedEffort?.Name ?? string.Empty;
+    public string ActiveEffortName => !_isAutoEffort ? _selectedEffort?.Name ?? string.Empty
+        : _autoEffortInEffect && _selectedEffort is { } inEffect ? _autoEffort.Name + " · " + inEffect.Name
+        : _autoEffort.Name;
     public string ModelEffortLabel => HasEffort && ActiveEffortName.Length > 0 ? ActiveModelName + " · " + ActiveEffortName : ActiveModelName;
     public string ActiveModeName => _selectedMode?.Name ?? "Mode unavailable";
 
@@ -947,6 +953,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             _isAutoEffort = ReferenceEquals(value, _autoEffort);
             if (_isAutoEffort)
             {
+                _lastAutoEffort = null;
+                _autoEffortInEffect = false;
                 NotifySelectionsChanged();
                 return Task.CompletedTask;
             }
@@ -957,8 +965,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // Runs ahead of the turn's prompt with nothing else in flight (Auto never sends ahead, see
     // CanSendAhead), so the effort it sets is the effort this prompt runs under. IsConfigBusy is held
     // from classification to acknowledgement, so a manual model/effort change cannot interleave with
-    // it and queued messages wait. A classifier failure costs only the choice (Medium, and the user is
-    // told); a rejected effort change fails the turn before its draft is consumed.
+    // it and queued messages wait. A failed judgment costs only the choice (the last judged level,
+    // else High, and the user is told); a rejected effort change fails the turn before its draft is
+    // consumed.
     private async Task ApplyAutoEffortAsync(IAcpAgentConnection connection, string sessionId, string prompt)
     {
         IsConfigBusy = true;
@@ -968,20 +977,25 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             try
             {
                 level = await _services.EffortClassifier!.ClassifyAsync(prompt, _lifetime.Token).ConfigureAwait(true);
+                _lastAutoEffort = level;
             }
             catch (OperationCanceledException) when (_disposed) { throw; }
             catch (Exception ex)
             {
-                level = EffortLevel.Medium;
-                if (!_disposed) StatusMessage = $"Auto effort could not classify this message, so it uses Medium: {ex.Message}";
+                level = _lastAutoEffort ?? EffortLevel.High;
+                if (!_disposed) StatusMessage = $"Auto effort could not judge this message, so it stays at {level}: {ex.Message}";
             }
 
             var option = _effortOption;
             var value = AutoEffortValues[(int)level];
-            if (_disposed || option is null || option.CurrentValue == value) return;
-            var options = await connection.SetSessionConfigOptionAsync(sessionId, option.Id, value, _lifetime.Token).ConfigureAwait(true);
-            if (!_disposed && ReferenceEquals(connection, _connection) && sessionId == _sessionId)
-                ApplyConfigOptions(options);
+            if (_disposed || option is null) return;
+            if (option.CurrentValue != value)
+            {
+                var options = await connection.SetSessionConfigOptionAsync(sessionId, option.Id, value, _lifetime.Token).ConfigureAwait(true);
+                if (!_disposed && ReferenceEquals(connection, _connection) && sessionId == _sessionId)
+                    ApplyConfigOptions(options);
+            }
+            _autoEffortInEffect = true;
         }
         finally
         {
