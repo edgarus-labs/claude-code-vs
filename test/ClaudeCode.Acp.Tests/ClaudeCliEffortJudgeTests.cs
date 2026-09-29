@@ -21,6 +21,9 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
         const fs = require('fs');
         const [mode, log] = process.argv.slice(2, 4);
         const args = process.argv.slice(4);
+        // Modes that never read stdin: the CLI failing at startup, or stalling before it reads.
+        if (mode === 'fail-early') { process.stderr.write('Not logged in · Please run /login'); process.exit(1); }
+        if (mode === 'stall') { setInterval(() => {}, 1000); return; }
         let stdin = '';
         process.stdin.setEncoding('utf8');
         process.stdin.on('data', d => stdin += d);
@@ -144,5 +147,28 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
     {
         using var cancel = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Judge("hang").ClassifyAsync("ok", cancel.Token));
+    }
+
+    // A large message fills the stdin pipe; the CLI exiting (or stalling) before it reads stdin
+    // must still surface its own error, or the timeout, never a broken pipe or a hang.
+    private static readonly string LargeMessage = new string('ż', 5000);
+
+    [Fact]
+    public async Task Classify_CliExitsBeforeReadingStdin_ReportsItsErrorNotABrokenPipe()
+    {
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => Judge("fail-early").ClassifyAsync(LargeMessage, CancellationToken.None));
+
+        Assert.Contains("Not logged in", error.Message);
+    }
+
+    [Fact]
+    public async Task Classify_CliNeverReadsStdin_TimesOut()
+    {
+        var watch = Stopwatch.StartNew();
+        await Assert.ThrowsAsync<TimeoutException>(
+            () => Judge("stall", TimeSpan.FromSeconds(2)).ClassifyAsync(LargeMessage, CancellationToken.None));
+
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(10), watch.Elapsed.ToString());
     }
 }

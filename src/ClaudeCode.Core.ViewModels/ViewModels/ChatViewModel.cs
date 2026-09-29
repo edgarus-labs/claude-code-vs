@@ -316,8 +316,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     }
 
     // A new or resumed session starts with Remote Control off; the option turns it on right away.
+    // Auto starts over too: an earlier session's verdict says nothing about this one.
     private void OnSessionStarted()
     {
+        ForgetAutoVerdict();
+        NotifySelectionsChanged();
         IsRemoteControlEnabled = false;
         RemoteControlUrl = null;
         if (_services.RemoteControlAtStartup) _ = SetRemoteControlAsync(true);
@@ -945,21 +948,35 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     public Task SelectEffortAsync(SessionConfigValue? value) => OnUiAsync(() => SelectEffortCoreAsync(value));
     public Task SelectModeAsync(SessionConfigValue? value) => OnUiAsync(() => ChangeConfigAsync(_modeOption, value));
 
-    private Task SelectEffortCoreAsync(SessionConfigValue? value)
+    private async Task SelectEffortCoreAsync(SessionConfigValue? value)
     {
-        if (CanConfigure && value is not null && AvailableEfforts.Contains(value))
+        if (!CanConfigure || value is null || !AvailableEfforts.Contains(value))
         {
-            // Leaving Auto needs no round trip when the level picked is already the current one.
-            _isAutoEffort = ReferenceEquals(value, _autoEffort);
-            if (_isAutoEffort)
-            {
-                _lastAutoEffort = null;
-                _autoEffortInEffect = false;
-                NotifySelectionsChanged();
-                return Task.CompletedTask;
-            }
+            await ChangeConfigAsync(_effortOption, value).ConfigureAwait(true);
+            return;
         }
-        return ChangeConfigAsync(_effortOption, value);
+        if (ReferenceEquals(value, _autoEffort))
+        {
+            _isAutoEffort = true;
+            ForgetAutoVerdict();
+            NotifySelectionsChanged();
+            return;
+        }
+        await ChangeConfigAsync(_effortOption, value).ConfigureAwait(true);
+        // Auto is left only once the agent runs the picked level - acknowledged now, or already
+        // current (no round trip). A rejected change keeps Auto, like any unacknowledged selection.
+        if (_isAutoEffort && _effortOption?.CurrentValue == value.Value)
+        {
+            _isAutoEffort = false;
+            NotifySelectionsChanged();
+        }
+    }
+
+    // A verdict belongs to one Auto selection in one session.
+    private void ForgetAutoVerdict()
+    {
+        _lastAutoEffort = null;
+        _autoEffortInEffect = false;
     }
 
     // Runs ahead of the turn's prompt with nothing else in flight (Auto never sends ahead, see
@@ -1336,7 +1353,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             if (_isAutoEffort && !joining)
             {
                 await ApplyAutoEffortAsync(connection, sessionId, promptText).ConfigureAwait(true);
-                if (_disposed) return;
+                // Stop pressed while judging had no prompt to cancel: the turn ends here, before
+                // prepare() takes the draft, instead of starting once the verdict arrives.
+                if (_disposed || _isStopping) return;
             }
             var (text, attachments) = prepare();
             var content = new List<ContentBlock>(attachments.Count + 1);

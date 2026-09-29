@@ -55,28 +55,31 @@ public static class EffortJudgePrompt
     public static string Preprocess(string message)
     {
         if (message is null) throw new ArgumentNullException(nameof(message));
-        var cleaned = AnsiEscape.Replace(message, string.Empty);
+        // The envelope and fence patterns rescan the rest of the text for every unclosed opener, so
+        // untrusted input is bounded before they run; the cut is marked like the final one.
+        var cleaned = AnsiEscape.Replace(Truncate(message, PreCleanChars), string.Empty);
         cleaned = XmlBlock.Replace(cleaned, " ");
         cleaned = LongHexRun.Replace(cleaned, match => match.Value.Substring(0, ShortHashChars));
         var withoutCode = BlankLines.Replace(HorizontalSpace.Replace(FencedCodeBlock.Replace(cleaned, " "), " "), "\n\n").Trim();
-        return Truncate(withoutCode.Length >= MinStrippedChars ? withoutCode : cleaned);
+        return Truncate(withoutCode.Length >= MinStrippedChars ? withoutCode : cleaned, MaxStateChars);
     }
 
-    // Two thirds of the kept space from the head, one third from the tail; the marker counts
-    // toward the bound. Two passes converge because only the omitted count's digit width varies.
-    private static string Truncate(string message)
+    // Room for noise the cleanup removes, while keeping the pattern cost bounded.
+    private const int PreCleanChars = 8 * MaxStateChars;
+
+    // Two thirds of the kept space from the head, one third from the tail; the marker counts toward
+    // the bound. Cuts never split a surrogate pair, which would reach the judge as U+FFFD.
+    private static string Truncate(string message, int maxChars)
     {
-        if (message.Length <= MaxStateChars) return message;
-        int omitted = message.Length - MaxStateChars;
-        int headChars = 0, tailChars = 0;
-        for (int pass = 0; pass < 2; pass++)
-        {
-            int keptChars = Math.Max(0, MaxStateChars - Marker(omitted).Length);
-            headChars = (keptChars * 2 + 2) / 3;
-            tailChars = keptChars - headChars;
-            omitted = message.Length - headChars - tailChars;
-        }
-        return message.Substring(0, headChars) + Marker(omitted) + message.Substring(message.Length - tailChars);
+        if (message.Length <= maxChars) return message;
+        // The marker's width depends on the omitted count, which depends on the marker's width:
+        // size it from the whole length (an upper bound on the count), then fit the cuts around it.
+        int keptChars = Math.Max(0, maxChars - Marker(message.Length).Length);
+        int head = (keptChars * 2 + 2) / 3;
+        int tailStart = message.Length - (keptChars - head);
+        if (head > 0 && char.IsHighSurrogate(message[head - 1])) head--;
+        if (tailStart < message.Length && char.IsLowSurrogate(message[tailStart])) tailStart++;
+        return message.Substring(0, head) + Marker(tailStart - head) + message.Substring(tailStart);
     }
 
     private static string Marker(int omitted) => "\n[… " + omitted.ToString(global::System.Globalization.CultureInfo.InvariantCulture) + " chars omitted …]\n";

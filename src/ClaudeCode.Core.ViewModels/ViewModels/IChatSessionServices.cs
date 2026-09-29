@@ -30,8 +30,8 @@ public interface IChatSessionServices
     /// <summary>Whether every new session should have Remote Control (claude.ai/code) turned on automatically.</summary>
     bool RemoteControlAtStartup { get; }
 
-    /// <summary>The local classifier behind the Auto effort option; null when the host ships none,
-    /// in which case Auto is not offered. Implementations must not load a model until asked to classify.</summary>
+    /// <summary>The judge behind the Auto effort option, asked once per Auto turn; null when the host
+    /// has none, in which case Auto is not offered.</summary>
     IEffortClassifier? EffortClassifier { get; }
 
     Task<EditorDocumentSnapshot?> CaptureActiveDocumentAsync(CancellationToken cancellationToken);

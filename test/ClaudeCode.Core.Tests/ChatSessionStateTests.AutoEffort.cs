@@ -331,6 +331,70 @@ public sealed partial class ChatSessionStateTests
         Assert.False(vm.IsBusy);
     }
 
+    // Stop during the judgment has no prompt to cancel yet; the turn must not start afterwards,
+    // and the message the user wrote stays theirs.
+    [Fact]
+    public async Task AutoTurn_StoppedWhileJudging_SendsNothingAndKeepsTheDraft()
+    {
+        var (connection, log) = AutoConnection("medium");
+        var verdict = new TaskCompletionSource<EffortLevel>();
+        var classifier = new FakeEffortClassifier { Handler = _ => verdict.Task };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+
+        var sending = SendTextAsync(vm, "hard work");
+        await vm.CancelAsync();
+        verdict.SetResult(EffortLevel.High);
+        await sending;
+
+        Assert.Empty(connection.Prompts);
+        Assert.Equal("hard work", vm.InputText);
+        Assert.False(vm.IsBusy);
+    }
+
+    // A verdict belongs to the session it was made in: a new session starts over from High and
+    // shows plain "Auto" until its own first judgment.
+    [Fact]
+    public async Task NewSession_ForgetsThePreviousSessionsAutoVerdict()
+    {
+        var (connection, log) = AutoConnection("medium");
+        var verdicts = new Queue<Task<EffortLevel>>(new[]
+        {
+            Task.FromResult(EffortLevel.Low),
+            Task.FromException<EffortLevel>(new TimeoutException("slow")),
+        });
+        var classifier = new FakeEffortClassifier { Handler = _ => verdicts.Dequeue() };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+        await SendTextAsync(vm, "git push");
+        Assert.Equal("Auto · low", vm.ActiveEffortName);
+
+        await vm.NewSessionAsync();
+        Assert.Equal("Auto", vm.ActiveEffortName);
+        log.Clear();
+        await SendTextAsync(vm, "next");
+
+        Assert.Equal(new[] { "effort=high", "prompt:next" }, log);
+    }
+
+    // Leaving Auto is a selection like any other: only an acknowledged change is shown.
+    [Fact]
+    public async Task ExplicitEffort_RejectedWhileOnAuto_StaysOnAuto()
+    {
+        var (connection, _) = AutoConnection("medium");
+        using var vm = CreateWithClassifier(connection, new FakeEffortClassifier());
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+        connection.ConfigHandler = (_, _, _) => Task.FromException<IReadOnlyList<SessionConfigOption>>(new InvalidOperationException("rejected"));
+
+        await vm.SelectEffortAsync(vm.AvailableEfforts.Single(value => value.Value == "xhigh"));
+
+        Assert.Same(Auto(vm), vm.SelectedEffort);
+        Assert.Equal("Auto", vm.ActiveEffortName);
+    }
+
     // A manual change landing between Auto's classification and its own effort change would be
     // silently overwritten; settings stay locked from classification until the turn's effort is set.
     [Fact]

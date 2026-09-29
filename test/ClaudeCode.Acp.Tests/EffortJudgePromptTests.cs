@@ -64,6 +64,48 @@ public sealed class EffortJudgePromptTests
         Assert.Equal(message.Length - (result.Length - (markerEnd - markerStart)), omitted);
     }
 
+    // Around the omitted count's digit boundaries the marker widens; the result must still fit.
+    [Fact]
+    public void Preprocess_EveryLength_StaysWithinTheBound()
+    {
+        for (int length = EffortJudgePrompt.MaxStateChars + 1; length <= 13_000; length++)
+        {
+            int actual = EffortJudgePrompt.Preprocess(new string('x', length)).Length;
+            Assert.True(actual <= EffortJudgePrompt.MaxStateChars, $"{length} chars preprocessed to {actual}");
+        }
+    }
+
+    // Cutting inside a surrogate pair would leave a lone half, sent to the judge as U+FFFD.
+    [Fact]
+    public void Preprocess_Truncation_NeverSplitsASurrogatePair()
+    {
+        for (int emoji = 1000; emoji < 1100; emoji++)
+        {
+            var result = EffortJudgePrompt.Preprocess(string.Concat(Enumerable.Repeat("😀", emoji)));
+            for (int i = 0; i < result.Length; i++)
+            {
+                if (char.IsHighSurrogate(result[i])) Assert.True(i + 1 < result.Length && char.IsLowSurrogate(result[++i]), $"lone high surrogate at {i} ({emoji} emoji)");
+                else Assert.False(char.IsLowSurrogate(result[i]), $"lone low surrogate at {i} ({emoji} emoji)");
+            }
+        }
+    }
+
+    // The message is untrusted: pasted logs full of unclosed tags or fences must not make the
+    // envelope/fence patterns scan the rest of the text once per tag.
+    [Theory]
+    [InlineData("<a>")]
+    [InlineData("```x ")]
+    public void Preprocess_PathologicalInput_StaysFastAndBounded(string unit)
+    {
+        var message = string.Concat(Enumerable.Repeat(unit, 40_000));
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+
+        var result = EffortJudgePrompt.Preprocess(message);
+
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(1), watch.Elapsed.ToString());
+        Assert.True(result.Length <= EffortJudgePrompt.MaxStateChars);
+    }
+
     [Theory]
     [InlineData("`low`\n\nThe request specifies exactly what to do.", EffortLevel.Low)]
     [InlineData("HIGH", EffortLevel.High)]

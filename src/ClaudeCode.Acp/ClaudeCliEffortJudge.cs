@@ -127,9 +127,26 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
             _ = drained.ContinueWith(task => { _ = task.Exception; }, CancellationToken.None,
                 TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
 
+            // Off the awaiting path and under the same deadline as the waits below: Windows hands out
+            // a synchronous pipe, so a CLI that stalls before reading its stdin would otherwise block
+            // this write past the timeout (disposing the job in finally breaks the pipe). A CLI that
+            // exits before reading it breaks the pipe instead; its exit code and output explain why.
             var bytes = Utf8.GetBytes(user);
-            await input.WriteAsync(bytes, 0, bytes.Length, cancellationToken).ConfigureAwait(false);
-            input.Dispose();
+            var writing = Task.Run(() =>
+            {
+                using (input) input.Write(bytes, 0, bytes.Length);
+            }, CancellationToken.None);
+            _ = writing.ContinueWith(task => { _ = task.Exception; }, CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            await ProcessExitWait.WaitForExitAsync(writing, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await writing.ConfigureAwait(false);
+            }
+            catch (IOException)
+            {
+                // Broken pipe: reported through the exit code below.
+            }
 
             await ProcessExitWait.WaitForExitAsync(drained, cancellationToken).ConfigureAwait(false);
             await ProcessExitWait.WaitForExitAsync(Task.Run(process.WaitForExit, CancellationToken.None), cancellationToken).ConfigureAwait(false);
