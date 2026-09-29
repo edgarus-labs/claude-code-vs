@@ -191,7 +191,7 @@ problem — is the fix or design already given, or which causes or designs remai
 
 | Level | When | Examples |
 |---|---|---|
-| Low | One obvious solution, applied mechanically: target, mapping or fix given. | `git status`, "zrób commit i push", rename a variable |
+| Low | One obvious solution, applied mechanically: target, mapping or fix given. | `git status`, commit and push, rename a variable |
 | Medium | A few candidates in one place, or one small trap. | which line breaks a test, one boundary case |
 | High | Several viable designs or candidate causes. | authentication, a deadlock, a flaky integration test |
 
