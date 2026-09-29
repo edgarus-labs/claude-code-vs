@@ -317,15 +317,15 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
         await Assert.ThrowsAsync<InvalidOperationException>(() => judge.ClassifyAsync("ok", CancellationToken.None));
     }
 
-    // An empty reply within the limit is not retried (the bounded reader reports it like an oversize
-    // one, and retrying that would only repeat it); the error names both possibilities.
+    // An empty reply has no level: it is retried like any other unparseable reply (#49), and the
+    // judgment fails only once the attempts are used up.
     [Fact]
-    public async Task Classify_EmptyReply_FailsOnceAndSaysItWasEmpty()
+    public async Task Classify_EmptyReply_IsRetriedLikeAnyUnparseableReply()
     {
         var error = await Assert.ThrowsAsync<InvalidDataException>(() => Judge("silent-ok").ClassifyAsync("ok", CancellationToken.None));
 
-        Assert.Contains("empty", error.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Single(Calls());
+        Assert.Contains("without a level", error.Message);
+        Assert.Equal(3, Calls().Count);
     }
 
     // A message larger than any pipe buffer, to a CLI that exits without reading it: the broken pipe
@@ -452,15 +452,15 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
         Assert.True(error.Message.Length <= 400, error.Message.Length.ToString(System.Globalization.CultureInfo.InvariantCulture));
     }
 
-    // Over the reply bound the reader keeps nothing, so the reply is indistinguishable from an
-    // empty one: retrying would only repeat it, and the error must say why.
+    // Over the reply bound the reader keeps nothing, so the reply reads as an empty one: like any
+    // reply without a level it is retried, and after the last attempt the judgment fails.
     [Fact]
-    public async Task Classify_ReplyOverTheLimit_FailsOnceAndSaysSo()
+    public async Task Classify_ReplyOverTheLimit_IsRetriedLikeAnyUnparseableReply()
     {
         var error = await Assert.ThrowsAsync<InvalidDataException>(() => Judge("oversize").ClassifyAsync("ok", CancellationToken.None));
 
-        Assert.Contains("limit", error.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Single(Calls());
+        Assert.Contains("without a level", error.Message);
+        Assert.Equal(3, Calls().Count);
     }
 
     [Fact]

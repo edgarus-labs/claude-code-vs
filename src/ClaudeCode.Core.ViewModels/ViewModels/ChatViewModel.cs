@@ -48,8 +48,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // Held from the start of a judgment until the effort change is acknowledged: locks the settings
     // only, unlike IsConfigBusy, which also locks the composer.
     private bool _isJudgingEffort;
-    // Held while an explicit level is being picked. The pick's own request releases the queue when it
-    // ends, before the pick has left Auto, so a follow-up released then must not be judged over it.
+    // Held while an explicit level is being picked. The pick's own request would release the queue
+    // before the pick has settled whether Auto is left, so the release waits for that (SelectEffortCoreAsync).
     private bool _isPickingEffort;
     private ChatMessageViewModel? _currentAssistantMessage;
     private DateTimeOffset? _turnStartedAt;
@@ -990,6 +990,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             _autoEffortSelected = _isAutoEffort = false;
             NotifySelectionsChanged();
         }
+        // Only now is it known whether follow-ups are judged (Auto kept) or run under the picked level.
+        DispatchNextQueuedMessage();
     }
 
     // A verdict belongs to one Auto selection in one session.
@@ -1124,8 +1126,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             NotifySelectionsChanged();
             SendPendingPlanReview();
             // A turn can end while this RPC is still in flight, and the queue refuses to dispatch
-            // into a config change; this is the blocker lifting, so whatever it held back goes now.
-            DispatchNextQueuedMessage();
+            // into a config change; this is the blocker lifting, so whatever it held back goes now -
+            // except during an effort pick, which releases it itself once it has settled Auto.
+            if (!_isPickingEffort) DispatchNextQueuedMessage();
         }
     }
 
@@ -1442,9 +1445,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             var (connection, sessionId) = await EnsureConnectedAsync(_lifetime.Token).ConfigureAwait(true);
             if (_disposed) return;
             // Only a turn that starts alone is judged: a joining one (a message sent ahead into a
-            // running turn, which Auto never does) shares that turn's effort. Not while an explicit
-            // level is being picked either: that pick, not the judge, governs this turn.
-            if (_isAutoEffort && !_isPickingEffort && !joining)
+            // running turn, which Auto never does) shares that turn's effort.
+            if (_isAutoEffort && !joining)
             {
                 var ready = await ApplyAutoEffortAsync(connection, sessionId, promptText).ConfigureAwait(true);
                 if (_disposed) return;

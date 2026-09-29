@@ -65,13 +65,6 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
                 var system = attempt == 0 ? EffortJudgePrompt.SystemPrompt : EffortJudgePrompt.RetrySystemPrompt;
                 reply = await RunAsync(executable, system, user, deadline.Token).ConfigureAwait(false);
                 if (EffortJudgePrompt.ParseReply(reply) is { } level) return level;
-                // The bounded reader reports an empty reply and one over MaxReplyChars alike, as "":
-                // retrying the second would only repeat it, so neither is retried and the error names both.
-                if (reply.Trim().Length == 0)
-                {
-                    throw new InvalidDataException(string.Format(CultureInfo.InvariantCulture,
-                        "The effort judge gave no usable reply: it was empty or longer than the {0}-character limit.", MaxReplyChars));
-                }
             }
             throw new InvalidDataException("The effort judge replied without a level after three attempts.");
         }

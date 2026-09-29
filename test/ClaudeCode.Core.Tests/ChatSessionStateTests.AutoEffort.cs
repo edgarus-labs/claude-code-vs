@@ -1469,6 +1469,54 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("xhigh", vm.SelectedEffort!.Value);
     }
 
+    // F-50-85: a pick the agent rejects leaves Auto selected, so the follow-up that waited for the pick
+    // is still an Auto turn: judged, and run under its own level.
+    [Fact]
+    public async Task ExplicitEffort_RejectedWhileAnAutoFollowUpWaits_StillJudgesTheFollowUp()
+    {
+        var (connection, log) = AutoConnection("medium");
+        connection.SupportsPromptQueueing = true;
+        var firstTurn = new TaskCompletionSource();
+        connection.PromptHandler = content =>
+        {
+            var text = ((ContentBlock.Text)content[0]).Value;
+            log.Add("prompt:" + text);
+            return text == "first" ? firstTurn.Task : Task.CompletedTask;
+        };
+        var inner = connection.ConfigHandler!;
+        var holdRequests = false;
+        var release = new TaskCompletionSource();
+        connection.ConfigHandler = async (session, value, token) =>
+        {
+            if (holdRequests) await release.Task;
+            if (value == "xhigh") throw new InvalidOperationException("rejected");
+            return await inner(session, value, token);
+        };
+        var classifier = new FakeEffortClassifier
+        {
+            Handler = prompt => Task.FromResult(prompt == "first" ? EffortLevel.Low : EffortLevel.High),
+        };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+
+        var running = SendTextAsync(vm, "first");
+        await WaitUntilAsync(() => log.Contains("prompt:first"));
+        await SendTextAsync(vm, "second");
+        holdRequests = true;
+        var picking = vm.SelectEffortAsync(vm.AvailableEfforts.Single(value => value.Value == "xhigh"));
+        await WaitUntilAsync(() => connection.ConfigChanges.Count == 2);
+        firstTurn.SetResult();
+        await WithinAsync(running);
+        release.SetResult();
+        await WithinAsync(picking);
+        await WaitUntilAsync(() => log.Contains("prompt:second") && !vm.IsBusy);
+
+        Assert.Equal(new[] { "first", "second" }, classifier.Prompts);
+        Assert.Equal(new[] { "effort=low", "prompt:first", "effort=high", "prompt:second" }, log);
+        Assert.Same(Auto(vm), vm.SelectedEffort);
+    }
+
     // The verdict is only applied while the agent still offers its level: if an update took the
     // levels away meanwhile, Auto is off and the turn goes out under the agent's own level.
     [Fact]
