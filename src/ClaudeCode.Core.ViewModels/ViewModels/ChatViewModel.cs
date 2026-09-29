@@ -1,4 +1,5 @@
 using ClaudeCode.Contracts;
+using ClaudeCode.Core.Effort;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using System;
@@ -28,6 +29,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private SessionConfigValue? _selectedModel;
     private SessionConfigValue? _selectedEffort;
     private SessionConfigValue? _selectedMode;
+    // Auto effort is a client-side choice, never a value sent to the agent: each turn is classified
+    // locally and gets the agent's own low/medium/high value (EffortLevel order) just before its prompt.
+    private static readonly string[] AutoEffortValues = { "low", "medium", "high" };
+    private readonly SessionConfigValue _autoEffort = new SessionConfigValue(
+        "auto", "Auto", "Low, Medium or High for each message, chosen on this machine");
+    private bool _isAutoEffort;
     private ChatMessageViewModel? _currentAssistantMessage;
     private DateTimeOffset? _turnStartedAt;
     private ChatMessageViewModel? _currentUserMessage;
@@ -388,7 +395,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     public bool HasEffort => AvailableEfforts.Count > 0;
     public bool HasModes => AvailableModes.Count > 0;
     public string ActiveModelName => _selectedModel?.Name ?? "Model unavailable";
-    public string ActiveEffortName => _selectedEffort?.Name ?? string.Empty;
+    public string ActiveEffortName => _isAutoEffort ? _autoEffort.Name : _selectedEffort?.Name ?? string.Empty;
     public string ModelEffortLabel => HasEffort && ActiveEffortName.Length > 0 ? ActiveModelName + " · " + ActiveEffortName : ActiveModelName;
     public string ActiveModeName => _selectedMode?.Name ?? "Mode unavailable";
 
@@ -400,7 +407,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     public SessionConfigValue? SelectedEffort
     {
-        get => _selectedEffort;
+        get => _isAutoEffort ? _autoEffort : _selectedEffort;
         set => _ = SelectEffortAsync(value);
     }
 
@@ -929,8 +936,59 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     }
 
     public Task SelectModelAsync(SessionConfigValue? value) => OnUiAsync(() => ChangeConfigAsync(_modelOption, value));
-    public Task SelectEffortAsync(SessionConfigValue? value) => OnUiAsync(() => ChangeConfigAsync(_effortOption, value));
+    public Task SelectEffortAsync(SessionConfigValue? value) => OnUiAsync(() => SelectEffortCoreAsync(value));
     public Task SelectModeAsync(SessionConfigValue? value) => OnUiAsync(() => ChangeConfigAsync(_modeOption, value));
+
+    private Task SelectEffortCoreAsync(SessionConfigValue? value)
+    {
+        if (CanConfigure && value is not null && AvailableEfforts.Contains(value))
+        {
+            // Leaving Auto needs no round trip when the level picked is already the current one.
+            _isAutoEffort = ReferenceEquals(value, _autoEffort);
+            if (_isAutoEffort)
+            {
+                NotifySelectionsChanged();
+                return Task.CompletedTask;
+            }
+        }
+        return ChangeConfigAsync(_effortOption, value);
+    }
+
+    // Runs ahead of the turn's prompt with nothing else in flight (Auto never sends ahead, see
+    // CanSendAhead), so the effort it sets is the effort this prompt runs under. IsConfigBusy is held
+    // from classification to acknowledgement, so a manual model/effort change cannot interleave with
+    // it and queued messages wait. A classifier failure costs only the choice (Medium, and the user is
+    // told); a rejected effort change fails the turn before its draft is consumed.
+    private async Task ApplyAutoEffortAsync(IAcpAgentConnection connection, string sessionId, string prompt)
+    {
+        IsConfigBusy = true;
+        try
+        {
+            EffortLevel level;
+            try
+            {
+                level = await _services.EffortClassifier!.ClassifyAsync(prompt, _lifetime.Token).ConfigureAwait(true);
+            }
+            catch (OperationCanceledException) when (_disposed) { throw; }
+            catch (Exception ex)
+            {
+                level = EffortLevel.Medium;
+                if (!_disposed) StatusMessage = $"Auto effort could not classify this message, so it uses Medium: {ex.Message}";
+            }
+
+            var option = _effortOption;
+            var value = AutoEffortValues[(int)level];
+            if (_disposed || option is null || option.CurrentValue == value) return;
+            var options = await connection.SetSessionConfigOptionAsync(sessionId, option.Id, value, _lifetime.Token).ConfigureAwait(true);
+            if (!_disposed && ReferenceEquals(connection, _connection) && sessionId == _sessionId)
+                ApplyConfigOptions(options);
+        }
+        finally
+        {
+            IsConfigBusy = false;
+            NotifySelectionsChanged();
+        }
+    }
 
     private async Task ChangeConfigAsync(SessionConfigOption? option, SessionConfigValue? value)
     {
@@ -1116,7 +1174,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             return Task.CompletedTask;
         }
 
-        return RunTurnAsync(null, () =>
+        return RunTurnAsync(null, text, () =>
         {
             // Acquire before consuming the draft: failed startup must not lose text or attachments.
             // RunTurnAsync's own EnsureConnectedAsync has already succeeded by the time this runs.
@@ -1227,7 +1285,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         try
         {
-            await RunTurnAsync(queued, () => (queued.Text, queued.Attachments)).ConfigureAwait(true);
+            await RunTurnAsync(queued, queued.Text, () => (queued.Text, queued.Attachments)).ConfigureAwait(true);
         }
         catch (Exception ex)
         {
@@ -1241,8 +1299,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // step is the one thing left to the caller. `prepare` runs only after EnsureConnectedAsync has
     // already succeeded, preserving the live-send path's "acquire before consuming the draft" rule.
     // A call made while another turn is running (only ever a queued message sent ahead to an agent
-    // that queues prompts) joins that turn's busy state instead of starting a new one.
-    private async Task RunTurnAsync(QueuedMessage? queued, Func<(string Text, IReadOnlyList<ChatAttachmentViewModel> Attachments)> prepare)
+    // that queues prompts) joins that turn's busy state instead of starting a new one. Under Auto
+    // effort, `promptText` is classified and the turn's effort set before `prepare` runs.
+    private async Task RunTurnAsync(QueuedMessage? queued, string promptText, Func<(string Text, IReadOnlyList<ChatAttachmentViewModel> Attachments)> prepare)
     {
         bool joining = _runningTurns++ > 0;
         bool submitted = false;
@@ -1260,6 +1319,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             }
             var (connection, sessionId) = await EnsureConnectedAsync(_lifetime.Token).ConfigureAwait(true);
             if (_disposed) return;
+            if (_isAutoEffort && !joining)
+            {
+                await ApplyAutoEffortAsync(connection, sessionId, promptText).ConfigureAwait(true);
+                if (_disposed) return;
+            }
             var (text, attachments) = prepare();
             var content = new List<ContentBlock>(attachments.Count + 1);
             if (text.Length > 0) content.Add(new ContentBlock.Text(text));
@@ -1361,7 +1425,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // Sent ahead only to an agent that advertised it queues prompts itself: it takes them in at its
     // next input boundary, between the running turn's operations, without interrupting any of them.
     // Held back while a returned-unstarted message waits to go out again, so it keeps its place.
-    private bool CanSendAhead => !_isStopping && _returnedUnstarted.Count == 0 && _connection?.SupportsPromptQueueing == true;
+    // Never under Auto effort: effort is session-wide, so a prompt sent ahead would run under the
+    // running turn's effort, or retune it - each Auto turn waits for the one before it.
+    private bool CanSendAhead => !_isStopping && _returnedUnstarted.Count == 0 && !_isAutoEffort && _connection?.SupportsPromptQueueing == true;
 
     // Auto-dispatch answers to the same admission gates as a message the user sends by hand: a queue
     // entry that outlives the state it was typed in is exactly the hazard CanQueueOrSendDraft
@@ -1825,6 +1891,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             ?? options.FirstOrDefault(option => option.Id == "mode");
         ReplaceOptions(AvailableModels, _modelOption);
         ReplaceOptions(AvailableEfforts, _effortOption);
+        // Offered only when the agent has all three levels Auto chooses from, and a classifier exists.
+        if (_services.EffortClassifier is not null && _effortOption is { } effort &&
+            AutoEffortValues.All(value => effort.Options.Any(candidate => candidate.Value == value)))
+            AvailableEfforts.Insert(0, _autoEffort);
+        else
+            _isAutoEffort = false;
         ReplaceOptions(AvailableModes, _modeOption);
         _selectedModel = AvailableModels.FirstOrDefault(option => option.Value == _modelOption?.CurrentValue);
         _selectedEffort = AvailableEfforts.FirstOrDefault(option => option.Value == _effortOption?.CurrentValue);

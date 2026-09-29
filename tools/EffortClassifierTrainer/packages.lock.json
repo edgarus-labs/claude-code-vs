@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net10.0": {
+      "CommunityToolkit.Mvvm": {
+        "type": "Transitive",
+        "resolved": "8.3.2",
+        "contentHash": "m8EolE1A0Updj68WTsZSGI6VWb6mUqHPh7QFo0kt7+JPhYMNXRS1ch8TS/oITAdcxTLrwMOp3ku1KjeG1/Zdpg=="
+      },
+      "Microsoft.Bcl.AsyncInterfaces": {
+        "type": "Transitive",
+        "resolved": "8.0.0",
+        "contentHash": "3WA9q9yVqJp222P3x1wYIGDAkpjAku0TMUaaQV22g6L67AI0LdOIrVS7Ht2vJfLHGSPVuqN94vIr15qn+HEkHw=="
+      },
+      "Microsoft.ML.OnnxRuntime": {
+        "type": "Transitive",
+        "resolved": "1.30.0",
+        "contentHash": "RaF3KjPXB/IbNvvrcQtrxS/NZjB9dEHnZQTsdJCLP5Fnn1Jj3LomeqR1mMAoRFKinJ0pIe85PLhLlfGBYqzgWA==",
+        "dependencies": {
+          "Microsoft.ML.OnnxRuntime.Managed": "1.30.0"
+        }
+      },
+      "Microsoft.ML.OnnxRuntime.Managed": {
+        "type": "Transitive",
+        "resolved": "1.30.0",
+        "contentHash": "KHW+vp+i4Mdf6RhIsMvurTVepafXHjg8/VQ0o6sa2wEK0KzV/4iEoRTUvsymcRP+XPAM/r6kZCaTADdV6Xn4RA==",
+        "dependencies": {
+          "System.Numerics.Tensors": "9.0.0"
+        }
+      },
+      "System.Numerics.Tensors": {
+        "type": "Transitive",
+        "resolved": "9.0.0",
+        "contentHash": "hyJB4UlpAi19Xr9AXzu2NuagKC4lPfHObNMEAA0HmqFz2rX7wKgzeYzO/jM/eBHDhnUGFFEjk5cOoJaxqg5J4A=="
+      },
+      "EdgarusLabs.ClaudeCode.Contracts": {
+        "type": "Project",
+        "dependencies": {
+          "Microsoft.Bcl.AsyncInterfaces": "[8.0.0, )"
+        }
+      },
+      "EdgarusLabs.ClaudeCode.Core.ViewModels": {
+        "type": "Project",
+        "dependencies": {
+          "CommunityToolkit.Mvvm": "[8.3.2, )",
+          "EdgarusLabs.ClaudeCode.Contracts": "[1.0.0, )",
+          "Microsoft.ML.OnnxRuntime": "[1.30.0, )"
+        }
+      }
+    }
+  }
+}

@@ -44,6 +44,7 @@ adapter's advertised capabilities — this is not a claim of feature parity with
 - [Getting started](#getting-started)
 - [Using the sidebar](#using-the-sidebar)
 - [Installing and debugging](#installing-and-debugging)
+- [Auto effort](#auto-effort)
 - [Solution layout](#solution-layout)
 - [Building](#building)
 - [CI/CD](#cicd)
@@ -97,6 +98,13 @@ tools (see `docs/VsControlProtocol.md` for the exact wire contract).
   snapshot; press **+** again on that file to refresh it.
 - **Attach images:** use the separate image button or paste an image with Ctrl+V. The **+** button is
   for document context, not image selection.
+- **Auto effort:** the model picker's **Effort** list offers **Auto** ahead of the adapter's own levels
+  whenever the adapter advertises `low`, `medium` and `high`. With Auto selected, each message is
+  classified on your machine and runs at Low (mechanical: `git status`, a rename, running the tests),
+  Medium (normal coding: fix a failing test, add validation, a small endpoint) or High (complex work:
+  authentication, concurrency bugs, flaky-test investigations). Auto never goes above High; higher
+  levels stay an explicit choice, and picking any explicit level behaves exactly as before. See
+  [Auto effort](#auto-effort) for how the choice is made.
 - **Slash commands:** type `/` to filter the adapter's live command catalog, plus two commands the
   sidebar always offers itself: `/login` and `/logout` (see [Getting started](#getting-started)). Use
   Up/Down to select, Tab or Enter to insert the selection without sending, and Escape to dismiss. You
@@ -160,13 +168,45 @@ F5 on `ClaudeCode.Vsix` launches a separate **Experimental Instance** for extens
 extension installation is separate from regular Visual Studio; testing there does not update the
 extension you use in your normal IDE. To use a rebuilt version normally, install the new `.vsix`.
 
+## Auto effort
+
+Auto is a client-side mode: the adapter never sees an `auto` value. For each turn the sidebar
+classifies the message text (only the current message, never the conversation), sets the adapter's
+`low`/`medium`/`high` effort through `session/set_config_option`, waits for the acknowledgement and
+only then sends the prompt. Because effort is session-wide, messages typed while an Auto turn is
+running are held and sent one at a time after it, each under its own effort, instead of being sent
+ahead into the running turn.
+
+The classifier is local and ships inside the `.vsix` (`Effort\Model`): the frozen
+[all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) sentence encoder
+(Apache-2.0, quantised ONNX, ~23 MB) run by ONNX Runtime, plus a trained 384 → 3 logistic-regression
+head (`effort-head.txt`). No Python, no network request and no Claude/API tokens are involved. The
+model is loaded on the first Auto turn only, so choosing an explicit effort costs nothing at startup.
+
+The decision is deliberately conservative against too little effort: Low needs P(Low) ≥ 0.70, High
+needs P(High) ≥ 0.50, and everything else — including ambiguous messages — is Medium. If the model
+cannot be loaded or run (for example on an ARM64 Visual Studio, which the packaged x64 engine does not
+cover), the turn uses Medium and the status line says why.
+
+To retrain the head after editing the labelled examples in
+`tools/EffortClassifierTrainer/effort-dataset.tsv` (labels describe required reasoning, not prompt
+length; include boundary examples), run:
+
+```bash
+dotnet run --project tools/EffortClassifierTrainer -- \
+  tools/EffortClassifierTrainer/effort-dataset.tsv src/ClaudeCode.Core.ViewModels/Effort/Model
+```
+
+It prints 5-fold cross-validated accuracy and rewrites `effort-head.txt`; then run the
+`EffortClassifierTests` in `ClaudeCode.Core.Tests`.
+
 ## Solution layout
 
 | Project | TFM | Role |
 |---|---|---|
 | `src/ClaudeCode.Contracts` | netstandard2.0 | Cross-project interfaces/DTOs (ACP connection, auth, MCP config) — the only thing every other project depends on. |
 | `src/ClaudeCode.Acp` | netstandard2.0 | ACP client: JSON-RPC/stdio transport, process spawning, executable resolution. |
-| `src/ClaudeCode.Core.ViewModels` | netstandard2.0 | XAML-free chat MVVM (view models, demo/fake connection). |
+| `src/ClaudeCode.Core.ViewModels` | netstandard2.0 | XAML-free chat MVVM (view models, demo/fake connection) and the local Auto effort classifier. |
 | `src/ClaudeCode.Core` | net472 + WPF | The sidebar UI (`ChatPanelView` and friends). |
 | `src/ClaudeCode.VsControl.Mcp` | net8.0 (exe) | Standalone MCP-over-stdio server; forwards tool calls to VS over a named pipe. |
 | `src/ClaudeCode.Vsix` | net48 | The actual VSIX package: `AsyncPackage`, tool window, commands, native CLI authentication status, VS theme bridge, and the named-pipe server VsControl.Mcp talks to. |

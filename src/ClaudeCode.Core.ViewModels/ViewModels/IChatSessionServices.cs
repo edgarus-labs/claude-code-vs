@@ -1,4 +1,5 @@
 using ClaudeCode.Contracts;
+using ClaudeCode.Core.Effort;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
@@ -29,6 +30,10 @@ public interface IChatSessionServices
 
     /// <summary>Whether every new session should have Remote Control (claude.ai/code) turned on automatically.</summary>
     bool RemoteControlAtStartup { get; }
+
+    /// <summary>The local classifier behind the Auto effort option; null when the host ships none,
+    /// in which case Auto is not offered. Implementations must not load a model until asked to classify.</summary>
+    IEffortClassifier? EffortClassifier { get; }
 
     Task<EditorDocumentSnapshot?> CaptureActiveDocumentAsync(CancellationToken cancellationToken);
 

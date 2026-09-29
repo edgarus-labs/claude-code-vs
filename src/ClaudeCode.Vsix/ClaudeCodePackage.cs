@@ -1,3 +1,4 @@
+using ClaudeCode.Core.Effort;
 using ClaudeCode.Vsix.Auth;
 using ClaudeCode.Vsix.Connections;
 using ClaudeCode.Vsix.Options;
@@ -32,6 +33,7 @@ public sealed class ClaudeCodePackage : AsyncPackage
     private AcpAuthService? _authService;
     private VsControlSessionRegistry? _vsControlSessionRegistry;
     private ActiveEditorDocumentTracker? _editorDocumentTracker;
+    private MiniLmEffortClassifier? _effortClassifier;
     private SolutionEvents? _solutionEvents;
     private readonly WorkspaceRootTracker _workspaceRootTracker = new WorkspaceRootTracker();
 
@@ -49,6 +51,10 @@ public sealed class ClaudeCodePackage : AsyncPackage
             "Resources", "Scripts", "fetch-usage.cjs");
         var usageService = new ClaudeUsageService(usageScriptPath);
         _vsControlSessionRegistry = new VsControlSessionRegistry();
+        // Only records the model path: the ONNX model is loaded on the first Auto turn, never at startup.
+        var effortClassifier = new MiniLmEffortClassifier(Path.Combine(
+            Path.GetDirectoryName(typeof(ClaudeCodePackage).Assembly.Location) ?? string.Empty, "Effort", "Model"));
+        _effortClassifier = effortClassifier;
 
         // Seed the workspace-root cache once on the UI thread, then keep it current via solution
         // events instead of blocking every GetWorkspaceRoot() call on JoinableTaskFactory.Run.
@@ -67,7 +73,7 @@ public sealed class ClaudeCodePackage : AsyncPackage
 
         ClaudeCode.Core.Views.ChatPanelView.ServicesFactory =
             () => new VsChatSessionServices(ClaudeCodeServices.ConnectionFactory!, ClaudeCodeServices.AuthService!, ClaudeCodeServices.UsageService!, _workspaceRootTracker, editorDocumentTracker,
-                ReadRemoteControlAtStartup);
+                ReadRemoteControlAtStartup, effortClassifier);
 
         await this.RegisterCommandsAsync();
     }
@@ -115,6 +121,7 @@ public sealed class ClaudeCodePackage : AsyncPackage
                 // Must run even if the UI-thread cleanup above throws, or the registry and the
                 // extension-scoped globals below would leak/outlive this package instance.
                 _vsControlSessionRegistry?.Dispose();
+                _effortClassifier?.Dispose();
 
                 ClaudeCodeServices.ConnectionFactory = null;
                 ClaudeCodeServices.AuthService = null;

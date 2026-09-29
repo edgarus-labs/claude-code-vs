@@ -1,4 +1,5 @@
 using ClaudeCode.Contracts;
+using ClaudeCode.Core.Effort;
 using ClaudeCode.Core.ViewModels;
 using Community.VisualStudio.Toolkit;
 using Microsoft.VisualStudio;
@@ -18,7 +19,7 @@ internal sealed class VsChatSessionServices : IChatSessionServices
     private readonly ActiveEditorDocumentTracker _editorDocumentTracker;
     private readonly Func<bool> _remoteControlAtStartup;
 
-    public VsChatSessionServices(IAcpAgentConnectionFactory connectionFactory, IAcpAuthService authService, IUsageService usageService, WorkspaceRootTracker workspaceRootTracker, ActiveEditorDocumentTracker editorDocumentTracker, Func<bool> remoteControlAtStartup)
+    public VsChatSessionServices(IAcpAgentConnectionFactory connectionFactory, IAcpAuthService authService, IUsageService usageService, WorkspaceRootTracker workspaceRootTracker, ActiveEditorDocumentTracker editorDocumentTracker, Func<bool> remoteControlAtStartup, IEffortClassifier effortClassifier)
     {
         ConnectionFactory = connectionFactory ?? throw new ArgumentNullException(nameof(connectionFactory));
         AuthService = authService ?? throw new ArgumentNullException(nameof(authService));
@@ -26,6 +27,7 @@ internal sealed class VsChatSessionServices : IChatSessionServices
         _workspaceRootTracker = workspaceRootTracker ?? throw new ArgumentNullException(nameof(workspaceRootTracker));
         _editorDocumentTracker = editorDocumentTracker ?? throw new ArgumentNullException(nameof(editorDocumentTracker));
         _remoteControlAtStartup = remoteControlAtStartup ?? throw new ArgumentNullException(nameof(remoteControlAtStartup));
+        EffortClassifier = effortClassifier ?? throw new ArgumentNullException(nameof(effortClassifier));
     }
 
     public IAcpAgentConnectionFactory ConnectionFactory { get; }
@@ -39,6 +41,8 @@ internal sealed class VsChatSessionServices : IChatSessionServices
     public bool HasActiveDocument => _editorDocumentTracker.HasActiveDocument;
 
     public bool RemoteControlAtStartup => _remoteControlAtStartup();
+
+    public IEffortClassifier? EffortClassifier { get; }
 
     public event EventHandler? ActiveDocumentChanged
     {

@@ -26,6 +26,9 @@ public sealed class NullChatSessionServices : IChatSessionServices
 
     public bool RemoteControlAtStartup => false;
 
+    /// <summary>No model ships with the design-time double, so Auto effort is not offered.</summary>
+    public ClaudeCode.Core.Effort.IEffortClassifier? EffortClassifier => null;
+
     public event EventHandler? ActiveDocumentChanged { add { } remove { } }
 
     public event EventHandler? WorkspaceRootChanged { add { } remove { } }

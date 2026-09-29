@@ -99,6 +99,10 @@
     <PackageReference Include="EnvDTE90a" Version="17.13.40008" />
     <PackageReference Include="Microsoft.VisualStudio.Text.UI" Version="17.13.226" />
     <PackageReference Include="Microsoft.VisualStudio.Text.Logic" Version="17.13.226" />
+    <!-- Auto effort's ONNX runtime. The managed assembly already flows in through ClaudeCode.Core.ViewModels;
+         this direct reference exists for $(PkgMicrosoft_ML_OnnxRuntime), so the native win-x64 engine below
+         can be packaged. ExcludeAssets="build" drops the package's own None copy of the same file. -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.30.0" ExcludeAssets="build" GeneratePathProperty="true" />
   </ItemGroup>
 
   <ItemGroup>
@@ -211,6 +215,19 @@
          resolves it from (this assembly's own directory). -->
     <Content Include="..\ClaudeCode.Core\Resources\Transcript\**\*.*">
       <Link>Resources\Transcript\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <IncludeInVSIX>true</IncludeInVSIX>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <!-- Auto effort: the native ONNX engine (Visual Studio is an x64 process; elsewhere Auto reports the
+         load failure and uses Medium) and ClaudeCode.Core.ViewModels' model folder, repeated here for
+         the same reason as the transcript assets above. Loaded from beside this assembly on first use. -->
+    <Content Include="$(PkgMicrosoft_ML_OnnxRuntime)\runtimes\win-x64\native\onnxruntime.dll">
+      <Link>onnxruntime.dll</Link>
+      <IncludeInVSIX>true</IncludeInVSIX>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\ClaudeCode.Core.ViewModels\Effort\Model\**\*.*">
+      <Link>Effort\Model\%(RecursiveDir)%(Filename)%(Extension)</Link>
       <IncludeInVSIX>true</IncludeInVSIX>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>

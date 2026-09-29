@@ -1,4 +1,5 @@
 using ClaudeCode.Contracts;
+using ClaudeCode.Core.Effort;
 using ClaudeCode.Core.ViewModels;
 using System;
 using System.Collections.Generic;
@@ -24,6 +25,8 @@ internal sealed class StubChatSessionServices : IChatSessionServices
     public IAcpAuthService AuthService { get; }
 
     public IUsageService UsageService { get; }
+
+    public IEffortClassifier? EffortClassifier { get; set; }
 
     /// <summary>Injects a failure for the VSIX host's <c>WorkspaceRoot</c>, which is a live
     /// callback into solution state and throws while a solution is closing or reloading.</summary>

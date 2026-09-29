@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Offline, developer-run tool that (re)trains Auto effort's 384 -> 3 head from effort-dataset.tsv
+       with the exact encoder the extension ships. Not part of ClaudeCodeVS.slnx or the VSIX. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/ClaudeCode.Core.ViewModels/ClaudeCode.Core.ViewModels.csproj" />
+  </ItemGroup>
+
+</Project>
