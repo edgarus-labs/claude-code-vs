@@ -998,6 +998,34 @@ public sealed partial class ChatSessionStateTests
         Assert.False(vm.IsBusy);
     }
 
+    // A session lost while judging ends that judgment at once: the judge (a CLI process) is not left
+    // running for a session that is gone, and the turn does not hold the panel busy until it returns.
+    [Fact]
+    public async Task AutoTurn_SessionLostWhileJudging_CancelsTheJudgmentAndEndsTheTurn()
+    {
+        var (connection, log) = AutoConnection("medium");
+        var classifier = new FakeEffortClassifier
+        {
+            TokenHandler = async (_, token) =>
+            {
+                await Task.Delay(Timeout.Infinite, token);
+                return EffortLevel.Medium;
+            },
+        };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+
+        var sending = SendTextAsync(vm, "hard work");
+        await WaitUntilAsync(() => classifier.Prompts.Count == 1);
+        connection.RaiseDisconnected();
+        await WithinAsync(sending);
+
+        Assert.False(vm.IsBusy);
+        Assert.Empty(log);
+        Assert.Equal("hard work", vm.InputText);
+    }
+
     // A queued message being judged is held by nobody else, so a session lost meanwhile
     // takes it too: it is reported like every other queued message the session drops, and its
     // bubble does not stay behind as pending.

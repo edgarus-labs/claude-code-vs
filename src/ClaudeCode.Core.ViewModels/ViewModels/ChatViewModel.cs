@@ -2921,6 +2921,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         ClearPendingRequests("The agent connection was closed.");
         ClearRunningSubagents();
         CurrentPlan = null;
+        // A judgment still running belongs to the session being released: end it (and its CLI process)
+        // now instead of holding the panel busy for a session that is gone.
+        _autoEffortStop?.Cancel();
         IsRemoteControlEnabled = false;
         RemoteControlUrl = null;
         ApplyConfigOptions(Array.Empty<SessionConfigOption>());
