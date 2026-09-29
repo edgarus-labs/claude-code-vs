@@ -73,7 +73,7 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
                         "The effort judge gave no usable reply: it was empty or longer than the {0}-character limit.", MaxReplyChars));
                 }
             }
-            throw new InvalidDataException("The effort judge replied without a level: " + Excerpt(reply));
+            throw new InvalidDataException("The effort judge replied without a level after three attempts.");
         }
         catch (OperationCanceledException) when (deadline.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
@@ -210,12 +210,10 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
             await ProcessExitWait.WaitForExitAsync(exited, cancellationToken).ConfigureAwait(false);
             if (process.ExitCode != 0)
             {
-                // API errors arrive on stdout with nothing on stderr.
-                var details = await stderr.ConfigureAwait(false);
-                if (details.Trim().Length == 0) details = await reply.ConfigureAwait(false);
-                var excerpt = Excerpt(details);
+                // CLI output can echo the user's message (including secrets). Keep the exit code,
+                // but never expose stderr or stdout in an exception surfaced to the UI or logs.
                 throw new InvalidOperationException(string.Format(CultureInfo.InvariantCulture,
-                    "The effort judge exited with code {0}{1}", process.ExitCode, excerpt.Length == 0 ? "." : ": " + excerpt));
+                    "The effort judge exited with code {0}.", process.ExitCode));
             }
             // Exit 0 with a broken pipe: it never read the message, so the reply below answers nothing.
             if (inputRefused) throw new InvalidOperationException("The effort judge exited before reading the message.");
@@ -254,9 +252,4 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
         }
     }
 
-    private static string Excerpt(string text)
-    {
-        text = text.Trim();
-        return text.Length <= 300 ? text : text.Substring(0, 300) + "…";
-    }
 }

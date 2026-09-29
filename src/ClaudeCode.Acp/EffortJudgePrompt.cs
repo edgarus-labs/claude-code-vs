@@ -133,8 +133,8 @@ public static class EffortJudgePrompt
         {
             int at = text.IndexOf(word, from, StringComparison.OrdinalIgnoreCase);
             if (at < 0) return -1;
-            bool boundedBefore = at == 0 || !IsWordChar(text[at - 1]);
-            bool boundedAfter = at + word.Length == text.Length || !IsWordChar(text[at + word.Length]);
+            bool boundedBefore = at == 0 || !JoinsWord(text, at - 1, -1);
+            bool boundedAfter = at + word.Length == text.Length || !JoinsWord(text, at + word.Length, 1);
             if (boundedBefore && boundedAfter) return at;
             from = at + 1;
         }
@@ -142,4 +142,13 @@ public static class EffortJudgePrompt
     }
 
     private static bool IsWordChar(char c) => char.IsLetterOrDigit(c) || c == '_';
+
+    // A neighbour joins the label into a larger word: a word character, or a hyphen with a word
+    // character beyond it ("low-level", "follow-high"), but not a spaced dash ("medium - not high").
+    private static bool JoinsWord(string text, int neighbour, int step)
+    {
+        if (IsWordChar(text[neighbour])) return true;
+        int beyond = neighbour + step;
+        return text[neighbour] == '-' && beyond >= 0 && beyond < text.Length && IsWordChar(text[beyond]);
+    }
 }

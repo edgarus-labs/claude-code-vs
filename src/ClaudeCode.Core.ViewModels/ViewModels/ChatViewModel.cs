@@ -48,8 +48,6 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // Held from the start of a judgment until the effort change is acknowledged: locks the settings
     // only, unlike IsConfigBusy, which also locks the composer.
     private bool _isJudgingEffort;
-    // Set when an effort change was abandoned by Stop, so the agent's level is not known.
-    private bool _effortUncertain;
     // Held while an explicit level is being picked. The pick's own request releases the queue when it
     // ends, before the pick has left Auto, so a follow-up released then must not be judged over it.
     private bool _isPickingEffort;
@@ -1057,21 +1055,15 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             var value = level.ToAgentValue();
             // ... or stopped offering this level (a config update meanwhile, which also ended Auto).
             if (!option.Options.Any(candidate => candidate.Value == value)) return true;
-            if (option.CurrentValue != value || _effortUncertain)
+            if (option.CurrentValue != value)
             {
                 IReadOnlyList<SessionConfigOption> options;
                 try
                 {
-                    options = await connection.SetSessionConfigOptionAsync(sessionId, option.Id, value, stop.Token).ConfigureAwait(true);
-                }
-                catch (Exception) when (stop.IsCancellationRequested && !_disposed)
-                {
-                    // Whatever the request ends in after Stop, the user stopped it. The agent may
-                    // already have applied the change: the local level is unknown until it reports
-                    // one, so the next Auto turn sets its own again and the picker names no level.
-                    _effortUncertain = true;
-                    _autoEffortInEffect = false;
-                    return false;
+                    // Not `stop`'s token: a request cancelled in flight makes the connection drop the
+                    // whole session. Stop takes effect once the agent has answered (below); dispose
+                    // still cancels the request.
+                    options = await connection.SetSessionConfigOptionAsync(sessionId, option.Id, value, _lifetime.Token).ConfigureAwait(true);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
@@ -1081,7 +1073,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 ApplyConfigOptions(options);
             }
             _autoEffortInEffect = true;
-            return true;
+            // Stop pressed while the agent was setting the level: its answer is the level it runs now,
+            // but the turn ends here without sending.
+            return !stop.IsCancellationRequested;
         }
         finally
         {
@@ -1101,9 +1095,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task ChangeConfigAsync(SessionConfigOption? option, SessionConfigValue? value)
     {
-        // After Stop abandoned Auto's effort change the level shown as current may not be the agent's.
-        bool levelUnknown = ReferenceEquals(option, _effortOption) && _effortUncertain;
-        if (!CanConfigure || option is null || value is null || (value.Value == option.CurrentValue && !levelUnknown) ||
+        if (!CanConfigure || option is null || value is null || value.Value == option.CurrentValue ||
             !option.Options.Any(candidate => candidate.Value == value.Value))
         {
             NotifySelectionsChanged();
@@ -1258,6 +1250,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // session (DiscardQueuedMessages), which tells the user.
     private readonly List<QueuedMessage> _returnedUnstarted = new List<QueuedMessage>();
 
+    // The live draft SendCoreAsync handed to RunTurnAsync, until prepare() takes it out of the
+    // composer. Auto's judgment makes that a window of seconds in which the composer still holds the
+    // message, and sending it again (a second Enter) would queue a copy that runs the prompt twice.
+    private (string Text, ChatAttachmentViewModel[] Attachments)? _draftInFlight;
+
     private Task SendCoreAsync()
     {
         if (!CanSend()) return Task.CompletedTask;
@@ -1273,11 +1270,16 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             return RunClientCommandAsync(clientCommand);
         }
 
+        var attachments = Attachments.ToArray();
+        // The draft being judged is still in the composer: sending it again changes nothing. Anything
+        // else there is a new message and queues like any other.
+        if (IsBusy && _draftInFlight is { } inFlight && text == inFlight.Text && attachments.SequenceEqual(inFlight.Attachments))
+            return Task.CompletedTask;
+
         // Sending is the user's own action, so it is what clears a stale error - not the start of
         // every turn, which would wipe the failure of the turn that just ended before it could be
         // read (an auto-dispatched queue would erase its own predecessor's error).
         StatusMessage = null;
-        var attachments = Attachments.ToArray();
 
         if (IsBusy)
         {
@@ -1285,6 +1287,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             return Task.CompletedTask;
         }
 
+        _draftInFlight = (text, attachments);
         return RunTurnAsync(null, text, () =>
         {
             // Acquire before consuming the draft: failed startup must not lose text or attachments.
@@ -1292,6 +1295,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             Messages.Add(BuildUserBubble(text, attachments, isPending: false));
             UpdateSessionTitleFromFirstUserMessage();
             ConsumeDraft(text, attachments);
+            _draftInFlight = null;
             return (text, (IReadOnlyList<ChatAttachmentViewModel>)attachments);
         });
     }
@@ -1476,6 +1480,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
         finally
         {
+            // A live turn that ended before prepare() took its draft (Stop, a lost session, a rejected
+            // effort change) leaves the draft in the composer, no longer in flight.
+            if (queued is null) _draftInFlight = null;
             try
             {
                 if (failed) _runningFailed |= !submitted || queued is null || !queued.Bubble.IsPending;
@@ -2027,8 +2034,6 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private void ApplyConfigOptions(IReadOnlyList<SessionConfigOption> options)
     {
-        // Whatever the agent reports is its level now; only that clears the doubt Stop left behind.
-        _effortUncertain = false;
         _modelOption = options.FirstOrDefault(option => option.Category == "model")
             ?? options.FirstOrDefault(option => option.Id == "model");
         _effortOption = options.FirstOrDefault(option => option.Category == "thought_level")

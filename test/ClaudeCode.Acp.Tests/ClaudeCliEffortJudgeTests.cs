@@ -50,6 +50,9 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
             case 'never': process.stdout.write('I cannot help with that.'); break;
             case 'fail': process.stderr.write('Not logged in · Please run /login'); process.exit(1);
             case 'fail-stdout': process.stdout.write('API Error: overloaded'); process.exit(1);
+            case 'fail-echo-stderr': process.stderr.write('Authentication failed for ' + stdin); process.exit(37);
+            case 'fail-echo-stdout': process.stdout.write('API Error: ' + stdin); process.exit(37);
+            case 'echo-unparseable': process.stdout.write('Cannot classify: ' + stdin.split('\n\nAnswer with exactly one of:')[0]); break;
             case 'fail-silent': process.exit(1);
             case 'oversize': process.stdout.write('x'.repeat(20000)); break;
             case 'flood':
@@ -152,20 +155,46 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
     {
         var error = await Assert.ThrowsAsync<InvalidDataException>(() => Judge("never").ClassifyAsync("ok", CancellationToken.None));
 
-        Assert.Contains("I cannot help with that.", error.Message);
+        Assert.Contains("without a level", error.Message);
         Assert.Equal(3, Calls().Count);
     }
 
-    // The CLI reports some failures (API errors) on stdout with nothing on stderr.
+    // The CLI can report failures on stdout or stderr; neither stream is safe to disclose.
     [Theory]
-    [InlineData("fail", "Not logged in")]
-    [InlineData("fail-stdout", "API Error: overloaded")]
-    public async Task Classify_CliFails_ReportsItsError(string mode, string expected)
+    [InlineData("fail")]
+    [InlineData("fail-stdout")]
+    public async Task Classify_CliFails_ReportsExitCodeWithoutRawOutput(string mode)
     {
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => Judge(mode).ClassifyAsync("ok", CancellationToken.None));
 
-        Assert.Contains(expected, error.Message);
+        Assert.Contains("code 1", error.Message);
         Assert.Single(Calls());
+    }
+
+    [Theory]
+    [InlineData("fail-echo-stderr")]
+    [InlineData("fail-echo-stdout")]
+    public async Task Classify_CliFailureEchoingInput_ReportsExitCodeWithoutDisclosingInput(string mode)
+    {
+        const string secret = "customer-secret-token-7421";
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => Judge(mode).ClassifyAsync(secret, CancellationToken.None));
+
+        Assert.Contains("code 37", error.Message);
+        Assert.DoesNotContain(secret, error.ToString());
+        Assert.Single(Calls());
+    }
+
+    [Fact]
+    public async Task Classify_UnparseableReplyEchoingInput_ReportsInvalidReplyWithoutDisclosingInput()
+    {
+        const string secret = "customer-secret-token-7421";
+        var error = await Assert.ThrowsAsync<InvalidDataException>(
+            () => Judge("echo-unparseable").ClassifyAsync(secret, CancellationToken.None));
+
+        Assert.Contains("without a level", error.Message);
+        Assert.DoesNotContain(secret, error.ToString());
+        Assert.Equal(3, Calls().Count);
     }
 
     [Fact]
@@ -183,16 +212,16 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
     // RenderUser bounds the state to 2,000 chars, so through the public API the stdin payload stays
     // near 4 KB and does not fill a Linux (64 KB) pipe, at most Windows' small one; the blocked-write
     // path in RunAsync is therefore not reliably reachable here. This pins that a CLI which exits or
-    // stalls before reading stdin surfaces its own error, or the timeout, never a broken pipe or a hang.
+    // stalls before reading stdin surfaces its exit code or the timeout, never a broken pipe or a hang.
     private static readonly string OversizedMessage = new string('ż', 5000);
 
     [Fact]
-    public async Task Classify_CliExitsBeforeReadingStdin_ReportsItsErrorNotABrokenPipe()
+    public async Task Classify_CliExitsBeforeReadingStdin_ReportsExitCodeNotABrokenPipe()
     {
         var error = await Assert.ThrowsAsync<InvalidOperationException>(
             () => Judge("fail-early").ClassifyAsync(OversizedMessage, CancellationToken.None));
 
-        Assert.Contains("Not logged in", error.Message);
+        Assert.Contains("code 1", error.Message);
     }
 
     [Fact]
@@ -261,12 +290,8 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
         await AssertChildGone();
     }
 
-    // The 15 s default is the issue's bound; one deadline covers every attempt, so a slow first run
-    // leaves the retries less time rather than each getting a fresh 15 s.
-    [Fact]
-    public void DefaultTimeout_IsFifteenSeconds() =>
-        Assert.Equal(TimeSpan.FromSeconds(15), ClaudeCliEffortJudge.DefaultTimeout);
-
+    // One deadline covers every attempt, so a slow first run leaves the retries less time rather
+    // than each getting a fresh 15 s.
     [Fact]
     public async Task Classify_OneDeadlineCoversEveryAttempt()
     {
@@ -344,15 +369,7 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
 
         using var cancel = new CancellationTokenSource();
         var classifying = Judge("grandchild").ClassifyAsync("ok", cancel.Token);
-        var grandchildPidFile = _log + ".grandchild.pid";
-        var giveUp = DateTime.UtcNow + TimeSpan.FromSeconds(10);
-        while (!(File.Exists(grandchildPidFile) && File.ReadAllText(grandchildPidFile).Length > 0))
-        {
-            Assert.True(DateTime.UtcNow < giveUp, "the fake adapter never started its child");
-            await Task.Delay(20);
-        }
-
-        var grandchild = int.Parse(File.ReadAllText(grandchildPidFile), System.Globalization.CultureInfo.InvariantCulture);
+        var grandchild = await WaitForPid(_log + ".grandchild.pid", "the fake adapter never started its child");
         cancel.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => classifying);
 
@@ -360,18 +377,35 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
         await AssertGone(grandchild);
     }
 
-    private int? ReadPid() =>
-        File.Exists(_pidFile) && int.TryParse(File.ReadAllText(_pidFile), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var pid) ? pid : null;
+    private static int? ReadPidFile(string path)
+    {
+        try
+        {
+            // Shared for writing: the fake adapter may still hold the file open while it writes it.
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(stream);
+            return int.TryParse(reader.ReadToEnd(), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var pid) ? pid : null;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
 
-    private async Task WaitForPidFile()
+    private int? ReadPid() => ReadPidFile(_pidFile);
+
+    private static async Task<int> WaitForPid(string path, string failure)
     {
         var giveUp = DateTime.UtcNow + TimeSpan.FromSeconds(10);
-        while (!(File.Exists(_pidFile) && File.ReadAllText(_pidFile).Length > 0))
+        while (true)
         {
-            Assert.True(DateTime.UtcNow < giveUp, "the fake adapter never started");
+            if (ReadPidFile(path) is { } pid) return pid;
+            Assert.True(DateTime.UtcNow < giveUp, failure);
             await Task.Delay(20);
         }
     }
+
+    private async Task WaitForPidFile() => await WaitForPid(_pidFile, "the fake adapter never started");
 
     // The kill/dispose has run by the time ClassifyAsync throws, but the OS may take a moment. A
     // child killed before it wrote its pid has, by then, nothing left to outlive the judgment.
@@ -413,7 +447,9 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => Judge("flood").ClassifyAsync("ok", CancellationToken.None));
 
         Assert.True(watch.Elapsed < TimeSpan.FromSeconds(10), watch.Elapsed.ToString());
-        Assert.Equal("The effort judge exited with code 1.", error.Message);
+        // Flooded output is drained but never included in the diagnostic.
+        Assert.StartsWith("The effort judge exited with code 1", error.Message);
+        Assert.True(error.Message.Length <= 400, error.Message.Length.ToString(System.Globalization.CultureInfo.InvariantCulture));
     }
 
     // Over the reply bound the reader keeps nothing, so the reply is indistinguishable from an

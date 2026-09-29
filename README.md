@@ -196,8 +196,8 @@ problem — is the fix or design already given, or which causes or designs remai
 | High | Several viable designs or candidate causes. | authentication, a deadlock, a flaky integration test |
 
 Volume of work and wording never raise the level, and when torn between two levels Auto picks the
-lower one. It is not tied to one language: the judge reads the message as written (tried on English
-and Polish). Auto never goes above High; higher levels (such as Extra High or
+lower one. It is not tied to one language: the judge reads the message as written and its prompt does
+not name a language. Auto never goes above High; higher levels (such as Extra High or
 Max) stay an explicit choice, and picking any explicit level behaves exactly as before. Auto is offered
 only when the adapter advertises `low`, `medium` and `high`.
 
@@ -214,10 +214,13 @@ judge, never as instructions.
 The Auto choice survives an agent reconnect but is not remembered beyond the tool window: a new tool
 window or Visual Studio session starts on a manual level.
 
-**What it costs.** Each Auto message makes one small Haiku request against whichever account or
-provider your Claude Code is set up with — up to three when the judge's reply has no usable level and
-is retried — and adds a few seconds (a CLI start plus the model round trip) before the message is
-sent. No API key and no extra configuration are needed.
+**What it costs.** Each Auto message makes one small Haiku request — up to three when the judge's
+reply has no usable level and is retried — and adds a few seconds (a CLI start plus the model round
+trip) before the message is sent. No API key and no extra configuration are needed. The judge reads no
+Claude Code settings: it uses your sign-in and Visual Studio's environment variables, so a provider or
+gateway configured only in `settings.json` (`env` block, `apiKeyHelper`) is not used for it. With such
+a setup Auto falls back as described below, or, if you are also signed in to Anthropic, the message
+goes to Anthropic.
 
 **How it stays correct.** Auto is a client-side mode: the adapter never receives an `auto` value. The
 chosen level is set through ACP and acknowledged before the message is sent. Effort applies to the
@@ -306,7 +309,8 @@ rebuilt version normally, install the new `.vsix` as described in [Installation]
 
 The extension handles prompts, attached documents and images, editor contents (including unsaved
 edits), file paths and tool results. They are passed to the ACP agent and on to its model provider;
-with Auto effort, each message is additionally sent to a Claude Haiku model to judge its effort. The extension
+with Auto effort, each message is additionally sent to Claude Haiku (through your sign-in and
+environment, not your Claude Code settings) to judge its effort. The extension
 never reads or stores your Claude credentials: sign-in and sign-out run Claude Code's own CLI, and the
 one component that reads an OAuth token — the usage-limit lookup — does so in a short-lived
 subprocess that returns only the trimmed usage JSON. See [SECURITY.md](SECURITY.md) for the full scope

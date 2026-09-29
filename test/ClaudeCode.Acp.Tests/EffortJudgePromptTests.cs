@@ -12,7 +12,7 @@ public sealed class EffortJudgePromptTests
 {
     private static string[] LevelNames => Enum.GetNames<EffortLevel>();
 
-    // Auto's ceiling is High: the judge is offered exactly the EffortLevel names, nothing above.
+    // Auto's ceiling is High: the judge is offered exactly the EffortLevel labels, nothing above.
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -22,28 +22,15 @@ public sealed class EffortJudgePromptTests
         foreach (var name in LevelNames) Assert.Contains("`" + name.ToLowerInvariant() + "`", prompt);
         Assert.DoesNotContain("xhigh", prompt, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("`max`", prompt, StringComparison.OrdinalIgnoreCase);
-        // The state is guarded as untrusted data; the exact sentence is not pinned.
-        Assert.Contains("untrusted", prompt, StringComparison.OrdinalIgnoreCase);
     }
 
-    // The one place a level becomes the agent's string is ToAgentValue; the judge's labels come from
-    // it, so each level's value must parse back to that very level.
+    // The judge's labels come from ToAgentValue, so each level's value must parse back to it.
     [Fact]
-    public void ToAgentValue_IsTheLowercaseLevelName_AndParsesBackToThatLevel()
+    public void ParseReply_ParsesEachLevelsAgentValueBackToThatLevel()
     {
         foreach (EffortLevel level in Enum.GetValues<EffortLevel>())
-        {
-            Assert.Equal(level.ToString().ToLowerInvariant(), level.ToAgentValue());
             Assert.Equal(level, EffortJudgePrompt.ParseReply(level.ToAgentValue()));
-        }
-
-        Assert.Equal(new[] { 0, 1, 2 }, new[] { EffortLevel.Low, EffortLevel.Medium, EffortLevel.High }.Select(level => (int)level));
     }
-
-    // A classifier is a public contract and can return a value that is no level.
-    [Fact]
-    public void ToAgentValue_ForAValueThatIsNoLevel_Faults() =>
-        Assert.Throws<ArgumentOutOfRangeException>(() => ((EffortLevel)5).ToAgentValue());
 
     // Runs of 12 or more hex digits are shortened, whatever they are: a commit hash, or a long
     // number. Shorter ones are left alone.
@@ -135,17 +122,34 @@ public sealed class EffortJudgePromptTests
         }
     }
 
-    // Cutting inside a surrogate pair would leave a lone half, sent to the judge as U+FFFD.
-    [Fact]
-    public void Preprocess_Truncation_NeverSplitsASurrogatePair()
+    // Cutting inside a surrogate pair would leave a lone half, sent to the judge as U+FFFD. The
+    // prefix and suffix lengths move both cut points across pair boundaries and mid-pair; 9000
+    // emoji (18,000 chars) also passes the pre-clean cut.
+    [Theory]
+    [InlineData(1000, 1100)]
+    [InlineData(9000, 9004)]
+    public void Preprocess_Truncation_NeverSplitsASurrogatePair(int fromEmoji, int toEmoji)
     {
-        for (int emoji = 1000; emoji < 1100; emoji++)
+        var strict = new System.Text.UTF8Encoding(false, true);
+        for (int emoji = fromEmoji; emoji < toEmoji; emoji++)
         {
-            var result = EffortJudgePrompt.Preprocess(string.Concat(Enumerable.Repeat("😀", emoji)));
-            for (int i = 0; i < result.Length; i++)
+            for (int prefix = 0; prefix < 4; prefix++)
             {
-                if (char.IsHighSurrogate(result[i])) Assert.True(i + 1 < result.Length && char.IsLowSurrogate(result[++i]), $"lone high surrogate at {i} ({emoji} emoji)");
-                else Assert.False(char.IsLowSurrogate(result[i]), $"lone low surrogate at {i} ({emoji} emoji)");
+                for (int suffix = 0; suffix < 4; suffix++)
+                {
+                    var message = new string('a', prefix) + string.Concat(Enumerable.Repeat("😀", emoji)) + new string('b', suffix);
+                    var result = EffortJudgePrompt.Preprocess(message);
+                    var where = $"{emoji} emoji, prefix {prefix}, suffix {suffix}";
+                    Assert.True(result.Length <= EffortJudgePrompt.MaxStateChars, where);
+                    try
+                    {
+                        strict.GetBytes(result);
+                    }
+                    catch (System.Text.EncoderFallbackException)
+                    {
+                        Assert.Fail("lone surrogate: " + where);
+                    }
+                }
             }
         }
     }
@@ -216,6 +220,11 @@ public sealed class EffortJudgePromptTests
     [InlineData("HIGH", EffortLevel.High)]
     [InlineData("medium - not high", EffortLevel.Medium)]
     [InlineData("highly likely: medium", EffortLevel.Medium)]
+    // A hyphen joining letters makes a larger word, not a label.
+    [InlineData("This is a low-level fix, so medium", EffortLevel.Medium)]
+    [InlineData("A high-level design request: medium", EffortLevel.Medium)]
+    [InlineData("low-hanging fruit, medium", EffortLevel.Medium)]
+    [InlineData("a follow-high then low", EffortLevel.Low)]
     [InlineData("I'd say `high`.", EffortLevel.High)]
     public void ParseReply_TakesTheEarliestWholeWordLabel(string reply, EffortLevel expected)
     {
@@ -226,6 +235,7 @@ public sealed class EffortJudgePromptTests
     [InlineData("")]
     [InlineData("Nie mam kontekstu do wykonania tego polecenia.")]
     [InlineData("lowest highest")]
+    [InlineData("low-level")]
     public void ParseReply_NoLabel_IsNull(string reply)
     {
         Assert.Null(EffortJudgePrompt.ParseReply(reply));

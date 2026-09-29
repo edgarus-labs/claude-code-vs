@@ -28,14 +28,19 @@ executable the sign-in status probe already uses (never a path or command derive
 untrusted input) to run its bundled CLI auth commands. The extension process itself never
 reads, logs, or stores the resulting credentials; only the process exit code and the existing
 status probe's JSON cross back into the extension. When `auth logout` fails, the last 4 KB of its
-stderr is written to the Visual Studio ActivityLog for diagnosis (never shown in the UI).
+stderr is written to the Visual Studio ActivityLog for diagnosis (never shown in the UI). Auto
+effort judge failures log the exception and show a status message with an error type or exit code,
+not raw judge stdout or stderr, which could echo the message.
 
 With **Auto effort** selected, each message is also judged before it is sent: the extension runs
 the same resolved adapter executable's bundled CLI in print mode (`--cli -p --model haiku`, so
 Claude Haiku by default) with no tools, no settings files, no MCP servers and no saved session,
 from the system temporary directory rather than your workspace (the CLI may still read user-level
-instruction files such as a CLAUDE.md in your home directory or above the temporary directory). The CLI inherits Visual Studio's environment, so
-the message goes to whichever model provider your Claude Code is configured for. The message
+instruction files such as a CLAUDE.md in your home directory or above the temporary directory). The
+CLI reads no Claude Code settings; it inherits Visual Studio's environment and uses your sign-in, so
+a provider or gateway configured only in `settings.json` (`env` block, `apiKeyHelper`) is not used
+for the judge: Auto then falls back, or, if you are also signed in to Anthropic, the message goes to
+Anthropic. The message
 (shortened to at most 2,000 characters) goes to the CLI on standard input as untrusted data to
 judge, never on the command line; only the current message is sent, without attachments or
 conversation history. The shortening removes noise such as ANSI escapes, XML envelopes and closed
