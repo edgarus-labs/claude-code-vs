@@ -47,7 +47,9 @@ public static class EffortJudgePrompt
     // hence the timeout; a timed-out step is skipped.
     private static readonly Regex XmlBlock = new Regex(@"<([a-zA-Z][\w-]*)(?:\s[^>]*)?>[\s\S]*?</\1>", RegexOptions.CultureInvariant, PatternTimeout);
     private static readonly Regex LongHexRun = new Regex(@"\b[0-9a-fA-F]{12,}\b", RegexOptions.CultureInvariant);
-    private static readonly Regex FencedCodeBlock = new Regex(@"```+[\s\S]*?(?:```+|$)", RegexOptions.CultureInvariant);
+    // Only a closed fence is a code block: an unclosed one is left in, so the request that follows
+    // it is not lost with the code.
+    private static readonly Regex FencedCodeBlock = new Regex(@"```+[\s\S]*?```+", RegexOptions.CultureInvariant);
     private static readonly Regex HorizontalSpace = new Regex(@"[ \t]+", RegexOptions.CultureInvariant);
     private static readonly Regex BlankLines = new Regex(@"\n{3,}", RegexOptions.CultureInvariant);
 

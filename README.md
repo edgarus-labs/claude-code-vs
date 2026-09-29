@@ -208,11 +208,13 @@ Claude Haiku, run through the adapter's bundled Claude Code CLI
 message is judged, never the conversation. The message is cleaned first to cut noise (ANSI escapes,
 tool/XML envelopes and fenced code removed, commit hashes shortened, at most 2,000 characters keeping
 both ends; this is not redaction) and passed on standard input as data to judge, never as instructions.
-The Auto choice is not remembered: a new tool window or Visual Studio session starts on a manual level.
+The Auto choice survives an agent reconnect but is not remembered beyond the tool window: a new tool
+window or Visual Studio session starts on a manual level.
 
-**What it costs.** Each Auto message makes one small Haiku request against your Claude plan and adds
-a few seconds (a CLI start plus the model round trip) before the message is sent. No API key and no
-extra configuration are needed.
+**What it costs.** Each Auto message makes one small Haiku request against your Claude plan — up to
+three when the judge's reply has no usable level and is retried — and adds a few seconds (a CLI start
+plus the model round trip) before the message is sent. No API key and no extra configuration are
+needed.
 
 **How it stays correct.** Auto is a client-side mode: the adapter never receives an `auto` value. The
 chosen level is set through ACP and acknowledged before the message is sent. Effort applies to the

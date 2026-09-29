@@ -26,13 +26,6 @@ public sealed class EffortJudgePromptTests
         Assert.Contains("untrusted", prompt, StringComparison.OrdinalIgnoreCase);
     }
 
-    [Fact]
-    public void RetrySystemPrompt_DiffersFromTheSystemPrompt()
-    {
-        Assert.NotEmpty(EffortJudgePrompt.RetrySystemPrompt);
-        Assert.NotEqual(EffortJudgePrompt.SystemPrompt, EffortJudgePrompt.RetrySystemPrompt);
-    }
-
     // Callers index by ordinal (labels here, the effort values in the view model): each level's
     // lowercase name must parse back to that very level.
     [Fact]
@@ -133,12 +126,15 @@ public sealed class EffortJudgePromptTests
     }
 
     // The message is untrusted: pasted logs full of unclosed tags must not make the envelope pattern
-    // rescan the rest of the text once per tag. The input is bounded before the patterns run and the
-    // pattern has a match timeout; the time limit is generous, it only catches an order-of-magnitude
-    // regression (dropping both guards costs many seconds on this input).
+    // rescan the rest of the text once per tag. The input is bounded before the patterns run (without
+    // that bound this input costs many seconds); the time limit is generous and catches an
+    // order-of-magnitude regression. The patterns' own match timeouts are a second guard that this
+    // input, already bounded, does not reach.
     [Theory]
     [InlineData("<a>")]
     [InlineData("<a ")]
+    [InlineData("```")]
+    [InlineData("```x\n")]
     public void Preprocess_UnclosedOpeners_StayBoundedAndFinish(string unit)
     {
         var message = string.Concat(Enumerable.Repeat(unit, 100_000));
@@ -149,6 +145,30 @@ public sealed class EffortJudgePromptTests
         Assert.True(watch.Elapsed < TimeSpan.FromSeconds(5), watch.Elapsed.ToString());
         Assert.True(result.Length <= EffortJudgePrompt.MaxStateChars);
         Assert.True(result.Length > 0);
+    }
+
+    // A fence that never closes is not a code block: everything after it is still the user's text,
+    // and the request usually sits at the end. The head and tail are kept, as for any long message.
+    [Fact]
+    public void Preprocess_UnclosedFence_KeepsTheTextAfterIt()
+    {
+        var message = "Please look at this code:\n```\n" + string.Concat(Enumerable.Repeat("var x = 1;\n", 400)) + "now redesign the retry API";
+
+        var result = EffortJudgePrompt.Preprocess(message);
+
+        Assert.StartsWith("Please look at this code:", result);
+        Assert.EndsWith("now redesign the retry API", result);
+    }
+
+    // Closed fences still go, and an unclosed one after them does not take the rest with it.
+    [Fact]
+    public void Preprocess_ClosedFenceGoes_AnUnclosedOneAfterItStays()
+    {
+        var result = EffortJudgePrompt.Preprocess("explain this:\n```cs\nvar x = 1;\n```\nthen fix that:\n```\nbroken(");
+
+        Assert.DoesNotContain("var x = 1;", result);
+        Assert.Contains("then fix that:", result);
+        Assert.Contains("broken(", result);
     }
 
     // The pre-clean cut (16,000 chars) keeps both ends, like the final one.

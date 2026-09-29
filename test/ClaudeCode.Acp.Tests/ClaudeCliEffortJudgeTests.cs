@@ -114,7 +114,11 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
         Assert.Equal(EffortLevel.Low, level);
         var calls = Calls();
         Assert.Equal(2, calls.Count);
-        Assert.Equal(EffortJudgePrompt.RetrySystemPrompt, calls[1].Args[Array.IndexOf(calls[1].Args, "--system-prompt") + 1]);
+        var systemPrompts = calls.Select(call => call.Args[Array.IndexOf(call.Args, "--system-prompt") + 1]).ToArray();
+        Assert.Equal(EffortJudgePrompt.SystemPrompt, systemPrompts[0]);
+        Assert.Equal(EffortJudgePrompt.RetrySystemPrompt, systemPrompts[1]);
+        // A retry that repeated the first prompt verbatim would just repeat the first answer.
+        Assert.NotEqual(systemPrompts[0], systemPrompts[1]);
     }
 
     [Fact]
@@ -188,7 +192,51 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
         await AssertChildGone();
     }
 
-    private int ReadPid() => int.Parse(File.ReadAllText(_pidFile), System.Globalization.CultureInfo.InvariantCulture);
+    // F-50-33: the 15 s bound covers the whole judgment. Resolving the adapter probes the filesystem
+    // and cannot observe the token, so a probe stuck on an unreachable path must not hold the turn
+    // past the deadline.
+    [Fact]
+    public async Task Classify_AdapterResolutionThatIgnoresTheDeadline_StillTimesOut()
+    {
+        var neverResolves = new TaskCompletionSource<AcpExecutableSpec>();
+        var judge = new ClaudeCliEffortJudge(_ => neverResolves.Task, TimeSpan.FromMilliseconds(200));
+
+        var classifying = judge.ClassifyAsync("ok", CancellationToken.None);
+        var finished = await Task.WhenAny(classifying, Task.Delay(TimeSpan.FromSeconds(10)));
+
+        Assert.Same(classifying, finished);
+        await Assert.ThrowsAsync<TimeoutException>(() => classifying);
+    }
+
+    // F-50-33: caller cancellation is honoured while the adapter is being resolved too.
+    [Fact]
+    public async Task Classify_CallerCancelsWhileTheAdapterIsBeingResolved_EndsAtOnce()
+    {
+        var neverResolves = new TaskCompletionSource<AcpExecutableSpec>();
+        var judge = new ClaudeCliEffortJudge(_ => neverResolves.Task);
+        using var cancel = new CancellationTokenSource();
+
+        var classifying = judge.ClassifyAsync("ok", cancel.Token);
+        cancel.Cancel();
+        var finished = await Task.WhenAny(classifying, Task.Delay(TimeSpan.FromSeconds(10)));
+
+        Assert.Same(classifying, finished);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => classifying);
+    }
+
+    // F-50-42: a deadline that expires before the child has written its pid leaves nothing to
+    // check; it must not read as a failure of the judge.
+    [Fact]
+    public async Task Classify_DeadlineExpiresBeforeTheChildStarts_TimesOutAndLeavesNoChild()
+    {
+        await Assert.ThrowsAsync<TimeoutException>(
+            () => Judge("stall", TimeSpan.FromMilliseconds(1)).ClassifyAsync("ok", CancellationToken.None));
+
+        await AssertChildGone();
+    }
+
+    private int? ReadPid() =>
+        File.Exists(_pidFile) && int.TryParse(File.ReadAllText(_pidFile), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var pid) ? pid : null;
 
     private async Task WaitForPidFile()
     {
@@ -200,10 +248,11 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
         }
     }
 
-    // The kill/dispose has run by the time ClassifyAsync throws, but the OS may take a moment.
+    // The kill/dispose has run by the time ClassifyAsync throws, but the OS may take a moment. A
+    // child killed before it wrote its pid has, by then, nothing left to outlive the judgment.
     private async Task AssertChildGone()
     {
-        int pid = ReadPid();
+        if (ReadPid() is not { } pid) return;
         var giveUp = DateTime.UtcNow + TimeSpan.FromSeconds(5);
         while (IsAlive(pid))
         {

@@ -49,7 +49,7 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
         deadline.CancelAfter(_timeout);
         try
         {
-            var executable = await _resolveExecutable(deadline.Token).ConfigureAwait(false);
+            var executable = await WithinDeadlineAsync(_resolveExecutable(deadline.Token), deadline.Token).ConfigureAwait(false);
             var user = EffortJudgePrompt.RenderUser(prompt);
             string reply = string.Empty;
             for (int attempt = 0; attempt <= ParseRetries; attempt++)
@@ -72,6 +72,25 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
             throw new TimeoutException(string.Format(CultureInfo.InvariantCulture,
                 "The effort judge did not answer within {0:0} s.", _timeout.TotalSeconds));
         }
+    }
+
+    // Resolving the adapter probes the filesystem in code that cannot observe the token (an
+    // unreachable path blocks until the OS gives up), so the deadline is enforced by not waiting for
+    // it rather than by asking it to stop.
+    private static async Task<T> WithinDeadlineAsync<T>(Task<T> work, CancellationToken deadline)
+    {
+        var expired = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using (deadline.Register(() => expired.TrySetResult(true)))
+        {
+            if (await Task.WhenAny(work, expired.Task).ConfigureAwait(false) != work)
+            {
+                // Whatever the abandoned work ends in is nobody's to handle: keep its fault from
+                // surfacing as an unobserved task exception.
+                _ = work.ContinueWith(finished => finished.Exception, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously);
+                deadline.ThrowIfCancellationRequested();
+            }
+        }
+        return await work.ConfigureAwait(false);
     }
 
     internal static IReadOnlyList<string> Arguments(AcpExecutableSpec executable, string system)

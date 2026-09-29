@@ -160,7 +160,7 @@ public sealed partial class ChatSessionStateTests
     private static async Task WaitUntilAsync(Func<bool> condition)
     {
         for (var i = 0; i < 300 && !condition(); i++) await Task.Delay(10);
-        Assert.True(condition(), "timed out waiting for the changed-file state");
+        Assert.True(condition(), "timed out waiting for the expected state");
     }
 
     [Fact]
