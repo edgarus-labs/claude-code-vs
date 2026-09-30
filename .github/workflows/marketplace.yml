@@ -1,0 +1,65 @@
+name: Marketplace
+
+# Manual pipeline: publishes to the Visual Studio Marketplace only when a maintainer starts it with
+# "Run workflow" and selects a version tag (vX.Y.Z) as the ref. It never starts automatically, and it
+# refuses to run from a branch. It publishes the release-vsix artifact built and tested by the CD run
+# of that tag, so the published bits are the ones the GitHub Release was built from.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: marketplace-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  marketplace:
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    runs-on: windows-latest
+    environment: marketplace
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Download release payload from the CD run
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:TAG -notmatch '^v\d+\.\d+\.\d+$') { throw "Tag '$env:TAG' is not a release tag (vX.Y.Z)." }
+          $runs = gh run list --workflow cd.yml --event push --branch $env:TAG --commit $env:SHA --json databaseId,status --limit 1 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to list CD runs.' }
+          if (-not $runs) { throw "No CD run found for tag $env:TAG." }
+          $runId = $runs[0].databaseId
+          $build = ((gh run view $runId --json jobs | ConvertFrom-Json).jobs | Where-Object name -eq 'build')
+          if (-not $build -or $build.status -ne 'completed' -or $build.conclusion -ne 'success') {
+            throw "The CD build job for $env:TAG has not completed successfully; nothing to publish."
+          }
+          gh run download $runId --name release-vsix --dir release
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to download the release-vsix artifact.' }
+
+      - name: Locate VsixPublisher
+        id: publisher
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          $publisher = & $vswhere -latest -products * -find "VSSDK\VisualStudioIntegration\Tools\Bin\VsixPublisher.exe" | Select-Object -First 1
+          if (-not $publisher) { throw "VsixPublisher.exe was not found in the runner's Visual Studio installation." }
+          "path=$publisher" >> $env:GITHUB_OUTPUT
+
+      - name: Publish to Visual Studio Marketplace
+        shell: pwsh
+        env:
+          VS_MARKETPLACE_PAT: ${{ secrets.VS_MARKETPLACE_PAT }}
+          PUBLISHER_PATH: ${{ steps.publisher.outputs.path }}
+        run: |
+          $vsix = @(Get-ChildItem -Path release -Filter *.vsix)
+          if ($vsix.Count -ne 1) { throw "Expected exactly one .vsix in the release payload, found $($vsix.Count)." }
+          ./.github/scripts/Publish-Marketplace.ps1 -VsixPath $vsix[0].FullName -PublishManifestPath src/ClaudeCode.Vsix/publishManifest.json -PublisherPath $env:PUBLISHER_PATH -PersonalAccessToken $env:VS_MARKETPLACE_PAT

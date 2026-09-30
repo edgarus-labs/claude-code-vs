@@ -249,17 +249,16 @@ instance described above.
 - **CD** (`.github/workflows/cd.yml`): pushing a tag matching `vX.Y.Z` stamps that version into both the
   `.vsixmanifest` `Identity/@Version` (what Visual Studio's Extensions & Updates dialog displays) and the .NET
   assembly metadata (`-p:Version=X.Y.Z`), rebuilds, re-runs tests, and uploads the `.vsix` and its `SHA256SUMS`
-  as the run's `release-vsix` artifact. Two independent jobs then publish that artifact:
-  - **release** creates a **draft** GitHub Release with both files attached. A maintainer reviews the generated
-    notes and the assets, then publishes the release by hand.
-  - **marketplace** publishes the `.vsix` to the Visual Studio Marketplace under the publisher ID
-    `edgarus-labs` (`src/ClaudeCode.Vsix/publishManifest.json`, which must match the `.vsixmanifest`
-    `Identity/@Publisher`), using a Marketplace personal access token stored in the `VS_MARKETPLACE_PAT`
-    secret of the `marketplace` GitHub environment. A missing token, a publisher mismatch or a rejected upload fails the job.
-
-  If either publishing job fails, the run fails while the `release-vsix` artifact stays available. Fix the
-  cause (for example the token) and use **Re-run failed jobs**: it republishes the same artifact and repeats
-  only the job that failed; a re-run of **release** reuses the existing draft for the tag.
+  as the run's `release-vsix` artifact, and the **release** job creates a **draft** GitHub Release with both files
+  attached. A maintainer reviews the generated notes and the assets, then publishes the release by hand. A failed
+  **release** job can be fixed and repeated with **Re-run failed jobs**; it reuses the existing draft for the tag.
+- **Marketplace** (`.github/workflows/marketplace.yml`): a separate, manual pipeline (`workflow_dispatch` only;
+  it never starts automatically). A maintainer starts it with **Run workflow** and selects a `vX.Y.Z` tag as the ref;
+  runs from a branch are refused. It takes the `release-vsix` artifact of the successful CD build of that tag and
+  publishes the `.vsix` to the Visual Studio Marketplace under the publisher ID `edgarus-labs`
+  (`src/ClaudeCode.Vsix/publishManifest.json`, which must match the `.vsixmanifest` `Identity/@Publisher`), using a
+  Marketplace personal access token stored in the `VS_MARKETPLACE_PAT` secret of the `marketplace` GitHub
+  environment. A missing or failed CD build, a missing token, a publisher mismatch or a rejected upload fails the run.
 - **CodeQL** (`.github/workflows/codeql.yml`): every PR to `develop`, every push to `develop`, and a weekly
   schedule run GitHub CodeQL over C# (`build-mode: none`, no Windows build needed), the JavaScript transcript
   renderer, and the GitHub Actions workflows. Results are uploaded to the repository's **Security → Code
