@@ -249,8 +249,56 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("keep me", vm.InputText);
         Assert.Equal("AQID", Assert.Single(vm.Attachments).Base64Data);
         Assert.Empty(vm.Messages);
+        Assert.Equal("Untitled", vm.SessionTitle);
         Assert.Empty(vm.AvailableModels);
         Assert.False(vm.CanConfigure);
+    }
+
+    // A transcript observer that throws while an unsent message is taken back out of the transcript
+    // must not leave the panel busy for good: nothing could be sent again.
+    [Fact]
+    public async Task ReconnectFailure_ObserverThrowsWhileTheMessageIsRestored_PanelDoesNotStayBusy()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var factory = new SingleConnectionFactory(connection);
+        using var vm = new ChatViewModel(new StubChatSessionServices(factory, new AlwaysSignedInAuthService()));
+        await vm.Initialization;
+        connection.RaiseDisconnected();
+        factory.ConnectHandler = _ => Task.FromException<IAcpAgentConnection>(new InvalidOperationException("Unavailable"));
+        vm.Messages.CollectionChanged += (_, e) =>
+        {
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove) throw new InvalidOperationException("observer failed");
+        };
+        vm.InputText = "keep me";
+
+        await Record.ExceptionAsync(() => vm.SendAsync());
+
+        Assert.False(vm.IsBusy);
+    }
+
+    // The send itself runs inside the turn's error handling: a transcript observer that throws as the
+    // message enters the transcript fails the send visibly, and the message goes back to the composer.
+    [Fact]
+    public async Task Send_ObserverThrowsAsTheMessageEntersTheTranscript_ReportsIt_AndKeepsTheMessage()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.Messages.CollectionChanged += (_, e) =>
+        {
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Add) throw new InvalidOperationException("observer failed");
+        };
+        vm.InputText = "keep me";
+        vm.AddImageAttachment("draft.png", "image/png", "AQID");
+
+        await vm.SendAsync();
+
+        Assert.Empty(connection.Prompts);
+        Assert.Equal("keep me", vm.InputText);
+        Assert.Equal("AQID", Assert.Single(vm.Attachments).Base64Data);
+        Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User);
+        Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
+        Assert.False(vm.IsBusy);
     }
 
     [Fact]

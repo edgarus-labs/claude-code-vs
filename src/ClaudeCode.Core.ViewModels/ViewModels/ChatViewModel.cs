@@ -1009,7 +1009,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // (CanConfigure) from classification to acknowledgement, so a manual model/effort change cannot
     // interleave with it; the composer is not, so messages written meanwhile queue and wait. A failed
     // judgment costs only the choice (the last judged level, else High, and the user is told); a
-    // rejected effort change fails the turn before its draft is consumed.
+    // rejected effort change fails the turn before its prompt is sent (a live message goes back to
+    // the composer, a queued one to the message box).
     // Returns whether the turn goes on: false once Stop ended the judgment or the session it was
     // judged for is gone.
     private async Task<bool> ApplyAutoEffortAsync(IAcpAgentConnection connection, string sessionId, string prompt)
@@ -1210,7 +1211,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // away (dimmed, see ChatMessageViewModel.IsPending) so the user can see it was captured, held
     // here until it can be dispatched exactly like a normal send - straight away when the agent
     // queues prompts itself (IAcpAgentConnection.SupportsPromptQueueing), otherwise once the
-    // in-flight turn ends.
+    // in-flight turn ends. Also holds a live send's message from Send until it is handed to the
+    // agent (_draftInFlight), so a turn that ends before then can give it back.
     private sealed class QueuedMessage
     {
         public QueuedMessage(ChatMessageViewModel bubble, string text, IReadOnlyList<ChatAttachmentViewModel> attachments)
@@ -1256,21 +1258,20 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // session (DiscardQueuedMessages), which tells the user.
     private readonly List<QueuedMessage> _returnedUnstarted = new List<QueuedMessage>();
 
-    // The live message SendCoreAsync handed to RunTurnAsync, until prepare() submits it. A sent
-    // message belongs to the turn, not the composer (#53): it leaves the composer at once and shows
-    // in the transcript as pending, like a queued message, so Auto's judgment (seconds) never looks
-    // like a draft still waiting to be sent. Until it is submitted it is held here so a turn that ends
-    // before the prompt goes out (a failed connect, Stop, a lost session, a rejected effort change)
-    // can give it back to the composer (RestoreDraftToComposer).
+    // The live message SendCoreAsync handed to RunTurnAsync, until prepare() hands it to the agent.
+    // A sent message belongs to the turn, not the composer (#53): it leaves the composer at once and
+    // shows in the transcript as pending, like a queued message, so Auto's judgment (seconds) never
+    // looks like a draft still waiting to be sent. Until it is handed over it is held here so a turn
+    // that ends before the prompt goes out (a failed connect, Stop, a lost session, a rejected effort
+    // change) can give it back to the composer (RestoreDraftToComposer).
     private QueuedMessage? _draftInFlight;
 
     private Task SendCoreAsync()
     {
         if (!CanSend()) return Task.CompletedTask;
 
-        // Snapshot now, not after the connect round trip: the composer stays editable mid-turn, so
-        // whatever is typed while EnsureConnectedAsync is still running belongs to the *next*
-        // message and must neither be folded into this prompt nor cleared with it.
+        // What this message carries; the composer is cleared of exactly this before any await, so
+        // whatever is typed afterwards belongs to the *next* message.
         var text = InputText.Trim();
         if (TryGetClientCommand(text, out var clientCommand))
         {
@@ -1293,21 +1294,27 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
         // Out of the composer and into the transcript right away, exactly like a queued message
         // (EnqueueDraft): the composer only ever shows unsent input. Pending until the prompt is
-        // actually submitted, which under Auto comes after the judgment.
+        // handed to the agent, which under Auto comes after the judgment. Held in _draftInFlight
+        // from the start, so whatever ends the turn before then - including an observer throwing
+        // as the message moves - gives it back.
         var bubble = BuildUserBubble(text, attachments, isPending: true);
-        Messages.Add(bubble);
-        UpdateSessionTitleFromFirstUserMessage();
-        ConsumeDraft(text, attachments);
         var draft = new QueuedMessage(bubble, text, attachments);
         _draftInFlight = draft;
-        return RunTurnAsync(null, text, () =>
-        {
-            // Submitted: from here on the message is the turn's, not the composer's (RunTurnAsync's
-            // finally gives back only a draft still held here).
-            bubble.MarkSent();
-            _draftInFlight = null;
-            return (text, draft.Attachments);
-        });
+        return RunTurnAsync(null, text,
+            accept: () =>
+            {
+                ConsumeDraft(text, attachments);
+                Messages.Add(bubble);
+                UpdateSessionTitleFromFirstUserMessage();
+            },
+            prepare: () =>
+            {
+                // Handed over: from here on the message is no longer given back to the composer
+                // (RunTurnAsync's finally restores only a message still held in _draftInFlight).
+                bubble.MarkSent();
+                _draftInFlight = null;
+                return (text, draft.Attachments);
+            });
     }
 
     // /login and /logout never touch the turn/queue machinery above: they are local actions against
@@ -1366,10 +1373,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         if (signedIn && !_disposed) await InitializeCoreAsync(_lifetime.Token).ConfigureAwait(true);
     }
 
-    // Draft is consumed immediately (unlike the live-send path above) so the composer is free for
-    // the next message right away; there is no "connect first" step to guard here since dispatch -
-    // and therefore the connection attempt - happens later, once DispatchNextQueuedMessage dequeues
-    // this entry and DispatchQueuedMessageAsync runs it through RunTurnAsync.
+    // Consumed immediately, like the live-send path above, so the composer is free for the next
+    // message right away; dispatch - and with it the connection attempt - happens later, once
+    // DispatchNextQueuedMessage dequeues this entry and DispatchQueuedMessageAsync runs it through
+    // RunTurnAsync.
     private void EnqueueDraft(string text, ChatAttachmentViewModel[] attachments)
     {
         var bubble = BuildUserBubble(text, attachments, isPending: true);
@@ -1393,8 +1400,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         };
     }
 
-    // Takes exactly what this message carried out of the composer and leaves anything typed or
-    // attached since alone: that newer draft is the user's next message, not part of this one.
+    // Takes exactly what this message carried out of the composer and nothing else.
     private void ConsumeDraft(string text, ChatAttachmentViewModel[] attachments)
     {
         if (InputText.Trim() == text) InputText = string.Empty;
@@ -1402,10 +1408,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         AttachmentError = null;
     }
 
-    // Mirrors SendCoreAsync's live-send path for a message that was queued earlier: the bubble
-    // already exists in the transcript, and RunTurnAsync stops it reading as pending once the agent
-    // is actually running it. Nobody awaits a queued dispatch, so an exception escaping RunTurnAsync
-    // (an observer throwing in its bookkeeping) is reported here instead of vanishing with the task.
+    // Runs a message that was queued earlier through RunTurnAsync, as SendCoreAsync does for a live
+    // send: its pending bubble stops reading as pending once the agent is actually running it.
+    // Nobody awaits a queued dispatch, so an exception escaping RunTurnAsync (an observer throwing
+    // in its bookkeeping) is reported here instead of vanishing with the task.
     private async Task DispatchQueuedMessageAsync(QueuedMessage queued)
     {
         try
@@ -1420,13 +1426,15 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     // Shared by SendCoreAsync and DispatchQueuedMessageAsync: everything from connecting through
     // submitting one turn's content and reacting to how it ended is identical between a live send
-    // and a queued dispatch - only how (text, attachments) is obtained differs, which is why that
-    // step is the one thing left to the caller. `prepare` runs only after EnsureConnectedAsync has
-    // already succeeded and, under Auto, the effort is set: it marks the message submitted.
+    // and a queued dispatch - only what happens as the turn starts and as its content is handed
+    // over differs, which is why those steps are left to the caller. `prepare` runs only after
+    // EnsureConnectedAsync has succeeded and, under Auto, the effort has been set; it is the moment
+    // the content is handed over. `accept`, when given, runs first, inside the turn's error
+    // handling: the live send uses it to move its message from the composer into the transcript.
     // A call made while another turn is running (only ever a queued message sent ahead to an agent
-    // that queues prompts) joins that turn's busy state instead of starting a new one. Under Auto
-    // effort, `promptText` is classified and the turn's effort set before `prepare` runs.
-    private async Task RunTurnAsync(QueuedMessage? queued, string promptText, Func<(string Text, IReadOnlyList<ChatAttachmentViewModel> Attachments)> prepare)
+    // that queues prompts) joins that turn's busy state instead of starting a new one.
+    private async Task RunTurnAsync(QueuedMessage? queued, string promptText,
+        Func<(string Text, IReadOnlyList<ChatAttachmentViewModel> Attachments)> prepare, Action? accept = null)
     {
         bool joining = _runningTurns++ > 0;
         bool submitted = false;
@@ -1444,6 +1452,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 _turnStartUsedTokens = _sessionUsedTokens;
                 TurnTokens = null;
             }
+            accept?.Invoke();
             var (connection, sessionId) = await EnsureConnectedAsync(_lifetime.Token).ConfigureAwait(true);
             if (_disposed) return;
             // Only a turn that starts alone is judged: a joining one (a message sent ahead into a
@@ -1453,14 +1462,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 var ready = await ApplyAutoEffortAsync(connection, sessionId, promptText).ConfigureAwait(true);
                 if (_disposed) return;
                 // A session lost while judging (agent died, sign-out, workspace switch) took with it
-                // whatever this turn was going to be sent to. A live draft stays in the composer; a
-                // queued message goes with its queue (see the tail below).
+                // whatever this turn was going to be sent to. A live message goes back to the composer
+                // (the finally below); a queued message goes with its queue (see the tail below).
                 sessionLost = !IsCurrentSession(connection, sessionId);
                 if (sessionLost && queued is null && string.IsNullOrEmpty(StatusMessage))
                     StatusMessage = "The session changed while judging effort, so your message was not sent.";
                 // Stop pressed while judging had no prompt to cancel: the turn ends here, before
-                // prepare() takes the draft, instead of starting once the verdict arrives. Control
-                // still reaches the tail below, which sends the follow-ups Stop leaves queued.
+                // prepare() hands the message over, instead of starting once the verdict arrives.
+                // Control still reaches the tail below, which sends the follow-ups Stop leaves queued.
                 abandoned = !ready || sessionLost;
             }
             if (!abandoned)
@@ -1489,26 +1498,29 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
         finally
         {
-            // A live turn that ended before prepare() submitted its message (a failed connect, Stop, a
-            // lost session, a rejected effort change): Claude never saw it, so it leaves the transcript
-            // and goes back to the composer.
-            if (queued is null)
-            {
-                if (_draftInFlight is { } left && !_disposed) RestoreDraftToComposer(left);
-                _draftInFlight = null;
-                // A draft that failed before it was sent: what was written after it must not overtake it.
-                if (failed && !submitted && !_disposed && _queuedMessages.Count > 0)
-                {
-                    var behind = _queuedMessages.ToList();
-                    _queuedMessages.Clear();
-                    RestoreToComposer(behind,
-                        "Your queued message was not sent because the message before it failed - it is back in the message box, after that one.",
-                        "{0} queued messages were not sent because the message before them failed - they are back in the message box, after it.",
-                        behindDraft: true);
-                }
-            }
             try
             {
+                // A live turn that ended before prepare() ran (a failed connect, Stop, a lost session, a
+                // rejected effort change): Claude never saw the message, so it leaves the transcript and
+                // goes back to the composer. Inside this try: an observer throwing here must not skip
+                // the end of the busy state below.
+                if (queued is null)
+                {
+                    var left = _draftInFlight;
+                    _draftInFlight = null;
+                    // A draft that failed before it was sent: what was written after it must not overtake
+                    // it. The queued follow-ups go back ahead of anything typed since, then the draft
+                    // ahead of them - the order all of it was written in.
+                    if (failed && !submitted && !_disposed && _queuedMessages.Count > 0)
+                    {
+                        var behind = _queuedMessages.ToList();
+                        _queuedMessages.Clear();
+                        RestoreToComposer(behind,
+                            "Your queued message was not sent because the message before it failed - it is back in the message box, after that one.",
+                            "{0} queued messages were not sent because the message before them failed - they are back in the message box, after it.");
+                    }
+                    if (left is not null && !_disposed) RestoreDraftToComposer(left);
+                }
                 if (failed) _runningFailed |= !submitted || queued is null || !queued.Bubble.IsPending;
                 if (submitted) OnPromptReturned(queued, stopReason);
                 // Taken off the queue but never handed to the agent: nothing else holds it now.
@@ -1616,14 +1628,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // Called once nothing is running, for messages that must not be re-sent automatically (see
     // RunTurnAsync for a failed turn). The bubbles leave the transcript and
     // the texts go into the composer in the order they were sent, ahead of whatever is typed there.
-    private void RestoreToComposer(List<QueuedMessage> pending, string one, string many, bool behindDraft = false)
+    private void RestoreToComposer(List<QueuedMessage> pending, string one, string many)
     {
         if (pending.Count == 0) return;
         var restored = pending.ToList();
         pending.Clear();
         var texts = restored.Select(message => message.Text).Where(text => text.Length > 0).ToList();
-        // Ahead of what is typed, except behind a draft that failed before it was sent: it was written first.
-        if (InputText.Trim().Length > 0) { if (behindDraft) texts.Insert(0, InputText); else texts.Add(InputText); }
+        if (InputText.Trim().Length > 0) texts.Add(InputText);
         InputText = string.Join(Environment.NewLine + Environment.NewLine, texts);
         foreach (var message in restored)
         {
@@ -1631,6 +1642,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             foreach (var attachment in message.Attachments)
                 if (!Attachments.Contains(attachment)) Attachments.Add(attachment);
         }
+        RefreshSessionTitleAfterRemoval();
         var notice = restored.Count == 1 ? one : string.Format(System.Globalization.CultureInfo.InvariantCulture, many, restored.Count);
         // Appended, not replacing: after a failed turn the error that caused this must stay readable.
         StatusMessage = string.IsNullOrEmpty(StatusMessage) ? notice : StatusMessage + " " + notice;
@@ -1647,6 +1659,16 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             : draft.Text + Environment.NewLine + Environment.NewLine + typedSince;
         foreach (var attachment in draft.Attachments)
             if (!Attachments.Contains(attachment)) Attachments.Add(attachment);
+        RefreshSessionTitleAfterRemoval();
+    }
+
+    // A title derived from a message that has since left the transcript must not outlive it: the
+    // chat is named after what is first in it now, or is untitled again.
+    private void RefreshSessionTitleAfterRemoval()
+    {
+        if (_explicitSessionTitle is not null) return;
+        if (Messages.Count == 0) SessionTitle = UntitledSessionTitle;
+        else UpdateSessionTitleFromFirstUserMessage();
     }
 
     // Called once nothing is running: messages the agent returned unstarted go back to the front of
@@ -1732,8 +1754,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private async Task SendReviewThenRestoreDraftAsync(string draft)
     {
         await SendAsync().ConfigureAwait(true);
-        // Still occupied means either the send never got as far as reading it (the review text is
-        // still in there and is the more valuable of the two) or the user has typed again since.
+        // Still occupied means the review never went out - refused at send, or given back by a turn
+        // that ended before it was sent; it is the more valuable of the two - or the user has typed
+        // again since.
         if (_disposed || draft.Length == 0 || InputText.Length > 0) return;
         InputText = draft;
     }

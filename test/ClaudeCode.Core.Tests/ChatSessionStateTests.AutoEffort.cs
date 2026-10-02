@@ -224,7 +224,7 @@ public sealed partial class ChatSessionStateTests
     }
 
     [Fact]
-    public async Task AutoTurn_EffortChangeRejected_KeepsTheDraftAndSendsNothing()
+    public async Task AutoTurn_EffortChangeRejected_ReturnsTheDraftAndSendsNothing()
     {
         var (connection, log) = AutoConnection("medium");
         connection.ConfigHandler = (_, _, _) => Task.FromException<IReadOnlyList<SessionConfigOption>>(new InvalidOperationException("rejected"));
@@ -268,6 +268,35 @@ public sealed partial class ChatSessionStateTests
         Assert.Empty(connection.Prompts);
         Assert.Equal("first message" + Environment.NewLine + Environment.NewLine + "second message", vm.InputText);
         Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User);
+    }
+
+    // Text typed after the queued follow-up was written after it too: when the draft fails before it
+    // is sent, the message box holds all three in the order they were written. Nothing Claude never
+    // received names the chat.
+    [Fact]
+    public async Task AutoTurn_DraftFailsBeforeItIsSent_QueuedFollowUpAndTextTypedSince_ComeBackInWrittenOrder()
+    {
+        var (connection, log) = AutoConnection("medium");
+        connection.ConfigHandler = (_, _, _) => Task.FromException<IReadOnlyList<SessionConfigOption>>(new InvalidOperationException("rejected"));
+        var verdict = new TaskCompletionSource<EffortLevel>();
+        var classifier = new FakeEffortClassifier { Handler = _ => verdict.Task };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+
+        var sending = SendTextAsync(vm, "first");
+        await WaitUntilAsync(() => classifier.Prompts.Count == 1);
+        await SendTextAsync(vm, "second");
+        vm.InputText = "third";
+        verdict.SetResult(EffortLevel.High);
+        await WithinAsync(sending);
+        await WaitUntilAsync(() => !vm.IsBusy);
+
+        Assert.Empty(log);
+        Assert.Empty(connection.Prompts);
+        Assert.Equal(string.Join(Environment.NewLine + Environment.NewLine, "first", "second", "third"), vm.InputText);
+        Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User);
+        Assert.Equal("Untitled", vm.SessionTitle);
     }
 
     [Fact]
@@ -414,12 +443,13 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("hard work" + Environment.NewLine + Environment.NewLine + "typed since", vm.InputText);
         Assert.Same(attachment, Assert.Single(vm.Attachments));
         Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User);
+        Assert.Equal("Untitled", vm.SessionTitle);
     }
 
     // Stop during the judgment has no prompt to cancel yet; the turn must not start afterwards,
     // and the message the user wrote comes back to the composer.
     [Fact]
-    public async Task AutoTurn_StoppedWhileJudging_SendsNothingAndKeepsTheDraft()
+    public async Task AutoTurn_StoppedWhileJudging_SendsNothingAndReturnsTheDraft()
     {
         var (connection, log) = AutoConnection("medium");
         var verdict = new TaskCompletionSource<EffortLevel>();
@@ -601,7 +631,7 @@ public sealed partial class ChatSessionStateTests
     }
 
     // Stop during the agent's effort change does not cancel the request: the answer still lands and
-    // is the level shown, the turn ends without sending, and the draft stays.
+    // is the level shown, the turn ends without sending, and the message comes back to the composer.
     [Fact]
     public async Task AutoTurn_StopWhileSettingEffort_LetsTheRequestFinish_ThenEndsTheTurnWithoutSending()
     {
@@ -784,8 +814,8 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { "small" }, classifier.Prompts);
     }
 
-    // A queued Auto turn whose effort change is refused has no live draft to keep: like any turn
-    // that fails before it starts, the message goes back to the message box and is not sent.
+    // A queued Auto turn whose effort change is refused fails before it starts: like a live message,
+    // it goes back to the message box and is not sent.
     [Fact]
     public async Task AutoTurn_EffortChangeRejectedOnAQueuedTurn_ReturnsItToTheComposer()
     {
@@ -924,10 +954,10 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(string.Empty, vm.InputText);
     }
 
-    // Once the composer differs from the judged draft, it is a new message like any other written
-    // meanwhile: queued at once, and sent exactly once after the first.
+    // A new message written while the first is judged is queued at once and sent exactly once after
+    // the first.
     [Fact]
-    public async Task AutoTurn_WhileJudging_EditedDraft_IsANewMessageSentOnceAfterTheFirst()
+    public async Task AutoTurn_WhileJudging_ANewMessage_IsSentOnceAfterTheFirst()
     {
         var (connection, log) = AutoConnection("medium");
         var verdict = new TaskCompletionSource<EffortLevel>();
@@ -1010,7 +1040,7 @@ public sealed partial class ChatSessionStateTests
     // A message whose judgment Stop ended is back in the composer: sent again while another message
     // is judged, it is a message like any other.
     [Fact]
-    public async Task AutoTurn_DraftStoppedWhileJudging_IsNoLongerInFlight_WhenTheSameTextIsSentAgain()
+    public async Task AutoTurn_DraftStoppedWhileJudging_IsANewMessage_WhenTheSameTextIsSentAgain()
     {
         var (connection, log) = AutoConnection("medium");
         var secondVerdict = new TaskCompletionSource<EffortLevel>();
@@ -1044,7 +1074,7 @@ public sealed partial class ChatSessionStateTests
 
     // The same text sent again while the first runs is a second message.
     [Fact]
-    public async Task AutoTurn_SameTextSentAgainAfterTheDraftWasTaken_IsQueued()
+    public async Task AutoTurn_SameTextSentAgainWhileTheFirstRuns_IsQueued()
     {
         var (connection, log) = AutoConnection("medium");
         var firstTurn = new TaskCompletionSource();
@@ -1094,10 +1124,10 @@ public sealed partial class ChatSessionStateTests
     }
 
     // The judgment is a multi-second await between connecting and sending. A session lost in
-    // that window (agent died, sign-out, workspace switch) must not have the draft consumed and
-    // sent to the connection that was released.
+    // that window (agent died, sign-out, workspace switch) must not send the message to the
+    // connection that was released: it goes back to the composer and leaves the transcript.
     [Fact]
-    public async Task AutoTurn_SessionLostWhileJudging_SendsNothingAndKeepsTheDraft()
+    public async Task AutoTurn_SessionLostWhileJudging_SendsNothingAndReturnsTheDraft()
     {
         var (connection, log) = AutoConnection("medium");
         var verdict = new TaskCompletionSource<EffortLevel>();
@@ -1172,8 +1202,8 @@ public sealed partial class ChatSessionStateTests
             vm.Messages.Where(message => message.Role == ChatRole.User).Select(message => message.Text).ToArray());
     }
 
-    // Sending another message while the first is judged empties the composer, so when Stop ends the
-    // first one's judgment it must not vanish: its text is back in the message box.
+    // When Stop ends the first message's judgment after a later one was queued, the first comes back
+    // to the message box and leaves the transcript, and the queued one is still sent - and names the chat.
     [Fact]
     public async Task AutoTurn_JudgedDraftStoppedAfterALaterMessageWasQueued_ReturnsToTheComposer()
     {
@@ -1200,6 +1230,7 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { "prompt:second" }, log);
         Assert.Equal("first", vm.InputText);
         Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User && message.Text == "first");
+        Assert.Equal("second", vm.SessionTitle);
     }
 
     // A queued message being judged is held by nobody else, so a session lost meanwhile
@@ -1789,9 +1820,9 @@ public sealed partial class ChatSessionStateTests
     }
 
     // A session lost after the judgment, while the agent applies the level, is lost like one lost
-    // during the judgment: nothing is sent and the draft stays.
+    // during the judgment: nothing is sent and the message comes back to the composer.
     [Fact]
-    public async Task AutoTurn_SessionLostWhileSettingEffort_SendsNothingAndKeepsTheDraft()
+    public async Task AutoTurn_SessionLostWhileSettingEffort_SendsNothingAndReturnsTheDraft()
     {
         var (connection, log) = AutoConnection("medium");
         var release = new TaskCompletionSource();
