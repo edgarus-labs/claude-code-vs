@@ -146,9 +146,9 @@
         <!-- Hidden, not Disabled: a ListBox always owns an internal ScrollViewer. Disabled truly
              blocks scrolling (not just the bar) and swallows the mouse wheel event before it can
              bubble up to the ScrollViewer these lists are wrapped in - Hidden keeps the inner one
-             bar-less but lets the wheel event pass through. The Model/Effort/Mode wrappers below are
-             bar-less too, on purpose: those popups scroll by wheel and keyboard only, with no
-             scrollbar drawn against their rounded frame. -->
+             bar-less but lets the wheel event pass through. The Mode wrapper below is bar-less too,
+             scrolling by wheel and keyboard only. The Model and Effort wrappers show their bar
+             (Auto) once the agent advertises more entries than fit, so none of them is hidden. -->
         <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Hidden" />
         <Setter Property="HorizontalContentAlignment" Value="Stretch" />
         <Setter Property="KeyboardNavigation.DirectionalNavigation" Value="Contained" />
@@ -1105,7 +1105,7 @@
               <TextBlock Grid.Row="0" Text="Model" Margin="11,6,11,5"
                          FontSize="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=11}"
                          Foreground="{DynamicResource ChatSubtleForegroundBrush}" />
-              <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled">
+              <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                 <ListBox x:Name="ModelList" ItemsSource="{Binding AvailableModels}" SelectedItem="{Binding SelectedModel, Mode=OneWay}"
                          IsEnabled="{Binding CanConfigure}" Style="{StaticResource ConfigListStyle}"
                          ItemContainerStyle="{StaticResource ConfigItemStyle}" ItemTemplate="{StaticResource ConfigValueTemplate}"
@@ -1150,7 +1150,7 @@
                              FontSize="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}" />
                 </StackPanel>
               </Button>
-              <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled">
+              <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                 <ListBox x:Name="EffortList" ItemsSource="{Binding AvailableEfforts}" SelectedItem="{Binding SelectedEffort, Mode=OneWay}"
                          IsEnabled="{Binding CanConfigure}" Style="{StaticResource ConfigListStyle}"
                          ItemContainerStyle="{StaticResource ConfigItemStyle}" ItemTemplate="{StaticResource ConfigValueTemplate}"
