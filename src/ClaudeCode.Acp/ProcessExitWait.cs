@@ -14,7 +14,11 @@ public static class ProcessExitWait
     /// </summary>
     public static async Task WaitForExitAsync(Task exited, CancellationToken cancellationToken)
     {
-        if (exited is null) throw new ArgumentNullException(nameof(exited));
+        if (exited is null)
+        {
+            throw new ArgumentNullException(nameof(exited));
+        }
+
         cancellationToken.ThrowIfCancellationRequested();
         var cancelled = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         using (cancellationToken.Register(() => cancelled.TrySetResult(true)))

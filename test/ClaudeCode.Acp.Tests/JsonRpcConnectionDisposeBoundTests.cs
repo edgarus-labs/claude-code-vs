@@ -1,7 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.IO.Pipelines;
-using System.Collections.Generic;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
@@ -88,6 +88,7 @@ public sealed class JsonRpcConnectionDisposeBoundTests
         {
             using CancellationTokenRegistration registration = cancellationToken.Register(() => throw callbackFailure);
             await releaseHandler.Task;
+
             return new JsonObject();
         };
 
@@ -122,6 +123,7 @@ public sealed class JsonRpcConnectionDisposeBoundTests
         connection.RequestHandler = (_, _, _) =>
         {
             handlerCalls++;
+
             return Task.FromResult<JsonNode?>(new JsonObject());
         };
 
@@ -146,6 +148,7 @@ public sealed class JsonRpcConnectionDisposeBoundTests
         {
             Interlocked.Increment(ref handlerCalls);
             await releaseHandlers.Task;
+
             return new JsonObject();
         };
         var runningHandlers = new List<Task>();

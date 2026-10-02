@@ -13,6 +13,9 @@ namespace ClaudeCode.Acp.Tests;
 /// </summary>
 public sealed class PipeHandshakeLineReaderTests
 {
+    /// <summary>
+    /// The cap.
+    /// </summary>
     private const int _cap = 512;
 
     [Fact]
@@ -79,6 +82,9 @@ public sealed class PipeHandshakeLineReaderTests
 
         public CountingReader(string content) => _content = content;
 
+        /// <summary>
+        /// Gets or sets the chars read.
+        /// </summary>
         public int CharsRead { get; private set; }
 
         public override int Peek() => _position >= _content.Length ? -1 : _content[_position];

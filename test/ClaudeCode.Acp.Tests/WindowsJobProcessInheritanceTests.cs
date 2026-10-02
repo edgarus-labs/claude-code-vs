@@ -25,17 +25,15 @@ public sealed class WindowsJobProcessInheritanceTests
                 FileName = Path.Combine(Environment.SystemDirectory, "cmd.exe"),
                 Arguments = "/c exit 0",
             }, beforeProcessCreate: () =>
+            ordinary = Process.Start(new ProcessStartInfo
             {
-                ordinary = Process.Start(new ProcessStartInfo
-                {
-                    FileName = Path.Combine(Environment.SystemDirectory, "ping.exe"),
-                    Arguments = "-n 60 127.0.0.1",
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                });
-            });
+                FileName = Path.Combine(Environment.SystemDirectory, "ping.exe"),
+                Arguments = "-n 60 127.0.0.1",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            }));
             await adapter.Process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
             Assert.NotNull(ordinary);
             Assert.False(ordinary.HasExited);

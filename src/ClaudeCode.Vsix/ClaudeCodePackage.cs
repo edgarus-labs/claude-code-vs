@@ -167,15 +167,12 @@ public sealed class ClaudeCodePackage : AsyncPackage
 
     private string? GetWorkspaceRoot() => _workspaceRootTracker.Root;
 
-    private void OnSolutionOpened(Solution? solution)
-    {
-        _workspaceRootTracker.Update(ComputeWorkspaceRoot(solution?.FullPath));
-    }
+    private void OnSolutionOpened(Solution? solution) => _workspaceRootTracker.Update(ComputeWorkspaceRoot(solution?.FullPath));
 
-    private void OnSolutionClosed()
-    {
-        _workspaceRootTracker.Update(null);
-    }
+    /// <summary>
+    /// Resets the workspace root tracker upon solution closure.
+    /// </summary>
+    private void OnSolutionClosed() => _workspaceRootTracker.Update(null);
 
     internal static string? ComputeWorkspaceRoot(string? solutionFullPath) =>
         solutionFullPath is string path ? System.IO.Path.GetDirectoryName(path) : null;

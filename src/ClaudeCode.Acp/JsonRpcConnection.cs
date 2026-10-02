@@ -466,6 +466,10 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Begins a new operation by acquiring the operation gate, verifying the instance is not disposed (throwing an OperationCanceledException if it is), and incrementing the active operation count.
+    /// </summary>
+    /// <exception cref="OperationCanceledException">Thrown when an error occurs during execution.</exception>
     private void BeginOperation()
     {
         lock (_operationGate)
@@ -479,6 +483,9 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Ends the current operation by decrementing the active operation count and, when no operations remain, disposes the write lock, inbound request throttle, and cancellation token source.
+    /// </summary>
     private void EndOperation()
     {
         lock (_operationGate)
@@ -492,17 +499,31 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Represents a wire identifier that encapsulates numeric or textual values and provides methods to retrieve the originating and terminating node identifiers.
+    /// </summary>
     private readonly struct WireId
     {
         private readonly long _numeric;
         private readonly string? _text;
 
+        /// <summary>
+        /// Initializes a new instance of the WireId struct with the specified numeric identifier and optional textual representation.
+        /// </summary>
+        /// <param name="numeric">The numeric.</param>
+        /// <param name="text">The text.</param>
         private WireId(long numeric, string? text)
         {
             _numeric = numeric;
             _text = text;
         }
 
+        /// <summary>
+        /// Parses the given JSON node into a WireId, converting numeric values to the numeric identifier, string values to the string identifier, and throws an AcpProtocolException if the node is neither a number nor a string.
+        /// </summary>
+        /// <param name="node">The node.</param>
+        /// <returns>The wire id result.</returns>
+        /// <exception cref="AcpProtocolException">Thrown when an error occurs during execution.</exception>
         public static WireId FromNode(JsonNode? node)
         {
             if (node is JsonValue value)
@@ -526,6 +547,10 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
             throw new AcpProtocolException("JSON-RPC request id must be a number or a string.");
         }
 
+        /// <summary>
+        /// Creates a JsonValue node containing the stored text when it is not null, otherwise the numeric value.
+        /// </summary>
+        /// <returns>The json value result.</returns>
         public JsonValue ToNode() => _text is not null ? JsonValue.Create(_text)! : JsonValue.Create(_numeric)!;
     }
 }

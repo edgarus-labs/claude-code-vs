@@ -7,16 +7,10 @@ namespace ClaudeCode.Core.Tests;
 public sealed class TranscriptHostProtocolTests
 {
     [Fact]
-    public void IsTranscriptOrigin_TranscriptPage_IsAccepted()
-    {
-        Assert.True(TranscriptHostProtocol.IsTranscriptOrigin(TranscriptHostProtocol.PageUrl));
-    }
+    public void IsTranscriptOrigin_TranscriptPage_IsAccepted() => Assert.True(TranscriptHostProtocol.IsTranscriptOrigin(TranscriptHostProtocol.PageUrl));
 
     [Fact]
-    public void IsTranscriptOrigin_TranscriptOriginRoot_IsAccepted()
-    {
-        Assert.True(TranscriptHostProtocol.IsTranscriptOrigin("https://ClaudeCode.Transcript/"));
-    }
+    public void IsTranscriptOrigin_TranscriptOriginRoot_IsAccepted() => Assert.True(TranscriptHostProtocol.IsTranscriptOrigin("https://ClaudeCode.Transcript/"));
 
     [Theory]
     [InlineData("file:///C:/Users/me/notes.txt")]
@@ -28,30 +22,18 @@ public sealed class TranscriptHostProtocolTests
     [InlineData("")]
     [InlineData("https://claudecode.transcript./index.html")]
     [InlineData(null)]
-    public void IsTranscriptOrigin_AnythingButTheTranscriptOrigin_IsRejected(string? uri)
-    {
-        Assert.False(TranscriptHostProtocol.IsTranscriptOrigin(uri));
-    }
+    public void IsTranscriptOrigin_AnythingButTheTranscriptOrigin_IsRejected(string? uri) => Assert.False(TranscriptHostProtocol.IsTranscriptOrigin(uri));
 
     [Fact]
-    public void IsTranscriptOrigin_LookAlikeHost_IsRejected()
-    {
-        Assert.False(TranscriptHostProtocol.IsTranscriptOrigin("https://claudecode.transcript.example.com/index.html"));
-    }
+    public void IsTranscriptOrigin_LookAlikeHost_IsRejected() => Assert.False(TranscriptHostProtocol.IsTranscriptOrigin("https://claudecode.transcript.example.com/index.html"));
 
     [Fact]
-    public void StepFontSize_AtUpperBound_StaysClamped()
-    {
-        Assert.Equal(TranscriptHostProtocol.MaxFontSize,
+    public void StepFontSize_AtUpperBound_StaysClamped() => Assert.Equal(TranscriptHostProtocol.MaxFontSize,
             TranscriptHostProtocol.StepFontSize(TranscriptHostProtocol.MaxFontSize, 1));
-    }
 
     [Fact]
-    public void StepFontSize_AtLowerBound_StaysClamped()
-    {
-        Assert.Equal(TranscriptHostProtocol.MinFontSize,
+    public void StepFontSize_AtLowerBound_StaysClamped() => Assert.Equal(TranscriptHostProtocol.MinFontSize,
             TranscriptHostProtocol.StepFontSize(TranscriptHostProtocol.MinFontSize, -1));
-    }
 
     [Fact]
     public void StepFontSize_LargeDelta_MovesOneStep()
@@ -61,10 +43,7 @@ public sealed class TranscriptHostProtocolTests
     }
 
     [Fact]
-    public void StepFontSize_ZeroDelta_DoesNotMove()
-    {
-        Assert.Equal(13d, TranscriptHostProtocol.StepFontSize(13d, 0d));
-    }
+    public void StepFontSize_ZeroDelta_DoesNotMove() => Assert.Equal(13d, TranscriptHostProtocol.StepFontSize(13d, 0d));
 
     [Fact]
     public void ScaleFontSize_AtTheDefault_ReturnsTheDesignValueUnchanged()
@@ -90,20 +69,14 @@ public sealed class TranscriptHostProtocolTests
     [InlineData(nameof(ChatMessageViewModel.Images))]
     [InlineData(nameof(ChatMessageViewModel.IsPending))]
     [InlineData(nameof(ToolCallCardViewModel.Status))]
-    public void AffectsTranscript_PropertyCarriedByThePayload_RequiresRepaint(string propertyName)
-    {
-        Assert.True(TranscriptHostProtocol.AffectsTranscript(propertyName));
-    }
+    public void AffectsTranscript_PropertyCarriedByThePayload_RequiresRepaint(string propertyName) => Assert.True(TranscriptHostProtocol.AffectsTranscript(propertyName));
 
     [Theory]
     [InlineData(nameof(ToolCallCardViewModel.IsExpanded))]
     [InlineData("ToolCallId")]
     [InlineData("")]
     [InlineData(null)]
-    public void AffectsTranscript_PropertyNotCarriedByThePayload_RequiresNoRepaint(string? propertyName)
-    {
-        Assert.False(TranscriptHostProtocol.AffectsTranscript(propertyName));
-    }
+    public void AffectsTranscript_PropertyNotCarriedByThePayload_RequiresNoRepaint(string? propertyName) => Assert.False(TranscriptHostProtocol.AffectsTranscript(propertyName));
 
     [Theory]
     [InlineData("http://claude.ai/code/abc")]
@@ -113,35 +86,20 @@ public sealed class TranscriptHostProtocolTests
     [InlineData("/code/abc")]
     [InlineData("")]
     [InlineData(null)]
-    public void NormalizeRemoteControlLink_AnythingButAbsoluteHttps_IsRefused(string? url)
-    {
-        Assert.Null(TranscriptHostProtocol.NormalizeRemoteControlLink(url));
-    }
+    public void NormalizeRemoteControlLink_AnythingButAbsoluteHttps_IsRefused(string? url) => Assert.Null(TranscriptHostProtocol.NormalizeRemoteControlLink(url));
 
     [Fact]
-    public void NormalizeRemoteControlLink_AbsoluteHttps_IsReturnedAsAnAbsoluteUri()
-    {
-        Assert.Equal(
+    public void NormalizeRemoteControlLink_AbsoluteHttps_IsReturnedAsAnAbsoluteUri() => Assert.Equal(
             "https://claude.ai/code/abc",
             TranscriptHostProtocol.NormalizeRemoteControlLink("https://claude.ai/code/abc"));
-    }
 
     [Fact]
-    public void RenderCoalesceWindow_IsShorterThanTheMaximumWait()
-    {
-        Assert.True(TranscriptHostProtocol.RenderCoalesceWindow < TranscriptHostProtocol.MaxRenderInterval);
-    }
+    public void RenderCoalesceWindow_IsShorterThanTheMaximumWait() => Assert.True(TranscriptHostProtocol.RenderCoalesceWindow < TranscriptHostProtocol.MaxRenderInterval);
 
     [Fact]
-    public void ShouldPaintImmediately_StaleForExactlyTheMaximumWait_PaintsNow()
-    {
-        Assert.True(TranscriptHostProtocol.ShouldPaintImmediately(TranscriptHostProtocol.MaxRenderInterval));
-    }
+    public void ShouldPaintImmediately_StaleForExactlyTheMaximumWait_PaintsNow() => Assert.True(TranscriptHostProtocol.ShouldPaintImmediately(TranscriptHostProtocol.MaxRenderInterval));
 
     [Fact]
-    public void ShouldPaintImmediately_OneTickShortOfTheMaximumWait_Coalesces()
-    {
-        Assert.False(TranscriptHostProtocol.ShouldPaintImmediately(
+    public void ShouldPaintImmediately_OneTickShortOfTheMaximumWait_Coalesces() => Assert.False(TranscriptHostProtocol.ShouldPaintImmediately(
             TranscriptHostProtocol.MaxRenderInterval - TimeSpan.FromTicks(1)));
-    }
 }

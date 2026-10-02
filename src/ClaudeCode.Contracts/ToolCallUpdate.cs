@@ -5,18 +5,33 @@ namespace ClaudeCode.Contracts;
 
 public sealed class ToolCallUpdate
 {
+    /// <summary>
+    /// Gets or sets the tool call id.
+    /// </summary>
     public string ToolCallId { get; set; } = "";
 
+    /// <summary>
+    /// Gets or sets the title.
+    /// </summary>
     public string Title { get; set; } = "";
 
+    /// <summary>
+    /// Gets or sets the kind.
+    /// </summary>
     public string? Kind { get; set; }
 
+    /// <summary>
+    /// Gets or sets the status.
+    /// </summary>
     public ToolCallStatus Status { get; set; }
 
     /// <summary>True when the call runs a subagent (Claude Code's Agent/Task tool). Only reported on
     /// updates that name the tool; an update without it says nothing either way.</summary>
     public bool IsSubagent { get; set; }
 
+    /// <summary>
+    /// Gets or sets the collection of content.
+    /// </summary>
     public IReadOnlyList<ToolCallContent> Content { get; set; } = Array.Empty<ToolCallContent>();
 
     /// <summary>The paths the call touches: ACP <c>locations[].path</c> (for claude-agent-acp the file

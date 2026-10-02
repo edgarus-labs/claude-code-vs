@@ -13,11 +13,18 @@ public sealed class ChatAttentionEventArgs : EventArgs
         Message = message;
     }
 
+    /// <summary>
+    /// Gets the kind.
+    /// </summary>
     public ChatAttentionKind Kind { get; }
 
+    /// <summary>
+    /// Gets the title.
+    /// </summary>
     public string Title { get; }
 
+    /// <summary>
+    /// Gets the message.
+    /// </summary>
     public string Message { get; }
 }
-
-public enum ChatAttentionKind { TurnCompleted, PermissionNeeded, PlanReview }

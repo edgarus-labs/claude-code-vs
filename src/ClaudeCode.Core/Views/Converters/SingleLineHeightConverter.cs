@@ -17,7 +17,11 @@ public sealed class SingleLineHeightConverter : IMultiValueConverter
         }
 
         double padding = 0;
-        if (parameter is string spec) double.TryParse(spec, NumberStyles.Float, CultureInfo.InvariantCulture, out padding);
+        if (parameter is string spec)
+        {
+            double.TryParse(spec, NumberStyles.Float, CultureInfo.InvariantCulture, out padding);
+        }
+
         return Math.Ceiling(family.LineSpacing * fontSize + padding);
     }
 

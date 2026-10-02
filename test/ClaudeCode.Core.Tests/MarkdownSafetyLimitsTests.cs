@@ -29,52 +29,31 @@ public sealed class MarkdownSafetyLimitsTests
     }
 
     [Fact]
-    public void IsNavigableLink_AcceptsOrdinaryHttpsHost()
-    {
-        Assert.True(MarkdownSafetyLimits.IsNavigableLink(new Uri("https://example.com/path")));
-    }
+    public void IsNavigableLink_AcceptsOrdinaryHttpsHost() => Assert.True(MarkdownSafetyLimits.IsNavigableLink(new Uri("https://example.com/path")));
 
     [Fact]
-    public void IsNavigableLink_RejectsLoopbackHost()
-    {
-        Assert.False(MarkdownSafetyLimits.IsNavigableLink(new Uri("http://127.0.0.1/")));
-    }
+    public void IsNavigableLink_RejectsLoopbackHost() => Assert.False(MarkdownSafetyLimits.IsNavigableLink(new Uri("http://127.0.0.1/")));
 
     [Fact]
-    public void IsNavigableLink_RejectsAllZeroesHost()
-    {
-        Assert.False(MarkdownSafetyLimits.IsNavigableLink(new Uri("http://0.0.0.0/")));
-    }
+    public void IsNavigableLink_RejectsAllZeroesHost() => Assert.False(MarkdownSafetyLimits.IsNavigableLink(new Uri("http://0.0.0.0/")));
 
     [Theory]
     [InlineData("http://[::]/")]
     [InlineData("https://[::ffff:127.0.0.1]/")]
     [InlineData("http://[::ffff:127.42.0.7]/")]
     [InlineData("http://[::ffff:0.0.0.0]/")]
-    public void IsNavigableLink_RejectsLocalIpv6Destinations(string target)
-    {
-        Assert.False(MarkdownSafetyLimits.IsNavigableLink(new Uri(target)));
-    }
+    public void IsNavigableLink_RejectsLocalIpv6Destinations(string target) => Assert.False(MarkdownSafetyLimits.IsNavigableLink(new Uri(target)));
 
     [Theory]
     [InlineData("https://[2001:4860:4860::8888]/")]
     [InlineData("https://[::ffff:8.8.8.8]/")]
-    public void IsNavigableLink_AcceptsRemoteIpDestinations(string target)
-    {
-        Assert.True(MarkdownSafetyLimits.IsNavigableLink(new Uri(target)));
-    }
+    public void IsNavigableLink_AcceptsRemoteIpDestinations(string target) => Assert.True(MarkdownSafetyLimits.IsNavigableLink(new Uri(target)));
 
     [Fact]
-    public void IsNavigableLink_NullUri_ReturnsFalse()
-    {
-        Assert.False(MarkdownSafetyLimits.IsNavigableLink(null));
-    }
+    public void IsNavigableLink_NullUri_ReturnsFalse() => Assert.False(MarkdownSafetyLimits.IsNavigableLink(null));
 
     [Theory]
     [InlineData("docs/page.md")]
     [InlineData("/etc/passwd")]
-    public void IsNavigableLink_RelativeUri_ReturnsFalse(string target)
-    {
-        Assert.False(MarkdownSafetyLimits.IsNavigableLink(new Uri(target, UriKind.Relative)));
-    }
+    public void IsNavigableLink_RelativeUri_ReturnsFalse(string target) => Assert.False(MarkdownSafetyLimits.IsNavigableLink(new Uri(target, UriKind.Relative)));
 }

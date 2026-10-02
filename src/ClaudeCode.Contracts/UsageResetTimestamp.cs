@@ -18,6 +18,7 @@ public static class UsageResetTimestamp
         {
             case DateTimeOffset offset:
                 return offset;
+
             case DateTime dateTime:
                 try
                 {

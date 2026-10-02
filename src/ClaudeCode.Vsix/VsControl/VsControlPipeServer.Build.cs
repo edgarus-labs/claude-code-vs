@@ -15,8 +15,17 @@ namespace ClaudeCode.Vsix.VsControl;
 
 internal sealed partial class VsControlPipeServer
 {
+    /// <summary>
+    /// The default output chars.
+    /// </summary>
     private const int _defaultOutputChars = 20_000;
+    /// <summary>
+    /// The max output chars.
+    /// </summary>
     private const int _maxOutputChars = 200_000;
+    /// <summary>
+    /// The max build error rows.
+    /// </summary>
     private const int _maxBuildErrorRows = 1_000;
 
     private static readonly TimeSpan _buildTimeout = TimeSpan.FromMinutes(10);
@@ -60,7 +69,7 @@ internal sealed partial class VsControlPipeServer
         var expiry = Task.Delay(Timeout.Infinite, budget.Token);
         if (await Task.WhenAny(build, expiry) != build)
         {
-            _ = build.ContinueWith(task => { _ = task.Exception; },
+            _ = build.ContinueWith(task => _ = task.Exception,
                 CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
             cancellationToken.ThrowIfCancellationRequested();
             throw new InvalidOperationException(
@@ -96,9 +105,21 @@ internal sealed partial class VsControlPipeServer
     private static BuildAction ParseBuildAction(JObject args)
     {
         var action = args["action"]?.Value<string>();
-        if (string.IsNullOrEmpty(action) || string.Equals(action, "build", StringComparison.OrdinalIgnoreCase)) return BuildAction.Build;
-        if (string.Equals(action, "rebuild", StringComparison.OrdinalIgnoreCase)) return BuildAction.Rebuild;
-        if (string.Equals(action, "clean", StringComparison.OrdinalIgnoreCase)) return BuildAction.Clean;
+        if (string.IsNullOrEmpty(action) || string.Equals(action, "build", StringComparison.OrdinalIgnoreCase))
+        {
+            return BuildAction.Build;
+        }
+
+        if (string.Equals(action, "rebuild", StringComparison.OrdinalIgnoreCase))
+        {
+            return BuildAction.Rebuild;
+        }
+
+        if (string.Equals(action, "clean", StringComparison.OrdinalIgnoreCase))
+        {
+            return BuildAction.Clean;
+        }
+
         throw new InvalidOperationException($"Unknown build action '{action}'; use build, rebuild or clean.");
     }
 
@@ -158,7 +179,11 @@ internal sealed partial class VsControlPipeServer
     private static async Task<JObject> GetOutputAsync(JObject args)
     {
         var paneName = args["pane"]?.Value<string>();
-        if (string.IsNullOrEmpty(paneName)) paneName = "Debug";
+        if (string.IsNullOrEmpty(paneName))
+        {
+            paneName = "Debug";
+        }
+
         var clear = args["clear"]?.Value<bool?>() ?? false;
         var maxChars = VsBuildChannelRules.ClampOutputChars(args["maxChars"]?.Value<int?>(), _defaultOutputChars, _maxOutputChars);
 

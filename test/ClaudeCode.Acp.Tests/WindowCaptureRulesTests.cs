@@ -1,5 +1,5 @@
-using System;
 using ClaudeCode.Contracts;
+using System;
 using Xunit;
 
 namespace ClaudeCode.Acp.Tests;
@@ -161,24 +161,16 @@ public sealed class WindowCaptureRulesTests
     public void Classify_WithoutTheListOfWindowsAbove_Throws()
     {
         var error = Assert.Throws<ArgumentNullException>(() =>
-        {
-            _ = WindowCaptureRules.Classify(isVisible: true, isMinimized: false, isCloaked: false, paintsWholeRectangle: true, _window, _virtualScreen, windowsAbove: null!);
-        });
+        _ = WindowCaptureRules.Classify(isVisible: true, isMinimized: false, isCloaked: false, paintsWholeRectangle: true, _window, _virtualScreen, windowsAbove: null!));
 
         Assert.Equal("windowsAbove", error.ParamName);
     }
 
     [Fact]
-    public void HasCapturableSize_WindowSmallerThanTheDesktop_IsCapturable()
-    {
-        Assert.True(WindowCaptureRules.HasCapturableSize(_window, _virtualScreen));
-    }
+    public void HasCapturableSize_WindowSmallerThanTheDesktop_IsCapturable() => Assert.True(WindowCaptureRules.HasCapturableSize(_window, _virtualScreen));
 
     [Fact]
-    public void HasCapturableSize_WindowExactlyTheSizeOfTheDesktop_IsCapturable()
-    {
-        Assert.True(WindowCaptureRules.HasCapturableSize(_virtualScreen, _virtualScreen));
-    }
+    public void HasCapturableSize_WindowExactlyTheSizeOfTheDesktop_IsCapturable() => Assert.True(WindowCaptureRules.HasCapturableSize(_virtualScreen, _virtualScreen));
 
     [Fact]
     public void HasCapturableSize_WindowWiderThanTheDesktop_IsNotCapturable()
@@ -197,10 +189,7 @@ public sealed class WindowCaptureRulesTests
     }
 
     [Fact]
-    public void HasCapturableSize_WindowWithNoArea_IsNotCapturable()
-    {
-        Assert.False(WindowCaptureRules.HasCapturableSize(new ScreenRect(0, 0, 1920, 0), _virtualScreen));
-    }
+    public void HasCapturableSize_WindowWithNoArea_IsNotCapturable() => Assert.False(WindowCaptureRules.HasCapturableSize(new ScreenRect(0, 0, 1920, 0), _virtualScreen));
 
     [Fact]
     public void HasCapturableSize_DesktopSizedWindowHangingOverTheEdge_IsCapturable()
@@ -219,10 +208,7 @@ public sealed class WindowCaptureRulesTests
     }
 
     [Fact]
-    public void PaintedBounds_WithoutAFrame_IsTheWindowRectangle()
-    {
-        Assert.Equal(_window, WindowCaptureRules.PaintedBounds(_window, default));
-    }
+    public void PaintedBounds_WithoutAFrame_IsTheWindowRectangle() => Assert.Equal(_window, WindowCaptureRules.PaintedBounds(_window, default));
 
     [Fact]
     public void PaintedBounds_FrameReachingOutsideTheWindowRectangle_IsTheWindowRectangle()
@@ -233,38 +219,20 @@ public sealed class WindowCaptureRulesTests
     }
 
     [Fact]
-    public void ScaleForLongestSide_WindowSmallerThanTheLimit_IsNotUpscaled()
-    {
-        Assert.Equal(1.0, WindowCaptureRules.ScaleForLongestSide(800, 600, 1920));
-    }
+    public void ScaleForLongestSide_WindowSmallerThanTheLimit_IsNotUpscaled() => Assert.Equal(1.0, WindowCaptureRules.ScaleForLongestSide(800, 600, 1920));
 
     [Fact]
-    public void ScaleForLongestSide_WindowExactlyAtTheLimit_IsNotScaled()
-    {
-        Assert.Equal(1.0, WindowCaptureRules.ScaleForLongestSide(1920, 1080, 1920));
-    }
+    public void ScaleForLongestSide_WindowExactlyAtTheLimit_IsNotScaled() => Assert.Equal(1.0, WindowCaptureRules.ScaleForLongestSide(1920, 1080, 1920));
 
     [Fact]
-    public void ScaleForLongestSide_TallWindow_ScalesByItsHeight()
-    {
-        Assert.Equal(0.5, WindowCaptureRules.ScaleForLongestSide(600, 3840, 1920));
-    }
+    public void ScaleForLongestSide_TallWindow_ScalesByItsHeight() => Assert.Equal(0.5, WindowCaptureRules.ScaleForLongestSide(600, 3840, 1920));
 
     [Fact]
-    public void ScaleForLongestSide_WideWindow_ScalesByItsWidth()
-    {
-        Assert.Equal(0.5, WindowCaptureRules.ScaleForLongestSide(3840, 600, 1920));
-    }
+    public void ScaleForLongestSide_WideWindow_ScalesByItsWidth() => Assert.Equal(0.5, WindowCaptureRules.ScaleForLongestSide(3840, 600, 1920));
 
     [Fact]
-    public void ScaleDimension_SideThatWouldRoundToZero_KeepsOnePixel()
-    {
-        Assert.Equal(1, WindowCaptureRules.ScaleDimension(3, 0.05));
-    }
+    public void ScaleDimension_SideThatWouldRoundToZero_KeepsOnePixel() => Assert.Equal(1, WindowCaptureRules.ScaleDimension(3, 0.05));
 
     [Fact]
-    public void ScaleDimension_HalfScale_HalvesTheSide()
-    {
-        Assert.Equal(500, WindowCaptureRules.ScaleDimension(1000, 0.5));
-    }
+    public void ScaleDimension_HalfScale_HalvesTheSide() => Assert.Equal(500, WindowCaptureRules.ScaleDimension(1000, 0.5));
 }

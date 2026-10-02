@@ -9,8 +9,14 @@ namespace ClaudeCode.Core.ViewModels;
 /// </summary>
 public static class MarkdownSafetyLimits
 {
+    /// <summary>
+    /// The max markdown length.
+    /// </summary>
     public const int MaxMarkdownLength = 200_000;
-    internal const string TruncationNotice = "\n\n*(message truncated: exceeded the maximum renderable size)*";
+    /// <summary>
+    /// The truncation notice.
+    /// </summary>
+    internal const string _truncationNotice = "\n\n*(message truncated: exceeded the maximum renderable size)*";
 
     /// <summary>
     /// Truncates markdown text to at most <paramref name="maxLength"/> characters plus a truncation notice.
@@ -22,7 +28,7 @@ public static class MarkdownSafetyLimits
             return markdown;
         }
 
-        return markdown.Substring(0, maxLength) + TruncationNotice;
+        return markdown.Substring(0, maxLength) + _truncationNotice;
     }
 
     /// <summary>

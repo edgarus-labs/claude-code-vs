@@ -53,9 +53,20 @@ public sealed class AcpRemoteException : Exception
         return summary;
     }
 
+    /// <summary>
+    /// Retrieves a string value from the specified JsonObject by key, returning null if the key is absent or the value is not a string.
+    /// </summary>
+    /// <param name="data">The data.</param>
+    /// <param name="key">The key.</param>
+    /// <returns>The string? result.</returns>
     private static string? ReadString(JsonObject data, string key) =>
         data[key] is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
 
+    /// <summary>
+    /// Determines whether the specified error kind string corresponds to a recognized error category.
+    /// </summary>
+    /// <param name="kind">The kind.</param>
+    /// <returns>true if the condition is met; otherwise, false.</returns>
     private static bool IsKnownErrorKind(string? kind) => kind switch
     {
         "authentication_failed" or "oauth_org_not_allowed" or "account_on_hold" or

@@ -28,7 +28,11 @@ internal sealed class VsAttentionNotifier : IDisposable
     public void Notify(string title, string message)
     {
         ThreadHelper.ThrowIfNotOnUIThread();
-        if (_disposed || IsVisualStudioForeground()) return;
+        if (_disposed || IsVisualStudioForeground())
+        {
+            return;
+        }
+
         _icon.Visible = true;
         _icon.ShowBalloonTip(8000, title, string.IsNullOrWhiteSpace(message) ? " " : message, ToolTipIcon.None);
     }
@@ -36,7 +40,11 @@ internal sealed class VsAttentionNotifier : IDisposable
     private static bool IsVisualStudioForeground()
     {
         var foreground = GetForegroundWindow();
-        if (foreground == IntPtr.Zero) return false;
+        if (foreground == IntPtr.Zero)
+        {
+            return false;
+        }
+
         _ = GetWindowThreadProcessId(foreground, out var pid);
         using var current = Process.GetCurrentProcess();
         return pid == (uint)current.Id;
@@ -55,7 +63,11 @@ internal sealed class VsAttentionNotifier : IDisposable
                 var handle = current.MainWindowHandle;
                 if (handle != IntPtr.Zero)
                 {
-                    if (IsIconic(handle)) ShowWindow(handle, SW_RESTORE);
+                    if (IsIconic(handle))
+                    {
+                        ShowWindow(handle, _sW_RESTORE);
+                    }
+
                     SetForegroundWindow(handle);
                 }
 
@@ -71,7 +83,10 @@ internal sealed class VsAttentionNotifier : IDisposable
 
     private void HideIcon()
     {
-        if (!_disposed) _icon.Visible = false;
+        if (!_disposed)
+        {
+            _icon.Visible = false;
+        }
     }
 
     private static Icon? LoadIcon()
@@ -105,14 +120,21 @@ internal sealed class VsAttentionNotifier : IDisposable
 
     public void Dispose()
     {
-        if (_disposed) return;
+        if (_disposed)
+        {
+            return;
+        }
+
         _disposed = true;
         _icon.Visible = false;
         _icon.Dispose();
         _ownedIcon?.Dispose();
     }
 
-    private const int SW_RESTORE = 9;
+    /// <summary>
+    /// The sw restore.
+    /// </summary>
+    private const int _sW_RESTORE = 9;
 
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);

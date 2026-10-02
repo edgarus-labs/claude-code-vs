@@ -16,6 +16,9 @@ namespace ClaudeCode.Vsix.Usage;
 internal sealed class ClaudeUsageService : IUsageService
 {
     private static readonly TimeSpan _processTimeout = TimeSpan.FromSeconds(10);
+    /// <summary>
+    /// The max output characters.
+    /// </summary>
     private const int _maxOutputCharacters = 64 * 1024;
 
     private readonly string _scriptPath;
@@ -23,6 +26,11 @@ internal sealed class ClaudeUsageService : IUsageService
     private UsageSnapshot? _cachedSnapshot;
     private JoinableTask<UsageSnapshot?>? _inFlight;
 
+    /// <summary>
+    /// Initializes a new instance of the ClaudeUsageService class with the specified script path, throwing an ArgumentNullException if scriptPath is null.
+    /// </summary>
+    /// <param name="scriptPath">The script path.</param>
+    /// <exception cref="ArgumentNullException">Thrown when an error occurs during execution.</exception>
     public ClaudeUsageService(string scriptPath)
     {
         _scriptPath = scriptPath ?? throw new ArgumentNullException(nameof(scriptPath));
@@ -114,7 +122,7 @@ internal sealed class ClaudeUsageService : IUsageService
             Task stderrDrain = process.StandardError.BaseStream.CopyToAsync(Stream.Null);
             Task<string> stdout = BoundedProcessOutput.ReadBoundedAsync(process.StandardOutput, _maxOutputCharacters);
             Task complete = Task.WhenAll(stderrDrain, stdout, exited.Task);
-            _ = complete.ContinueWith(task => { _ = task.Exception; },
+            _ = complete.ContinueWith(task => _ = task.Exception,
                 CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
             Task finished = await Task.WhenAny(complete, Task.Delay(_processTimeout)).ConfigureAwait(false);
             if (finished != complete)
@@ -198,6 +206,11 @@ internal sealed class ClaudeUsageService : IUsageService
         }
     }
 
+    /// <summary>
+    /// Parses a JSON token to extract a reset timestamp as a nullable DateTimeOffset.
+    /// </summary>
+    /// <param name="token">The token.</param>
+    /// <returns>The date time offset? result.</returns>
     private static DateTimeOffset? ReadResetsAt(JToken? token) =>
         UsageResetTimestamp.FromJsonValue((token as JValue)?.Value);
 }

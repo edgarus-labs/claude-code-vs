@@ -1,6 +1,5 @@
 using System;
 using System.IO;
-using ClaudeCode.Acp;
 using Xunit;
 
 namespace ClaudeCode.Acp.Tests;
@@ -97,6 +96,7 @@ public sealed class AcpLauncherWrapTests : IDisposable
         string path = Path.IsPathRooted(relativeOrAbsolutePath) ? relativeOrAbsolutePath : Path.Combine(_root, relativeOrAbsolutePath);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, string.Empty);
+
         return path;
     }
 

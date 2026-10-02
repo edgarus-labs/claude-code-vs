@@ -16,7 +16,7 @@ namespace ClaudeCode.Core.Tests;
 /// </summary>
 public sealed class ElicitationCardViewLayoutTests
 {
-    private static readonly XNamespace Xaml = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+    private static readonly XNamespace _xaml = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
 
     [Fact]
     public void AgentAuthoredMessageSitsInsideAScrollRegionBoundedByAShareOfTheChatPanel()
@@ -24,11 +24,11 @@ public sealed class ElicitationCardViewLayoutTests
         XDocument view = XDocument.Load(ViewPath());
 
         XElement message = Assert.Single(
-            view.Descendants(Xaml + "TextBlock"),
+            view.Descendants(_xaml + "TextBlock"),
             element => (string?)element.Attribute("Text") == "{Binding Message}");
 
         XElement scroll = Assert.Single(
-            message.Ancestors(Xaml + "ScrollViewer"),
+            message.Ancestors(_xaml + "ScrollViewer"),
             element => element.Attribute("MaxHeight") is not null);
         string maxHeight = Regex.Replace((string)scroll.Attribute("MaxHeight")!, @"\s+", " ");
 
@@ -39,7 +39,7 @@ public sealed class ElicitationCardViewLayoutTests
 
         XElement converter = Assert.Single(
             view.Descendants(), element => element.Name.LocalName == "FractionOfConverter");
-        string converterKey = (string)converter.Attribute(XNamespace.Get("http://schemas.microsoft.com/winfx/2006/xaml") + "Key")!;
+        var converterKey = (string)converter.Attribute(XNamespace.Get("http://schemas.microsoft.com/winfx/2006/xaml") + "Key")!;
         Assert.Contains($"Converter={{StaticResource {converterKey}}}", maxHeight);
 
         Match fraction = Regex.Match(maxHeight, @"ConverterParameter=([0-9.]+)");
@@ -56,11 +56,11 @@ public sealed class ElicitationCardViewLayoutTests
         foreach (string command in new[] { "{Binding DeclineCommand}", "{Binding SubmitCommand}" })
         {
             XElement button = Assert.Single(
-                view.Descendants(Xaml + "Button"),
+                view.Descendants(_xaml + "Button"),
                 element => (string?)element.Attribute("Command") == command);
 
             Assert.False(
-                button.Ancestors(Xaml + "ScrollViewer").Any(),
+                button.Ancestors(_xaml + "ScrollViewer").Any(),
                 $"The button bound to {command} sits inside the card's ScrollViewer. Bounding the "
                     + "agent-authored body must not sweep the answer buttons in with it: a long form would "
                     + "then scroll them out of view and the user would have to find them to unblock the agent.");
@@ -72,8 +72,8 @@ public sealed class ElicitationCardViewLayoutTests
     {
         XDocument view = XDocument.Load(ViewPath());
 
-        Assert.Empty(view.Descendants(Xaml + "ResourceDictionary.MergedDictionaries"));
-        Assert.Empty(view.Descendants(Xaml + "SolidColorBrush"));
+        Assert.Empty(view.Descendants(_xaml + "ResourceDictionary.MergedDictionaries"));
+        Assert.Empty(view.Descendants(_xaml + "SolidColorBrush"));
         Assert.DoesNotContain(
             view.Descendants().SelectMany(element => element.Attributes()),
             attribute => attribute.Value.StartsWith("{StaticResource Chat", System.StringComparison.Ordinal));
@@ -88,7 +88,7 @@ public sealed class ElicitationCardViewLayoutTests
         {
             XElement template = OptionRowTemplate(view, option);
 
-            Assert.NotEmpty(template.Descendants(Xaml + "ContentPresenter"));
+            Assert.NotEmpty(template.Descendants(_xaml + "ContentPresenter"));
 
             HashSet<string> selected = TriggerEffects(template, "IsChecked");
             HashSet<string> hovered = TriggerEffects(template, "IsMouseOver");
@@ -106,10 +106,10 @@ public sealed class ElicitationCardViewLayoutTests
 
     private static IEnumerable<XElement> OptionControls(XDocument view) =>
         view.Descendants().Where(
-            element => element.Name == Xaml + "RadioButton" || element.Name == Xaml + "CheckBox");
+            element => element.Name == _xaml + "RadioButton" || element.Name == _xaml + "CheckBox");
 
     private static XElement OptionRowTemplate(XDocument view, XElement option) =>
-        Assert.Single(StyleChain(view, option).SelectMany(style => style.Descendants(Xaml + "ControlTemplate")));
+        Assert.Single(StyleChain(view, option).SelectMany(style => style.Descendants(_xaml + "ControlTemplate")));
 
     private static List<XElement> StyleChain(XDocument view, XElement option)
     {
@@ -126,7 +126,7 @@ public sealed class ElicitationCardViewLayoutTests
             Assert.True(key.Success, $"Unexpected option style reference: {reference}");
             Assert.True(seen.Add(key.Groups["key"].Value), $"Cyclic BasedOn chain at {key.Groups["key"].Value}.");
             XElement style = Assert.Single(
-                view.Descendants(Xaml + "Style"),
+                view.Descendants(_xaml + "Style"),
                 element => (string?)element.Attribute(
                     XNamespace.Get("http://schemas.microsoft.com/winfx/2006/xaml") + "Key")
                     == key.Groups["key"].Value);
@@ -140,25 +140,25 @@ public sealed class ElicitationCardViewLayoutTests
     private static HashSet<string> TriggerEffects(XElement template, string property) =>
         new(template
             .Descendants()
-            .Where(trigger => (trigger.Name == Xaml + "Trigger" || trigger.Name == Xaml + "MultiTrigger")
+            .Where(trigger => (trigger.Name == _xaml + "Trigger" || trigger.Name == _xaml + "MultiTrigger")
                 && FiresOn(trigger, property))
-            .SelectMany(trigger => trigger.Elements(Xaml + "Setter"))
+            .SelectMany(trigger => trigger.Elements(_xaml + "Setter"))
             .Select(setter => SetterKey(setter.Attribute("TargetName"), setter.Attribute("Property"), setter.Attribute("Value"))));
 
     private static bool FiresOn(XElement trigger, string property) =>
         ((string?)trigger.Attribute("Property") == property && (string?)trigger.Attribute("Value") == "True")
-            || trigger.Descendants(Xaml + "Condition").Any(
+            || trigger.Descendants(_xaml + "Condition").Any(
                 condition => (string?)condition.Attribute("Property") == property
                     && (string?)condition.Attribute("Value") == "True");
 
     private static XElement[] HoverTriggersThatRepaintAChosenRow(XElement template) =>
         template
             .Descendants()
-            .Where(trigger => (trigger.Name == Xaml + "Trigger" || trigger.Name == Xaml + "MultiTrigger")
+            .Where(trigger => (trigger.Name == _xaml + "Trigger" || trigger.Name == _xaml + "MultiTrigger")
                 && FiresOn(trigger, "IsMouseOver")
-                && trigger.Elements(Xaml + "Setter").Any(
+                && trigger.Elements(_xaml + "Setter").Any(
                     setter => (string?)setter.Attribute("Property") == "Background")
-                && !trigger.Descendants(Xaml + "Condition").Any(
+                && !trigger.Descendants(_xaml + "Condition").Any(
                     condition => (string?)condition.Attribute("Property") == "IsChecked"
                         && (string?)condition.Attribute("Value") == "False"))
             .ToArray();
@@ -173,8 +173,8 @@ public sealed class ElicitationCardViewLayoutTests
 
         XElement[] optionTexts = view
             .Descendants()
-            .Where(element => element.Name == Xaml + "RadioButton" || element.Name == Xaml + "CheckBox")
-            .SelectMany(option => option.Descendants(Xaml + "TextBlock"))
+            .Where(element => element.Name == _xaml + "RadioButton" || element.Name == _xaml + "CheckBox")
+            .SelectMany(option => option.Descendants(_xaml + "TextBlock"))
             .ToArray();
         Assert.NotEmpty(optionTexts);
 

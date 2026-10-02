@@ -59,12 +59,11 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         _token = token;
     }
 
-    public void Start()
-    {
+    public void Start() =>
 #pragma warning disable VSSDK007
         _listenTask = ThreadHelper.JoinableTaskFactory.RunAsync(() => RunAsync(_cts.Token));
 #pragma warning restore VSSDK007
-    }
+
 
     private async Task RunAsync(CancellationToken cancellationToken)
     {
@@ -152,7 +151,7 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
             var timeoutTask = Task.Delay(Timeout.Infinite, timeoutCts.Token);
             if (await Task.WhenAny(readTask, timeoutTask).ConfigureAwait(false) != readTask)
             {
-                _ = readTask.ContinueWith(task => { _ = task.Exception; },
+                _ = readTask.ContinueWith(task => _ = task.Exception,
                     CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
                 return false;
             }
@@ -167,10 +166,7 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         return tokenLine is not null && ConstantTimeTokenComparer.Equals(tokenLine, _token);
     }
 
-    private static PipeSecurity CreatePipeSecurity()
-    {
-        return PipeSecurityFactory.CreateCurrentUserOnly(PipeAccessRights.ReadWrite);
-    }
+    private static PipeSecurity CreatePipeSecurity() => PipeSecurityFactory.CreateCurrentUserOnly(PipeAccessRights.ReadWrite);
 
     private async Task<string> HandleRequestLineAsync(string line, CancellationToken cancellationToken)
     {
@@ -489,6 +485,12 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         return new JObject();
     }
 
+    /// <summary>
+    /// Creates an.
+    /// </summary>
+    /// <param name="error">The error.</param>
+    /// <param name="failureMessage">The failure message.</param>
+    /// <returns>The invalid operation exception result.</returns>
     private static InvalidOperationException ActionableDteError(COMException error, string failureMessage) =>
         error.HResult == _rpcServerCallRetryLaterHResult
             ? new InvalidOperationException("Visual Studio is busy, try again.")
@@ -648,6 +650,10 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         return value!;
     }
 
+    /// <summary>
+    /// Asynchronously disposes the resources by canceling the operation, disposing the pipe, awaiting the listening task to complete, and releasing the cancellation token source.
+    /// </summary>
+    /// <returns>A value task representing the asynchronous operation.</returns>
     public async ValueTask DisposeAsync()
     {
         _cts.Cancel();

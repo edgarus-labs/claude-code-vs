@@ -8,7 +8,13 @@ namespace ClaudeCode.Core.ViewModels;
 /// </summary>
 public static class CircularProgressGeometry
 {
+    /// <summary>
+    /// The default radius.
+    /// </summary>
     public const double DefaultRadius = 6;
+    /// <summary>
+    /// The default thickness.
+    /// </summary>
     public const double DefaultThickness = 2;
 
     /// <summary>
@@ -43,8 +49,15 @@ public static class CircularProgressGeometry
     /// </summary>
     public static (double Dash, double Gap) ComputeDash(int percent, double radius, double thickness)
     {
-        if (radius <= 0) radius = DefaultRadius;
-        if (thickness <= 0) thickness = DefaultThickness;
+        if (radius <= 0)
+        {
+            radius = DefaultRadius;
+        }
+
+        if (thickness <= 0)
+        {
+            thickness = DefaultThickness;
+        }
 
         double clamped = Math.Max(0, Math.Min(100, percent));
         double circumference = 2 * Math.PI * radius / thickness;

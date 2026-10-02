@@ -30,14 +30,16 @@ namespace ClaudeCode.Core.Views;
 
 public partial class ChatPanelView : UserControl, IDisposable
 {
-    private const int MaxImageBytes = 5 * 1024 * 1024;
-    private const long MaxImagePixels = 20_000_000;
-    private const int MaxImages = 5;
-    private const int CopyFeedbackDisplayMilliseconds = 4000;
-    private const string TranscriptLostMessage =
+    private const int _maxImageBytes = 5 * 1024 * 1024;
+    private const long _maxImagePixels = 20_000_000;
+    private const int _maxImages = 5;
+    private const int _copyFeedbackDisplayMilliseconds = 4000;
+
+    private const string _transcriptLostMessage =
         "The transcript display stopped updating after a Microsoft Edge WebView2 process failure " +
         "and could not be restored.";
-    private const string TranscriptUnavailableMessage =
+
+    private const string _transcriptUnavailableMessage =
         "The transcript could not be displayed: the transcript page is missing from this " +
         "installation of the extension. Repair or reinstall the extension.";
 
@@ -51,10 +53,12 @@ public partial class ChatPanelView : UserControl, IDisposable
     private readonly DispatcherTimer _copyFeedbackTimer;
     private readonly DispatcherTimer _transcriptRenderTimer;
     private readonly DispatcherTimer _transcriptRenderDebounceTimer;
-    private readonly List<ChatMessageViewModel> _trackedMessages = new List<ChatMessageViewModel>();
-    private readonly List<ToolCallCardViewModel> _trackedCards = new List<ToolCallCardViewModel>();
+    private readonly List<ChatMessageViewModel> _trackedMessages = [];
+    private readonly List<ToolCallCardViewModel> _trackedCards = [];
+
     private readonly Dictionary<ChatMessageViewModel, string> _imagesJsonByMessage =
         new Dictionary<ChatMessageViewModel, string>();
+
     private bool _disposed;
     private bool _transcriptReady;
     private DateTimeOffset? _busyStartedAt;
@@ -77,7 +81,7 @@ public partial class ChatPanelView : UserControl, IDisposable
         CommandManager.AddPreviewExecutedHandler(ComposerBox, ComposerBox_PreviewExecuted);
         _copyFeedbackTimer = new DispatcherTimer(DispatcherPriority.Background, Dispatcher)
         {
-            Interval = TimeSpan.FromMilliseconds(CopyFeedbackDisplayMilliseconds)
+            Interval = TimeSpan.FromMilliseconds(_copyFeedbackDisplayMilliseconds)
         };
         _copyFeedbackTimer.Tick += OnCopyFeedbackTimerTick;
         _transcriptRenderTimer = new DispatcherTimer(DispatcherPriority.Background, Dispatcher)
@@ -220,11 +224,12 @@ public partial class ChatPanelView : UserControl, IDisposable
         switch (e.ProcessFailedKind)
         {
             case CoreWebView2ProcessFailedKind.RenderProcessExited:
-                ReloadTranscriptPage(TranscriptLostMessage);
+                ReloadTranscriptPage(_transcriptLostMessage);
                 break;
+
             case CoreWebView2ProcessFailedKind.BrowserProcessExited:
                 InvalidateTranscriptPage();
-                ShowCopyFeedback(TranscriptLostMessage, persistent: true);
+                ShowCopyFeedback(_transcriptLostMessage, persistent: true);
                 break;
         }
     }
@@ -241,10 +246,12 @@ public partial class ChatPanelView : UserControl, IDisposable
             if (e.NavigationId == _cancelledNavigationId)
             {
                 _cancelledNavigationId = null;
+
                 return;
             }
 
-            ReloadTranscriptPage(e.HttpStatusCode >= 400 ? TranscriptUnavailableMessage : TranscriptLostMessage);
+            ReloadTranscriptPage(e.HttpStatusCode >= 400 ? _transcriptUnavailableMessage : _transcriptLostMessage);
+
             return;
         }
 
@@ -340,6 +347,7 @@ public partial class ChatPanelView : UserControl, IDisposable
         if (TranscriptHostProtocol.ShouldPaintImmediately(DateTimeOffset.UtcNow - _lastRenderAt))
         {
             RenderTranscript();
+
             return;
         }
 
@@ -363,6 +371,7 @@ public partial class ChatPanelView : UserControl, IDisposable
 
                 RenderTranscript();
                 break;
+
             case nameof(ChatViewModel.ActivityText):
             case nameof(ChatViewModel.TurnTokens):
                 RenderTranscript();
@@ -442,12 +451,14 @@ public partial class ChatPanelView : UserControl, IDisposable
         try
         {
             _ = TranscriptView.CoreWebView2.ExecuteScriptAsync(script);
+
             return true;
         }
         catch (Exception exception) when (exception is COMException || exception is InvalidOperationException ||
                                           exception is ObjectDisposedException)
         {
             InvalidateTranscriptPage();
+
             return false;
         }
     }
@@ -466,6 +477,7 @@ public partial class ChatPanelView : UserControl, IDisposable
         if (_transcriptReloadAttempted || TranscriptView.CoreWebView2 is not CoreWebView2 core)
         {
             ShowCopyFeedback(lostMessage, persistent: true);
+
             return;
         }
 
@@ -510,6 +522,7 @@ public partial class ChatPanelView : UserControl, IDisposable
         }
 
         var call = ((ChatToolCallPart)part).Card;
+
         return new
         {
             type = "tool",
@@ -577,6 +590,7 @@ public partial class ChatPanelView : UserControl, IDisposable
         if (TryFindResource(resourceKey) is SolidColorBrush brush)
         {
             Color color = brush.Color;
+
             return $"#{color.R:X2}{color.G:X2}{color.B:X2}{color.A:X2}";
         }
 
@@ -605,9 +619,11 @@ public partial class ChatPanelView : UserControl, IDisposable
             case "openLink":
                 OpenTranscriptLink(ReadString(message, "url"));
                 break;
+
             case "openFile":
                 _ = _viewModel.OpenFileReferenceAsync(ReadString(message, "href"));
                 break;
+
             case "zoom":
                 ChatTextFontSize = TranscriptHostProtocol.StepFontSize(
                     ChatTextFontSize, -ReadDouble(message, "delta"));
@@ -641,6 +657,7 @@ public partial class ChatPanelView : UserControl, IDisposable
         if (!Uri.TryCreate(target, UriKind.Absolute, out Uri? uri) || !MarkdownSafetyLimits.IsNavigableLink(uri))
         {
             ShowCopyFeedback("This link cannot be opened. Only absolute HTTP and HTTPS links are allowed.");
+
             return;
         }
 
@@ -729,6 +746,7 @@ public partial class ChatPanelView : UserControl, IDisposable
         if (e.Key == Key.V && Keyboard.Modifiers == ModifierKeys.Control && TryPasteImage())
         {
             e.Handled = true;
+
             return;
         }
 
@@ -741,6 +759,7 @@ public partial class ChatPanelView : UserControl, IDisposable
         {
             e.Handled = true;
             _viewModel.CancelCommand.Execute(null);
+
             return;
         }
 
@@ -805,7 +824,7 @@ public partial class ChatPanelView : UserControl, IDisposable
             }
 
             var bitmap = Clipboard.GetImage();
-            if (bitmap == null)
+            if (bitmap is null)
             {
                 ShowAttachmentError("The clipboard image is unavailable. Copy it again and retry.");
             }
@@ -840,16 +859,17 @@ public partial class ChatPanelView : UserControl, IDisposable
         try
         {
             var owner = Window.GetWindow(this);
-            if ((owner == null ? picker.ShowDialog() : picker.ShowDialog(owner)) != true)
+            if ((owner is null ? picker.ShowDialog() : picker.ShowDialog(owner)) != true)
             {
                 return;
             }
 
             using (var stream = new FileStream(picker.FileName, FileMode.Open, FileAccess.Read, FileShare.Read))
             {
-                if (stream.Length > MaxImageBytes)
+                if (stream.Length > _maxImageBytes)
                 {
                     ShowAttachmentError("Choose an image smaller than 5 MB.");
+
                     return;
                 }
 
@@ -869,15 +889,17 @@ public partial class ChatPanelView : UserControl, IDisposable
 
     private void AddImage(BitmapSource bitmap, string name)
     {
-        if (_viewModel.Attachments.Count(attachment => attachment.IsImage) >= MaxImages)
+        if (_viewModel.Attachments.Count(attachment => attachment.IsImage) >= _maxImages)
         {
             ShowAttachmentError("Attach up to 5 images per message. Remove an image to add another.");
+
             return;
         }
 
-        if ((long)bitmap.PixelWidth * bitmap.PixelHeight > MaxImagePixels)
+        if ((long)bitmap.PixelWidth * bitmap.PixelHeight > _maxImagePixels)
         {
             ShowAttachmentError("That image is too large. Resize it to 20 megapixels or fewer.");
+
             return;
         }
 
@@ -886,9 +908,10 @@ public partial class ChatPanelView : UserControl, IDisposable
         using (var encoded = new MemoryStream())
         {
             encoder.Save(encoded);
-            if (encoded.Length > MaxImageBytes)
+            if (encoded.Length > _maxImageBytes)
             {
                 ShowAttachmentError("The image exceeds 5 MB as PNG. Resize it and try again.");
+
                 return;
             }
 
@@ -932,6 +955,7 @@ public partial class ChatPanelView : UserControl, IDisposable
         if (_persistentFeedback is string persistent)
         {
             CopyFeedback.Text = persistent;
+
             return;
         }
 
@@ -951,11 +975,12 @@ public partial class ChatPanelView : UserControl, IDisposable
                 _viewModel.DismissSlashSuggestions();
                 ComposerBox.Focus();
                 break;
+
             case Key.Up:
             case Key.Down:
                 if (_viewModel.SlashSuggestions.Count > 0)
                 {
-                    var current = _viewModel.SelectedSlashSuggestion == null ? -1 :
+                    var current = _viewModel.SelectedSlashSuggestion is null ? -1 :
                         _viewModel.SlashSuggestions.IndexOf(_viewModel.SelectedSlashSuggestion);
                     var next = current < 0 ? 0 : Math.Max(0, Math.Min(
                         _viewModel.SlashSuggestions.Count - 1, current + (e.Key == Key.Down ? 1 : -1)));
@@ -963,6 +988,7 @@ public partial class ChatPanelView : UserControl, IDisposable
                     SlashList.ScrollIntoView(_viewModel.SelectedSlashSuggestion);
                 }
                 break;
+
             case Key.Enter:
             case Key.Tab:
                 if (!AcceptSlashSuggestion())
@@ -970,18 +996,20 @@ public partial class ChatPanelView : UserControl, IDisposable
                     return false;
                 }
                 break;
+
             default:
                 return false;
         }
 
         e.Handled = true;
+
         return true;
     }
 
     private bool AcceptSlashSuggestion()
     {
         var command = _viewModel.SelectedSlashSuggestion;
-        if (!CanEditDraft || command == null || !_viewModel.ApplySlashSuggestionCommand.CanExecute(command))
+        if (!CanEditDraft || command is null || !_viewModel.ApplySlashSuggestionCommand.CanExecute(command))
         {
             return false;
         }
@@ -989,6 +1017,7 @@ public partial class ChatPanelView : UserControl, IDisposable
         _viewModel.ApplySlashSuggestionCommand.Execute(command);
         ComposerBox.Focus();
         ComposerBox.CaretIndex = ComposerBox.Text.Length;
+
         return true;
     }
 
@@ -1035,27 +1064,24 @@ public partial class ChatPanelView : UserControl, IDisposable
         FocusConfigList(ModeList, ModePopup);
     }
 
-    private void FocusConfigList(ListBox list, Popup owner)
-    {
-        Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(() =>
-        {
-            if (!owner.IsOpen || !list.IsVisible)
-            {
-                return;
-            }
+    private void FocusConfigList(ListBox list, Popup owner) => Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(() =>
+                                                                    {
+                                                                        if (!owner.IsOpen || !list.IsVisible)
+                                                                        {
+                                                                            return;
+                                                                        }
 
-            var selected = list.SelectedItem == null ? null :
-                list.ItemContainerGenerator.ContainerFromItem(list.SelectedItem) as ListBoxItem;
-            if (selected != null)
-            {
-                selected.Focus();
-            }
-            else
-            {
-                list.Focus();
-            }
-        }));
-    }
+                                                                        var selected = list.SelectedItem is null ? null :
+                                                                            list.ItemContainerGenerator.ContainerFromItem(list.SelectedItem) as ListBoxItem;
+                                                                        if (selected is not null)
+                                                                        {
+                                                                            selected.Focus();
+                                                                        }
+                                                                        else
+                                                                        {
+                                                                            list.Focus();
+                                                                        }
+                                                                    }));
 
     private void EffortButton_Click(object sender, RoutedEventArgs e) => ShowEffortOptions();
 
@@ -1097,6 +1123,7 @@ public partial class ChatPanelView : UserControl, IDisposable
         if (TranscriptHostProtocol.NormalizeRemoteControlLink(_viewModel.RemoteControlUrl) is string link)
         {
             OpenTranscriptLink(link);
+
             return;
         }
 
@@ -1218,6 +1245,7 @@ public partial class ChatPanelView : UserControl, IDisposable
             ModePopup.IsOpen = false;
             ModeButton.Focus();
             _viewModel.SelectedMode = value;
+
             return;
         }
 

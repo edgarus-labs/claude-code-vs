@@ -19,10 +19,7 @@ public sealed class VsControlPipeClientTests
     [InlineData(" \t")]
     [InlineData("token\nrequest")]
     [InlineData("token\rrequest")]
-    public void Constructor_RejectsMissingOrMultilineHandshakeToken(string token)
-    {
-        Assert.Throws<ArgumentException>(() => new VsControlPipeClient("unused", handshakeToken: token));
-    }
+    public void Constructor_RejectsMissingOrMultilineHandshakeToken(string token) => Assert.Throws<ArgumentException>(() => new VsControlPipeClient("unused", handshakeToken: token));
 
     [Fact]
     public async Task SendAsync_CancelledPartialRequest_ClosesTransportAndRetryHandshakesAgain()
@@ -107,7 +104,7 @@ public sealed class VsControlPipeClientTests
     public async Task SendAsync_CancelledHandshakeClosesConnection_AndRetryStartsWithToken()
     {
         string pipeName = $"vscontrol-cancel-handshake-{Guid.NewGuid():N}";
-        string token = new string('t', 8 * 1024 * 1024);
+        var token = new string('t', 8 * 1024 * 1024);
         using var cancellation = new CancellationTokenSource();
         using var stopFirstServer = new SemaphoreSlim(0, 1);
         using var firstServer = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);

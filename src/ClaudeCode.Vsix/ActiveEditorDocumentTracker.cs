@@ -24,8 +24,14 @@ internal sealed class ActiveEditorDocumentTracker : IDisposable
         _windowEvents.ActiveFrameChanged += OnActiveFrameChanged;
     }
 
+    /// <summary>
+    /// Occurs when active document changed.
+    /// </summary>
     public event EventHandler? ActiveDocumentChanged;
 
+    /// <summary>
+    /// Gets a value indicating whether has active document.
+    /// </summary>
     public bool HasActiveDocument => !_disposed && _lastDocumentView?.TextView is { IsClosed: false } && _lastDocumentView.TextBuffer is not null;
 
     public async Task InitializeAsync(CancellationToken cancellationToken)
@@ -102,6 +108,10 @@ internal sealed class ActiveEditorDocumentTracker : IDisposable
         return view?.TextView is { IsClosed: false } && view.TextBuffer is not null;
     }
 
+    /// <summary>
+    /// Updates the stored last document view, detaches the Closed handler from the previous view, attaches it to the new view, and raises the ActiveDocumentChanged event when not disposed.
+    /// </summary>
+    /// <param name="view">The view.</param>
     private void SetLastDocumentView(DocumentView? view)
     {
         ThreadHelper.ThrowIfNotOnUIThread();

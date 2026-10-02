@@ -1,6 +1,5 @@
 using System.IO;
 using System.Threading.Tasks;
-using ClaudeCode.Acp;
 using Xunit;
 
 namespace ClaudeCode.Acp.Tests;

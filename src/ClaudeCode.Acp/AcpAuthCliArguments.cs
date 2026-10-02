@@ -14,9 +14,14 @@ public static class AcpAuthCliArguments
 
     private static List<string> Combine(AcpExecutableSpec executable, params string[] authArgs)
     {
-        if (executable is null) throw new ArgumentNullException(nameof(executable));
+        if (executable is null)
+        {
+            throw new ArgumentNullException(nameof(executable));
+        }
+
         var arguments = new List<string>(executable.Arguments) { "--cli", "auth" };
         arguments.AddRange(authArgs);
+
         return arguments;
     }
 }

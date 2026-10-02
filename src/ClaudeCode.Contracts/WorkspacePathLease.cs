@@ -1,10 +1,10 @@
+using Microsoft.Win32.SafeHandles;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
-using Microsoft.Win32.SafeHandles;
 
 namespace ClaudeCode.Contracts;
 
@@ -15,7 +15,7 @@ namespace ClaudeCode.Contracts;
 /// </summary>
 public sealed class WorkspacePathLease : IDisposable
 {
-    private readonly List<SafeFileHandle> _directories = new List<SafeFileHandle>();
+    private readonly List<SafeFileHandle> _directories = [];
     private readonly bool _windows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
     private readonly string _leaf;
     private readonly bool _document;
@@ -29,24 +29,39 @@ public sealed class WorkspacePathLease : IDisposable
         _document = document;
     }
 
+    /// <summary>
+    /// Gets the full path.
+    /// </summary>
     public string FullPath { get; }
 
     internal static WorkspacePathLease Acquire(string? root, string? path, bool document)
     {
         if (!WorkspacePathGuard.TryResolveWithinWorkspace(root, path, out string fullPath))
+        {
             throw new UnauthorizedAccessException("The path is outside the workspace or cannot be resolved safely.");
+        }
+
         var lease = new WorkspacePathLease(fullPath, document);
         try
         {
             if (!lease._windows && (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux) || document))
+            {
                 throw new PlatformNotSupportedException("Confined file operations support Windows and Linux; document paths require Windows.");
+            }
+
             string parent = Path.GetDirectoryName(fullPath) ?? throw new UnauthorizedAccessException("A workspace file path is required.");
             if (lease._leaf.Length == 0 || (lease._windows && lease._leaf.IndexOf(':') >= 0))
+            {
                 throw new UnauthorizedAccessException("A regular file path is required.");
+            }
+
             lease.OpenDirectories(parent);
             lease._file = lease.OpenLeaf(document);
             if (document && lease._file is null)
+            {
                 throw new UnauthorizedAccessException("A document lease requires an existing file.");
+            }
+
             return lease;
         }
         catch
@@ -69,7 +84,11 @@ public sealed class WorkspacePathLease : IDisposable
     public string ReadAllText()
     {
         ThrowIfDisposed();
-        if (_file is null) throw new FileNotFoundException("The workspace file does not exist.", FullPath);
+        if (_file is null)
+        {
+            throw new FileNotFoundException("The workspace file does not exist.", FullPath);
+        }
+
         using var retained = new HandleReference(_file);
         using var stream = OpenRetainedRead();
         using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
@@ -109,7 +128,10 @@ public sealed class WorkspacePathLease : IDisposable
 
         public void Dispose()
         {
-            if (_added) _handle.DangerousRelease();
+            if (_added)
+            {
+                _handle.DangerousRelease();
+            }
         }
     }
 
@@ -138,7 +160,10 @@ public sealed class WorkspacePathLease : IDisposable
 
             if (_windows)
             {
-                if (!MoveFileExW(WorkspacePathGuard.LongPathSafe(temporaryPath), WorkspacePathGuard.LongPathSafe(FullPath), 1)) throw NativeIOException("Could not replace the workspace file.");
+                if (!MoveFileExW(WorkspacePathGuard.LongPathSafe(temporaryPath), WorkspacePathGuard.LongPathSafe(FullPath), 1))
+                {
+                    throw NativeIOException("Could not replace the workspace file.");
+                }
             }
             else if (RenameAt(DirectoryHandle, WorkspacePathGuard.GetUnixPathBytes(temporary), DirectoryHandle, WorkspacePathGuard.GetUnixPathBytes(_leaf)) != 0)
             {
@@ -151,9 +176,14 @@ public sealed class WorkspacePathLease : IDisposable
             {
                 if (created)
                 {
-                    if (_windows) File.Delete(WorkspacePathGuard.LongPathSafe(temporaryPath));
+                    if (_windows)
+                    {
+                        File.Delete(WorkspacePathGuard.LongPathSafe(temporaryPath));
+                    }
                     else if (UnlinkAt(DirectoryHandle, WorkspacePathGuard.GetUnixPathBytes(temporary), 0) != 0)
+                    {
                         throw NativeIOException("Could not remove the temporary workspace file.");
+                    }
                 }
 
                 _file = OpenLeaf(_document);
@@ -183,14 +213,30 @@ public sealed class WorkspacePathLease : IDisposable
 
     private Encoding DetectEncoding()
     {
-        if (_file is null) return new UTF8Encoding(false);
+        if (_file is null)
+        {
+            return new UTF8Encoding(false);
+        }
+
         var buffer = new byte[4];
         using var retained = new HandleReference(_file);
         using var stream = OpenRetainedRead();
         int count = stream.Read(buffer, 0, buffer.Length);
-        if (count >= 3 && buffer[0] == 0xEF && buffer[1] == 0xBB && buffer[2] == 0xBF) return new UTF8Encoding(true);
-        if (count >= 2 && buffer[0] == 0xFF && buffer[1] == 0xFE) return Encoding.Unicode;
-        if (count >= 2 && buffer[0] == 0xFE && buffer[1] == 0xFF) return Encoding.BigEndianUnicode;
+        if (count >= 3 && buffer[0] == 0xEF && buffer[1] == 0xBB && buffer[2] == 0xBF)
+        {
+            return new UTF8Encoding(true);
+        }
+
+        if (count >= 2 && buffer[0] == 0xFF && buffer[1] == 0xFE)
+        {
+            return Encoding.Unicode;
+        }
+
+        if (count >= 2 && buffer[0] == 0xFE && buffer[1] == 0xFF)
+        {
+            return Encoding.BigEndianUnicode;
+        }
+
         return new UTF8Encoding(false);
     }
 
@@ -202,7 +248,7 @@ public sealed class WorkspacePathLease : IDisposable
             SafeFileHandle handle;
             if (securityDescriptor is null)
             {
-                handle = CreateFileW(target, 0x40000000, 0, IntPtr.Zero, 1, OpenReparsePoint, IntPtr.Zero);
+                handle = CreateFileW(target, 0x40000000, 0, IntPtr.Zero, 1, _openReparsePoint, IntPtr.Zero);
             }
             else
             {
@@ -215,33 +261,50 @@ public sealed class WorkspacePathLease : IDisposable
                         Descriptor = pinned.AddrOfPinnedObject(),
                         InheritHandle = false,
                     };
-                    handle = CreateFileWithSecurityW(target, 0x40000000, 0, ref attributes, 1, OpenReparsePoint, IntPtr.Zero);
+                    handle = CreateFileWithSecurityW(target, 0x40000000, 0, ref attributes, 1, _openReparsePoint, IntPtr.Zero);
                 }
                 finally
                 {
                     pinned.Free();
                 }
             }
-            if (!handle.IsInvalid) return handle;
+            if (!handle.IsInvalid)
+            {
+                return handle;
+            }
+
             var error = NativeIOException("Could not create a temporary workspace file.");
             handle.Dispose();
             throw error;
         }
-        int fd = OpenAt(DirectoryHandle, WorkspacePathGuard.GetUnixPathBytes(name), OpenWriteOnly | OpenCreate | OpenExclusive | OpenNoFollow | OpenCloseOnExec, 384);
-        if (fd < 0) throw NativeIOException("Could not create a temporary workspace file.");
+        int fd = OpenAt(DirectoryHandle, WorkspacePathGuard.GetUnixPathBytes(name), _openWriteOnly | _openCreate | _openExclusive | _openNoFollow | _openCloseOnExec, 384);
+        if (fd < 0)
+        {
+            throw NativeIOException("Could not create a temporary workspace file.");
+        }
+
         return new SafeFileHandle(new IntPtr(fd), ownsHandle: true);
     }
 
     private static byte[] ReadWindowsDacl(SafeFileHandle file)
     {
         if (!GetKernelObjectSecurity(file, 4, null, 0, out uint length) && Marshal.GetLastWin32Error() != 122)
+        {
             throw NativeIOException("Could not read the workspace file permissions.");
+        }
+
         var descriptor = new byte[checked((int)length)];
         if (!GetKernelObjectSecurity(file, 4, descriptor, length, out _))
+        {
             throw NativeIOException("Could not read the workspace file permissions.");
+        }
+
         return descriptor;
     }
 
+    /// <summary>
+    /// Gets the directory handle.
+    /// </summary>
     private int DirectoryHandle => _directories[_directories.Count - 1].DangerousGetHandle().ToInt32();
 
     private void OpenDirectories(string parent)
@@ -259,20 +322,28 @@ public sealed class WorkspacePathLease : IDisposable
             return;
         }
 
-        int fd = OpenAt(-100, WorkspacePathGuard.GetUnixPathBytes(root), OpenDirectory | OpenNoFollow | OpenCloseOnExec, 0);
-        if (fd < 0) throw NativeIOException("Could not pin the filesystem root.");
+        int fd = OpenAt(-100, WorkspacePathGuard.GetUnixPathBytes(root), _openDirectory | _openNoFollow | _openCloseOnExec, 0);
+        if (fd < 0)
+        {
+            throw NativeIOException("Could not pin the filesystem root.");
+        }
+
         _directories.Add(new SafeFileHandle(new IntPtr(fd), ownsHandle: true));
         foreach (string part in parent.Substring(root.Length).Split(new[] { Path.DirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries))
         {
-            fd = OpenAt(DirectoryHandle, WorkspacePathGuard.GetUnixPathBytes(part), OpenDirectory | OpenNoFollow | OpenCloseOnExec, 0);
-            if (fd < 0) throw new UnauthorizedAccessException("The workspace path contains an inaccessible directory or symbolic link.", NativeIOException("Directory acquisition failed."));
+            fd = OpenAt(DirectoryHandle, WorkspacePathGuard.GetUnixPathBytes(part), _openDirectory | _openNoFollow | _openCloseOnExec, 0);
+            if (fd < 0)
+            {
+                throw new UnauthorizedAccessException("The workspace path contains an inaccessible directory or symbolic link.", NativeIOException("Directory acquisition failed."));
+            }
+
             _directories.Add(new SafeFileHandle(new IntPtr(fd), ownsHandle: true));
         }
     }
 
     private static SafeFileHandle OpenWindowsDirectory(string path)
     {
-        var handle = CreateFileW(WorkspacePathGuard.LongPathSafe(path), 0, 1, IntPtr.Zero, 3, BackupSemantics | OpenReparsePoint, IntPtr.Zero);
+        var handle = CreateFileW(WorkspacePathGuard.LongPathSafe(path), 0, 1, IntPtr.Zero, 3, _backupSemantics | _openReparsePoint, IntPtr.Zero);
         return VerifyWindowsHandle(handle, directory: true);
     }
 
@@ -280,7 +351,7 @@ public sealed class WorkspacePathLease : IDisposable
     {
         if (_windows)
         {
-            var handle = CreateFileW(WorkspacePathGuard.LongPathSafe(FullPath), GenericRead, document ? FileShareReadWrite : FileShareReadWriteDelete, IntPtr.Zero, 3, OpenReparsePoint, IntPtr.Zero);
+            var handle = CreateFileW(WorkspacePathGuard.LongPathSafe(FullPath), _genericRead, document ? _fileShareReadWrite : _fileShareReadWriteDelete, IntPtr.Zero, 3, _openReparsePoint, IntPtr.Zero);
             if (handle.IsInvalid && Marshal.GetLastWin32Error() == 2)
             {
                 handle.Dispose();
@@ -289,10 +360,14 @@ public sealed class WorkspacePathLease : IDisposable
             return VerifyWindowsHandle(handle, directory: false);
         }
 
-        int fd = OpenAt(DirectoryHandle, WorkspacePathGuard.GetUnixPathBytes(_leaf), OpenNoFollow | OpenCloseOnExec | OpenNonBlock, 0);
+        int fd = OpenAt(DirectoryHandle, WorkspacePathGuard.GetUnixPathBytes(_leaf), _openNoFollow | _openCloseOnExec | _openNonBlock, 0);
         if (fd < 0)
         {
-            if (Marshal.GetLastWin32Error() == 2) return null;
+            if (Marshal.GetLastWin32Error() == 2)
+            {
+                return null;
+            }
+
             throw new UnauthorizedAccessException("The workspace file cannot be opened without following a symbolic link.", NativeIOException("File acquisition failed."));
         }
         return new SafeFileHandle(new IntPtr(fd), ownsHandle: true);
@@ -320,35 +395,90 @@ public sealed class WorkspacePathLease : IDisposable
 
     private void ThrowIfDisposed()
     {
-        if (_disposed) throw new ObjectDisposedException(nameof(WorkspacePathLease));
+        if (_disposed)
+        {
+            throw new ObjectDisposedException(nameof(WorkspacePathLease));
+        }
     }
 
     public void Dispose()
     {
-        if (_disposed) return;
+        if (_disposed)
+        {
+            return;
+        }
+
         _disposed = true;
         _file?.Dispose();
-        for (int i = _directories.Count - 1; i >= 0; i--) _directories[i].Dispose();
+        for (int i = _directories.Count - 1; i >= 0; i--)
+        {
+            _directories[i].Dispose();
+        }
     }
 
-    private const uint GenericRead = 0x80000000;
-    private const uint BackupSemantics = 0x02000000;
-    private const uint OpenReparsePoint = 0x00200000;
-    private const uint FileShareReadWrite = 0x00000001 | 0x00000002;
-    private const uint FileShareReadWriteDelete = 0x00000001 | 0x00000002 | 0x00000004;
-    private const int OpenWriteOnly = 1;
-    private const int OpenCreate = 0x40;
-    private const int OpenExclusive = 0x80;
-    private const int OpenNonBlock = 0x800;
-    private const int OpenDirectory = 0x10000;
-    private const int OpenNoFollow = 0x20000;
-    private const int OpenCloseOnExec = 0x80000;
+    /// <summary>
+    /// The generic read.
+    /// </summary>
+    private const uint _genericRead = 0x80000000;
+    /// <summary>
+    /// The backup semantics.
+    /// </summary>
+    private const uint _backupSemantics = 0x02000000;
+    /// <summary>
+    /// The open reparse point.
+    /// </summary>
+    private const uint _openReparsePoint = 0x00200000;
+    /// <summary>
+    /// The file share read write.
+    /// </summary>
+    private const uint _fileShareReadWrite = 0x00000001 | 0x00000002;
+    /// <summary>
+    /// The file share read write delete.
+    /// </summary>
+    private const uint _fileShareReadWriteDelete = 0x00000001 | 0x00000002 | 0x00000004;
+    /// <summary>
+    /// The open write only.
+    /// </summary>
+    private const int _openWriteOnly = 1;
+    /// <summary>
+    /// The open create.
+    /// </summary>
+    private const int _openCreate = 0x40;
+    /// <summary>
+    /// The open exclusive.
+    /// </summary>
+    private const int _openExclusive = 0x80;
+    /// <summary>
+    /// The open non block.
+    /// </summary>
+    private const int _openNonBlock = 0x800;
+    /// <summary>
+    /// The open directory.
+    /// </summary>
+    private const int _openDirectory = 0x10000;
+    /// <summary>
+    /// The open no follow.
+    /// </summary>
+    private const int _openNoFollow = 0x20000;
+    /// <summary>
+    /// The open close on exec.
+    /// </summary>
+    private const int _openCloseOnExec = 0x80000;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct SecurityAttributes
     {
+        /// <summary>
+        /// The length.
+        /// </summary>
         public uint Length;
+        /// <summary>
+        /// The descriptor.
+        /// </summary>
         public IntPtr Descriptor;
+        /// <summary>
+        /// The inherit handle.
+        /// </summary>
         [MarshalAs(UnmanagedType.Bool)]
         public bool InheritHandle;
     }
@@ -356,15 +486,45 @@ public sealed class WorkspacePathLease : IDisposable
     [StructLayout(LayoutKind.Sequential)]
     private struct FileInformation
     {
+        /// <summary>
+        /// The attributes.
+        /// </summary>
         public uint Attributes;
+        /// <summary>
+        /// The creation time.
+        /// </summary>
         public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+        /// <summary>
+        /// The last access time.
+        /// </summary>
         public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+        /// <summary>
+        /// The last write time.
+        /// </summary>
         public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+        /// <summary>
+        /// The volume serial number.
+        /// </summary>
         public uint VolumeSerialNumber;
+        /// <summary>
+        /// The file size high.
+        /// </summary>
         public uint FileSizeHigh;
+        /// <summary>
+        /// The file size low.
+        /// </summary>
         public uint FileSizeLow;
+        /// <summary>
+        /// The number of links.
+        /// </summary>
         public uint NumberOfLinks;
+        /// <summary>
+        /// The file index high.
+        /// </summary>
         public uint FileIndexHigh;
+        /// <summary>
+        /// The file index low.
+        /// </summary>
         public uint FileIndexLow;
     }
 

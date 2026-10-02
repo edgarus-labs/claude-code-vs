@@ -135,10 +135,7 @@ public sealed class ElicitationRequestViewModelTests
     }
 
     [Fact]
-    public void Constructor_NullFields_ThrowsArgumentNullException()
-    {
-        Assert.Throws<ArgumentNullException>(() => new ElicitationRequestViewModel("Pick one", null!, _ => { }));
-    }
+    public void Constructor_NullFields_ThrowsArgumentNullException() => Assert.Throws<ArgumentNullException>(() => new ElicitationRequestViewModel("Pick one", null!, _ => { }));
 
     [Fact]
     public void Submit_DuplicateFieldKeys_AnswersWithTheLastFilledInField()
@@ -263,10 +260,7 @@ public sealed class ElicitationRequestViewModelTests
     }
 
     [Fact]
-    public void Constructor_NullFieldInsideTheForm_ThrowsArgumentNullException()
-    {
-        Assert.Throws<ArgumentNullException>(() => new ElicitationRequestViewModel("Pick one", [null!], _ => { }));
-    }
+    public void Constructor_NullFieldInsideTheForm_ThrowsArgumentNullException() => Assert.Throws<ArgumentNullException>(() => new ElicitationRequestViewModel("Pick one", [null!], _ => { }));
 
     [Fact]
     public void Constructor_AbsentTitleDescriptionAndOptionDescription_StayNull()

@@ -13,7 +13,6 @@ public sealed class ChatMessageViewModelTests
     private static ToolCallCardViewModel MakeCard(string id) =>
         new ToolCallCardViewModel(new ToolCallUpdate { ToolCallId = id, Title = id, Status = ToolCallStatus.Completed });
 
-
     [Fact]
     public void AppendText_MultipleChunks_ConcatenatesInOrder()
     {
@@ -165,10 +164,7 @@ public sealed class ChatMessageViewModelTests
     }
 
     [Fact]
-    public void Parts_EmptyConstructorText_SeedsNoPart()
-    {
-        Assert.Empty(new ChatMessageViewModel(ChatRole.Assistant).Parts);
-    }
+    public void Parts_EmptyConstructorText_SeedsNoPart() => Assert.Empty(new ChatMessageViewModel(ChatRole.Assistant).Parts);
 
     [Fact]
     public void AppendText_ManyChunks_AccumulatesWithoutRecopyingTheWholeMessage()
@@ -219,9 +215,9 @@ public sealed class ChatMessageViewModelTests
 
         var thoughts = message.Parts.OfType<ChatThinkingPart>().ToList();
         Assert.Equal(2, thoughts.Count);
-        Assert.EndsWith(MarkdownSafetyLimits.TruncationNotice, thoughts[1].Text, StringComparison.Ordinal);
+        Assert.EndsWith(MarkdownSafetyLimits._truncationNotice, thoughts[1].Text, StringComparison.Ordinal);
         Assert.Equal(MarkdownSafetyLimits.MaxMarkdownLength,
-            thoughts.Sum(part => part.Text.Length) - MarkdownSafetyLimits.TruncationNotice.Length);
+            thoughts.Sum(part => part.Text.Length) - MarkdownSafetyLimits._truncationNotice.Length);
         Assert.Equal(version, message.ThinkingVersion);
     }
 

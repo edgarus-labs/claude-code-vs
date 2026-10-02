@@ -15,12 +15,10 @@ public static class UsageServiceRules
     public static bool IsWithinBurstWindow(DateTimeOffset fetchedAt, DateTimeOffset now)
     {
         TimeSpan age = now - fetchedAt;
+
         return age >= TimeSpan.Zero && age < RefetchBurstWindow;
     }
 
     /// <summary>Clamps a limit's reported percentage to the 0-100 range.</summary>
-    public static int ClampPercent(int percent)
-    {
-        return Math.Max(0, Math.Min(100, percent));
-    }
+    public static int ClampPercent(int percent) => Math.Max(0, Math.Min(100, percent));
 }

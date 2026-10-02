@@ -31,9 +31,17 @@ public sealed class PlanToolWindowPane : ToolWindowPane
         _view.Plan = plan;
     }
 
+    /// <summary>
+    /// Asynchronously applies the new theme to the view and refreshes it, logging any errors that occur.
+    /// </summary>
+    /// <param name="e">The e.</param>
     private void OnThemeChanged(ThemeChangedEventArgs e)
     {
-        if (_disposed) return;
+        if (_disposed)
+        {
+            return;
+        }
+
         try
         {
             ThreadHelper.JoinableTaskFactory.Run(async () =>

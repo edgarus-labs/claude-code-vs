@@ -29,9 +29,15 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private SessionConfigValue? _selectedModel;
     private SessionConfigValue? _selectedEffort;
     private SessionConfigValue? _selectedMode;
-    private static readonly string[] AutoEffortValues =
+    private static readonly string[] _autoEffortValues =
         Enum.GetValues(typeof(EffortLevel)).Cast<EffortLevel>().Select(level => level.ToAgentValue()).ToArray();
+    /// <summary>
+    /// Gets the auto services.
+    /// </summary>
     private IAutoEffortServices? AutoServices => _services as IAutoEffortServices;
+    /// <summary>
+    /// Gets the error log.
+    /// </summary>
     private IChatErrorLog? ErrorLog => _services as IChatErrorLog;
     private readonly SessionConfigValue _autoEffort = new SessionConfigValue(
         "auto", "Auto", "Low, Medium or High for each message, judged per message");
@@ -49,14 +55,17 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private bool _isHistoryLoading;
     private string? _historyError;
     private string _historyFilter = string.Empty;
-    private List<SessionSummary> _allSessionHistory = new List<SessionSummary>();
-    private string _sessionTitle = UntitledSessionTitle;
+    private List<SessionSummary> _allSessionHistory = [];
+    private string _sessionTitle = _untitledSessionTitle;
     private long _sessionUsedTokens;
     private long _turnStartUsedTokens;
     private long? _turnTokens;
     private long? _contextWindowSize;
     private string? _explicitSessionTitle;
-    private const string UntitledSessionTitle = "Untitled";
+    /// <summary>
+    /// The untitled session title.
+    /// </summary>
+    private const string _untitledSessionTitle = "Untitled";
     private IReadOnlyList<AvailableCommand> _availableCommands = Array.Empty<AvailableCommand>();
     private Dictionary<string, IReadOnlyList<AvailableCommand>>? _pendingCommandCatalogs;
     private AvailableCommand? _selectedSlashSuggestion;
@@ -89,22 +98,34 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private bool _isAuthCommandRunning;
     private CancellationTokenSource? _authCommandCts;
 
-    private static readonly AvailableCommand LoginCommand =
+    private static readonly AvailableCommand _loginCommand =
         new AvailableCommand("login", "Sign in to Claude Code (opens a console and your browser)");
-    private static readonly AvailableCommand LogoutCommand =
+    private static readonly AvailableCommand _logoutCommand =
         new AvailableCommand("logout", "Sign out of Claude Code everywhere on this machine");
-    private static readonly IReadOnlyList<AvailableCommand> ClientCommands = new[] { LoginCommand, LogoutCommand };
+    private static readonly IReadOnlyList<AvailableCommand> _clientCommands = new[] { _loginCommand, _logoutCommand };
 
-    private const long MaxImageAttachmentBytes = 5L * 1024 * 1024;
-    private const long MaxDocumentAttachmentBytes = 1L * 1024 * 1024;
-    private const int UsageWarningThresholdPercent = 75;
-    private static readonly TimeSpan UsagePollInterval = TimeSpan.FromMinutes(5);
-    private static readonly TimeSpan UsagePollRetryInterval = TimeSpan.FromSeconds(15);
+    /// <summary>
+    /// The max image attachment bytes.
+    /// </summary>
+    private const long _maxImageAttachmentBytes = 5L * 1024 * 1024;
+    /// <summary>
+    /// The max document attachment bytes.
+    /// </summary>
+    private const long _maxDocumentAttachmentBytes = 1L * 1024 * 1024;
+    /// <summary>
+    /// The usage warning threshold percent.
+    /// </summary>
+    private const int _usageWarningThresholdPercent = 75;
+    private static readonly TimeSpan _usagePollInterval = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan _usagePollRetryInterval = TimeSpan.FromSeconds(15);
 
-    private const int UsagePollFastRetries = 4;
+    /// <summary>
+    /// The usage poll fast retries.
+    /// </summary>
+    private const int _usagePollFastRetries = 4;
 
     internal static TimeSpan NextUsagePollDelay(int consecutiveFailures) =>
-        consecutiveFailures > 0 && consecutiveFailures <= UsagePollFastRetries ? UsagePollRetryInterval : UsagePollInterval;
+        consecutiveFailures > 0 && consecutiveFailures <= _usagePollFastRetries ? _usagePollRetryInterval : _usagePollInterval;
 
     private static readonly IReadOnlyDictionary<string, IReadOnlyList<string>> _emptyElicitationContent =
         new Dictionary<string, IReadOnlyList<string>>();
@@ -137,7 +158,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         Attachments.CollectionChanged += (_, __) => SendCommand.NotifyCanExecuteChanged();
         AcceptAllChangesCommand = new AsyncRelayCommand(() => OnUiAsync(async () =>
         {
-            foreach (var file in ChangedFiles.ToList()) await AcceptChangeAsync(file).ConfigureAwait(true);
+            foreach (var file in ChangedFiles.ToList())
+            {
+                await AcceptChangeAsync(file).ConfigureAwait(true);
+            }
         }), () => ChangedFiles.Count > 0);
         RejectAllChangesCommand = new AsyncRelayCommand(() => OnUiAsync(RejectAllChangesAsync), () => ChangedFiles.Count > 0);
         ChangedFiles.CollectionChanged += (_, __) =>
@@ -156,31 +180,109 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         _ = UsagePollingLoopAsync();
     }
 
+    /// <summary>
+    /// Gets the messages.
+    /// </summary>
     public ObservableCollection<ChatMessageViewModel> Messages { get; } = new ObservableCollection<ChatMessageViewModel>();
+    /// <summary>
+    /// Gets the attachments.
+    /// </summary>
     public ObservableCollection<ChatAttachmentViewModel> Attachments { get; } = new ObservableCollection<ChatAttachmentViewModel>();
+    /// <summary>
+    /// Gets the available models.
+    /// </summary>
     public ObservableCollection<SessionConfigValue> AvailableModels { get; } = new ObservableCollection<SessionConfigValue>();
+    /// <summary>
+    /// Gets the available efforts.
+    /// </summary>
     public ObservableCollection<SessionConfigValue> AvailableEfforts { get; } = new ObservableCollection<SessionConfigValue>();
+    /// <summary>
+    /// Gets the available modes.
+    /// </summary>
     public ObservableCollection<SessionConfigValue> AvailableModes { get; } = new ObservableCollection<SessionConfigValue>();
+    /// <summary>
+    /// Gets the slash suggestions.
+    /// </summary>
     public ObservableCollection<AvailableCommand> SlashSuggestions { get; } = new ObservableCollection<AvailableCommand>();
+    /// <summary>
+    /// Gets the session history.
+    /// </summary>
     public ObservableCollection<SessionSummary> SessionHistory { get; } = new ObservableCollection<SessionSummary>();
+    /// <summary>
+    /// Gets the changed files.
+    /// </summary>
     public ObservableCollection<ChangedFileViewModel> ChangedFiles { get; } = new ObservableCollection<ChangedFileViewModel>();
+    /// <summary>
+    /// Gets the accept all changes command.
+    /// </summary>
     public IAsyncRelayCommand AcceptAllChangesCommand { get; }
+    /// <summary>
+    /// Gets the reject all changes command.
+    /// </summary>
     public IAsyncRelayCommand RejectAllChangesCommand { get; }
+    /// <summary>
+    /// Gets the open changed file command.
+    /// </summary>
     public IAsyncRelayCommand<ChangedFileViewModel> OpenChangedFileCommand { get; }
+    /// <summary>
+    /// Gets the send command.
+    /// </summary>
     public IAsyncRelayCommand SendCommand { get; }
+    /// <summary>
+    /// Gets the cancel command.
+    /// </summary>
     public IAsyncRelayCommand CancelCommand { get; }
+    /// <summary>
+    /// Gets the sign in command.
+    /// </summary>
     public IAsyncRelayCommand SignInCommand { get; }
+    /// <summary>
+    /// Gets the new session command.
+    /// </summary>
     public IAsyncRelayCommand NewSessionCommand { get; }
+    /// <summary>
+    /// Gets the show history command.
+    /// </summary>
     public IAsyncRelayCommand ShowHistoryCommand { get; }
+    /// <summary>
+    /// Gets the open session command.
+    /// </summary>
     public IAsyncRelayCommand<SessionSummary> OpenSessionCommand { get; }
+    /// <summary>
+    /// Gets the remove attachment command.
+    /// </summary>
     public IRelayCommand<ChatAttachmentViewModel> RemoveAttachmentCommand { get; }
+    /// <summary>
+    /// Gets the attach active document command.
+    /// </summary>
     public IAsyncRelayCommand AttachActiveDocumentCommand { get; }
+    /// <summary>
+    /// Gets the apply slash suggestion command.
+    /// </summary>
     public IRelayCommand<AvailableCommand> ApplySlashSuggestionCommand { get; }
+    /// <summary>
+    /// Gets the toggle remote control command.
+    /// </summary>
     public IAsyncRelayCommand ToggleRemoteControlCommand { get; }
+    /// <summary>
+    /// Gets the open usage panel command.
+    /// </summary>
     public IRelayCommand OpenUsagePanelCommand { get; }
+    /// <summary>
+    /// Gets the close usage panel command.
+    /// </summary>
     public IRelayCommand CloseUsagePanelCommand { get; }
+    /// <summary>
+    /// Gets the dismiss usage warning command.
+    /// </summary>
     public IRelayCommand DismissUsageWarningCommand { get; }
+    /// <summary>
+    /// Gets the cancel auth command.
+    /// </summary>
     public IRelayCommand CancelAuthCommand { get; }
+    /// <summary>
+    /// Gets the initialization.
+    /// </summary>
     public Task Initialization { get; }
 
     /// <summary>True while a client-side /login or /logout console command is running.</summary>
@@ -208,12 +310,18 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         private set => SetProperty(ref _isRemoteControlEnabled, value);
     }
 
+    /// <summary>
+    /// Gets or sets a value indicating whether is remote control busy.
+    /// </summary>
     public bool IsRemoteControlBusy
     {
         get => _isRemoteControlBusy;
         private set
         {
-            if (SetProperty(ref _isRemoteControlBusy, value)) ToggleRemoteControlCommand.NotifyCanExecuteChanged();
+            if (SetProperty(ref _isRemoteControlBusy, value))
+            {
+                ToggleRemoteControlCommand.NotifyCanExecuteChanged();
+            }
         }
     }
 
@@ -230,15 +338,27 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         var connection = _connection;
         var sessionId = _sessionId;
-        if (connection is null || sessionId is null || _isRemoteControlBusy || _disposed) return;
+        if (connection is null || sessionId is null || _isRemoteControlBusy || _disposed)
+        {
+            return;
+        }
+
         IsRemoteControlBusy = true;
         try
         {
             var state = await connection.SetRemoteControlAsync(sessionId, enabled, RemoteControlSessionName, _lifetime.Token).ConfigureAwait(true);
-            if (_disposed || !ReferenceEquals(connection, _connection)) return;
+            if (_disposed || !ReferenceEquals(connection, _connection))
+            {
+                return;
+            }
+
             if (sessionId != _sessionId)
             {
-                if (state.Enabled) _ = TryDisableRemoteControlAsync(connection, sessionId);
+                if (state.Enabled)
+                {
+                    _ = TryDisableRemoteControlAsync(connection, sessionId);
+                }
+
                 return;
             }
             IsRemoteControlEnabled = state.Enabled;
@@ -248,7 +368,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex)
         {
-            if (!_disposed && ReferenceEquals(connection, _connection) && sessionId == _sessionId) StatusMessage = $"Remote Control: {ex.Message}";
+            if (!_disposed && ReferenceEquals(connection, _connection) && sessionId == _sessionId)
+            {
+                StatusMessage = $"Remote Control: {ex.Message}";
+            }
         }
         finally
         {
@@ -276,7 +399,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task LeaveRemoteControlAsync(IAcpAgentConnection connection, string sessionId)
     {
-        if (!IsRemoteControlEnabled) return;
+        if (!IsRemoteControlEnabled)
+        {
+            return;
+        }
+
         if (await TryDisableRemoteControlAsync(connection, sessionId).ConfigureAwait(true) && !_disposed && sessionId == _sessionId)
         {
             IsRemoteControlEnabled = false;
@@ -284,6 +411,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>
+    /// Gets the remote control session name.
+    /// </summary>
     private string RemoteControlSessionName
     {
         get
@@ -300,9 +430,15 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         NotifySelectionsChanged();
         IsRemoteControlEnabled = false;
         RemoteControlUrl = null;
-        if (_services.RemoteControlAtStartup) _ = SetRemoteControlAsync(true);
+        if (_services.RemoteControlAtStartup)
+        {
+            _ = SetRemoteControlAsync(true);
+        }
     }
 
+    /// <summary>
+    /// Gets or sets the input text.
+    /// </summary>
     public string InputText
     {
         get => _inputText;
@@ -317,104 +453,199 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>
+    /// Gets or sets a value indicating whether is busy.
+    /// </summary>
     public bool IsBusy
     {
         get => _isBusy;
-        private set { if (SetProperty(ref _isBusy, value)) NotifyStateChanged(); }
+        private set { if (SetProperty(ref _isBusy, value))
+            {
+                NotifyStateChanged();
+            }
+        }
     }
 
+    /// <summary>
+    /// Gets or sets a value indicating whether is connecting.
+    /// </summary>
     public bool IsConnecting
     {
         get => _isConnecting;
-        private set { if (SetProperty(ref _isConnecting, value)) NotifyStateChanged(); }
+        private set { if (SetProperty(ref _isConnecting, value))
+            {
+                NotifyStateChanged();
+            }
+        }
     }
 
+    /// <summary>
+    /// Gets or sets a value indicating whether is config busy.
+    /// </summary>
     public bool IsConfigBusy
     {
         get => _isConfigBusy;
-        private set { if (SetProperty(ref _isConfigBusy, value)) NotifyStateChanged(); }
+        private set { if (SetProperty(ref _isConfigBusy, value))
+            {
+                NotifyStateChanged();
+            }
+        }
     }
 
+    /// <summary>
+    /// Gets or sets a value indicating whether is signed in.
+    /// </summary>
     public bool IsSignedIn
     {
         get => _isSignedIn;
-        private set { if (SetProperty(ref _isSignedIn, value)) NotifyStateChanged(); }
+        private set { if (SetProperty(ref _isSignedIn, value))
+            {
+                NotifyStateChanged();
+            }
+        }
     }
 
+    /// <summary>
+    /// Gets or sets a value indicating whether needs authentication.
+    /// </summary>
     public bool NeedsAuthentication
     {
         get => _needsAuthentication;
-        private set { if (SetProperty(ref _needsAuthentication, value)) NotifyStateChanged(); }
+        private set { if (SetProperty(ref _needsAuthentication, value))
+            {
+                NotifyStateChanged();
+            }
+        }
     }
 
+    /// <summary>
+    /// Gets a value indicating whether can edit draft.
+    /// </summary>
     private bool CanEditDraft => CanQueueOrSendDraft && !IsBusy;
 
+    /// <summary>
+    /// Gets a value indicating whether can show slash popup.
+    /// </summary>
     private bool CanShowSlashPopup => !_disposed && !IsBusy && !_isSwitchingSession;
 
+    /// <summary>
+    /// Gets a value indicating whether can queue or send draft.
+    /// </summary>
     private bool CanQueueOrSendDraft => !_disposed && !NeedsAuthentication && !IsConnecting
         && !IsConfigBusy && !_isSwitchingSession;
 
+    /// <summary>
+    /// Gets the workspace cwd.
+    /// </summary>
     private string WorkspaceCwd => _services.WorkspaceRoot ?? Environment.CurrentDirectory;
 
+    /// <summary>
+    /// Gets a value indicating whether can configure.
+    /// </summary>
     public bool CanConfigure => !_disposed && !NeedsAuthentication && !IsConnecting && !IsConfigBusy && !_isJudgingEffort &&
         !_isCapturingDocument && !_isSwitchingSession && _sessionId is not null;
+    /// <summary>
+    /// Gets a value indicating whether has effort.
+    /// </summary>
     public bool HasEffort => AvailableEfforts.Count > 0;
+    /// <summary>
+    /// Gets a value indicating whether has modes.
+    /// </summary>
     public bool HasModes => AvailableModes.Count > 0;
+    /// <summary>
+    /// Gets the active model name.
+    /// </summary>
     public string ActiveModelName => _selectedModel?.Name ?? "Model unavailable";
+    /// <summary>
+    /// Gets the active effort name.
+    /// </summary>
     public string ActiveEffortName => !_isAutoEffort ? _selectedEffort?.Name ?? string.Empty
         : _selectedEffort is { } inEffect && inEffect.Value == _autoEffortSetTo ? _autoEffort.Name + " · " + inEffect.Name
         : _autoEffort.Name;
+    /// <summary>
+    /// Gets the model effort label.
+    /// </summary>
     public string ModelEffortLabel => HasEffort && ActiveEffortName.Length > 0 ? ActiveModelName + " · " + ActiveEffortName : ActiveModelName;
+    /// <summary>
+    /// Gets the active mode name.
+    /// </summary>
     public string ActiveModeName => _selectedMode?.Name ?? "Mode unavailable";
 
+    /// <summary>
+    /// Gets or sets the selected model.
+    /// </summary>
     public SessionConfigValue? SelectedModel
     {
         get => _selectedModel;
         set => _ = SelectModelAsync(value);
     }
 
+    /// <summary>
+    /// Gets or sets the selected effort.
+    /// </summary>
     public SessionConfigValue? SelectedEffort
     {
         get => _isAutoEffort ? _autoEffort : _selectedEffort;
         set => _ = SelectEffortAsync(value);
     }
 
+    /// <summary>
+    /// Gets or sets the selected mode.
+    /// </summary>
     public SessionConfigValue? SelectedMode
     {
         get => _selectedMode;
         set => _ = SelectModeAsync(value);
     }
 
+    /// <summary>
+    /// Gets or sets the status message.
+    /// </summary>
     public string? StatusMessage
     {
         get => _statusMessage;
         private set => SetProperty(ref _statusMessage, value);
     }
 
+    /// <summary>
+    /// Gets or sets the attachment error.
+    /// </summary>
     public string? AttachmentError
     {
         get => _attachmentError;
         set => SetProperty(ref _attachmentError, value);
     }
 
+    /// <summary>
+    /// Gets or sets a value indicating whether is history open.
+    /// </summary>
     public bool IsHistoryOpen
     {
         get => _isHistoryOpen;
         private set => SetProperty(ref _isHistoryOpen, value);
     }
 
+    /// <summary>
+    /// Gets or sets a value indicating whether is history loading.
+    /// </summary>
     public bool IsHistoryLoading
     {
         get => _isHistoryLoading;
         private set => SetProperty(ref _isHistoryLoading, value);
     }
 
+    /// <summary>
+    /// Gets or sets the history error.
+    /// </summary>
     public string? HistoryError
     {
         get => _historyError;
         private set => SetProperty(ref _historyError, value);
     }
 
+    /// <summary>
+    /// Gets or sets the session title.
+    /// </summary>
     public string SessionTitle
     {
         get => _sessionTitle;
@@ -429,8 +660,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         private set => SetProperty(ref _turnTokens, value);
     }
 
+    /// <summary>
+    /// Gets the session used tokens.
+    /// </summary>
     public long SessionUsedTokens => _sessionUsedTokens;
 
+    /// <summary>
+    /// Gets the context window size.
+    /// </summary>
     public long? ContextWindowSize => _contextWindowSize;
 
     /// <summary>How full the context window is, 0–100, or null until the agent reports both numbers.</summary>
@@ -438,6 +675,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         ? (int)Math.Min(100, Math.Round(100.0 * _sessionUsedTokens / size))
         : null;
 
+    /// <summary>
+    /// Gets the context usage label.
+    /// </summary>
     public string ContextUsageLabel => _contextWindowSize is long size && size > 0
         ? $"Context: {FormatTokens(_sessionUsedTokens)} / {FormatTokens(size)} ({ContextUsagePercent}%)"
         : "Context usage unknown";
@@ -449,7 +689,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private void UpdateSessionTitleFromFirstUserMessage()
     {
-        if (_explicitSessionTitle is null && FirstUserMessageTitle() is { } title) SessionTitle = title;
+        if (_explicitSessionTitle is null && FirstUserMessageTitle() is { } title)
+        {
+            SessionTitle = title;
+        }
     }
 
     private string? FirstUserMessageTitle() =>
@@ -459,12 +702,18 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private static string? NormalizeSessionTitle(string? title) =>
         SessionTitleFormat.Describe(title, sessionId: null) is { Length: > 0 } normalized ? normalized : null;
 
+    /// <summary>
+    /// Gets or sets the history filter.
+    /// </summary>
     public string HistoryFilter
     {
         get => _historyFilter;
         set
         {
-            if (SetProperty(ref _historyFilter, value ?? string.Empty)) RefreshHistoryFilter();
+            if (SetProperty(ref _historyFilter, value ?? string.Empty))
+            {
+                RefreshHistoryFilter();
+            }
         }
     }
 
@@ -525,7 +774,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         Usage = snapshot;
 
         UsageLimit? top = snapshot.Limits
-            .Where(limit => limit.Percent >= UsageWarningThresholdPercent)
+            .Where(limit => limit.Percent >= _usageWarningThresholdPercent)
             .OrderByDescending(limit => limit.Percent)
             .FirstOrDefault();
         if (top is null)
@@ -561,7 +810,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
 
         string? resetText = limit.ResetsAt is DateTimeOffset resetsAt ? FormatResetsAtLabel(resetsAt) : null;
-        return new UsageLimitDisplay(label, limit.Percent, resetText, limit.Percent >= UsageWarningThresholdPercent);
+        return new UsageLimitDisplay(label, limit.Percent, resetText, limit.Percent >= _usageWarningThresholdPercent);
     }
 
     private static string FormatUsageWarningMessage(UsageLimit limit)
@@ -580,9 +829,21 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private static string FormatResetsInLabel(DateTimeOffset resetsAt)
     {
         TimeSpan remaining = resetsAt - DateTimeOffset.UtcNow;
-        if (remaining <= TimeSpan.Zero) return "resets soon";
-        if (remaining.TotalDays >= 1) return $"resets in {(int)remaining.TotalDays}d";
-        if (remaining.TotalHours >= 1) return $"resets in {(int)remaining.TotalHours}h";
+        if (remaining <= TimeSpan.Zero)
+        {
+            return "resets soon";
+        }
+
+        if (remaining.TotalDays >= 1)
+        {
+            return $"resets in {(int)remaining.TotalDays}d";
+        }
+
+        if (remaining.TotalHours >= 1)
+        {
+            return $"resets in {(int)remaining.TotalHours}h";
+        }
+
         return $"resets in {Math.Max(1, (int)remaining.TotalMinutes)}m";
     }
 
@@ -595,48 +856,76 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             : $"Resets {local:dddd} {local:t}";
     }
 
+    /// <summary>
+    /// Gets or sets the activity text.
+    /// </summary>
     public string ActivityText
     {
         get => _activityText;
         private set => SetProperty(ref _activityText, value);
     }
 
+    /// <summary>
+    /// Gets or sets the selected slash suggestion.
+    /// </summary>
     public AvailableCommand? SelectedSlashSuggestion
     {
         get => _selectedSlashSuggestion;
         set => SetProperty(ref _selectedSlashSuggestion, value);
     }
 
+    /// <summary>
+    /// Gets or sets a value indicating whether are slash suggestions visible.
+    /// </summary>
     public bool AreSlashSuggestionsVisible
     {
         get => _areSlashSuggestionsVisible;
         private set => SetProperty(ref _areSlashSuggestionsVisible, value);
     }
 
+    /// <summary>
+    /// Gets or sets the command catalog status.
+    /// </summary>
     public string CommandCatalogStatus
     {
         get => _commandCatalogStatus;
         private set => SetProperty(ref _commandCatalogStatus, value);
     }
 
+    /// <summary>
+    /// Gets or sets the current plan.
+    /// </summary>
     public PlanViewModel? CurrentPlan
     {
         get => _currentPlan;
         private set => SetProperty(ref _currentPlan, value);
     }
 
+    /// <summary>
+    /// Gets or sets the pending permission.
+    /// </summary>
     public PermissionRequestViewModel? PendingPermission
     {
         get => _pendingPermission;
         private set => SetProperty(ref _pendingPermission, value);
     }
 
+    /// <summary>
+    /// Gets or sets the pending elicitation.
+    /// </summary>
     public ElicitationRequestViewModel? PendingElicitation
     {
         get => _pendingElicitation;
-        private set { if (SetProperty(ref _pendingElicitation, value)) OnPropertyChanged(nameof(IsElicitationOpen)); }
+        private set { if (SetProperty(ref _pendingElicitation, value))
+            {
+                OnPropertyChanged(nameof(IsElicitationOpen));
+            }
+        }
     }
 
+    /// <summary>
+    /// Gets a value indicating whether is elicitation open.
+    /// </summary>
     public bool IsElicitationOpen => _pendingElicitation is not null;
 
     /// <summary>Raw usage snapshot; null until the first usage fetch succeeds.</summary>
@@ -654,8 +943,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>
+    /// Gets the session usage.
+    /// </summary>
     public UsageLimitDisplay? SessionUsage => BuildUsageDisplay("Current session", limit => limit.Kind == "session");
 
+    /// <summary>
+    /// Gets the weekly usage.
+    /// </summary>
     public UsageLimitDisplay? WeeklyUsage => BuildUsageDisplay("This week", limit => limit.Kind == "weekly_all");
 
     /// <summary>The agent's <c>weekly_scoped</c> limit, labelled with the scope the agent named.</summary>
@@ -663,18 +958,27 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         (_usage?.Limits.FirstOrDefault(limit => limit.Kind == "weekly_scoped")?.ScopeLabel ?? "Scoped") + " this week",
         limit => limit.Kind == "weekly_scoped");
 
+    /// <summary>
+    /// Gets or sets the usage warning.
+    /// </summary>
     public UsageWarningViewModel? UsageWarning
     {
         get => _usageWarning;
         private set => SetProperty(ref _usageWarning, value);
     }
 
+    /// <summary>
+    /// Gets or sets a value indicating whether is usage panel open.
+    /// </summary>
     public bool IsUsagePanelOpen
     {
         get => _isUsagePanelOpen;
         set
         {
-            if (SetProperty(ref _isUsagePanelOpen, value) && value) _ = RefreshUsageAsync();
+            if (SetProperty(ref _isUsagePanelOpen, value) && value)
+            {
+                _ = RefreshUsageAsync();
+            }
         }
     }
 
@@ -683,7 +987,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         try
         {
             UsageSnapshot? snapshot = await _services.UsageService.GetUsageAsync(_lifetime.Token).ConfigureAwait(false);
-            if (snapshot is not null && !_disposed) RunOnUi(() => ApplyUsageSnapshot(snapshot));
+            if (snapshot is not null && !_disposed)
+            {
+                RunOnUi(() => ApplyUsageSnapshot(snapshot));
+            }
         }
         catch
         {
@@ -692,14 +999,29 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     public void AddImageAttachment(string name, string mimeType, string base64Data)
     {
-        if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("An image name is required.", nameof(name));
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            throw new ArgumentException("An image name is required.", nameof(name));
+        }
+
         if (string.IsNullOrWhiteSpace(mimeType) || !mimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+        {
             throw new ArgumentException("An image media type is required.", nameof(mimeType));
-        if (string.IsNullOrWhiteSpace(base64Data)) throw new ArgumentException("Image data is required.", nameof(base64Data));
+        }
+
+        if (string.IsNullOrWhiteSpace(base64Data))
+        {
+            throw new ArgumentException("Image data is required.", nameof(base64Data));
+        }
+
         RunOnUi(() =>
         {
-            if (!CanEditDraft) return;
-            if (EstimateBase64ByteLength(base64Data) > MaxImageAttachmentBytes)
+            if (!CanEditDraft)
+            {
+                return;
+            }
+
+            if (EstimateBase64ByteLength(base64Data) > _maxImageAttachmentBytes)
             {
                 AttachmentError = "Image exceeds the 5 MB attachment limit.";
                 return;
@@ -713,16 +1035,28 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private void OnActiveDocumentChanged(object? sender, EventArgs e) => RunOnUi(() =>
     {
-        if (_disposed) return;
+        if (_disposed)
+        {
+            return;
+        }
+
         AttachActiveDocumentCommand.NotifyCanExecuteChanged();
         OnPropertyChanged(nameof(HasActiveDocument));
     });
 
     private void OnWorkspaceRootChanged(object? sender, EventArgs e) => RunOnUi(() =>
     {
-        if (_disposed) return;
+        if (_disposed)
+        {
+            return;
+        }
+
         var root = TryReadWorkspaceRoot();
-        if (root is null || string.Equals(root, _workspaceRoot, StringComparison.OrdinalIgnoreCase)) return;
+        if (root is null || string.Equals(root, _workspaceRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
         _workspaceRoot = root;
         _ = SwitchWorkspaceAsync();
     });
@@ -735,7 +1069,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         try
         {
             await ReleaseConnectionAsync().ConfigureAwait(true);
-            if (_disposed) return;
+            if (_disposed)
+            {
+                return;
+            }
+
             ResetTranscriptState();
             await InitializeCoreAsync(_lifetime.Token).ConfigureAwait(true);
         }
@@ -743,7 +1081,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         catch (Exception ex)
         {
             _workspaceRoot = null;
-            if (!_disposed) StatusMessage = $"Could not switch to the new workspace: {ex.Message}";
+            if (!_disposed)
+            {
+                StatusMessage = $"Could not switch to the new workspace: {ex.Message}";
+            }
         }
         finally
         {
@@ -758,6 +1099,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         catch { return null; }
     }
 
+    /// <summary>
+    /// Gets a value indicating whether has active document.
+    /// </summary>
     public bool HasActiveDocument => _services.HasActiveDocument;
 
     public void DismissAttachmentError() => RunOnUi(() => AttachmentError = null);
@@ -767,7 +1111,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task AttachActiveDocumentCoreAsync(CancellationToken cancellationToken)
     {
-        if (!CanEditDraft || _isCapturingDocument) return;
+        if (!CanEditDraft || _isCapturingDocument)
+        {
+            return;
+        }
+
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
         _isCapturingDocument = true;
         try
@@ -789,13 +1137,17 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         {
             var document = await _services.CaptureActiveDocumentAsync(cancellationToken).ConfigureAwait(true);
             cancellationToken.ThrowIfCancellationRequested();
-            if (!CanEditDraft) return;
+            if (!CanEditDraft)
+            {
+                return;
+            }
+
             if (document is null)
             {
                 AttachmentError = "Open a text document in the editor before attaching it.";
                 return;
             }
-            if (Encoding.UTF8.GetByteCount(document.Text) > MaxDocumentAttachmentBytes)
+            if (Encoding.UTF8.GetByteCount(document.Text) > _maxDocumentAttachmentBytes)
             {
                 AttachmentError = "Document exceeds the 1 MB attachment limit.";
                 return;
@@ -816,7 +1168,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         catch (Exception ex)
         {
             LogFailure("Attaching the active document failed.", ex);
-            if (!_disposed) AttachmentError = $"Could not attach the active document: {ex.Message}";
+            if (!_disposed)
+            {
+                AttachmentError = $"Could not attach the active document: {ex.Message}";
+            }
         }
     }
 
@@ -828,7 +1183,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private void ApplySlashSuggestion(AvailableCommand? command)
     {
-        if (!CanShowSlashPopup || !AreSlashSuggestionsVisible || command is null || !SlashSuggestions.Contains(command)) return;
+        if (!CanShowSlashPopup || !AreSlashSuggestionsVisible || command is null || !SlashSuggestions.Contains(command))
+        {
+            return;
+        }
+
         InputText = "/" + command.Name + " ";
     }
 
@@ -839,6 +1198,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         RefreshSlashSuggestions();
     }
 
+    /// <summary>
+    /// Gets a value indicating whether is slash token.
+    /// </summary>
     private bool IsSlashToken => InputText.StartsWith("/", StringComparison.Ordinal) && !InputText.Any(char.IsWhiteSpace);
 
     private void RefreshSlashSuggestions()
@@ -849,8 +1211,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         if (isSlashToken)
         {
             var prefix = InputText.Substring(1);
-            foreach (var command in _availableCommands.Concat(ClientCommands))
-                if (command.Name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) SlashSuggestions.Add(command);
+            foreach (var command in _availableCommands.Concat(_clientCommands))
+            {
+                if (command.Name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    SlashSuggestions.Add(command);
+                }
+            }
         }
         SelectedSlashSuggestion = SlashSuggestions.FirstOrDefault(command => command.Name == selectedName)
             ?? SlashSuggestions.FirstOrDefault();
@@ -872,7 +1239,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private void UpdateActivity(string activity)
     {
-        if (IsBusy) ActivityText = PendingPermission is null ? activity : "Waiting for permission…";
+        if (IsBusy)
+        {
+            ActivityText = PendingPermission is null ? activity : "Waiting for permission…";
+        }
     }
 
     public Task SelectModelAsync(SessionConfigValue? value) => OnUiAsync(() => RunReportingFailuresAsync(() => ChangeConfigAsync(_modelOption, value)));
@@ -923,7 +1293,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private async Task<bool> ApplyAutoEffortAsync(IAcpAgentConnection connection, string sessionId, string prompt)
     {
         var classifier = AutoServices?.EffortClassifier;
-        if (classifier is null) return true;
+        if (classifier is null)
+        {
+            return true;
+        }
+
         _isJudgingEffort = true;
         NotifyStateChanged();
         var previousActivity = ActivityText;
@@ -940,7 +1314,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 {
                     judged = await classifier.ClassifyAsync(prompt, stop.Token).ConfigureAwait(true);
                     if (judged is { } verdict && !Enum.IsDefined(typeof(EffortLevel), verdict))
+                    {
                         throw new System.IO.InvalidDataException("The effort judge returned an unknown level (" + (int)verdict + ").");
+                    }
                 }
                 catch (OperationCanceledException) when (stop.IsCancellationRequested) { return false; }
                 catch (Exception ex)
@@ -949,17 +1325,40 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                     failure = Describe(ex);
                     LogFailure("Auto effort could not judge a message.", ex);
                 }
-                if (stop.IsCancellationRequested) return false;
+                if (stop.IsCancellationRequested)
+                {
+                    return false;
+                }
             }
 
-            if (!IsCurrentSession(connection, sessionId)) return false;
+            if (!IsCurrentSession(connection, sessionId))
+            {
+                return false;
+            }
+
             EffortLevel level = judged ?? _lastAutoEffort ?? EffortLevel.High;
-            if (judged is not null) _lastAutoEffort = level;
-            if (failure is not null) StatusMessage = $"Auto effort could not judge this message, so it runs at {level}: {failure}";
+            if (judged is not null)
+            {
+                _lastAutoEffort = level;
+            }
+
+            if (failure is not null)
+            {
+                StatusMessage = $"Auto effort could not judge this message, so it runs at {level}: {failure}";
+            }
+
             var option = _effortOption;
-            if (option is null) return true;
+            if (option is null)
+            {
+                return true;
+            }
+
             var value = level.ToAgentValue();
-            if (!option.Options.Any(candidate => candidate.Value == value)) return true;
+            if (!option.Options.Any(candidate => candidate.Value == value))
+            {
+                return true;
+            }
+
             if (option.CurrentValue != value)
             {
                 IReadOnlyList<SessionConfigOption> options;
@@ -971,7 +1370,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 {
                     throw new InvalidOperationException($"Auto effort could not set the effort to {value}: {Describe(ex)}", ex);
                 }
-                if (!IsCurrentSession(connection, sessionId)) return false;
+                if (!IsCurrentSession(connection, sessionId))
+                {
+                    return false;
+                }
+
                 ApplyConfigOptions(options);
             }
             _autoEffortSetTo = value;
@@ -980,7 +1383,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         finally
         {
             _autoEffortStop = null;
-            if (!_disposed) ActivityText = previousActivity;
+            if (!_disposed)
+            {
+                ActivityText = previousActivity;
+            }
+
             _isJudgingEffort = false;
             NotifyStateChanged();
             NotifySelectionsChanged();
@@ -1010,13 +1417,18 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             StatusMessage = null;
             var options = await connection.SetSessionConfigOptionAsync(sessionId, option.Id, value.Value, _lifetime.Token).ConfigureAwait(true);
             if (IsCurrentSession(connection, sessionId))
+            {
                 ApplyConfigOptions(options);
+            }
         }
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex)
         {
             LogFailure("Changing a session setting failed.", ex);
-            if (!_disposed) StatusMessage = $"Could not change session settings: {ex.Message}";
+            if (!_disposed)
+            {
+                StatusMessage = $"Could not change session settings: {ex.Message}";
+            }
         }
         finally
         {
@@ -1024,7 +1436,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 () => IsConfigBusy = false,
                 NotifySelectionsChanged,
                 SendPendingPlanReview,
-                () => { if (!_isPickingEffort) DispatchNextQueuedMessage(); });
+                () => { if (!_isPickingEffort) { DispatchNextQueuedMessage(); } });
         }
     }
 
@@ -1032,23 +1444,40 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task InitializeCoreAsync(CancellationToken cancellationToken)
     {
-        if (_disposed) return;
+        if (_disposed)
+        {
+            return;
+        }
+
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
         IsConnecting = true;
         try
         {
             var signedIn = await _services.AuthService.IsSignedInAsync(linked.Token).ConfigureAwait(true);
-            if (_disposed) return;
+            if (_disposed)
+            {
+                return;
+            }
+
             IsSignedIn = signedIn || (_sessionId is not null && _services.AuthService.CurrentState != AuthState.SignedOut);
             NeedsAuthentication = !signedIn && _services.AuthService.CurrentState == AuthState.SignedOut;
-            if (!NeedsAuthentication) await EnsureConnectedAsync(linked.Token).ConfigureAwait(true);
-            else await ReleaseConnectionAsync().ConfigureAwait(true);
+            if (!NeedsAuthentication)
+            {
+                await EnsureConnectedAsync(linked.Token).ConfigureAwait(true);
+            }
+            else
+            {
+                await ReleaseConnectionAsync().ConfigureAwait(true);
+            }
         }
         catch (OperationCanceledException) when (linked.IsCancellationRequested) { }
         catch (Exception ex)
         {
             LogFailure("Preparing Claude failed.", ex);
-            if (!_disposed) StatusMessage = $"Could not prepare Claude: {ex.Message}";
+            if (!_disposed)
+            {
+                StatusMessage = $"Could not prepare Claude: {ex.Message}";
+            }
         }
         finally
         {
@@ -1060,25 +1489,38 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task SignInCoreAsync()
     {
-        if (_disposed) return;
+        if (_disposed)
+        {
+            return;
+        }
+
         StatusMessage = "Signing in to Claude...";
-        var progress = new Progress<string>(message => RunOnUi(() => { if (!_disposed) StatusMessage = message; }));
+        var progress = new Progress<string>(message => RunOnUi(() => { if (!_disposed) { StatusMessage = message; } }));
         try
         {
             await _services.AuthService.SignInAsync(_lifetime.Token, progress).ConfigureAwait(true);
             await InitializeCoreAsync(_lifetime.Token).ConfigureAwait(true);
-            if (!_disposed && !IsSignedIn) StatusMessage = "Sign-in did not complete.";
+            if (!_disposed && !IsSignedIn)
+            {
+                StatusMessage = "Sign-in did not complete.";
+            }
         }
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex)
         {
-            if (!_disposed) StatusMessage = $"Sign-in failed: {ex.Message}";
+            if (!_disposed)
+            {
+                StatusMessage = $"Sign-in failed: {ex.Message}";
+            }
         }
     }
 
     private bool CanSend() => !_isCapturingDocument && (!string.IsNullOrWhiteSpace(InputText) || Attachments.Count > 0) &&
         (TryGetClientCommand(InputText.Trim(), out _) ? CanRunClientCommand : CanQueueOrSendDraft);
 
+    /// <summary>
+    /// Gets a value indicating whether can run client command.
+    /// </summary>
     private bool CanRunClientCommand => CanShowSlashPopup && !IsAuthCommandRunning;
 
     private enum ClientSlashCommand { Login, Logout }
@@ -1087,9 +1529,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         var token = trimmedInput;
         int spaceIndex = token.IndexOf(' ');
-        if (spaceIndex >= 0) token = token.Substring(0, spaceIndex);
-        if (string.Equals(token, "/" + LoginCommand.Name, StringComparison.OrdinalIgnoreCase)) { command = ClientSlashCommand.Login; return true; }
-        if (string.Equals(token, "/" + LogoutCommand.Name, StringComparison.OrdinalIgnoreCase)) { command = ClientSlashCommand.Logout; return true; }
+        if (spaceIndex >= 0)
+        {
+            token = token.Substring(0, spaceIndex);
+        }
+
+        if (string.Equals(token, "/" + _loginCommand.Name, StringComparison.OrdinalIgnoreCase)) { command = ClientSlashCommand.Login; return true; }
+        if (string.Equals(token, "/" + _logoutCommand.Name, StringComparison.OrdinalIgnoreCase)) { command = ClientSlashCommand.Logout; return true; }
         command = default;
         return false;
     }
@@ -1105,14 +1551,23 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             Attachments = attachments;
         }
 
+        /// <summary>
+        /// Gets the bubble.
+        /// </summary>
         public ChatMessageViewModel Bubble { get; }
+        /// <summary>
+        /// Gets the text.
+        /// </summary>
         public string Text { get; }
+        /// <summary>
+        /// Gets the collection of attachments.
+        /// </summary>
         public IReadOnlyList<ChatAttachmentViewModel> Attachments { get; }
     }
 
     private readonly Queue<QueuedMessage> _queuedMessages = new Queue<QueuedMessage>();
 
-    private readonly List<QueuedMessage?> _submittedPrompts = new List<QueuedMessage?>();
+    private readonly List<QueuedMessage?> _submittedPrompts = [];
 
     private int _runningTurns;
 
@@ -1120,13 +1575,16 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private bool _runningFailed;
 
-    private readonly List<QueuedMessage> _returnedUnstarted = new List<QueuedMessage>();
+    private readonly List<QueuedMessage> _returnedUnstarted = [];
 
     private QueuedMessage? _draftInFlight;
 
     private Task SendCoreAsync(bool userSent)
     {
-        if (!CanSend()) return Task.CompletedTask;
+        if (!CanSend())
+        {
+            return Task.CompletedTask;
+        }
 
         var text = InputText.Trim();
         if (TryGetClientCommand(text, out var clientCommand))
@@ -1156,8 +1614,15 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             {
                 ConsumeDraft(text, attachments);
                 var firstQueued = Messages.FirstOrDefault(message => message.Role == ChatRole.User && message.IsPending);
-                if (firstQueued is null) Messages.Add(bubble);
-                else Messages.Insert(Messages.IndexOf(firstQueued), bubble);
+                if (firstQueued is null)
+                {
+                    Messages.Add(bubble);
+                }
+                else
+                {
+                    Messages.Insert(Messages.IndexOf(firstQueued), bubble);
+                }
+
                 UpdateSessionTitleFromFirstUserMessage();
             },
             prepare: () =>
@@ -1170,7 +1635,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task RunClientCommandAsync(ClientSlashCommand command)
     {
-        if (!CanRunClientCommand) return;
+        if (!CanRunClientCommand)
+        {
+            return;
+        }
+
         bool login = command == ClientSlashCommand.Login;
         InputText = string.Empty;
         StatusMessage = null;
@@ -1185,28 +1654,42 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             if (login)
             {
                 StatusMessage = "Opening a console to sign in to Claude Code…";
-                var progress = new Progress<string>(message => RunOnUi(() => { if (!_disposed) StatusMessage = message; }));
+                var progress = new Progress<string>(message => RunOnUi(() => { if (!_disposed) { StatusMessage = message; } }));
                 outcome = await _services.AuthService.LaunchInteractiveLoginAsync(token, progress).ConfigureAwait(true);
             }
             else
             {
-                if (!await _services.ConfirmSignOutEverywhereAsync(token).ConfigureAwait(true)) return;
+                if (!await _services.ConfirmSignOutEverywhereAsync(token).ConfigureAwait(true))
+                {
+                    return;
+                }
+
                 StatusMessage = "Signing out of Claude Code…";
                 outcome = await _services.AuthService.LaunchInteractiveLogoutAsync(token).ConfigureAwait(true);
             }
 
-            if (_disposed) return;
+            if (_disposed)
+            {
+                return;
+            }
+
             StatusMessage = outcome.Message;
             signedIn = login && outcome.Succeeded;
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
-            if (!_disposed) StatusMessage = login ? "Sign-in cancelled." : "Sign-out cancelled.";
+            if (!_disposed)
+            {
+                StatusMessage = login ? "Sign-in cancelled." : "Sign-out cancelled.";
+            }
         }
         catch (Exception ex)
         {
             LogFailure(login ? "Signing in failed." : "Signing out failed.", ex);
-            if (!_disposed) StatusMessage = $"{(login ? "Sign-in" : "Sign-out")} failed: {ex.Message}";
+            if (!_disposed)
+            {
+                StatusMessage = $"{(login ? "Sign-in" : "Sign-out")} failed: {ex.Message}";
+            }
         }
         finally
         {
@@ -1215,7 +1698,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             RunEachStepReportingFailures(() => IsAuthCommandRunning = false);
         }
 
-        if (signedIn && !_disposed) await InitializeCoreAsync(_lifetime.Token).ConfigureAwait(true);
+        if (signedIn && !_disposed)
+        {
+            await InitializeCoreAsync(_lifetime.Token).ConfigureAwait(true);
+        }
     }
 
     private void EnqueueDraft(string text, ChatAttachmentViewModel[] attachments)
@@ -1245,8 +1731,16 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private void ConsumeDraft(string text, ChatAttachmentViewModel[] attachments)
     {
-        if (InputText.Trim() == text) InputText = string.Empty;
-        foreach (var attachment in attachments) Attachments.Remove(attachment);
+        if (InputText.Trim() == text)
+        {
+            InputText = string.Empty;
+        }
+
+        foreach (var attachment in attachments)
+        {
+            Attachments.Remove(attachment);
+        }
+
         AttachmentError = null;
     }
 
@@ -1265,7 +1759,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             ReportUnexpectedFailure(ex);
         }
 
-        if (_runningTurns > 0) return;
+        if (_runningTurns > 0)
+        {
+            return;
+        }
+
         try
         {
             SendPendingPlanReview();
@@ -1301,28 +1799,53 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             accept?.Invoke();
             var (connection, sessionId) = await EnsureConnectedAsync(_lifetime.Token).ConfigureAwait(true);
             (turnConnection, turnSessionId) = (connection, sessionId);
-            if (_disposed) return;
+            if (_disposed)
+            {
+                return;
+            }
+
             if (_isAutoEffort && !joining)
             {
                 var ready = await ApplyAutoEffortAsync(connection, sessionId, promptText).ConfigureAwait(true);
-                if (_disposed) return;
+                if (_disposed)
+                {
+                    return;
+                }
+
                 sessionLost = !IsCurrentSession(connection, sessionId);
                 if (sessionLost && queued is null)
+                {
                     AppendStatus("The session changed while judging effort, so your message was not sent.");
+                }
+
                 abandoned = !ready || sessionLost;
             }
             if (!abandoned)
             {
                 var (text, attachments) = prepare();
                 var content = new List<ContentBlock>(attachments.Count + 1);
-                if (text.Length > 0) content.Add(new ContentBlock.Text(text));
-                foreach (var attachment in attachments)
-                    content.Add(attachment.ToContentBlock());
+                if (text.Length > 0)
+                {
+                    content.Add(new ContentBlock.Text(text));
+                }
 
-                if (!joining) _currentAssistantMessage = null;
+                foreach (var attachment in attachments)
+                {
+                    content.Add(attachment.ToContentBlock());
+                }
+
+                if (!joining)
+                {
+                    _currentAssistantMessage = null;
+                }
+
                 _submittedPrompts.Add(queued);
                 submitted = true;
-                if (_submittedPrompts.Count == 1 && queued is not null) RunEachStepReportingFailures(queued.Bubble.MarkSent);
+                if (_submittedPrompts.Count == 1 && queued is not null)
+                {
+                    RunEachStepReportingFailures(queued.Bubble.MarkSent);
+                }
+
                 stopReason = await connection.SendPromptAsync(sessionId, content, _lifetime.Token).ConfigureAwait(true);
             }
         }
@@ -1334,7 +1857,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             if (!releasedUnderIt)
             {
                 LogFailure("A turn failed.", ex);
-                if (!_disposed) StatusMessage = $"Error: {ex.Message}";
+                if (!_disposed)
+                {
+                    StatusMessage = $"Error: {ex.Message}";
+                }
             }
         }
         finally
@@ -1345,7 +1871,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 {
                     var returning = new List<QueuedMessage>();
                     var left = _draftInFlight;
-                    if (left is not null) returning.Add(left);
+                    if (left is not null)
+                    {
+                        returning.Add(left);
+                    }
+
                     _draftInFlight = null;
                     int behind = 0;
                     if (failed && !submitted && !_disposed)
@@ -1359,14 +1889,24 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                         bool composerHeldText = InputText.Trim().Length > 0;
                         ReturnToComposer(returning);
                         if (left is not null && composerHeldText)
+                        {
                             AppendStatus("Your message is back in the message box, together with what was already there.");
+                        }
+
                         AppendRestoreNotice(behind,
                             "Your queued message was not sent because the message before it failed - it is back in the message box, after that one.",
                             "{0} queued messages were not sent because the message before them failed - they are back in the message box, after it.");
                     }
                 }
-                if (failed) _runningFailed |= !submitted || queued is null || !queued.Bubble.IsPending;
-                if (submitted) OnPromptReturned(queued, stopReason);
+                if (failed)
+                {
+                    _runningFailed |= !submitted || queued is null || !queued.Bubble.IsPending;
+                }
+
+                if (submitted)
+                {
+                    OnPromptReturned(queued, stopReason);
+                }
                 else if (queued is not null && !_disposed)
                 {
                     if (sessionLost)
@@ -1374,7 +1914,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                         Messages.Remove(queued.Bubble);
                         StatusMessage = WithQueueNotice(StatusMessage, 1);
                     }
-                    else _returnedUnstarted.Add(queued);
+                    else
+                    {
+                        _returnedUnstarted.Add(queued);
+                    }
                 }
             }
             finally
@@ -1384,7 +1927,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                     IsBusy = false;
                     ActivityText = string.Empty;
                     _currentAssistantMessage = null;
-                    if (_isStopping || failed) ClearRunningSubagents();
+                    if (_isStopping || failed)
+                    {
+                        ClearRunningSubagents();
+                    }
+
                     _isStopping = false;
                     bool runningFailed = _runningFailed;
                     _runningFailed = false;
@@ -1406,7 +1953,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private void OnPromptReturned(QueuedMessage? queued, string? stopReason)
     {
         int index = _submittedPrompts.IndexOf(queued);
-        if (index < 0) return;
+        if (index < 0)
+        {
+            return;
+        }
+
         _submittedPrompts.RemoveAt(index);
         bool endedNormally = stopReason is not null and not "cancelled";
         if (queued is not null && queued.Bubble.IsPending)
@@ -1418,22 +1969,35 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             }
             queued.Bubble.MarkSent();
         }
-        if (index != 0 || _submittedPrompts.Count == 0 || !endedNormally) return;
+        if (index != 0 || _submittedPrompts.Count == 0 || !endedNormally)
+        {
+            return;
+        }
+
         _currentAssistantMessage = null;
         _submittedPrompts[0]?.Bubble.MarkSent();
     }
 
+    /// <summary>
+    /// Gets a value indicating whether can send ahead.
+    /// </summary>
     private bool CanSendAhead => !_isStopping && _returnedUnstarted.Count == 0 && !_isAutoEffort && _connection?.SupportsPromptQueueing == true;
 
     private void DispatchNextQueuedMessage()
     {
         while (_queuedMessages.Count > 0 && CanQueueOrSendDraft && (!IsBusy || CanSendAhead))
+        {
             _ = DispatchQueuedMessageAsync(_queuedMessages.Dequeue());
+        }
     }
 
     private void RestoreToComposer(List<QueuedMessage> pending, string one, string many)
     {
-        if (pending.Count == 0) return;
+        if (pending.Count == 0)
+        {
+            return;
+        }
+
         var restored = pending.ToList();
         pending.Clear();
         ReturnToComposer(restored);
@@ -1442,28 +2006,55 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private void ReturnToComposer(IReadOnlyList<QueuedMessage> messages)
     {
-        if (messages.Count == 0) return;
+        if (messages.Count == 0)
+        {
+            return;
+        }
+
         var texts = messages.Select(message => message.Text).Where(text => text.Length > 0).ToList();
-        if (InputText.Trim().Length > 0) texts.Add(InputText);
+        if (InputText.Trim().Length > 0)
+        {
+            texts.Add(InputText);
+        }
+
         var steps = new List<Action> { () => InputText = string.Join(Environment.NewLine + Environment.NewLine, texts) };
         foreach (var attachment in messages.SelectMany(message => message.Attachments))
-            steps.Add(() => { if (!Attachments.Contains(attachment)) Attachments.Add(attachment); });
-        foreach (var message in messages) steps.Add(() => Messages.Remove(message.Bubble));
+        {
+            steps.Add(() => { if (!Attachments.Contains(attachment)) { Attachments.Add(attachment); } });
+        }
+
+        foreach (var message in messages)
+        {
+            steps.Add(() => Messages.Remove(message.Bubble));
+        }
+
         steps.Add(RefreshSessionTitleAfterRemoval);
         RunEachStep(steps);
     }
 
     private void AppendRestoreNotice(int count, string one, string many)
     {
-        if (count == 0) return;
+        if (count == 0)
+        {
+            return;
+        }
+
         AppendStatus(count == 1 ? one : string.Format(System.Globalization.CultureInfo.InvariantCulture, many, count));
     }
 
     private void ReportUnexpectedFailure(Exception ex)
     {
-        if (_disposed && ex is OperationCanceledException) return;
+        if (_disposed && ex is OperationCanceledException)
+        {
+            return;
+        }
+
         LogFailure("The chat panel failed in its own bookkeeping.", ex);
-        if (_disposed) return;
+        if (_disposed)
+        {
+            return;
+        }
+
         try { AppendStatus($"Error: {ex.Message}"); }
         catch (Exception statusFailure) { LogFailure("Showing a failure in the status line failed.", statusFailure); }
     }
@@ -1494,8 +2085,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             try { step(); }
             catch (Exception ex)
             {
-                if (first is null) first = ExceptionDispatchInfo.Capture(ex);
-                else LogFailure("A later step failed too.", ex);
+                if (first is null)
+                {
+                    first = ExceptionDispatchInfo.Capture(ex);
+                }
+                else
+                {
+                    LogFailure("A later step failed too.", ex);
+                }
             }
         }
         first?.Throw();
@@ -1506,16 +2103,27 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private void RefreshSessionTitleAfterRemoval()
     {
-        if (_explicitSessionTitle is null) SessionTitle = FirstUserMessageTitle() ?? UntitledSessionTitle;
+        if (_explicitSessionTitle is null)
+        {
+            SessionTitle = FirstUserMessageTitle() ?? _untitledSessionTitle;
+        }
     }
 
     private bool RequeueReturnedUnstarted()
     {
-        if (_returnedUnstarted.Count == 0) return false;
+        if (_returnedUnstarted.Count == 0)
+        {
+            return false;
+        }
+
         var ordered = _returnedUnstarted.Concat(_queuedMessages).ToList();
         _returnedUnstarted.Clear();
         _queuedMessages.Clear();
-        foreach (var message in ordered) _queuedMessages.Enqueue(message);
+        foreach (var message in ordered)
+        {
+            _queuedMessages.Enqueue(message);
+        }
+
         return true;
     }
 
@@ -1523,16 +2131,28 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         var dropped = _submittedPrompts.Skip(1).Select(prompt => prompt!)
             .Concat(_returnedUnstarted).Concat(_queuedMessages).ToList();
-        if (_submittedPrompts.Count > 1) _submittedPrompts.RemoveRange(1, _submittedPrompts.Count - 1);
+        if (_submittedPrompts.Count > 1)
+        {
+            _submittedPrompts.RemoveRange(1, _submittedPrompts.Count - 1);
+        }
+
         _returnedUnstarted.Clear();
         _queuedMessages.Clear();
-        foreach (var message in dropped) Messages.Remove(message.Bubble);
+        foreach (var message in dropped)
+        {
+            Messages.Remove(message.Bubble);
+        }
+
         return dropped.Count;
     }
 
     private static string? WithQueueNotice(string? status, int discarded)
     {
-        if (discarded <= 0) return status;
+        if (discarded <= 0)
+        {
+            return status;
+        }
+
         var notice = discarded == 1
             ? "A queued message was not sent."
             : discarded + " queued messages were not sent.";
@@ -1563,7 +2183,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private void SendPendingPlanReview()
     {
         var comments = _pendingPlanReviewComments;
-        if (comments is null || _disposed || !CanEditDraft || _isCapturingDocument) return;
+        if (comments is null || _disposed || !CanEditDraft || _isCapturingDocument)
+        {
+            return;
+        }
+
         _pendingPlanReviewComments = null;
         var draft = InputText;
         var draftAttachments = Attachments.ToArray();
@@ -1585,9 +2209,15 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 {
                     var steps = new List<Action>();
                     if (draft.Trim().Length > 0)
+                    {
                         steps.Add(() => InputText = InputText.Trim().Length == 0 ? draft : InputText + Environment.NewLine + Environment.NewLine + draft);
+                    }
+
                     foreach (var attachment in draftAttachments)
-                        steps.Add(() => { if (!Attachments.Contains(attachment)) Attachments.Add(attachment); });
+                    {
+                        steps.Add(() => { if (!Attachments.Contains(attachment)) { Attachments.Add(attachment); } });
+                    }
+
                     RunEachStep(steps);
                 }
             }
@@ -1602,11 +2232,23 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task CancelCoreAsync()
     {
-        if (_disposed || _connection is null || _sessionId is null) return;
-        if (IsBusy) _isStopping = true;
+        if (_disposed || _connection is null || _sessionId is null)
+        {
+            return;
+        }
+
+        if (IsBusy)
+        {
+            _isStopping = true;
+        }
+
         var judging = _autoEffortStop;
         judging?.Cancel();
-        if (judging is not null) return;
+        if (judging is not null)
+        {
+            return;
+        }
+
         try
         {
             await _connection.CancelAsync(_sessionId, _lifetime.Token).ConfigureAwait(true);
@@ -1616,7 +2258,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         {
             _isStopping = false;
             LogFailure("Cancelling the turn failed.", ex);
-            if (!_disposed) StatusMessage = $"Cancel failed: {ex.Message}";
+            if (!_disposed)
+            {
+                StatusMessage = $"Cancel failed: {ex.Message}";
+            }
+
             DispatchNextQueuedMessage();
         }
     }
@@ -1625,7 +2271,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task NewSessionCoreAsync()
     {
-        if (!CanEditDraft) return;
+        if (!CanEditDraft)
+        {
+            return;
+        }
+
         _isSwitchingSession = true;
         StatusMessage = "Starting a new chat…";
         NotifyStateChanged();
@@ -1633,21 +2283,37 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         {
             var sessionBeforeConnect = _sessionId;
             var (connection, sessionId) = await EnsureConnectedAsync(_lifetime.Token).ConfigureAwait(true);
-            if (_disposed || !ReferenceEquals(connection, _connection)) return;
+            if (_disposed || !ReferenceEquals(connection, _connection))
+            {
+                return;
+            }
+
             if (!string.Equals(sessionId, sessionBeforeConnect, StringComparison.Ordinal))
             {
                 var adoptedCommands = _availableCommands;
                 var adoptedCatalog = _hasCommandCatalog;
                 ResetTranscriptState();
-                if (adoptedCatalog) ApplyCommandCatalog(adoptedCommands);
+                if (adoptedCatalog)
+                {
+                    ApplyCommandCatalog(adoptedCommands);
+                }
+
                 StatusMessage = null;
                 return;
             }
 
             await LeaveRemoteControlAsync(connection, sessionId).ConfigureAwait(true);
-            if (_disposed || !ReferenceEquals(connection, _connection)) return;
+            if (_disposed || !ReferenceEquals(connection, _connection))
+            {
+                return;
+            }
+
             var session = await RequestNewSessionAsync(connection, _lifetime.Token).ConfigureAwait(true);
-            if (_disposed || !ReferenceEquals(connection, _connection)) return;
+            if (_disposed || !ReferenceEquals(connection, _connection))
+            {
+                return;
+            }
+
             ResetTranscriptState();
             AdoptNewSession(session);
             StatusMessage = null;
@@ -1655,7 +2321,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex)
         {
-            if (!_disposed) StatusMessage = $"Could not start a new session: {ex.Message}";
+            if (!_disposed)
+            {
+                StatusMessage = $"Could not start a new session: {ex.Message}";
+            }
         }
         finally
         {
@@ -1669,7 +2338,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task ShowHistoryCoreAsync()
     {
-        if (!CanEditDraft) return;
+        if (!CanEditDraft)
+        {
+            return;
+        }
+
         IsHistoryOpen = true;
         IsHistoryLoading = true;
         HistoryError = null;
@@ -1678,16 +2351,27 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         try
         {
             var (connection, _) = await EnsureConnectedAsync(_lifetime.Token).ConfigureAwait(true);
-            if (_disposed || !ReferenceEquals(connection, _connection)) return;
+            if (_disposed || !ReferenceEquals(connection, _connection))
+            {
+                return;
+            }
+
             var sessions = await connection.ListSessionsAsync(WorkspaceCwd, _lifetime.Token).ConfigureAwait(true);
-            if (_disposed || !ReferenceEquals(connection, _connection)) return;
+            if (_disposed || !ReferenceEquals(connection, _connection))
+            {
+                return;
+            }
+
             _allSessionHistory = sessions.ToList();
             RefreshHistoryFilter();
         }
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex)
         {
-            if (!_disposed) HistoryError = $"Could not load session history: {ex.Message}";
+            if (!_disposed)
+            {
+                HistoryError = $"Could not load session history: {ex.Message}";
+            }
         }
         finally
         {
@@ -1699,7 +2383,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task OpenSessionCoreAsync(SessionSummary? session)
     {
-        if (session is null || !CanEditDraft) return;
+        if (session is null || !CanEditDraft)
+        {
+            return;
+        }
+
         IsHistoryOpen = false;
         StatusMessage = "Opening the chat…";
         var sessionIdBeforeLoad = _sessionId;
@@ -1719,15 +2407,31 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         try
         {
             var (connection, sessionId) = await EnsureConnectedAsync(_lifetime.Token).ConfigureAwait(true);
-            if (_disposed || !ReferenceEquals(connection, _connection)) return;
+            if (_disposed || !ReferenceEquals(connection, _connection))
+            {
+                return;
+            }
+
             await LeaveRemoteControlAsync(connection, sessionId).ConfigureAwait(true);
-            if (_disposed || !ReferenceEquals(connection, _connection)) return;
+            if (_disposed || !ReferenceEquals(connection, _connection))
+            {
+                return;
+            }
+
             ResetTranscriptState();
             _explicitSessionTitle = NormalizeSessionTitle(session.Title);
-            if (_explicitSessionTitle is not null) SessionTitle = _explicitSessionTitle;
+            if (_explicitSessionTitle is not null)
+            {
+                SessionTitle = _explicitSessionTitle;
+            }
+
             _sessionId = session.SessionId;
             var result = await connection.LoadSessionAsync(session.SessionId, WorkspaceCwd, null, _lifetime.Token).ConfigureAwait(true);
-            if (_disposed || !ReferenceEquals(connection, _connection)) return;
+            if (_disposed || !ReferenceEquals(connection, _connection))
+            {
+                return;
+            }
+
             ApplyConfigOptions(result.ConfigOptions);
             StatusMessage = null;
             OnSessionStarted();
@@ -1739,17 +2443,32 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             {
                 _sessionId = sessionIdBeforeLoad;
                 ResetTranscriptState();
-                foreach (var message in messagesBeforeLoad) Messages.Add(message);
-                lock (_changedFilesByPath)
+                foreach (var message in messagesBeforeLoad)
                 {
-                    foreach (var file in changedFilesBeforeLoad) _changedFilesByPath[file.FullPath] = file;
+                    Messages.Add(message);
                 }
 
-                foreach (var file in changedFilesBeforeLoad) ChangedFiles.Add(file);
+                lock (_changedFilesByPath)
+                {
+                    foreach (var file in changedFilesBeforeLoad)
+                    {
+                        _changedFilesByPath[file.FullPath] = file;
+                    }
+                }
+
+                foreach (var file in changedFilesBeforeLoad)
+                {
+                    ChangedFiles.Add(file);
+                }
+
                 _toolCallLocations.UnionWith(toolCallLocationsBeforeLoad);
                 _explicitSessionTitle = explicitTitleBeforeLoad;
                 SessionTitle = titleBeforeLoad;
-                if (hadCatalogBeforeLoad) ApplyCommandCatalog(commandsBeforeLoad);
+                if (hadCatalogBeforeLoad)
+                {
+                    ApplyCommandCatalog(commandsBeforeLoad);
+                }
+
                 _sessionUsedTokens = usedTokensBeforeLoad;
                 _contextWindowSize = contextWindowBeforeLoad;
                 _turnStartUsedTokens = turnStartTokensBeforeLoad;
@@ -1760,7 +2479,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 OnPropertyChanged(nameof(ContextUsageLabel));
             }
 
-            if (!_disposed) StatusMessage = $"Could not open session: {ex.Message}";
+            if (!_disposed)
+            {
+                StatusMessage = $"Could not open session: {ex.Message}";
+            }
         }
         finally
         {
@@ -1773,14 +2495,18 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         DiscardQueuedMessages();
         Messages.Clear();
-        lock (_changedFilesByPath) _changedFilesByPath.Clear();
+        lock (_changedFilesByPath)
+        {
+            _changedFilesByPath.Clear();
+        }
+
         _toolCallDiffsById.Clear();
         _toolCallLocations.Clear();
         ClearRunningSubagents();
         ChangedFiles.Clear();
         ClearPendingRequests("The session was replaced.");
         _explicitSessionTitle = null;
-        SessionTitle = UntitledSessionTitle;
+        SessionTitle = _untitledSessionTitle;
         _currentAssistantMessage = null;
         _currentUserMessage = null;
         CurrentPlan = null;
@@ -1817,7 +2543,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (_connection is not null && _sessionId is not null) return (_connection, _sessionId);
+            if (_connection is not null && _sessionId is not null)
+            {
+                return (_connection, _sessionId);
+            }
+
             IsConnecting = true;
             var connection = await _services.ConnectionFactory.ConnectAsync(cancellationToken).ConfigureAwait(true);
             if (_disposed || cancellationToken.IsCancellationRequested)
@@ -1839,11 +2569,17 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 await connection.InitializeAsync(cancellationToken).ConfigureAwait(true);
                 cancellationToken.ThrowIfCancellationRequested();
                 if (!ReferenceEquals(connection, _connection) || NeedsAuthentication)
+                {
                     throw new InvalidOperationException("The agent disconnected before the session was ready.");
+                }
+
                 var session = await RequestNewSessionAsync(connection, cancellationToken).ConfigureAwait(true);
                 cancellationToken.ThrowIfCancellationRequested();
                 if (!ReferenceEquals(connection, _connection) || NeedsAuthentication)
+                {
                     throw new InvalidOperationException("The agent disconnected before the session was ready.");
+                }
+
                 IsSignedIn = true;
                 NeedsAuthentication = false;
                 AdoptNewSession(session);
@@ -1852,7 +2588,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             }
             catch
             {
-                if (ReferenceEquals(connection, _connection)) await ReleaseConnectionAsync().ConfigureAwait(true);
+                if (ReferenceEquals(connection, _connection))
+                {
+                    await ReleaseConnectionAsync().ConfigureAwait(true);
+                }
+
                 throw;
             }
             finally
@@ -1878,7 +2618,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         _sessionId = session.SessionId;
         if (_pendingCommandCatalogs is { } buffered && buffered.TryGetValue(session.SessionId, out var commands))
+        {
             ApplyCommandCatalog(commands);
+        }
+
         _pendingCommandCatalogs = null;
         ApplyConfigOptions(session.ConfigOptions);
         OnSessionStarted();
@@ -1895,8 +2638,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         ReplaceOptions(AvailableModels, _modelOption);
         ReplaceOptions(AvailableEfforts, _effortOption);
         var autoOffered = AutoServices?.EffortClassifier is not null && _effortOption is { } effort &&
-            AutoEffortValues.All(value => effort.Options.Any(candidate => candidate.Value == value));
-        if (autoOffered) AvailableEfforts.Insert(0, _autoEffort);
+            _autoEffortValues.All(value => effort.Options.Any(candidate => candidate.Value == value));
+        if (autoOffered)
+        {
+            AvailableEfforts.Insert(0, _autoEffort);
+        }
+
         _isAutoEffort = _autoEffortSelected && autoOffered;
         ReplaceOptions(AvailableModes, _modeOption);
         _selectedModel = AvailableModels.FirstOrDefault(option => option.Value == _modelOption?.CurrentValue);
@@ -1911,8 +2658,15 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private static void ReplaceOptions(ObservableCollection<SessionConfigValue> target, SessionConfigOption? option)
     {
         target.Clear();
-        if (option is null) return;
-        foreach (var value in option.Options) target.Add(value);
+        if (option is null)
+        {
+            return;
+        }
+
+        foreach (var value in option.Options)
+        {
+            target.Add(value);
+        }
     }
 
     private void NotifySelectionsChanged()
@@ -1932,54 +2686,90 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         var belongsToKnownSession = _sessionId is not null && e.SessionId == _sessionId;
         RunOnUi(() =>
         {
-            if (_disposed || !ReferenceEquals(sender, _connection)) return;
+            if (_disposed || !ReferenceEquals(sender, _connection))
+            {
+                return;
+            }
+
             if (e.Update is SessionUpdate.AvailableCommandsChanged catalog)
             {
                 if (e.SessionId == _sessionId && (belongsToKnownSession || pendingCatalogs is not null))
+                {
                     ApplyCommandCatalog(catalog.Commands);
+                }
                 else if (pendingCatalogs is not null && ReferenceEquals(pendingCatalogs, _pendingCommandCatalogs))
+                {
                     pendingCatalogs[e.SessionId] = catalog.Commands;
+                }
+
                 return;
             }
-            if (e.SessionId != _sessionId) return;
+            if (e.SessionId != _sessionId)
+            {
+                return;
+            }
+
             switch (e.Update)
             {
                 case SessionUpdate.ConfigOptionsChanged config:
                     ApplyConfigOptions(config.ConfigOptions);
                     break;
+
                 case SessionUpdate.UserMessageChunk chunk:
-                    if (IsBusy) break;
+                    if (IsBusy)
+                    {
+                        break;
+                    }
+
                     EnsureUserMessage().AppendText(chunk.Text);
                     UpdateSessionTitleFromFirstUserMessage();
                     break;
+
                 case SessionUpdate.AgentMessageChunk chunk:
                     EnsureAssistantMessage().AppendText(chunk.Text);
                     UpdateActivity("Responding…");
                     break;
+
                 case SessionUpdate.AgentThoughtChunk thought:
                     EnsureAssistantMessage().AppendThought(thought.Text);
                     UpdateActivity("Thinking…");
                     break;
+
                 case SessionUpdate.ToolCall toolCall:
                     _toolCallLocations.UnionWith(toolCall.Call.Locations);
                     UpsertToolCall(toolCall.Call);
                     break;
+
                 case SessionUpdate.Plan plan:
                     CurrentPlan = new PlanViewModel(plan.Entries) { IsExpanded = CurrentPlan?.IsExpanded ?? true };
                     break;
+
                 case SessionUpdate.UsageUpdate usage:
                     _sessionUsedTokens = usage.UsedTokens;
-                    if (usage.ContextWindowSize is long windowSize) _contextWindowSize = windowSize;
-                    if (IsBusy) TurnTokens = Math.Max(0, usage.UsedTokens - _turnStartUsedTokens);
+                    if (usage.ContextWindowSize is long windowSize)
+                    {
+                        _contextWindowSize = windowSize;
+                    }
+
+                    if (IsBusy)
+                    {
+                        TurnTokens = Math.Max(0, usage.UsedTokens - _turnStartUsedTokens);
+                    }
+
                     OnPropertyChanged(nameof(SessionUsedTokens));
                     OnPropertyChanged(nameof(ContextWindowSize));
                     OnPropertyChanged(nameof(ContextUsagePercent));
                     OnPropertyChanged(nameof(ContextUsageLabel));
                     break;
+
                 case SessionUpdate.TurnEnded turnEnded:
                     if (_submittedPrompts.Count > 1)
                     {
-                        if (turnEnded.StopReason != "cancelled") _currentAssistantMessage = null;
+                        if (turnEnded.StopReason != "cancelled")
+                        {
+                            _currentAssistantMessage = null;
+                        }
+
                         break;
                     }
                     if (_currentAssistantMessage is not null && _turnStartedAt is DateTimeOffset startedAt)
@@ -1987,7 +2777,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                         _currentAssistantMessage.DurationSeconds = Math.Max(0, (int)(DateTimeOffset.UtcNow - startedAt).TotalSeconds);
                     }
 
-                    if (_currentAssistantMessage is not null && TurnTokens is long turnTokens) _currentAssistantMessage.TokensUsed = turnTokens;
+                    if (_currentAssistantMessage is not null && TurnTokens is long turnTokens)
+                    {
+                        _currentAssistantMessage.TokensUsed = turnTokens;
+                    }
+
                     RaiseAttention(ChatAttentionKind.TurnCompleted, "Claude finished",
                         _currentAssistantMessage?.Text is { Length: > 0 } reply ? reply : "The response is ready in Visual Studio.");
 
@@ -2018,7 +2812,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private void ClearRunningSubagents()
     {
-        if (_runningSubagents.Count == 0) return;
+        if (_runningSubagents.Count == 0)
+        {
+            return;
+        }
+
         _runningSubagents.Clear();
         NotifyRunningAgents();
     }
@@ -2028,7 +2826,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         if (IsBusy)
         {
             var diffs = ResolveToolCallDiffs(call);
-            if (diffs.Count > 0) _ = Task.Run(() => TrackToolCallFileChangesAsync(call, diffs));
+            if (diffs.Count > 0)
+            {
+                _ = Task.Run(() => TrackToolCallFileChangesAsync(call, diffs));
+            }
         }
         var message = EnsureAssistantMessage();
         var card = message.ToolCalls.FirstOrDefault(t => t.ToolCallId == call.ToolCallId);
@@ -2047,7 +2848,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             bool changed = card.Status is ToolCallStatus.Completed or ToolCallStatus.Failed
                 ? _runningSubagents.Remove(card.ToolCallId)
                 : _runningSubagents.Add(card.ToolCallId);
-            if (changed) NotifyRunningAgents();
+            if (changed)
+            {
+                NotifyRunningAgents();
+            }
         }
         UpdateActivity("Working…");
     }
@@ -2078,101 +2882,125 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         _ = request.ContinueWith(finished =>
         {
             _ = finished.Exception;
-            RunOnUi(() => { if (!_disposed) onEnd(); });
+            RunOnUi(() => { if (!_disposed) { onEnd(); } });
         }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
 
-    private void OnPermissionRequested(object? sender, PermissionRequestEventArgs e)
-    {
-        RunOnUi(() =>
-        {
-            if (_disposed || !ReferenceEquals(sender, _connection) || e.SessionId != _sessionId)
-            {
-                e.Response.TrySetException(new OperationCanceledException("The permission request no longer belongs to an active session."));
-                return;
-            }
-            _pendingPermissionResponse?.TrySetException(new OperationCanceledException("Superseded by a newer permission request."));
-            if (_pendingPlan is { IsResolved: false }) _pendingPlan.MarkResolved("Superseded by a newer request");
-            _pendingPermissionResponse = e.Response;
-            PlanReviewViewModel? plan = null;
-            void Choose(PermissionOption option)
-            {
-                if (!e.Response.TrySetResult(option.OptionId)) return;
-                _pendingPermissionResponse = null;
-                RunEachStepReportingFailures(
-                    () => PendingPermission = null,
-                    () =>
-                    {
-                        if (plan is { IsResolved: false })
-                        {
-                            plan.MarkResolved(option.Outcome is PermissionOutcome.AllowOnce or PermissionOutcome.AllowAlways
-                                ? "Plan accepted — implementing…" : "Plan rejected");
-                        }
-                    },
-                    () => UpdateActivity("Working…"));
-            }
+    private void OnPermissionRequested(object? sender, PermissionRequestEventArgs e) => RunOnUi(() =>
+                                                                                             {
+                                                                                                 if (_disposed || !ReferenceEquals(sender, _connection) || e.SessionId != _sessionId)
+                                                                                                 {
+                                                                                                     e.Response.TrySetException(new OperationCanceledException("The permission request no longer belongs to an active session."));
+                                                                                                     return;
+                                                                                                 }
+                                                                                                 _pendingPermissionResponse?.TrySetException(new OperationCanceledException("Superseded by a newer permission request."));
+                                                                                                 if (_pendingPlan is { IsResolved: false })
+                                                                                                 {
+                                                                                                     _pendingPlan.MarkResolved("Superseded by a newer request");
+                                                                                                 }
 
-            PendingPermission = new PermissionRequestViewModel(ToolDisplayName.Describe(e.Call.Title), e.Options, Choose);
-            UpdateActivity("Waiting for permission…");
-            ObserveEnd(e.Response.Task, () =>
-            {
-                if (!ReferenceEquals(_pendingPermissionResponse, e.Response)) return;
-                _pendingPermissionResponse = null;
-                PendingPermission = null;
-                if (plan is { IsResolved: false }) plan.MarkResolved("Request ended");
-            });
+                                                                                                 _pendingPermissionResponse = e.Response;
+                                                                                                 PlanReviewViewModel? plan = null;
+                                                                                                 void Choose(PermissionOption option)
+                                                                                                 {
+                                                                                                     if (!e.Response.TrySetResult(option.OptionId))
+                                                                                                     {
+                                                                                                         return;
+                                                                                                     }
 
-            var planText = e.Call.Kind == "switch_mode"
-                ? string.Join("\n", e.Call.Content.Where(content => !content.IsDiff && !string.IsNullOrWhiteSpace(content.Text)).Select(content => content.Text))
-                : string.Empty;
-            if (planText.Length > 0)
-            {
-                plan = new PlanReviewViewModel(planText, e.Options, Choose,
-                    comments =>
-                    {
-                        if (plan!.RejectOption is not PermissionOption reject) return;
-                        _pendingPlanReviewComments = comments;
-                        RunEachStepReportingFailures(() => plan.MarkResolved("Sent back for revision"));
-                        Choose(reject);
-                        if (!IsBusy) SendPendingPlanReview();
-                    });
-                PendingPlan = plan;
-                PlanReviewRequested?.Invoke(this, EventArgs.Empty);
-                RaiseAttention(ChatAttentionKind.PlanReview, "Claude has a plan for you", "Review or approve the implementation plan.");
-            }
-            else
-            {
-                RaiseAttention(ChatAttentionKind.PermissionNeeded, "Claude needs your permission", ToolDisplayName.Describe(e.Call.Title));
-            }
-        });
-    }
+                                                                                                     _pendingPermissionResponse = null;
+                                                                                                     RunEachStepReportingFailures(
+                                                                                                         () => PendingPermission = null,
+                                                                                                         () =>
+                                                                                                         {
+                                                                                                             if (plan is { IsResolved: false })
+                                                                                                             {
+                                                                                                                 plan.MarkResolved(option.Outcome is PermissionOutcome.AllowOnce or PermissionOutcome.AllowAlways
+                                                                                                                     ? "Plan accepted — implementing…" : "Plan rejected");
+                                                                                                             }
+                                                                                                         },
+                                                                                                         () => UpdateActivity("Working…"));
+                                                                                                 }
 
-    private void OnElicitationRequested(object? sender, ElicitationRequestEventArgs e)
-    {
-        RunOnUi(() =>
-        {
-            if (_disposed || !ReferenceEquals(sender, _connection) || e.SessionId != _sessionId)
-            {
-                e.Response.TrySetException(new OperationCanceledException("The elicitation request no longer belongs to an active session."));
-                return;
-            }
-            _pendingElicitationResponse?.TrySetResult(new ElicitationAnswer(ElicitationAction.Cancel, _emptyElicitationContent));
-            _pendingElicitationResponse = e.Response;
-            PendingElicitation = new ElicitationRequestViewModel(e.Message, e.Fields, answer =>
-            {
-                e.Response.TrySetResult(answer);
-                if (!ReferenceEquals(_pendingElicitationResponse, e.Response)) return;
-                _pendingElicitationResponse = null;
-                PendingElicitation = null;
-            });
-            ObserveEnd(e.Response.Task, () =>
-            {
-                if (!ReferenceEquals(_pendingElicitationResponse, e.Response)) return;
-                _pendingElicitationResponse = null;
-                PendingElicitation = null;
-            });
-            RaiseAttention(ChatAttentionKind.PermissionNeeded, "Claude needs your input", e.Message);
-        });
-    }
+                                                                                                 PendingPermission = new PermissionRequestViewModel(ToolDisplayName.Describe(e.Call.Title), e.Options, Choose);
+                                                                                                 UpdateActivity("Waiting for permission…");
+                                                                                                 ObserveEnd(e.Response.Task, () =>
+                                                                                                 {
+                                                                                                     if (!ReferenceEquals(_pendingPermissionResponse, e.Response))
+                                                                                                     {
+                                                                                                         return;
+                                                                                                     }
+
+                                                                                                     _pendingPermissionResponse = null;
+                                                                                                     PendingPermission = null;
+                                                                                                     if (plan is { IsResolved: false })
+                                                                                                     {
+                                                                                                         plan.MarkResolved("Request ended");
+                                                                                                     }
+                                                                                                 });
+
+                                                                                                 var planText = e.Call.Kind == "switch_mode"
+                                                                                                     ? string.Join("\n", e.Call.Content.Where(content => !content.IsDiff && !string.IsNullOrWhiteSpace(content.Text)).Select(content => content.Text))
+                                                                                                     : string.Empty;
+                                                                                                 if (planText.Length > 0)
+                                                                                                 {
+                                                                                                     plan = new PlanReviewViewModel(planText, e.Options, Choose,
+                                                                                                         comments =>
+                                                                                                         {
+                                                                                                             if (plan!.RejectOption is not PermissionOption reject)
+                                                                                                             {
+                                                                                                                 return;
+                                                                                                             }
+
+                                                                                                             _pendingPlanReviewComments = comments;
+                                                                                                             RunEachStepReportingFailures(() => plan.MarkResolved("Sent back for revision"));
+                                                                                                             Choose(reject);
+                                                                                                             if (!IsBusy)
+                                                                                                             {
+                                                                                                                 SendPendingPlanReview();
+                                                                                                             }
+                                                                                                         });
+                                                                                                     PendingPlan = plan;
+                                                                                                     PlanReviewRequested?.Invoke(this, EventArgs.Empty);
+                                                                                                     RaiseAttention(ChatAttentionKind.PlanReview, "Claude has a plan for you", "Review or approve the implementation plan.");
+                                                                                                 }
+                                                                                                 else
+                                                                                                 {
+                                                                                                     RaiseAttention(ChatAttentionKind.PermissionNeeded, "Claude needs your permission", ToolDisplayName.Describe(e.Call.Title));
+                                                                                                 }
+                                                                                             });
+
+    private void OnElicitationRequested(object? sender, ElicitationRequestEventArgs e) => RunOnUi(() =>
+                                                                                               {
+                                                                                                   if (_disposed || !ReferenceEquals(sender, _connection) || e.SessionId != _sessionId)
+                                                                                                   {
+                                                                                                       e.Response.TrySetException(new OperationCanceledException("The elicitation request no longer belongs to an active session."));
+                                                                                                       return;
+                                                                                                   }
+                                                                                                   _pendingElicitationResponse?.TrySetResult(new ElicitationAnswer(ElicitationAction.Cancel, _emptyElicitationContent));
+                                                                                                   _pendingElicitationResponse = e.Response;
+                                                                                                   PendingElicitation = new ElicitationRequestViewModel(e.Message, e.Fields, answer =>
+                                                                                                   {
+                                                                                                       e.Response.TrySetResult(answer);
+                                                                                                       if (!ReferenceEquals(_pendingElicitationResponse, e.Response))
+                                                                                                       {
+                                                                                                           return;
+                                                                                                       }
+
+                                                                                                       _pendingElicitationResponse = null;
+                                                                                                       PendingElicitation = null;
+                                                                                                   });
+                                                                                                   ObserveEnd(e.Response.Task, () =>
+                                                                                                   {
+                                                                                                       if (!ReferenceEquals(_pendingElicitationResponse, e.Response))
+                                                                                                       {
+                                                                                                           return;
+                                                                                                       }
+
+                                                                                                       _pendingElicitationResponse = null;
+                                                                                                       PendingElicitation = null;
+                                                                                                   });
+                                                                                                   RaiseAttention(ChatAttentionKind.PermissionNeeded, "Claude needs your input", e.Message);
+                                                                                               });
 
     private async void OnFileReadRequested(object? sender, FileReadRequestEventArgs e)
     {
@@ -2183,7 +3011,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             using (var document = pathLease.ProtectDocument())
             {
                 if (document is not null || !RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                {
                     liveText = await _services.TryReadOpenDocumentAsync(pathLease.FullPath, _lifetime.Token).ConfigureAwait(true);
+                }
             }
             var text = liveText ?? pathLease.ReadAllText();
 
@@ -2206,18 +3036,30 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         var start = 0;
         for (var index = 0; index < text.Length; index++)
         {
-            if (text[index] != '\n') continue;
+            if (text[index] != '\n')
+            {
+                continue;
+            }
+
             lines.Add(text.Substring(start, index - start + 1));
             start = index + 1;
         }
 
-        if (start < text.Length) lines.Add(text.Substring(start));
+        if (start < text.Length)
+        {
+            lines.Add(text.Substring(start));
+        }
+
         return lines.ToArray();
     }
 
     private static string JoinRequestedLines(string[] lines, int start, int count)
     {
-        if (start >= lines.Length || count <= 0) return string.Empty;
+        if (start >= lines.Length || count <= 0)
+        {
+            return string.Empty;
+        }
+
         var end = (int)Math.Min(lines.Length, (long)start + count);
         var builder = new StringBuilder();
         for (var index = start; index < end; index++)
@@ -2225,8 +3067,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             var line = lines[index];
             if (index == end - 1)
             {
-                if (line.EndsWith("\r\n", StringComparison.Ordinal)) line = line.Substring(0, line.Length - 2);
-                else if (line.Length > 0 && line[line.Length - 1] == '\n') line = line.Substring(0, line.Length - 1);
+                if (line.EndsWith("\r\n", StringComparison.Ordinal))
+                {
+                    line = line.Substring(0, line.Length - 2);
+                }
+                else if (line.Length > 0 && line[line.Length - 1] == '\n')
+                {
+                    line = line.Substring(0, line.Length - 1);
+                }
             }
 
             builder.Append(line);
@@ -2241,7 +3089,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         try
         {
             var (tracked, isNewRow) = await TrackChangeBeforeWriteAsync(e.Path).ConfigureAwait(true);
-            if (isNewRow) created = tracked;
+            if (isNewRow)
+            {
+                created = tracked;
+            }
+
             using var pathLease = WorkspacePathGuard.AcquireFile(_services.WorkspaceRoot, e.Path);
             await WriteLeasedFileAsync(pathLease, e.Content).ConfigureAwait(true);
             RunOnUi(() => tracked.UpdateCounts(e.Content));
@@ -2249,7 +3101,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
-            if (created is not null) RunOnUi(() => UntrackChange(created));
+            if (created is not null)
+            {
+                RunOnUi(() => UntrackChange(created));
+            }
+
             e.Response.TrySetException(ex);
         }
     }
@@ -2264,9 +3120,20 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         var finished = call.Status is ToolCallStatus.Completed or ToolCallStatus.Failed;
         var diffs = call.Content.Where(content => content.IsDiff && !string.IsNullOrWhiteSpace(content.Path)).ToList();
-        if (diffs.Count > 0) _toolCallDiffsById[call.ToolCallId] = diffs;
-        else if (finished && _toolCallDiffsById.TryGetValue(call.ToolCallId, out var reported)) diffs = reported;
-        if (finished) _toolCallDiffsById.Remove(call.ToolCallId);
+        if (diffs.Count > 0)
+        {
+            _toolCallDiffsById[call.ToolCallId] = diffs;
+        }
+        else if (finished && _toolCallDiffsById.TryGetValue(call.ToolCallId, out var reported))
+        {
+            diffs = reported;
+        }
+
+        if (finished)
+        {
+            _toolCallDiffsById.Remove(call.ToolCallId);
+        }
+
         return diffs;
     }
 
@@ -2280,22 +3147,40 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 try { (tracked, _) = await TrackChangeBeforeWriteAsync(content.Path!, content, call.Status, call.ToolCallId).ConfigureAwait(true); }
                 catch (Exception) { continue; }
 
-                if (call.Status is not (ToolCallStatus.Completed or ToolCallStatus.Failed)) continue;
+                if (call.Status is not (ToolCallStatus.Completed or ToolCallStatus.Failed))
+                {
+                    continue;
+                }
+
                 string? current;
                 using (var pathLease = WorkspacePathGuard.AcquireFile(_services.WorkspaceRoot, tracked.FullPath))
+                {
                     current = await ReadLeasedFileAsync(pathLease).ConfigureAwait(true);
+                }
+
                 string? snapshot;
-                lock (_changedFilesByPath) snapshot = tracked.OriginalText;
+                lock (_changedFilesByPath)
+                {
+                    snapshot = tracked.OriginalText;
+                }
+
                 var unchanged = string.Equals(current, snapshot, StringComparison.Ordinal);
                 RunOnUi(() =>
                 {
                     if (call.Status == ToolCallStatus.Failed)
                     {
-                        if (unchanged) UntrackChange(tracked);
+                        if (unchanged)
+                        {
+                            UntrackChange(tracked);
+                        }
+
                         return;
                     }
                     tracked.UpdateCounts(current ?? string.Empty);
-                    if (unchanged) tracked.MarkNotRevertable();
+                    if (unchanged)
+                    {
+                        tracked.MarkNotRevertable();
+                    }
                 });
             }
         }
@@ -2316,7 +3201,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                     && TryGetRaceCorrectedSnapshot(existing.OriginalText, status, diff, out var corrected))
                 {
                     existing.CorrectOriginalSnapshot(corrected);
-                    if (corrected.Length == 0 && existing.TryMarkNotRevertable()) RunOnUi(existing.NotifyRevertabilityChanged);
+                    if (corrected.Length == 0 && existing.TryMarkNotRevertable())
+                    {
+                        RunOnUi(existing.NotifyRevertabilityChanged);
+                    }
                 }
 
                 return (existing, false);
@@ -2325,14 +3213,25 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
         var original = await ReadLeasedFileAsync(pathLease).ConfigureAwait(true);
         var raceCorrected = TryGetRaceCorrectedSnapshot(original, status, diff, out var correctedOriginal);
-        if (raceCorrected) original = correctedOriginal;
+        if (raceCorrected)
+        {
+            original = correctedOriginal;
+        }
 
         var entry = new ChangedFileViewModel(pathLease.FullPath, original,
             file => OnUiAsync(() => AcceptChangeAsync(file)),
             file => OnUiAsync(() => RejectChangeAsync(file)),
             toolCallId);
-        if (diff is not null && !IsPreEditSnapshot(original, diff)) entry.MarkNotRevertable();
-        if (raceCorrected && original is { Length: 0 }) entry.MarkNotRevertable();
+        if (diff is not null && !IsPreEditSnapshot(original, diff))
+        {
+            entry.MarkNotRevertable();
+        }
+
+        if (raceCorrected && original is { Length: 0 })
+        {
+            entry.MarkNotRevertable();
+        }
+
         lock (_changedFilesByPath)
         {
             if (_changedFilesByPath.TryGetValue(pathLease.FullPath, out var raced))
@@ -2341,7 +3240,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                     && TryGetRaceCorrectedSnapshot(raced.OriginalText, status, diff, out var late))
                 {
                     raced.CorrectOriginalSnapshot(late);
-                    if (late.Length == 0 && raced.TryMarkNotRevertable()) RunOnUi(raced.NotifyRevertabilityChanged);
+                    if (late.Length == 0 && raced.TryMarkNotRevertable())
+                    {
+                        RunOnUi(raced.NotifyRevertabilityChanged);
+                    }
                 }
 
                 return (raced, false);
@@ -2353,8 +3255,15 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         RunOnUi(() =>
         {
             bool live;
-            lock (_changedFilesByPath) live = _changedFilesByPath.TryGetValue(entry.FullPath, out var current) && ReferenceEquals(current, entry);
-            if (live) ChangedFiles.Add(entry);
+            lock (_changedFilesByPath)
+            {
+                live = _changedFilesByPath.TryGetValue(entry.FullPath, out var current) && ReferenceEquals(current, entry);
+            }
+
+            if (live)
+            {
+                ChangedFiles.Add(entry);
+            }
         });
         return (entry, true);
     }
@@ -2378,7 +3287,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private static bool IsPreEditSnapshot(string? snapshot, ToolCallContent diff)
     {
-        if (snapshot is null) return diff.OldText is null;
+        if (snapshot is null)
+        {
+            return diff.OldText is null;
+        }
+
         var text = FoldLineEndings(snapshot);
         return diff.OldText is { } oldText
             ? text.IndexOf(FoldLineEndings(oldText), StringComparison.Ordinal) >= 0
@@ -2392,7 +3305,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             if (document is not null || !RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
                 var liveText = await _services.TryReadOpenDocumentAsync(pathLease.FullPath, _lifetime.Token).ConfigureAwait(true);
-                if (liveText is not null) return liveText;
+                if (liveText is not null)
+                {
+                    return liveText;
+                }
             }
         }
 
@@ -2422,7 +3338,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private async Task OpenChangedFileAsync(ChangedFileViewModel? file)
     {
-        if (file is null) return;
+        if (file is null)
+        {
+            return;
+        }
+
         var workspaceRoot = _services.WorkspaceRoot;
         try
         {
@@ -2431,14 +3351,20 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 using var pathLease = WorkspacePathGuard.AcquireFile(workspaceRoot, file.FullPath);
                 using var document = pathLease.ProtectDocument();
                 if (document is null && RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                {
                     throw new FileNotFoundException("The workspace file does not exist.", pathLease.FullPath);
+                }
+
                 await _services.OpenDocumentAsync(pathLease.FullPath, null, _lifetime.Token).ConfigureAwait(true);
             }).ConfigureAwait(true);
         }
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex)
         {
-            if (!_disposed) StatusMessage = $"Could not open {file.Name}: {ex.Message}";
+            if (!_disposed)
+            {
+                StatusMessage = $"Could not open {file.Name}: {ex.Message}";
+            }
         }
     }
 
@@ -2448,13 +3374,18 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     /// </summary>
     public async Task OpenFileReferenceAsync(string? href)
     {
-        if (!ChatFileReference.TryParseLink(href, out var reference, out var line)) return;
+        if (!ChatFileReference.TryParseLink(href, out var reference, out var line))
+        {
+            return;
+        }
 
         try
         {
             var workspaceRoot = _services.WorkspaceRoot;
             if (string.IsNullOrEmpty(workspaceRoot))
+            {
                 throw new InvalidOperationException("no folder or solution is open.");
+            }
 
             var toolCallLocations = _toolCallLocations.ToArray();
             var cancellationToken = _lifetime.Token;
@@ -2464,59 +3395,100 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 using var pathLease = WorkspacePathGuard.AcquireFile(workspaceRoot, candidate);
                 using var document = pathLease.ProtectDocument();
                 if (document is null && RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                {
                     throw new FileNotFoundException("the file does not exist.", pathLease.FullPath);
+                }
+
                 await _services.OpenDocumentAsync(pathLease.FullPath, line, cancellationToken).ConfigureAwait(true);
             }).ConfigureAwait(true);
         }
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex)
         {
-            if (!_disposed) StatusMessage = $"Could not open {reference}: {ex.Message}";
+            if (!_disposed)
+            {
+                StatusMessage = $"Could not open {reference}: {ex.Message}";
+            }
         }
     }
 
     private static string ResolveFileReference(string workspaceRoot, string reference, IReadOnlyList<string> toolCallLocations, CancellationToken cancellationToken)
     {
-        if (Path.IsPathRooted(reference)) return reference;
+        if (Path.IsPathRooted(reference))
+        {
+            return reference;
+        }
 
         var underRoot = Path.Combine(workspaceRoot, reference);
         if (WorkspacePathGuard.TryResolveWithinWorkspace(workspaceRoot, underRoot, out var resolvedUnderRoot) && File.Exists(resolvedUnderRoot))
+        {
             return underRoot;
+        }
 
         var suffix = Path.DirectorySeparatorChar + reference.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
         var matches = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var refused = false;
         foreach (var location in toolCallLocations)
         {
-            if (!location.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar).EndsWith(suffix, StringComparison.OrdinalIgnoreCase)) continue;
-            if (!TryAnchorLocation(workspaceRoot, location, out var anchored)) continue;
+            if (!location.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar).EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (!TryAnchorLocation(workspaceRoot, location, out var anchored))
+            {
+                continue;
+            }
+
             if (!WorkspacePathGuard.TryResolveWithinWorkspace(workspaceRoot, anchored, out var fullPath))
+            {
                 refused = true;
+            }
             else if (File.Exists(fullPath))
+            {
                 matches.Add(fullPath);
+            }
         }
 
         if (matches.Count > 1)
+        {
             throw new IOException("more than one file Claude worked on matches it; ask Claude for the full path.");
-        if (matches.Count == 1) return matches.First();
+        }
+
+        if (matches.Count == 1)
+        {
+            return matches.First();
+        }
+
         if (refused)
+        {
             throw new UnauthorizedAccessException("the file Claude worked on by that name is outside the workspace or cannot be resolved safely.");
+        }
 
         foreach (var found in WorkspaceFileSearch.FindBySuffix(workspaceRoot, suffix, cancellationToken))
         {
             if (WorkspacePathGuard.TryResolveWithinWorkspace(workspaceRoot, found, out var fullPath) && File.Exists(fullPath))
+            {
                 matches.Add(fullPath);
+            }
         }
 
         if (matches.Count > 1)
+        {
             throw new IOException("more than one file in the workspace has that name; ask Claude for the full path.");
+        }
+
         return matches.Count == 1 ? matches.First() : underRoot;
     }
 
     private static bool TryAnchorLocation(string workspaceRoot, string location, out string anchored)
     {
         anchored = string.Empty;
-        if (location.IndexOfAny(Path.GetInvalidPathChars()) >= 0) return false;
+        if (location.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
+        {
+            return false;
+        }
+
         anchored = Path.IsPathRooted(location) ? location : Path.Combine(workspaceRoot, location);
         return true;
     }
@@ -2529,7 +3501,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
-            if (!_disposed) StatusMessage = $"Could not revert {file.Name}: {ex.Message}";
+            if (!_disposed)
+            {
+                StatusMessage = $"Could not revert {file.Name}: {ex.Message}";
+            }
         }
     }
 
@@ -2543,7 +3518,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             catch (Exception) { failed++; }
         }
 
-        if (failed > 0 && !_disposed) StatusMessage = $"Could not revert {failed} of {files.Count} files.";
+        if (failed > 0 && !_disposed)
+        {
+            StatusMessage = $"Could not revert {failed} of {files.Count} files.";
+        }
     }
 
     private async Task RevertChangeAsync(ChangedFileViewModel file)
@@ -2556,32 +3534,47 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             original = file.OriginalText;
         }
 
-        if (!canRevert) throw new InvalidOperationException("The content from before the edit is not known.");
+        if (!canRevert)
+        {
+            throw new InvalidOperationException("The content from before the edit is not known.");
+        }
+
         var workspaceRoot = _services.WorkspaceRoot;
         await Task.Run(async () =>
         {
             using var pathLease = WorkspacePathGuard.AcquireFile(workspaceRoot, file.FullPath);
-            if (original is null) File.Delete(pathLease.FullPath);
-            else await WriteLeasedFileAsync(pathLease, original).ConfigureAwait(true);
+            if (original is null)
+            {
+                File.Delete(pathLease.FullPath);
+            }
+            else
+            {
+                await WriteLeasedFileAsync(pathLease, original).ConfigureAwait(true);
+            }
         }).ConfigureAwait(true);
         UntrackChange(file);
     }
 
     private void UntrackChange(ChangedFileViewModel file)
     {
-        lock (_changedFilesByPath) _changedFilesByPath.Remove(file.FullPath);
+        lock (_changedFilesByPath)
+        {
+            _changedFilesByPath.Remove(file.FullPath);
+        }
+
         ChangedFiles.Remove(file);
     }
 
-    private void OnDisconnected(object? sender, Exception? ex)
-    {
-        RunOnUi(() =>
-        {
-            if (_disposed || !ReferenceEquals(sender, _connection)) return;
-            StatusMessage = ex is not null ? $"Agent disconnected: {ex.Message}" : "Agent disconnected.";
-            _ = ReleaseConnectionAsync();
-        });
-    }
+    private void OnDisconnected(object? sender, Exception? ex) => RunOnUi(() =>
+                                                                       {
+                                                                           if (_disposed || !ReferenceEquals(sender, _connection))
+                                                                           {
+                                                                               return;
+                                                                           }
+
+                                                                           StatusMessage = ex is not null ? $"Agent disconnected: {ex.Message}" : "Agent disconnected.";
+                                                                           _ = ReleaseConnectionAsync();
+                                                                       });
 
     private async Task ReleaseConnectionAsync()
     {
@@ -2602,7 +3595,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         IsRemoteControlEnabled = false;
         RemoteControlUrl = null;
         ApplyConfigOptions(Array.Empty<SessionConfigOption>());
-        if (connection is null) return;
+        if (connection is null)
+        {
+            return;
+        }
+
         connection.SessionUpdate -= OnSessionUpdate;
         connection.PermissionRequested -= OnPermissionRequested;
         connection.ElicitationRequested -= OnElicitationRequested;
@@ -2612,26 +3609,39 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         try { await connection.DisposeAsync().ConfigureAwait(true); }
         catch (Exception ex)
         {
-            if (!_disposed) StatusMessage = $"Could not close the agent: {ex.Message}";
+            if (!_disposed)
+            {
+                StatusMessage = $"Could not close the agent: {ex.Message}";
+            }
         }
     }
 
-    private void OnAuthStateChanged(object? sender, AuthStateChangedEventArgs e)
-    {
-        RunOnUi(() =>
-        {
-            if (_disposed) return;
-            ApplyAuthState(e.State, e.Detail);
-            if (!NeedsAuthentication && _sessionId is null && !IsConnecting) _ = InitializeAsync();
-            else if (NeedsAuthentication) _ = ReleaseConnectionAsync();
-        });
-    }
+    private void OnAuthStateChanged(object? sender, AuthStateChangedEventArgs e) => RunOnUi(() =>
+                                                                                         {
+                                                                                             if (_disposed)
+                                                                                             {
+                                                                                                 return;
+                                                                                             }
+
+                                                                                             ApplyAuthState(e.State, e.Detail);
+                                                                                             if (!NeedsAuthentication && _sessionId is null && !IsConnecting)
+                                                                                             {
+                                                                                                 _ = InitializeAsync();
+                                                                                             }
+                                                                                             else if (NeedsAuthentication)
+                                                                                             {
+                                                                                                 _ = ReleaseConnectionAsync();
+                                                                                             }
+                                                                                         });
 
     private void ApplyAuthState(AuthState state, string? detail = null)
     {
         IsSignedIn = state == AuthState.SignedIn || (state != AuthState.SignedOut && _sessionId is not null);
         NeedsAuthentication = state == AuthState.SignedOut;
-        if (detail is not null) StatusMessage = detail;
+        if (detail is not null)
+        {
+            StatusMessage = detail;
+        }
     }
 
     private void NotifyStateChanged()
@@ -2651,13 +3661,23 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private void RunOnUi(Action action)
     {
-        if (_uiContext is not null && _uiContext != SynchronizationContext.Current) _uiContext.Post(_ => action(), null);
-        else action();
+        if (_uiContext is not null && _uiContext != SynchronizationContext.Current)
+        {
+            _uiContext.Post(_ => action(), null);
+        }
+        else
+        {
+            action();
+        }
     }
 
     private Task OnUiAsync(Func<Task> action)
     {
-        if (_uiContext is null || _uiContext == SynchronizationContext.Current) return action();
+        if (_uiContext is null || _uiContext == SynchronizationContext.Current)
+        {
+            return action();
+        }
+
         var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         _uiContext.Post(async _ =>
         {
@@ -2669,7 +3689,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     public void Dispose()
     {
-        if (_disposed) return;
+        if (_disposed)
+        {
+            return;
+        }
+
         _disposed = true;
         _services.AuthService.StateChanged -= OnAuthStateChanged;
         _services.ActiveDocumentChanged -= OnActiveDocumentChanged;

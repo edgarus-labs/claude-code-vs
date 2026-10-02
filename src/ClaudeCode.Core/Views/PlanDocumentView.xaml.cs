@@ -19,7 +19,10 @@ namespace ClaudeCode.Core.Views;
 /// Proceed / Review actions bound to a <see cref="PlanReviewViewModel"/>.</summary>
 public partial class PlanDocumentView : UserControl, IDisposable
 {
-    private const string PlanLostMessage = "The plan viewer stopped working. Close this window and open the plan again.";
+    /// <summary>
+    /// The plan lost message.
+    /// </summary>
+    private const string _planLostMessage = "The plan viewer stopped working. Close this window and open the plan again.";
 
     private readonly DispatcherTimer _noticeTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(6) };
     private PlanReviewViewModel? _plan;
@@ -36,15 +39,26 @@ public partial class PlanDocumentView : UserControl, IDisposable
         _ = InitializeWebViewAsync();
     }
 
+    /// <summary>
+    /// Gets or sets the plan.
+    /// </summary>
     public PlanReviewViewModel? Plan
     {
         get => _plan;
         set
         {
-            if (_plan is not null) _plan.PropertyChanged -= OnPlanPropertyChanged;
+            if (_plan is not null)
+            {
+                _plan.PropertyChanged -= OnPlanPropertyChanged;
+            }
+
             _plan = value;
             DataContext = value;
-            if (_plan is not null) _plan.PropertyChanged += OnPlanPropertyChanged;
+            if (_plan is not null)
+            {
+                _plan.PropertyChanged += OnPlanPropertyChanged;
+            }
+
             ReviewPanel.Visibility = Visibility.Collapsed;
             ReviewBox.Text = string.Empty;
             HideNotice();
@@ -65,9 +79,16 @@ public partial class PlanDocumentView : UserControl, IDisposable
         try
         {
             var environment = await CoreWebView2Environment.CreateAsync(null, WebView2Profile.UserDataFolder).ConfigureAwait(true);
-            if (_disposed) return;
+            if (_disposed)
+            {
+                return;
+            }
+
             await PlanView.EnsureCoreWebView2Async(environment).ConfigureAwait(true);
-            if (_disposed) return;
+            if (_disposed)
+            {
+                return;
+            }
 
             CoreWebView2 core = PlanView.CoreWebView2;
             core.Settings.IsWebMessageEnabled = true;
@@ -98,7 +119,10 @@ public partial class PlanDocumentView : UserControl, IDisposable
 
     private void OnNavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)
     {
-        if (PlanDocumentProtocol.IsPlanDocumentUri(e.Uri)) return;
+        if (PlanDocumentProtocol.IsPlanDocumentUri(e.Uri))
+        {
+            return;
+        }
 
         e.Cancel = true;
         _cancelledNavigationId = e.NavigationId;
@@ -106,7 +130,11 @@ public partial class PlanDocumentView : UserControl, IDisposable
 
     private void OnNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
     {
-        if (_disposed) return;
+        if (_disposed)
+        {
+            return;
+        }
+
         if (!e.IsSuccess)
         {
             if (e.NavigationId == _cancelledNavigationId)
@@ -128,15 +156,20 @@ public partial class PlanDocumentView : UserControl, IDisposable
 
     private void OnProcessFailed(object? sender, CoreWebView2ProcessFailedEventArgs e)
     {
-        if (_disposed) return;
+        if (_disposed)
+        {
+            return;
+        }
+
         switch (e.ProcessFailedKind)
         {
             case CoreWebView2ProcessFailedKind.RenderProcessExited:
                 ReloadPlanPage();
                 break;
+
             case CoreWebView2ProcessFailedKind.BrowserProcessExited:
                 _ready = false;
-                ShowNotice(PlanLostMessage, persistent: true);
+                ShowNotice(_planLostMessage, persistent: true);
                 break;
         }
     }
@@ -146,7 +179,7 @@ public partial class PlanDocumentView : UserControl, IDisposable
         _ready = false;
         if (_reloadAttempted || PlanView.CoreWebView2 is not CoreWebView2 core)
         {
-            ShowNotice(PlanLostMessage, persistent: true);
+            ShowNotice(_planLostMessage, persistent: true);
             return;
         }
 
@@ -158,7 +191,7 @@ public partial class PlanDocumentView : UserControl, IDisposable
         catch (Exception exception) when (exception is COMException || exception is InvalidOperationException ||
                                           exception is ObjectDisposedException)
         {
-            ShowNotice(PlanLostMessage, persistent: true);
+            ShowNotice(_planLostMessage, persistent: true);
         }
     }
 
@@ -187,7 +220,11 @@ public partial class PlanDocumentView : UserControl, IDisposable
 
     private void PostToPlan(string script)
     {
-        if (!_ready || _disposed || PlanView.CoreWebView2 is null) return;
+        if (!_ready || _disposed || PlanView.CoreWebView2 is null)
+        {
+            return;
+        }
+
         try
         {
             _ = PlanView.CoreWebView2.ExecuteScriptAsync(script);
@@ -212,13 +249,20 @@ public partial class PlanDocumentView : UserControl, IDisposable
 
     private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
-        if (_disposed || !PlanDocumentProtocol.IsPlanDocumentUri(e.Source)) return;
+        if (_disposed || !PlanDocumentProtocol.IsPlanDocumentUri(e.Source))
+        {
+            return;
+        }
 
         string? url;
         try
         {
             var message = JsonConvert.DeserializeAnonymousType(e.WebMessageAsJson, new { type = "", url = "" });
-            if (message?.type != "openLink") return;
+            if (message?.type != "openLink")
+            {
+                return;
+            }
+
             url = message.url;
         }
         catch (Exception)
@@ -253,7 +297,10 @@ public partial class PlanDocumentView : UserControl, IDisposable
     private void ReviewButton_Click(object sender, RoutedEventArgs e)
     {
         ReviewPanel.Visibility = ReviewPanel.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
-        if (ReviewPanel.Visibility == Visibility.Visible) ReviewBox.Focus();
+        if (ReviewPanel.Visibility == Visibility.Visible)
+        {
+            ReviewBox.Focus();
+        }
     }
 
     private void ReviewCancel_Click(object sender, RoutedEventArgs e) => ReviewPanel.Visibility = Visibility.Collapsed;
@@ -261,7 +308,11 @@ public partial class PlanDocumentView : UserControl, IDisposable
     private void ReviewSend_Click(object sender, RoutedEventArgs e)
     {
         var comments = ReviewBox.Text;
-        if (_plan is null || string.IsNullOrWhiteSpace(comments)) return;
+        if (_plan is null || string.IsNullOrWhiteSpace(comments))
+        {
+            return;
+        }
+
         if (!_plan.ReviewCommand.CanExecute(comments))
         {
             ShowNotice(_plan.IsResolved
@@ -277,14 +328,25 @@ public partial class PlanDocumentView : UserControl, IDisposable
 
     private void ShowNotice(string message, bool persistent = false)
     {
-        if (_disposed) return;
-        if (persistent) _persistentNotice = message;
+        if (_disposed)
+        {
+            return;
+        }
+
+        if (persistent)
+        {
+            _persistentNotice = message;
+        }
+
         PlanNotice.Text = message;
         PlanNotice.Visibility = Visibility.Visible;
         var peer = UIElementAutomationPeer.FromElement(PlanNotice) ?? UIElementAutomationPeer.CreatePeerForElement(PlanNotice);
         peer?.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
         _noticeTimer.Stop();
-        if (!persistent) _noticeTimer.Start();
+        if (!persistent)
+        {
+            _noticeTimer.Start();
+        }
     }
 
     private void HideNotice()
@@ -303,11 +365,19 @@ public partial class PlanDocumentView : UserControl, IDisposable
 
     public void Dispose()
     {
-        if (_disposed) return;
+        if (_disposed)
+        {
+            return;
+        }
+
         _disposed = true;
         _noticeTimer.Stop();
         _noticeTimer.Tick -= OnNoticeTimerTick;
-        if (_plan is not null) _plan.PropertyChanged -= OnPlanPropertyChanged;
+        if (_plan is not null)
+        {
+            _plan.PropertyChanged -= OnPlanPropertyChanged;
+        }
+
         if (PlanView.CoreWebView2 is CoreWebView2 core)
         {
             core.WebMessageReceived -= OnWebMessageReceived;

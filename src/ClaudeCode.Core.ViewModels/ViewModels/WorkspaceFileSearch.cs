@@ -6,18 +6,32 @@ using System.Threading;
 
 namespace ClaudeCode.Core.ViewModels;
 
+/// <summary>
+/// Provides functionality to search for files within a workspace, supporting suffix filtering, optional folder copying, and limiting the number of returned entries.
+/// </summary>
 internal static class WorkspaceFileSearch
 {
-    private const int MaxEntries = 500_000;
+    /// <summary>
+    /// The max entries.
+    /// </summary>
+    private const int _maxEntries = 500_000;
 
-    private static readonly HashSet<string> CopyFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    private static readonly HashSet<string> _copyFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
         "bin", "obj", ".vs", "node_modules",
     };
 
     public static IReadOnlyList<string> FindBySuffix(string workspaceRoot, string suffix, CancellationToken cancellationToken) =>
-        FindBySuffix(workspaceRoot, suffix, MaxEntries, cancellationToken);
+        FindBySuffix(workspaceRoot, suffix, _maxEntries, cancellationToken);
 
+    /// <summary>
+    /// Searches the specified workspace root for paths ending with the given suffix, returning up to the requested maximum number of entries and, if needed, continues the search in any discovered copy folders.
+    /// </summary>
+    /// <param name="workspaceRoot">The workspace root.</param>
+    /// <param name="suffix">The suffix.</param>
+    /// <param name="maxEntries">The max entries.</param>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>A collection of iread only list items.</returns>
     internal static IReadOnlyList<string> FindBySuffix(string workspaceRoot, string suffix, int maxEntries, CancellationToken cancellationToken)
     {
         var budget = maxEntries;
@@ -68,7 +82,7 @@ internal static class WorkspaceFileSearch
                             continue;
                         }
 
-                        if (deferredCopyFolders is not null && CopyFolders.Contains(entry.Name))
+                        if (deferredCopyFolders is not null && _copyFolders.Contains(entry.Name))
                         {
                             deferredCopyFolders.Add(entry.FullName);
                         }

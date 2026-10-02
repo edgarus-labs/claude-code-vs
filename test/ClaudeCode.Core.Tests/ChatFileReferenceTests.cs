@@ -1,7 +1,7 @@
+using ClaudeCode.Core.ViewModels;
 using System;
 using System.Diagnostics;
 using System.Text;
-using ClaudeCode.Core.ViewModels;
 using Xunit;
 
 namespace ClaudeCode.Core.Tests;

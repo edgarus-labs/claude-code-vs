@@ -6,8 +6,14 @@ using System.Threading.Tasks;
 
 namespace ClaudeCode.VsControl.Mcp;
 
+/// <summary>
+/// Provides the application entry point that parses the pipe argument and initiates program execution.
+/// </summary>
 public static class Program
 {
+    /// <summary>
+    /// The pipe argument name.
+    /// </summary>
     private const string _pipeArgumentName = "--pipe";
 
     public static async Task<int> Main(string[] args)

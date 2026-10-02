@@ -517,21 +517,41 @@ public sealed class ChatViewModelTests
 
     private static async Task WaitUntilAsync(Func<bool> condition)
     {
-        for (var i = 0; i < 200 && !condition(); i++) await Task.Delay(10);
+        for (var i = 0; i < 200 && !condition(); i++)
+        {
+            await Task.Delay(10);
+        }
+
         Assert.True(condition());
     }
 
+    /// <summary>
+    /// Represents a usage service that tracks call counts, calculates usage percentage, and provides asynchronous retrieval of usage data and waiting for call limits.
+    /// </summary>
     private sealed class CountingUsageService : IUsageService
     {
         private int _calls;
+        /// <summary>
+        /// Gets or sets the percent.
+        /// </summary>
         public int Percent { get; set; } = 10;
+        /// <summary>
+        /// Gets or sets the resets at.
+        /// </summary>
         public DateTimeOffset? ResetsAt { get; set; }
+        /// <summary>
+        /// Gets or sets the failure.
+        /// </summary>
         public Exception? Failure { get; set; }
 
         public Task<UsageSnapshot?> GetUsageAsync(CancellationToken cancellationToken)
         {
             Interlocked.Increment(ref _calls);
-            if (Failure is not null) throw Failure;
+            if (Failure is not null)
+            {
+                throw Failure;
+            }
+
             return Task.FromResult<UsageSnapshot?>(new UsageSnapshot
             {
                 Limits = [new UsageLimit { Kind = "session", Group = "session", Percent = Percent, ResetsAt = ResetsAt }],
@@ -541,7 +561,11 @@ public sealed class ChatViewModelTests
 
         public async Task WaitForCallsAsync(int expected)
         {
-            for (var i = 0; i < 200 && Volatile.Read(ref _calls) < expected; i++) await Task.Delay(10);
+            for (var i = 0; i < 200 && Volatile.Read(ref _calls) < expected; i++)
+            {
+                await Task.Delay(10);
+            }
+
             Assert.True(Volatile.Read(ref _calls) >= expected, $"Expected at least {expected} usage fetches, saw {_calls}.");
         }
     }

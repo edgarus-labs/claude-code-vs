@@ -11,13 +11,25 @@ namespace ClaudeCode.Core.Tests;
 
 public sealed partial class ChatSessionStateTests
 {
-    private static readonly string[] AdvertisedEfforts = { "low", "medium", "high", "xhigh", "max" };
+    private static readonly string[] _advertisedEfforts = { "low", "medium", "high", "xhigh", "max" };
 
     private sealed class FakeEffortClassifier : IEffortClassifier
     {
+        /// <summary>
+        /// Gets the collection of prompts.
+        /// </summary>
         public List<string> Prompts { get; } = [];
+        /// <summary>
+        /// Gets the collection of tokens.
+        /// </summary>
         public List<CancellationToken> Tokens { get; } = [];
+        /// <summary>
+        /// Gets or sets the handler.
+        /// </summary>
         public Func<string, Task<EffortLevel>> Handler { get; set; } = _ => Task.FromResult(EffortLevel.Medium);
+        /// <summary>
+        /// Gets or sets the token handler.
+        /// </summary>
         public Func<string, CancellationToken, Task<EffortLevel>>? TokenHandler { get; set; }
 
         public Task<EffortLevel> ClassifyAsync(string prompt, CancellationToken cancellationToken)
@@ -32,12 +44,12 @@ public sealed partial class ChatSessionStateTests
     {
         var log = new List<string>();
         var current = effort;
-        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options("sonnet", effort, AdvertisedEfforts) };
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options("sonnet", effort, _advertisedEfforts) };
         connection.ConfigHandler = (_, value, _) =>
         {
             log.Add("effort=" + value);
             current = value;
-            return Task.FromResult(Options("sonnet", current, AdvertisedEfforts));
+            return Task.FromResult(Options("sonnet", current, _advertisedEfforts));
         };
         connection.PromptHandler = content =>
         {
@@ -347,7 +359,9 @@ public sealed partial class ChatSessionStateTests
         {
             if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove &&
                 e.OldItems!.Cast<ChatMessageViewModel>().Any(message => message.Text == "second"))
+            {
                 throw new InvalidOperationException("observer failed");
+            }
         };
         verdict.SetResult(EffortLevel.High);
         await WithinAsync(sending);
@@ -368,7 +382,7 @@ public sealed partial class ChatSessionStateTests
         connection.PromptHandler = _ => firstTurn.Task;
         connection.ConfigHandler = (_, value, _) => value == "high"
             ? Task.FromException<IReadOnlyList<SessionConfigOption>>(new InvalidOperationException("rejected"))
-            : Task.FromResult(Options("sonnet", value, AdvertisedEfforts));
+            : Task.FromResult(Options("sonnet", value, _advertisedEfforts));
         var classifier = new FakeEffortClassifier
         {
             Handler = prompt => Task.FromResult(prompt.StartsWith("Review comments", StringComparison.Ordinal) ? EffortLevel.High : EffortLevel.Low),
@@ -413,7 +427,9 @@ public sealed partial class ChatSessionStateTests
         {
             if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove &&
                 e.OldItems!.Cast<ChatMessageViewModel>().Any(message => message.Text == "first"))
+            {
                 throw new InvalidOperationException("observer failed");
+            }
         };
         await vm.CancelAsync();
         verdict.SetResult(EffortLevel.High);
@@ -443,7 +459,9 @@ public sealed partial class ChatSessionStateTests
         {
             if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove &&
                 e.OldItems!.Cast<ChatMessageViewModel>().Any(message => message.Text == "first"))
+            {
                 throw new InvalidOperationException("observer failed");
+            }
         };
         verdict.SetResult(EffortLevel.High);
         await WithinAsync(sending);
@@ -475,7 +493,9 @@ public sealed partial class ChatSessionStateTests
         {
             if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove &&
                 e.OldItems!.Cast<ChatMessageViewModel>().Any(message => message.Text == "first"))
+            {
                 throw new InvalidOperationException("observer failed");
+            }
         };
         await vm.CancelAsync();
         verdict.SetResult(EffortLevel.High);
@@ -497,7 +517,10 @@ public sealed partial class ChatSessionStateTests
         await vm.SelectEffortAsync(Auto(vm));
         vm.Messages.CollectionChanged += (_, e) =>
         {
-            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove) throw new InvalidOperationException("observer failed");
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove)
+            {
+                throw new InvalidOperationException("observer failed");
+            }
         };
 
         var (call, options) = PlanApprovalRequest();
@@ -806,7 +829,11 @@ public sealed partial class ChatSessionStateTests
         {
             tokens.Add(token);
             var acknowledgement = inner(session, value, token);
-            if (calls++ == call) await release.Task;
+            if (calls++ == call)
+            {
+                await release.Task;
+            }
+
             return await acknowledgement;
         };
         return (release, tokens);
@@ -912,7 +939,11 @@ public sealed partial class ChatSessionStateTests
         {
             TokenHandler = async (prompt, token) =>
             {
-                if (prompt == "second" && judgedSecond++ == 0) await Task.Delay(Timeout.Infinite, token);
+                if (prompt == "second" && judgedSecond++ == 0)
+                {
+                    await Task.Delay(Timeout.Infinite, token);
+                }
+
                 return EffortLevel.Medium;
             },
         };
@@ -1201,7 +1232,11 @@ public sealed partial class ChatSessionStateTests
         {
             TokenHandler = async (prompt, token) =>
             {
-                if (prompt == "look at this") await Task.Delay(Timeout.Infinite, token);
+                if (prompt == "look at this")
+                {
+                    await Task.Delay(Timeout.Infinite, token);
+                }
+
                 return EffortLevel.Medium;
             },
         };
@@ -1233,8 +1268,16 @@ public sealed partial class ChatSessionStateTests
         {
             TokenHandler = async (prompt, token) =>
             {
-                if (prompt == "second") return await secondVerdict.Task;
-                if (judgedHard++ == 0) await Task.Delay(Timeout.Infinite, token);
+                if (prompt == "second")
+                {
+                    return await secondVerdict.Task;
+                }
+
+                if (judgedHard++ == 0)
+                {
+                    await Task.Delay(Timeout.Infinite, token);
+                }
+
                 return EffortLevel.Medium;
             },
         };
@@ -1431,7 +1474,11 @@ public sealed partial class ChatSessionStateTests
         {
             TokenHandler = async (prompt, token) =>
             {
-                if (prompt == "first") await Task.Delay(Timeout.Infinite, token);
+                if (prompt == "first")
+                {
+                    await Task.Delay(Timeout.Infinite, token);
+                }
+
                 return EffortLevel.Medium;
             },
         };
@@ -1597,7 +1644,11 @@ public sealed partial class ChatSessionStateTests
         {
             TokenHandler = async (prompt, _) =>
             {
-                if (prompt == "git push") return EffortLevel.Low;
+                if (prompt == "git push")
+                {
+                    return EffortLevel.Low;
+                }
+
                 using var timeout = new CancellationTokenSource();
                 timeout.Cancel();
                 await Task.Delay(Timeout.Infinite, timeout.Token);
@@ -1680,7 +1731,7 @@ public sealed partial class ChatSessionStateTests
                 effort = value;
                 log.Add("effort=" + value);
             }
-            return Task.FromResult(Options(model, effort, model == "opus" ? opusLevels : AdvertisedEfforts));
+            return Task.FromResult(Options(model, effort, model == "opus" ? opusLevels : _advertisedEfforts));
         };
         return (connection, log);
     }
@@ -1691,7 +1742,7 @@ public sealed partial class ChatSessionStateTests
     [InlineData("high")]
     public async Task ModelSwitch_ToAModelLackingALevel_SuspendsAuto_UntilAModelWithAllThreeReturns(string missing)
     {
-        var opusLevels = AdvertisedEfforts.Where(level => level != missing).ToArray();
+        var opusLevels = _advertisedEfforts.Where(level => level != missing).ToArray();
         var (connection, log) = ModelSwitchingConnection(opusLevels, "xhigh");
         var classifier = new FakeEffortClassifier { Handler = _ => Task.FromResult(EffortLevel.Low) };
         using var vm = CreateWithClassifier(connection, classifier);
@@ -1721,7 +1772,7 @@ public sealed partial class ChatSessionStateTests
     [Fact]
     public async Task ModelSwitch_ToAModelWithAllThreeLevels_KeepsAutoWorking()
     {
-        var (connection, log) = ModelSwitchingConnection(AdvertisedEfforts, "high");
+        var (connection, log) = ModelSwitchingConnection(_advertisedEfforts, "high");
         var classifier = new FakeEffortClassifier { Handler = _ => Task.FromResult(EffortLevel.Low) };
         using var vm = CreateWithClassifier(connection, classifier);
         await vm.Initialization;
@@ -1741,7 +1792,7 @@ public sealed partial class ChatSessionStateTests
     [Fact]
     public async Task ModelSwitch_MovesTheAgentsEffort_PickerNamesNoLevelAutoDidNotSet()
     {
-        var (connection, _) = ModelSwitchingConnection(AdvertisedEfforts, "high");
+        var (connection, _) = ModelSwitchingConnection(_advertisedEfforts, "high");
         var classifier = new FakeEffortClassifier { Handler = _ => Task.FromResult(EffortLevel.Low) };
         using var vm = CreateWithClassifier(connection, classifier);
         await vm.Initialization;
@@ -1802,7 +1853,11 @@ public sealed partial class ChatSessionStateTests
         var release = new TaskCompletionSource();
         connection.ConfigHandler = async (session, value, token) =>
         {
-            if (holdRequests) await release.Task;
+            if (holdRequests)
+            {
+                await release.Task;
+            }
+
             return await inner(session, value, token);
         };
         var classifier = new FakeEffortClassifier { Handler = _ => Task.FromResult(EffortLevel.Low) };
@@ -1844,8 +1899,16 @@ public sealed partial class ChatSessionStateTests
         var release = new TaskCompletionSource();
         connection.ConfigHandler = async (session, value, token) =>
         {
-            if (holdRequests) await release.Task;
-            if (value == "xhigh") throw new InvalidOperationException("rejected");
+            if (holdRequests)
+            {
+                await release.Task;
+            }
+
+            if (value == "xhigh")
+            {
+                throw new InvalidOperationException("rejected");
+            }
+
             return await inner(session, value, token);
         };
         var classifier = new FakeEffortClassifier
@@ -1977,7 +2040,7 @@ public sealed partial class ChatSessionStateTests
         using var vm = CreateWithClassifier(connection, classifier);
         await vm.Initialization;
         await vm.SelectEffortAsync(Auto(vm));
-        var withLevels = Options("sonnet", "medium", AdvertisedEfforts);
+        var withLevels = Options("sonnet", "medium", _advertisedEfforts);
 
         connection.RaiseSessionUpdate(new SessionUpdate.ConfigOptionsChanged(Options("sonnet", "xhigh", "xhigh", "max")));
         Assert.DoesNotContain(vm.AvailableEfforts, value => value.Name == "Auto");

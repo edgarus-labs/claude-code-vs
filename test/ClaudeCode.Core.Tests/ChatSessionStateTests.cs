@@ -34,7 +34,7 @@ public sealed partial class ChatSessionStateTests
     private static ChatViewModel Create(RecordingAcpAgentConnection connection) =>
         new(new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService()));
 
-    private static readonly string[] ClientSlashCommandNames = { "login", "logout" };
+    private static readonly string[] _clientSlashCommandNames = { "login", "logout" };
 
     [Fact]
     public async Task Startup_PreparesAdvertisedCurrentSettingsBeforeFirstPrompt()
@@ -328,7 +328,10 @@ public sealed partial class ChatSessionStateTests
         factory.ConnectHandler = _ => Task.FromException<IAcpAgentConnection>(new InvalidOperationException("Unavailable"));
         vm.Messages.CollectionChanged += (_, e) =>
         {
-            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove) throw new InvalidOperationException("observer failed");
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove)
+            {
+                throw new InvalidOperationException("observer failed");
+            }
         };
         vm.InputText = "keep me";
 
@@ -354,7 +357,10 @@ public sealed partial class ChatSessionStateTests
         factory.ConnectHandler = _ => Task.FromException<IAcpAgentConnection>(new InvalidOperationException("Unavailable"));
         vm.Messages.CollectionChanged += (_, e) =>
         {
-            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove) throw new InvalidOperationException("observer failed");
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove)
+            {
+                throw new InvalidOperationException("observer failed");
+            }
         };
         vm.InputText = "keep me";
 
@@ -374,7 +380,10 @@ public sealed partial class ChatSessionStateTests
         factory.ConnectHandler = _ => Task.FromException<IAcpAgentConnection>(new InvalidOperationException("Unavailable"));
         vm.Messages.CollectionChanged += (_, e) =>
         {
-            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove) throw new InvalidOperationException("observer failed");
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove)
+            {
+                throw new InvalidOperationException("observer failed");
+            }
         };
         vm.InputText = "keep me";
 
@@ -417,7 +426,10 @@ public sealed partial class ChatSessionStateTests
         factory.ConnectHandler = _ => Task.FromException<IAcpAgentConnection>(new InvalidOperationException("Unavailable"));
         vm.Messages.CollectionChanged += (_, e) =>
         {
-            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove) throw new OperationCanceledException("observer cancelled");
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove)
+            {
+                throw new OperationCanceledException("observer cancelled");
+            }
         };
         vm.InputText = "keep me";
 
@@ -497,12 +509,17 @@ public sealed partial class ChatSessionStateTests
         factory.ConnectHandler = _ => Task.FromException<IAcpAgentConnection>(new InvalidOperationException("Unavailable"));
         vm.Messages.CollectionChanged += (_, e) =>
         {
-            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove) throw new InvalidOperationException("observer failed");
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove)
+            {
+                throw new InvalidOperationException("observer failed");
+            }
         };
         vm.PropertyChanged += (_, e) =>
         {
             if (e.PropertyName == nameof(ChatViewModel.StatusMessage) && vm.StatusMessage?.Contains("observer failed", StringComparison.Ordinal) == true)
+            {
                 throw new InvalidOperationException("status observer failed");
+            }
         };
         vm.InputText = "keep me";
 
@@ -523,7 +540,10 @@ public sealed partial class ChatSessionStateTests
         await vm.Initialization;
         vm.Messages.CollectionChanged += (_, e) =>
         {
-            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Add) throw new InvalidOperationException("observer failed");
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Add)
+            {
+                throw new InvalidOperationException("observer failed");
+            }
         };
         vm.InputText = "keep me";
         vm.AddImageAttachment("draft.png", "image/png", "AQID");
@@ -695,7 +715,10 @@ public sealed partial class ChatSessionStateTests
             SetSynchronizationContext(this);
             try
             {
-                while (_callbacks.TryDequeue(out var callback)) callback();
+                while (_callbacks.TryDequeue(out var callback))
+                {
+                    callback();
+                }
             }
             finally
             {
@@ -706,7 +729,13 @@ public sealed partial class ChatSessionStateTests
 
     private sealed class AdvisoryAuthService(AuthState state) : IAcpAuthService
     {
+        /// <summary>
+        /// Gets the current state.
+        /// </summary>
         public AuthState CurrentState => state;
+        /// <summary>
+        /// Occurs when state changed.
+        /// </summary>
         public event EventHandler<AuthStateChangedEventArgs>? StateChanged { add { } remove { } }
         public Task<bool> IsSignedInAsync(CancellationToken cancellationToken) => Task.FromResult(false);
         public Task SignInAsync(CancellationToken cancellationToken, IProgress<string>? progress = null) => Task.CompletedTask;

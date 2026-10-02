@@ -11,17 +11,14 @@ namespace ClaudeCode.Acp;
 
 public sealed partial class AcpProcessConnection
 {
-    private Task<JsonNode?> HandleInboundRequestAsync(string method, JsonNode? @params, CancellationToken cancellationToken)
+    private Task<JsonNode?> HandleInboundRequestAsync(string method, JsonNode? @params, CancellationToken cancellationToken) => method switch
     {
-        return method switch
-        {
-            "fs/read_text_file" => HandleReadTextFileAsync(RequireObject(@params, method), cancellationToken),
-            "fs/write_text_file" => HandleWriteTextFileAsync(RequireObject(@params, method), cancellationToken),
-            "session/request_permission" => HandleRequestPermissionAsync(RequireObject(@params, method), cancellationToken),
-            "elicitation/create" => HandleCreateElicitationAsync(RequireObject(@params, method), cancellationToken),
-            _ => throw new AcpRemoteException(-32601, $"Method not found: {method}"),
-        };
-    }
+        "fs/read_text_file" => HandleReadTextFileAsync(RequireObject(@params, method), cancellationToken),
+        "fs/write_text_file" => HandleWriteTextFileAsync(RequireObject(@params, method), cancellationToken),
+        "session/request_permission" => HandleRequestPermissionAsync(RequireObject(@params, method), cancellationToken),
+        "elicitation/create" => HandleCreateElicitationAsync(RequireObject(@params, method), cancellationToken),
+        _ => throw new AcpRemoteException(-32601, $"Method not found: {method}"),
+    };
 
     private async Task<JsonNode?> HandleReadTextFileAsync(JsonObject @params, CancellationToken cancellationToken)
     {
@@ -621,7 +618,7 @@ public sealed partial class AcpProcessConnection
         {
             foreach (var line in content.Split('\n'))
             {
-                if (GrepLinePathPrefix.Match(line) is { Success: true } match)
+                if (_grepLinePathPrefix.Match(line) is { Success: true } match)
                 {
                     paths.Add(match.Groups[1].Value);
                 }
@@ -629,7 +626,7 @@ public sealed partial class AcpProcessConnection
         }
     }
 
-    private static readonly Regex GrepLinePathPrefix = new Regex(@"^(.+?):\d+(?::|\r?$)", RegexOptions.CultureInvariant);
+    private static readonly Regex _grepLinePathPrefix = new Regex(@"^(.+?):\d+(?::|\r?$)", RegexOptions.CultureInvariant);
 
     private static ToolCallContent ParseToolCallContent(JsonObject obj)
     {
@@ -663,6 +660,12 @@ public sealed partial class AcpProcessConnection
         _ => null,
     };
 
+    /// <summary>
+    /// Converts the given ContentBlock into a JsonObject for wire transmission, mapping text, image, embedded text resource, and resource‑link blocks to their respective JSON structures and throwing NotSupportedException for unsupported block types.
+    /// </summary>
+    /// <param name="block">The block.</param>
+    /// <returns>The json object result.</returns>
+    /// <exception cref="NotSupportedException">Thrown when an error occurs during execution.</exception>
     private static JsonObject ToWireContentBlock(ContentBlock block) => block switch
     {
         ContentBlock.Text t => new JsonObject { ["type"] = "text", ["text"] = t.Value },
@@ -672,6 +675,11 @@ public sealed partial class AcpProcessConnection
         _ => throw new NotSupportedException($"Unsupported ContentBlock type: {block.GetType()}"),
     };
 
+    /// <summary>
+    /// Converts an EmbeddedTextResource into a JSON object for wire transmission, embedding its URI, text and optional MIME type within a resource wrapper.
+    /// </summary>
+    /// <param name="resource">The resource.</param>
+    /// <returns>The json object result.</returns>
     private static JsonObject ToWireEmbeddedTextResource(ContentBlock.EmbeddedTextResource resource)
     {
         var contents = new JsonObject { ["uri"] = resource.Uri, ["text"] = resource.Text };
@@ -683,6 +691,11 @@ public sealed partial class AcpProcessConnection
         return new JsonObject { ["type"] = "resource", ["resource"] = contents };
     }
 
+    /// <summary>
+    /// Creates a JsonArray that represents the supplied list of McpServerConfig objects, including each server&apos;s name, command, arguments, and environment variable pairs.
+    /// </summary>
+    /// <param name="servers">The collection of servers.</param>
+    /// <returns>The json array result.</returns>
     private static JsonArray BuildMcpServersArray(IReadOnlyList<McpServerConfig>? servers)
     {
         var array = new JsonArray();
@@ -717,6 +730,13 @@ public sealed partial class AcpProcessConnection
         return array;
     }
 
+    /// <summary>
+    /// Parses a JSON response to extract session configuration options, returning a read‑only list of SessionConfigOption objects and throwing AcpProtocolException on malformed data.
+    /// </summary>
+    /// <param name="response">The response.</param>
+    /// <param name="required">The required.</param>
+    /// <returns>A collection of iread only list items.</returns>
+    /// <exception cref="AcpProtocolException">Thrown when an error occurs during execution.</exception>
     private static IReadOnlyList<SessionConfigOption> ParseConfigOptions(JsonObject response, bool required = false)
     {
         JsonArray configOptions;
@@ -785,21 +805,53 @@ public sealed partial class AcpProcessConnection
         return result;
     }
 
+    /// <summary>
+    /// Parses a JSON node into a SessionConfigValue, throwing an AcpProtocolException if the node is not a valid JSON object.
+    /// </summary>
+    /// <param name="node">The node.</param>
+    /// <returns>The session config value result.</returns>
+    /// <exception cref="AcpProtocolException">Thrown when an error occurs during execution.</exception>
     private static SessionConfigValue ParseConfigValue(JsonNode? node)
     {
         var value = node as JsonObject ?? throw new AcpProtocolException("Invalid session config value.");
         return new SessionConfigValue(GetRequiredString(value, "value"), GetRequiredString(value, "name"), GetOptionalString(value, "description"));
     }
 
+    /// <summary>
+    /// Validates that the provided JsonNode is a JSON object and returns it, otherwise throws an AcpRemoteException indicating invalid parameters for the specified context.
+    /// </summary>
+    /// <param name="node">The node.</param>
+    /// <param name="context">The context.</param>
+    /// <returns>The json object result.</returns>
+    /// <exception cref="AcpRemoteException">Thrown when an error occurs during execution.</exception>
     private static JsonObject RequireObject(JsonNode? node, string context) =>
         node as JsonObject ?? throw new AcpRemoteException(-32602, $"Invalid params for {context}: expected a JSON object.");
 
+    /// <summary>
+    /// Retrieves the specified property value from the JSON object, throwing an AcpProtocolException if the property is missing or invalid.
+    /// </summary>
+    /// <param name="obj">The obj.</param>
+    /// <param name="property">The property.</param>
+    /// <returns>The string result.</returns>
+    /// <exception cref="AcpProtocolException">Thrown when an error occurs during execution.</exception>
     private static string GetRequiredString(JsonObject obj, string property) =>
         GetOptionalString(obj, property) ?? throw new AcpProtocolException($"Missing or invalid required '{property}' field.");
 
+    /// <summary>
+    /// Retrieves the string value of the specified property from the given JsonObject, returning null if the property is missing or not a string.
+    /// </summary>
+    /// <param name="obj">The obj.</param>
+    /// <param name="property">The property.</param>
+    /// <returns>The string? result.</returns>
     private static string? GetOptionalString(JsonObject obj, string property) =>
         obj.TryGetPropertyValue(property, out var node) && node is JsonValue value && value.TryGetValue<string>(out var s) ? s : null;
 
+    /// <summary>
+    /// Attempts to retrieve an integer value from the specified JSON property, returning null if the property is missing or cannot be parsed as an integer.
+    /// </summary>
+    /// <param name="obj">The obj.</param>
+    /// <param name="property">The property.</param>
+    /// <returns>The int? result.</returns>
     private static int? GetOptionalInt(JsonObject obj, string property)
     {
         if (!obj.TryGetPropertyValue(property, out var node) || node is not JsonValue value)

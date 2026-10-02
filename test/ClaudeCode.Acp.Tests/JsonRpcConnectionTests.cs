@@ -142,7 +142,7 @@ public sealed class JsonRpcConnectionTests : IAsyncLifetime, IAsyncDisposable
         Task<JsonNode?> request = _connection.SendRequestAsync("session/new", new JsonObject(), CancellationToken.None);
         await ReadRequestIdAsync();
 
-        byte[] oversized = new byte[(32 * 1024 * 1024) + 1024];
+        var oversized = new byte[(32 * 1024 * 1024) + 1024];
         for (int i = 0; i < oversized.Length; i++)
         {
             oversized[i] = (byte)'x';
@@ -177,6 +177,7 @@ public sealed class JsonRpcConnectionTests : IAsyncLifetime, IAsyncDisposable
 
             await release.Task.ConfigureAwait(false);
             Interlocked.Decrement(ref concurrent);
+
             return new JsonObject();
         };
 

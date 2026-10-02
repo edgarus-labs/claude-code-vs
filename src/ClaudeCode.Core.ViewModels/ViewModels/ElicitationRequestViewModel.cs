@@ -32,10 +32,10 @@ public sealed class ElicitationRequestViewModel : ObservableObject
     /// replaced by an ellipsis.</summary>
     public const int MaxFormTextLength = 20_000;
 
-    private static readonly IReadOnlyDictionary<string, IReadOnlyList<string>> NoContent =
+    private static readonly IReadOnlyDictionary<string, IReadOnlyList<string>> _noContent =
         new Dictionary<string, IReadOnlyList<string>>();
 
-    private static readonly ElicitationFieldViewModel[] NoFields = Array.Empty<ElicitationFieldViewModel>();
+    private static readonly ElicitationFieldViewModel[] _noFields = Array.Empty<ElicitationFieldViewModel>();
 
     private readonly Action<ElicitationAnswer> _respond;
     private readonly RelayCommand _backCommand;
@@ -44,6 +44,13 @@ public sealed class ElicitationRequestViewModel : ObservableObject
     private bool _submitted;
     private int _currentStep;
 
+    /// <summary>
+    /// Initializes a new instance of the ElicitationRequestViewModel class, validating that fields and respond.
+    /// </summary>
+    /// <param name="message">The message.</param>
+    /// <param name="fields">The collection of fields.</param>
+    /// <param name="respond">The respond.</param>
+    /// <exception cref="ArgumentNullException">Thrown when an error occurs during execution.</exception>
     public ElicitationRequestViewModel(string message, IReadOnlyList<ElicitationField> fields, Action<ElicitationAnswer> respond)
     {
         if (fields is null)
@@ -68,14 +75,23 @@ public sealed class ElicitationRequestViewModel : ObservableObject
         _nextCommand = new RelayCommand(GoNext, () => CanGoNext);
     }
 
+    /// <summary>
+    /// Gets the message.
+    /// </summary>
     public string Message { get; }
 
+    /// <summary>
+    /// Gets the collection of fields.
+    /// </summary>
     public IReadOnlyList<ElicitationFieldViewModel> Fields { get; }
 
     /// <summary>One line telling the user that the form was cut down to <see cref="MaxFields"/>, or
     /// null when it was not.</summary>
     public string? TruncationNotice { get; }
 
+    /// <summary>
+    /// Gets the submit command.
+    /// </summary>
     public ICommand SubmitCommand { get; }
 
     /// <summary>Dismisses the form without answering it.</summary>
@@ -84,7 +100,7 @@ public sealed class ElicitationRequestViewModel : ObservableObject
     /// <summary>The fields of the current question, in wire order; empty (never null) only when the
     /// form has no fields at all.</summary>
     public IReadOnlyList<ElicitationFieldViewModel> CurrentStepFields =>
-        _currentStep < _steps.Count ? _steps[_currentStep] : NoFields;
+        _currentStep < _steps.Count ? _steps[_currentStep] : _noFields;
 
     /// <summary>1-based position of the current question, or 0 when the form has no fields.</summary>
     public int CurrentStepNumber => _steps.Count == 0 ? 0 : _currentStep + 1;
@@ -93,6 +109,9 @@ public sealed class ElicitationRequestViewModel : ObservableObject
     /// companions that follow it.</summary>
     public int StepCount => _steps.Count;
 
+    /// <summary>
+    /// Gets a value indicating whether has multiple steps.
+    /// </summary>
     public bool HasMultipleSteps => _steps.Count > 1;
 
     /// <summary>"Question 2 of 3" for a form with multiple questions, otherwise null.</summary>
@@ -100,8 +119,14 @@ public sealed class ElicitationRequestViewModel : ObservableObject
         ? string.Format(CultureInfo.InvariantCulture, "Question {0} of {1}", CurrentStepNumber, StepCount)
         : null;
 
+    /// <summary>
+    /// Gets a value indicating whether can go back.
+    /// </summary>
     public bool CanGoBack => _currentStep > 0;
 
+    /// <summary>
+    /// Gets a value indicating whether can go next.
+    /// </summary>
     public bool CanGoNext => _currentStep + 1 < _steps.Count;
 
     /// <summary>True when the card should offer Send: the user is on the last question, or there is
@@ -197,7 +222,7 @@ public sealed class ElicitationRequestViewModel : ObservableObject
         }
 
         _submitted = true;
-        _respond(new ElicitationAnswer(ElicitationAction.Decline, NoContent));
+        _respond(new ElicitationAnswer(ElicitationAction.Decline, _noContent));
     }
 
     private static string[] SingleSelectValue(ElicitationFieldViewModel field)

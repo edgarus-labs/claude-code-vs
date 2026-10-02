@@ -23,10 +23,12 @@ public sealed class ElementBudget
         if (_remaining <= 0)
         {
             Truncated = true;
+
             return false;
         }
 
         _remaining--;
+
         return true;
     }
 

@@ -1,87 +1,7 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 
 namespace ClaudeCode.Contracts;
-
-/// <summary>A desktop rectangle in physical screen pixels, right/bottom exclusive like the Win32 <c>RECT</c> it is built from.</summary>
-public readonly struct ScreenRect : IEquatable<ScreenRect>
-{
-    public ScreenRect(int left, int top, int right, int bottom)
-    {
-        Left = left;
-        Top = top;
-        Right = right;
-        Bottom = bottom;
-    }
-
-    public int Left { get; }
-
-    public int Top { get; }
-
-    public int Right { get; }
-
-    public int Bottom { get; }
-
-    /// <summary>The width in pixels; zero or negative for an empty rectangle.</summary>
-    public int Width => Right - Left;
-
-    /// <summary>The height in pixels; zero or negative for an empty rectangle.</summary>
-    public int Height => Bottom - Top;
-
-    /// <summary>True when the rectangle encloses no pixel at all.</summary>
-    public bool IsEmpty => (Right <= Left) || (Bottom <= Top);
-
-    /// <summary>True when the two rectangles share at least one pixel; merely touching edges do not.</summary>
-    public bool Overlaps(ScreenRect other) =>
-        !IsEmpty && !other.IsEmpty && (other.Left < Right) && (other.Right > Left) && (other.Top < Bottom) && (other.Bottom > Top);
-
-    /// <summary>True when every pixel of <paramref name="other"/> lies inside this rectangle.</summary>
-    public bool Contains(ScreenRect other) =>
-        !other.IsEmpty && (other.Left >= Left) && (other.Top >= Top) && (other.Right <= Right) && (other.Bottom <= Bottom);
-
-    public bool Equals(ScreenRect other) =>
-        (Left == other.Left) && (Top == other.Top) && (Right == other.Right) && (Bottom == other.Bottom);
-
-    public override bool Equals(object? obj) => obj is ScreenRect other && Equals(other);
-
-    public override int GetHashCode() => (((((Left * 397) ^ Top) * 397) ^ Right) * 397) ^ Bottom;
-
-    /// <summary>Renders the four edges as <c>(left,top)-(right,bottom)</c>.</summary>
-    public override string ToString() =>
-        string.Format(CultureInfo.InvariantCulture, "({0},{1})-({2},{3})", Left, Top, Right, Bottom);
-
-    public static bool operator ==(ScreenRect left, ScreenRect right) => left.Equals(right);
-
-    public static bool operator !=(ScreenRect left, ScreenRect right) => !left.Equals(right);
-}
-
-/// <summary>Whether a window's own pixels can be read off the screen, and if not, which condition prevents it.</summary>
-public enum WindowCaptureExposure
-{
-    /// <summary>Every pixel of the window rectangle is the window's own.</summary>
-    Exposed,
-
-    /// <summary>The window is not visible, so the desktop shows something else at its rectangle.</summary>
-    Hidden,
-
-    /// <summary>The window is minimized and paints nothing.</summary>
-    Minimized,
-
-    /// <summary>The window is DWM-cloaked (on another virtual desktop, or suspended) and keeps a full
-    /// on-screen rectangle it never paints in.</summary>
-    Cloaked,
-
-    /// <summary>The window does not paint its whole rectangle opaquely: it is layered or
-    /// region-shaped.</summary>
-    Translucent,
-
-    /// <summary>The rectangle is empty or reaches outside the desktop, where no pixels are painted.</summary>
-    OffScreen,
-
-    /// <summary>Another window above it overlaps its rectangle.</summary>
-    Occluded,
-}
 
 /// <summary>
 /// The pure decisions behind the VSIX <c>captureWindow</c> tool.
@@ -169,6 +89,7 @@ public static class WindowCaptureRules
         }
 
         var longest = Math.Max(width, height);
+
         return longest <= maxSide ? 1.0 : (double)maxSide / longest;
     }
 

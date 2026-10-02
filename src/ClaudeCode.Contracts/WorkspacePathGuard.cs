@@ -1,8 +1,8 @@
+using Microsoft.Win32.SafeHandles;
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
-using Microsoft.Win32.SafeHandles;
 
 namespace ClaudeCode.Contracts;
 
@@ -34,7 +34,9 @@ public static class WorkspacePathGuard
     {
         fullPath = string.Empty;
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows) && !RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+        {
             return false;
+        }
 
         if (string.IsNullOrEmpty(workspaceRoot) || string.IsNullOrEmpty(candidatePath))
         {
@@ -139,7 +141,7 @@ public static class WorkspacePathGuard
             return false;
         }
 
-        if (GetFileAttributesW(LongPathSafe(path)) != InvalidFileAttributes)
+        if (GetFileAttributesW(LongPathSafe(path)) != _invalidFileAttributes)
         {
             return false;
         }
@@ -149,7 +151,7 @@ public static class WorkspacePathGuard
     }
 
     internal static string LongPathSafe(string path) =>
-        path.Length < MaxPath || path.StartsWith(@"\\", StringComparison.Ordinal) ? path : @"\\?\" + path;
+        path.Length < _maxPath || path.StartsWith(@"\\", StringComparison.Ordinal) ? path : @"\\?\" + path;
 
     private static bool IsWindowsSeparator(char value) => value == '\\' || value == '/';
 
@@ -158,9 +160,17 @@ public static class WorkspacePathGuard
         finalPath = string.Empty;
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
-            if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux)) return false;
+            if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+            {
+                return false;
+            }
+
             IntPtr resolved = RealPath(GetUnixPathBytes(path), IntPtr.Zero);
-            if (resolved == IntPtr.Zero) return false;
+            if (resolved == IntPtr.Zero)
+            {
+                return false;
+            }
+
             try
             {
                 finalPath = Marshal.PtrToStringAnsi(resolved)!;
@@ -175,10 +185,10 @@ public static class WorkspacePathGuard
         using SafeFileHandle handle = CreateFileW(
             LongPathSafe(path),
             dwDesiredAccess: 0,
-            dwShareMode: FileShareReadWriteDelete,
+            dwShareMode: _fileShareReadWriteDelete,
             lpSecurityAttributes: IntPtr.Zero,
-            dwCreationDisposition: OpenExisting,
-            dwFlagsAndAttributes: FileFlagBackupSemantics,
+            dwCreationDisposition: _openExisting,
+            dwFlagsAndAttributes: _fileFlagBackupSemantics,
             hTemplateFile: IntPtr.Zero);
 
         if (handle.IsInvalid)
@@ -197,11 +207,26 @@ public static class WorkspacePathGuard
         return true;
     }
 
-    private const uint FileShareReadWriteDelete = 0x00000001 | 0x00000002 | 0x00000004;
-    private const uint OpenExisting = 3;
-    private const uint FileFlagBackupSemantics = 0x02000000;
-    private const int MaxPath = 260;
-    private const uint InvalidFileAttributes = 0xFFFFFFFF;
+    /// <summary>
+    /// The file share read write delete.
+    /// </summary>
+    private const uint _fileShareReadWriteDelete = 0x00000001 | 0x00000002 | 0x00000004;
+    /// <summary>
+    /// The open existing.
+    /// </summary>
+    private const uint _openExisting = 3;
+    /// <summary>
+    /// The file flag backup semantics.
+    /// </summary>
+    private const uint _fileFlagBackupSemantics = 0x02000000;
+    /// <summary>
+    /// The max path.
+    /// </summary>
+    private const int _maxPath = 260;
+    /// <summary>
+    /// The invalid file attributes.
+    /// </summary>
+    private const uint _invalidFileAttributes = 0xFFFFFFFF;
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, ExactSpelling = true)]
     private static extern SafeFileHandle CreateFileW(
@@ -225,7 +250,11 @@ public static class WorkspacePathGuard
 
     internal static byte[] GetUnixPathBytes(string path)
     {
-        if (path.IndexOf('\0') >= 0) throw new ArgumentException("Filesystem paths cannot contain NUL.", nameof(path));
+        if (path.IndexOf('\0') >= 0)
+        {
+            throw new ArgumentException("Filesystem paths cannot contain NUL.", nameof(path));
+        }
+
         var bytes = new byte[Encoding.UTF8.GetByteCount(path) + 1];
         Encoding.UTF8.GetBytes(path, 0, path.Length, bytes, 0);
         return bytes;

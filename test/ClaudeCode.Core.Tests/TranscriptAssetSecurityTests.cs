@@ -15,17 +15,20 @@ namespace ClaudeCode.Core.Tests;
 /// </summary>
 public sealed class TranscriptAssetSecurityTests
 {
-    private static readonly string[] OwnScripts = ["transcript-common.js", "transcript.js", "plan.js"];
+    private static readonly string[] _ownScripts = ["transcript-common.js", "transcript.js", "plan.js"];
 
-    private const string SharedModule = "transcript-common.js";
+    /// <summary>
+    /// The shared module.
+    /// </summary>
+    private const string _sharedModule = "transcript-common.js";
 
-    private static readonly (string Page, string Script)[] PageScripts =
+    private static readonly (string Page, string Script)[] _pageScripts =
         [("index.html", "transcript.js"), ("plan.html", "plan.js")];
 
-    private static readonly string[] VendorBundles =
+    private static readonly string[] _vendorBundles =
         ["vendor/markdown-it.min.js", "vendor/purify.min.js", "vendor/highlight.min.js"];
 
-    private static readonly string[] ForbiddenSinks = ["outerHTML", "insertAdjacentHTML", "document.write", "srcdoc"];
+    private static readonly string[] _forbiddenSinks = ["outerHTML", "insertAdjacentHTML", "document.write", "srcdoc"];
 
     [Theory]
     [InlineData("transcript.js")]
@@ -58,7 +61,7 @@ public sealed class TranscriptAssetSecurityTests
         var unguarded = new List<string>();
         int assignments = 0;
 
-        foreach (string fileName in OwnScripts)
+        foreach (string fileName in _ownScripts)
         {
             string source = ReadScript(fileName);
 
@@ -87,7 +90,7 @@ public sealed class TranscriptAssetSecurityTests
                         + "'x.innerHTML = <value>;' assignments - an indexed or aliased write would escape this check");
             }
 
-            foreach (string sink in ForbiddenSinks)
+            foreach (string sink in _forbiddenSinks)
             {
                 if (source.Contains(sink, StringComparison.Ordinal))
                 {
@@ -118,12 +121,12 @@ public sealed class TranscriptAssetSecurityTests
     [Fact]
     public void SanitizerIsConfiguredWithTheNarrowedHtmlProfile()
     {
-        string source = ReadScript(SharedModule);
+        string source = ReadScript(_sharedModule);
 
         Match declaration = Regex.Match(source, @"var\s+purifyConfig\s*=\s*\{(?<body>.*?)\};", RegexOptions.Singleline);
         Assert.True(
             declaration.Success,
-            $"{SharedModule} no longer declares the shared 'purifyConfig' object literal. Both pages pass it to "
+            $"{_sharedModule} no longer declares the shared 'purifyConfig' object literal. Both pages pass it to "
                 + "every DOMPurify.sanitize() call; without it there is no single place that states what agent "
                 + "markdown is allowed to contain.");
 
@@ -166,7 +169,7 @@ public sealed class TranscriptAssetSecurityTests
         int sinks = 0;
         var callSiteFiles = new List<string>();
 
-        foreach (string fileName in OwnScripts)
+        foreach (string fileName in _ownScripts)
         {
             string source = ReadScript(fileName);
 
@@ -202,10 +205,10 @@ public sealed class TranscriptAssetSecurityTests
                 + "removed (then delete this test) or the pattern no longer matches the call shape it polices, "
                 + "which would make this guard pass vacuously.");
 
-        var strays = callSiteFiles.Where(file => file != SharedModule).Distinct().ToList();
+        var strays = callSiteFiles.Where(file => file != _sharedModule).Distinct().ToList();
         Assert.True(
             strays.Count == 0,
-            $"hljs.highlight() must only be called from {SharedModule}, which owns the shared character budget "
+            $"hljs.highlight() must only be called from {_sharedModule}, which owns the shared character budget "
                 + "every page render shares. A per-page call site is how the 20 000-char cap came to bound one of "
                 + "three sinks while a single 128 KB tool-output line still froze the renderer for 21 s. "
                 + $"Stray call sites in: {string.Join(", ", strays)}");
@@ -266,12 +269,12 @@ public sealed class TranscriptAssetSecurityTests
     public void PageLoadsTheSharedModuleBeforeItsOwnScript(string fileName)
     {
         string page = ReadAsset(fileName);
-        string pageScript = PageScripts.Single(entry => entry.Page == fileName).Script;
+        string pageScript = _pageScripts.Single(entry => entry.Page == fileName).Script;
 
-        int shared = ScriptTagIndex(page, SharedModule);
+        int shared = ScriptTagIndex(page, _sharedModule);
         Assert.True(
             shared >= 0,
-            $"{fileName} has no <script src=\"{SharedModule}\"> tag. Its page script reads the shared sanitizer "
+            $"{fileName} has no <script src=\"{_sharedModule}\"> tag. Its page script reads the shared sanitizer "
                 + "configuration, highlight budget, theme and link handling from window.claudeTranscriptCommon; "
                 + "without the tag the page IIFE throws on load and the window renders nothing at all.");
 
@@ -283,16 +286,16 @@ public sealed class TranscriptAssetSecurityTests
 
         Assert.True(
             shared < own,
-            $"{fileName} loads '{pageScript}' before '{SharedModule}'. Both are classic (non-deferred) scripts "
+            $"{fileName} loads '{pageScript}' before '{_sharedModule}'. Both are classic (non-deferred) scripts "
                 + "executed in document order, so the page script would run with window.claudeTranscriptCommon "
                 + "still undefined and render nothing.");
 
-        foreach (string bundle in VendorBundles)
+        foreach (string bundle in _vendorBundles)
         {
             int vendor = ScriptTagIndex(page, bundle);
             Assert.True(
                 vendor >= 0 && vendor < shared,
-                $"{fileName} must load '{bundle}' before '{SharedModule}' (found at index {vendor}, shared module "
+                $"{fileName} must load '{bundle}' before '{_sharedModule}' (found at index {vendor}, shared module "
                     + $"at {shared}). The shared module touches window.DOMPurify while it is still executing.");
         }
     }

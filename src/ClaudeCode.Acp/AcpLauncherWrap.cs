@@ -9,7 +9,10 @@ namespace ClaudeCode.Acp;
 /// </summary>
 public static class AcpLauncherWrap
 {
-    private const string PackageEntrySuffix = "/@agentclientprotocol/claude-agent-acp/dist/index.js";
+    /// <summary>
+    /// The package entry suffix.
+    /// </summary>
+    private const string _packageEntrySuffix = "/@agentclientprotocol/claude-agent-acp/dist/index.js";
 
     /// <summary>
     /// When <paramref name="resolved"/> is the `node &lt;pkg&gt;/dist/index.js` shape and the launcher exists,
@@ -27,7 +30,7 @@ public static class AcpLauncherWrap
 
         var entry = resolved.Arguments is { Count: 1 } ? resolved.Arguments[0] : null;
         var normalized = entry?.Replace('\\', '/');
-        if (normalized is null || !normalized.EndsWith(PackageEntrySuffix, StringComparison.OrdinalIgnoreCase))
+        if (normalized is null || !normalized.EndsWith(_packageEntrySuffix, StringComparison.OrdinalIgnoreCase))
         {
             return (resolved.FileName, resolved.Arguments, null);
         }

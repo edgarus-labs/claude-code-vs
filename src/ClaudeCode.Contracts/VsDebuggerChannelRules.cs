@@ -137,18 +137,12 @@ public static class VsDebuggerChannelRules
 
     /// <summary>Clamps an agent-supplied expression-evaluation timeout to the range 1 to
     /// <paramref name="maxMs"/>.</summary>
-    public static int ClampEvaluationTimeoutMs(int requestedMs, int maxMs)
-    {
-        return Math.Max(1, Math.Min(maxMs, requestedMs));
-    }
+    public static int ClampEvaluationTimeoutMs(int requestedMs, int maxMs) => Math.Max(1, Math.Min(maxMs, requestedMs));
 
     /// <summary>Bounds an agent-supplied poll wait (<c>waitForBreakMs</c>, <c>timeoutMs</c>): uses
     /// <paramref name="defaultMs"/> when none is given and clamps the result to the range
     /// <paramref name="minMs"/> to <paramref name="maxMs"/>.</summary>
-    public static int ClampWaitMs(int? requestedMs, int defaultMs, int minMs, int maxMs)
-    {
-        return Math.Max(minMs, Math.Min(maxMs, requestedMs ?? defaultMs));
-    }
+    public static int ClampWaitMs(int? requestedMs, int defaultMs, int minMs, int maxMs) => Math.Max(minMs, Math.Min(maxMs, requestedMs ?? defaultMs));
 
     /// <summary>Returns <paramref name="line"/> when it is 1 or greater; otherwise throws
     /// <see cref="InvalidOperationException"/>.</summary>
@@ -178,6 +172,7 @@ public static class VsDebuggerChannelRules
         }
 
         int cut = maxChars > 0 && char.IsHighSurrogate(value[maxChars - 1]) ? maxChars - 1 : maxChars;
+
         return value.Substring(0, cut) + "…";
     }
 }

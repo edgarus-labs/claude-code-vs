@@ -15,9 +15,12 @@ public static class ChatFileReference
     /// <summary>Href prefix of a transcript file-reference link.</summary>
     public const string LinkPrefix = "/__claudecode/open?";
 
-    private const int MaxLinkDestinationLength = 512;
+    /// <summary>
+    /// The max link destination length.
+    /// </summary>
+    private const int _maxLinkDestinationLength = 512;
 
-    private static readonly HashSet<string> RecognizedExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    private static readonly HashSet<string> _recognizedExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
         "cs", "csx", "csproj", "vbproj", "fsproj", "vcxproj", "sln", "slnx", "vb", "fs", "fsx",
         "ts", "tsx", "js", "jsx", "mjs", "cjs",
@@ -295,7 +298,7 @@ public static class ChatFileReference
 
         var depth = 1;
         var k = closeBracket + 2;
-        var limit = Math.Min(line.Length, k + MaxLinkDestinationLength);
+        var limit = Math.Min(line.Length, k + _maxLinkDestinationLength);
         while (k < limit && depth > 0)
         {
             if (line[k] == '(')
@@ -571,7 +574,7 @@ public static class ChatFileReference
             return false;
         }
 
-        return RecognizedExtensions.Contains(path.Substring(dot + 1));
+        return _recognizedExtensions.Contains(path.Substring(dot + 1));
     }
 
     private static int LastSeparatorIndex(string path)
@@ -629,6 +632,11 @@ public static class ChatFileReference
         return line.HasValue ? href + "&line=" + line.Value.ToString(CultureInfo.InvariantCulture) : href;
     }
 
+    /// <summary>
+    /// Encodes the given path string by applying URI escaping and percent‑encoding of RFC 2396 reserved characters.
+    /// </summary>
+    /// <param name="path">The path.</param>
+    /// <returns>The string result.</returns>
     private static string EncodePathValue(string path)
     {
         var escaped = Uri.EscapeDataString(path);
@@ -656,18 +664,23 @@ public static class ChatFileReference
                 case '!':
                     builder.Append("%21");
                     break;
+
                 case '*':
                     builder.Append("%2A");
                     break;
+
                 case '\'':
                     builder.Append("%27");
                     break;
+
                 case '(':
                     builder.Append("%28");
                     break;
+
                 case ')':
                     builder.Append("%29");
                     break;
+
                 default:
                     builder.Append(c);
                     break;

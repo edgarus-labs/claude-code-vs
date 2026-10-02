@@ -60,8 +60,14 @@ public sealed class JsonRpcConnectionBackpressureTests
 
     private sealed class DelayedWriteStream : MemoryStream
     {
+        /// <summary>
+        /// Gets the entered.
+        /// </summary>
         internal TaskCompletionSource<bool> Entered { get; } = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        /// <summary>
+        /// Gets the release.
+        /// </summary>
         internal TaskCompletionSource<bool> Release { get; } = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public override async Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
@@ -78,14 +84,29 @@ public sealed class JsonRpcConnectionBackpressureTests
 
         public NonDisposingStream(Stream inner) => _inner = inner;
 
+        /// <summary>
+        /// Gets a value indicating whether can read.
+        /// </summary>
         public override bool CanRead => _inner.CanRead;
 
+        /// <summary>
+        /// Gets a value indicating whether can seek.
+        /// </summary>
         public override bool CanSeek => _inner.CanSeek;
 
+        /// <summary>
+        /// Gets a value indicating whether can write.
+        /// </summary>
         public override bool CanWrite => _inner.CanWrite;
 
+        /// <summary>
+        /// Gets the length.
+        /// </summary>
         public override long Length => _inner.Length;
 
+        /// <summary>
+        /// Gets or sets the position.
+        /// </summary>
         public override long Position
         {
             get => _inner.Position;
@@ -101,6 +122,12 @@ public sealed class JsonRpcConnectionBackpressureTests
         public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
             _inner.ReadAsync(buffer, offset, count, cancellationToken);
 
+        /// <summary>
+        /// Asynchronously reads bytes into the provided buffer and returns the count of bytes read.
+        /// </summary>
+        /// <param name="buffer">The buffer.</param>
+        /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+        /// <returns>A value task representing the asynchronous operation. The task result contains the int.</returns>
         public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
             _inner.ReadAsync(buffer, cancellationToken);
 
@@ -116,9 +143,6 @@ public sealed class JsonRpcConnectionBackpressureTests
         public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default) =>
             _inner.WriteAsync(buffer, cancellationToken);
 
-        protected override void Dispose(bool disposing)
-        {
-            base.Dispose(disposing);
-        }
+        protected override void Dispose(bool disposing) => base.Dispose(disposing);
     }
 }

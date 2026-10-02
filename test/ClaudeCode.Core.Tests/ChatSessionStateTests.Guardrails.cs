@@ -85,6 +85,7 @@ public sealed partial class ChatSessionStateTests
         var thrown = await Task.Run(() =>
         {
             SynchronizationContext.SetSynchronizationContext(null);
+
             return Record.Exception(() => new ChatViewModel(services));
         });
 
@@ -175,6 +176,7 @@ public sealed partial class ChatSessionStateTests
         connection.CancelHandler = () =>
         {
             permission.Response.TrySetResult("cancelled-by-connection");
+
             return Task.CompletedTask;
         };
         Assert.NotNull(vm.PendingPermission);
@@ -202,6 +204,7 @@ public sealed partial class ChatSessionStateTests
         connection.CancelHandler = () =>
         {
             elicitation.Response.TrySetResult(new ElicitationAnswer(ElicitationAction.Cancel, new Dictionary<string, IReadOnlyList<string>>()));
+
             return Task.CompletedTask;
         };
         Assert.NotNull(vm.PendingElicitation);
@@ -229,6 +232,7 @@ public sealed partial class ChatSessionStateTests
         connection.CancelHandler = () =>
         {
             permission.Response.TrySetResult("cancelled-by-connection");
+
             return Task.CompletedTask;
         };
         var plan = vm.PendingPlan!;
@@ -313,7 +317,7 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(200_000, vm.ContextWindowSize);
         Assert.Equal(6, vm.ContextUsagePercent);
         vm.InputText = "/";
-        Assert.Equal(new[] { "review" }.Concat(ClientSlashCommandNames), vm.SlashSuggestions.Select(c => c.Name));
+        Assert.Equal(new[] { "review" }.Concat(_clientSlashCommandNames), vm.SlashSuggestions.Select(c => c.Name));
         vm.InputText = string.Empty;
 
         var tracked = Assert.Single(vm.ChangedFiles);
@@ -469,6 +473,7 @@ public sealed partial class ChatSessionStateTests
         connection.NewSessionHandler = _ =>
         {
             connection.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([new AvailableCommand("review", "Review", "scope")]), "session-reconnected");
+
             return Task.FromResult(new NewSessionResult("session-reconnected", []));
         };
         await vm.NewSessionAsync();
@@ -477,6 +482,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Empty(vm.Messages);
         Assert.Equal("Untitled", vm.SessionTitle);
         vm.InputText = "/";
-        Assert.Equal(new[] { "review" }.Concat(ClientSlashCommandNames), vm.SlashSuggestions.Select(c => c.Name));
+        Assert.Equal(new[] { "review" }.Concat(_clientSlashCommandNames), vm.SlashSuggestions.Select(c => c.Name));
     }
 }

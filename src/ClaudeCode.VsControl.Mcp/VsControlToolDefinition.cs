@@ -9,9 +9,18 @@ public sealed class VsControlToolDefinition
         InputSchemaJson = inputSchemaJson;
     }
 
+    /// <summary>
+    /// Gets the name.
+    /// </summary>
     public string Name { get; }
 
+    /// <summary>
+    /// Gets the description.
+    /// </summary>
     public string Description { get; }
 
+    /// <summary>
+    /// Gets the input schema json.
+    /// </summary>
     public string InputSchemaJson { get; }
 }

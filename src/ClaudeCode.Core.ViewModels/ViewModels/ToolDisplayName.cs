@@ -10,8 +10,14 @@ namespace ClaudeCode.Core.ViewModels;
 /// </summary>
 public static class ToolDisplayName
 {
-    private const string McpPrefix = "mcp__";
-    private const string McpSeparator = "__";
+    /// <summary>
+    /// The mcp prefix.
+    /// </summary>
+    private const string _mcpPrefix = "mcp__";
+    /// <summary>
+    /// The mcp separator.
+    /// </summary>
+    private const string _mcpSeparator = "__";
 
     /// <summary>
     /// Maximum length of a string returned by <see cref="Describe"/>.
@@ -31,19 +37,19 @@ public static class ToolDisplayName
             return string.Empty;
         }
 
-        if (!value.StartsWith(McpPrefix, StringComparison.Ordinal))
+        if (!value.StartsWith(_mcpPrefix, StringComparison.Ordinal))
         {
             return Cap(value);
         }
 
-        int separator = value.IndexOf(McpSeparator, McpPrefix.Length, StringComparison.Ordinal);
+        int separator = value.IndexOf(_mcpSeparator, _mcpPrefix.Length, StringComparison.Ordinal);
         if (separator < 0)
         {
             return Cap(value);
         }
 
-        string server = value.Substring(McpPrefix.Length, separator - McpPrefix.Length);
-        string tool = value.Substring(separator + McpSeparator.Length);
+        string server = value.Substring(_mcpPrefix.Length, separator - _mcpPrefix.Length);
+        string tool = value.Substring(separator + _mcpSeparator.Length);
         if (server.Length == 0 || tool.Length == 0)
         {
             return Cap(value);
@@ -76,6 +82,11 @@ public static class ToolDisplayName
         return string.Join("\n", lines).Trim();
     }
 
+    /// <summary>
+    /// Truncates the input string to a maximum display length, preserving surrogate pairs and trimming trailing whitespace, and appends an ellipsis when truncation occurs.
+    /// </summary>
+    /// <param name="value">The value.</param>
+    /// <returns>The string result.</returns>
     private static string Cap(string value)
     {
         if (value.Length <= MaxDisplayLength)
@@ -108,6 +119,11 @@ public static class ToolDisplayName
         return builder.ToString();
     }
 
+    /// <summary>
+    /// Converts the given identifier to sentence case, preserving acronyms and lower‑casing subsequent words while separating them with spaces.
+    /// </summary>
+    /// <param name="identifier">The identifier.</param>
+    /// <returns>The string result.</returns>
     private static string SentenceCase(string identifier)
     {
         var builder = new StringBuilder(identifier.Length + 4);

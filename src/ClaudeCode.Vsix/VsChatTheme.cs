@@ -54,6 +54,7 @@ internal static class VsChatTheme
         catch (Exception exception)
         {
             ActivityLog.TryLogWarning("Claude Code", "Editor format map unavailable: " + exception.Message);
+
             return null;
         }
     }
@@ -61,6 +62,7 @@ internal static class VsChatTheme
     private static Microsoft.VisualStudio.ComponentModelHost.IComponentModel? GetComponentModel()
     {
         ThreadHelper.ThrowIfNotOnUIThread();
+
         return ServiceProvider.GlobalProvider.GetService(typeof(Microsoft.VisualStudio.ComponentModelHost.SComponentModel))
             as Microsoft.VisualStudio.ComponentModelHost.IComponentModel;
     }
@@ -82,7 +84,11 @@ internal static class VsChatTheme
                 foreach (var name in classifications)
                 {
                     var type = registry.GetClassificationType(name);
-                    if (type is null) continue;
+                    if (type is null)
+                    {
+                        continue;
+                    }
+
                     if (map.GetTextProperties(type).ForegroundBrush is SolidColorBrush brush && brush.Color.A > 0)
                     {
                         var frozen = new SolidColorBrush(brush.Color);

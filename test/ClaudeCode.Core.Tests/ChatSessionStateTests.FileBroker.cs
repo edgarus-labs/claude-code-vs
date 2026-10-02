@@ -1,4 +1,3 @@
-using ClaudeCode.Contracts;
 using ClaudeCode.Core.ViewModels;
 using System;
 using System.IO;
@@ -12,6 +11,9 @@ public sealed partial class ChatSessionStateTests
 {
     private sealed class TempWorkspace : IDisposable
     {
+        /// <summary>
+        /// Gets the root.
+        /// </summary>
         public string Root { get; }
 
         public TempWorkspace()
@@ -196,7 +198,10 @@ public sealed partial class ChatSessionStateTests
     [Fact]
     public async Task FileReadRequest_ParentReplacedDuringEditorAwait_DoesNotReadOutside()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
 
         using var workspace = new TempWorkspace();
         using var outside = new TempWorkspace();
@@ -221,7 +226,10 @@ public sealed partial class ChatSessionStateTests
     [Fact]
     public async Task FileWriteRequest_ParentReplacedDuringEditorAwait_DoesNotWriteOutside()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
 
         using var workspace = new TempWorkspace();
         using var outside = new TempWorkspace();
@@ -248,7 +256,10 @@ public sealed partial class ChatSessionStateTests
     [Fact]
     public async Task FileReadRequest_LeafReplacedDuringEditorAwait_ReadsAcquiredFile()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
 
         using var workspace = new TempWorkspace();
         using var outside = new TempWorkspace();
@@ -273,7 +284,10 @@ public sealed partial class ChatSessionStateTests
     [Fact]
     public async Task FileWriteRequest_LeafReplacedDuringEditorAwait_ReplacesLinkNotItsTarget()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
 
         using var workspace = new TempWorkspace();
         using var outside = new TempWorkspace();

@@ -11,13 +11,34 @@ using System.Threading.Tasks;
 
 namespace ClaudeCode.VsControl.Mcp;
 
+/// <summary>
+/// Provides a client that communicates with Visual Studio through a named pipe, managing connection establishment, handshake token exchange, asynchronous request/response messaging, and graceful disposal.
+/// </summary>
 public sealed class VsControlPipeClient : IAsyncDisposable
 {
+    /// <summary>
+    /// The handshake token environment variable.
+    /// </summary>
     private const string _handshakeTokenEnvironmentVariable = "CLAUDECODE_VSCONTROL_TOKEN";
+    /// <summary>
+    /// The build solution method.
+    /// </summary>
     private const string _buildSolutionMethod = "buildSolution";
+    /// <summary>
+    /// The build project method.
+    /// </summary>
     private const string _buildProjectMethod = "buildProject";
+    /// <summary>
+    /// The start debugging method.
+    /// </summary>
     private const string _startDebuggingMethod = "startDebugging";
+    /// <summary>
+    /// The open solution method.
+    /// </summary>
     private const string _openSolutionMethod = "openSolution";
+    /// <summary>
+    /// The add project to solution method.
+    /// </summary>
     private const string _addProjectToSolutionMethod = "addProjectToSolution";
 
     /// <summary>
@@ -146,6 +167,12 @@ public sealed class VsControlPipeClient : IAsyncDisposable
             or _openSolutionMethod
             or _addProjectToSolutionMethod;
 
+    /// <summary>
+    /// Asynchronously ensures that a named pipe connection to the Visual Studio control pipe is established, reconnecting if necessary and throwing a TimeoutException if the connection cannot be made within the configured timeout.
+    /// </summary>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>A task representing the asynchronous operation.</returns>
+    /// <exception cref="TimeoutException">Thrown when an error occurs during execution.</exception>
     private async Task EnsureConnectedAsync(CancellationToken cancellationToken)
     {
         await _connectLock.WaitAsync(cancellationToken).ConfigureAwait(false);

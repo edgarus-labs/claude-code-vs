@@ -38,8 +38,5 @@ internal sealed class SignInCommand : BaseCommand<SignInCommand>
         }
     }
 
-    protected override void BeforeQueryStatus(EventArgs e)
-    {
-        Command.Enabled = ClaudeCodeServices.AuthService?.CurrentState != AuthState.SigningIn;
-    }
+    protected override void BeforeQueryStatus(EventArgs e) => Command.Enabled = ClaudeCodeServices.AuthService?.CurrentState != AuthState.SigningIn;
 }

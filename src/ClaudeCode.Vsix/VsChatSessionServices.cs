@@ -29,18 +29,39 @@ internal sealed class VsChatSessionServices : IChatSessionServices, IAutoEffortS
         EffortClassifier = effortClassifier ?? throw new ArgumentNullException(nameof(effortClassifier));
     }
 
+    /// <summary>
+    /// Gets the connection factory.
+    /// </summary>
     public IAcpAgentConnectionFactory ConnectionFactory { get; }
 
+    /// <summary>
+    /// Gets the auth service.
+    /// </summary>
     public IAcpAuthService AuthService { get; }
 
+    /// <summary>
+    /// Gets the usage service.
+    /// </summary>
     public IUsageService UsageService { get; }
 
+    /// <summary>
+    /// Gets the workspace root.
+    /// </summary>
     public string? WorkspaceRoot => _workspaceRootTracker.Root;
 
+    /// <summary>
+    /// Gets a value indicating whether has active document.
+    /// </summary>
     public bool HasActiveDocument => _editorDocumentTracker.HasActiveDocument;
 
+    /// <summary>
+    /// Gets a value indicating whether remote control at startup.
+    /// </summary>
     public bool RemoteControlAtStartup => _remoteControlAtStartup();
 
+    /// <summary>
+    /// Gets the effort classifier.
+    /// </summary>
     public IEffortClassifier? EffortClassifier { get; }
 
     private static OutputWindowPane? _outputPane;
@@ -65,12 +86,18 @@ internal sealed class VsChatSessionServices : IChatSessionServices, IAutoEffortS
     }
 #pragma warning restore VSSDK007
 
+    /// <summary>
+    /// Occurs when active document changed.
+    /// </summary>
     public event EventHandler? ActiveDocumentChanged
     {
         add => _editorDocumentTracker.ActiveDocumentChanged += value;
         remove => _editorDocumentTracker.ActiveDocumentChanged -= value;
     }
 
+    /// <summary>
+    /// Occurs when workspace root changed.
+    /// </summary>
     public event EventHandler? WorkspaceRootChanged
     {
         add => _workspaceRootTracker.Changed += value;
@@ -114,11 +141,17 @@ internal sealed class VsChatSessionServices : IChatSessionServices, IAutoEffortS
 
         using var edit = view.TextBuffer.CreateEdit();
         if (!edit.Replace(new Span(0, view.TextBuffer.CurrentSnapshot.Length), text) || edit.HasFailedChanges)
+        {
             throw new IOException("The editor rejected the document edit.");
+        }
+
         edit.Apply();
 
         if (edit.HasFailedChanges || edit.Canceled)
+        {
             throw new IOException("The editor rejected the document edit.");
+        }
+
         return true;
     }
 

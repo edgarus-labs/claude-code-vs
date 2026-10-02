@@ -22,10 +22,10 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
 {
     public static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(15);
     public const string JudgeModel = "haiku";
-    private const int ParseRetries = 2;
-    private const int MaxReplyChars = 16 * 1024;
-    private const int MaxDrainedStderrChars = 4 * 1024;
-    private static readonly Encoding Utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+    private const int _parseRetries = 2;
+    private const int _maxReplyChars = 16 * 1024;
+    private const int _maxDrainedStderrChars = 4 * 1024;
+    private static readonly Encoding _utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
 
     private readonly Func<CancellationToken, Task<AcpExecutableSpec>> _resolveExecutable;
     private readonly TimeSpan _timeout;
@@ -35,12 +35,19 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
     {
         _resolveExecutable = resolveExecutable ?? throw new ArgumentNullException(nameof(resolveExecutable));
         _timeout = timeout ?? DefaultTimeout;
-        if (_timeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(timeout), timeout, "The judgment deadline must be positive.");
+        if (_timeout <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(timeout), timeout, "The judgment deadline must be positive.");
+        }
     }
 
     public async Task<EffortLevel> ClassifyAsync(string prompt, CancellationToken cancellationToken)
     {
-        if (prompt is null) throw new ArgumentNullException(nameof(prompt));
+        if (prompt is null)
+        {
+            throw new ArgumentNullException(nameof(prompt));
+        }
+
         var user = await Task.Run(() => EffortJudgePrompt.RenderUser(prompt), CancellationToken.None).ConfigureAwait(false);
         return await JudgeAsync(user, cancellationToken).ConfigureAwait(false);
     }
@@ -53,11 +60,14 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
         {
             var executable = await WithinDeadlineAsync(_resolveExecutable(deadline.Token), deadline.Token).ConfigureAwait(false);
             string reply = string.Empty;
-            for (int attempt = 0; attempt <= ParseRetries; attempt++)
+            for (int attempt = 0; attempt <= _parseRetries; attempt++)
             {
                 var system = attempt == 0 ? EffortJudgePrompt.SystemPrompt : EffortJudgePrompt.RetrySystemPrompt;
                 reply = await RunAsync(executable, system, user, deadline.Token).ConfigureAwait(false);
-                if (EffortJudgePrompt.ParseReply(reply) is { } level) return level;
+                if (EffortJudgePrompt.ParseReply(reply) is { } level)
+                {
+                    return level;
+                }
             }
             throw new InvalidDataException("The effort judge replied without a level after three attempts.");
         }
@@ -86,6 +96,12 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
         return await work.ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Creates a read‑only list of command‑line arguments for the specified executable, incorporating the provided system prompt and predefined options.
+    /// </summary>
+    /// <param name="executable">The executable.</param>
+    /// <param name="system">The system.</param>
+    /// <returns>A collection of iread only list items.</returns>
     internal static IReadOnlyList<string> Arguments(AcpExecutableSpec executable, string system)
     {
         var arguments = new List<string>(executable.Arguments)
@@ -103,6 +119,15 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
         return arguments;
     }
 
+    /// <summary>
+    /// Asynchronously executes the specified AcpExecutableSpec with system arguments, writes the user input to its standard input, captures and returns the bounded standard output while draining standard error.
+    /// </summary>
+    /// <param name="executable">The executable.</param>
+    /// <param name="system">The system.</param>
+    /// <param name="user">The user.</param>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the string.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when an error occurs during execution.</exception>
     private static async Task<string> RunAsync(AcpExecutableSpec executable, string system, string user, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -145,18 +170,21 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
 
         try
         {
-            var reply = BoundedProcessOutput.ReadBoundedAsync(new StreamReader(output, Utf8), MaxReplyChars);
-            var stderrDrain = BoundedProcessOutput.ReadBoundedAsync(new StreamReader(error, Utf8), MaxDrainedStderrChars);
+            var reply = BoundedProcessOutput.ReadBoundedAsync(new StreamReader(output, _utf8), _maxReplyChars);
+            var stderrDrain = BoundedProcessOutput.ReadBoundedAsync(new StreamReader(error, _utf8), _maxDrainedStderrChars);
             var drained = Task.WhenAll(reply, stderrDrain);
-            _ = drained.ContinueWith(task => { _ = task.Exception; }, CancellationToken.None,
+            _ = drained.ContinueWith(task => _ = task.Exception, CancellationToken.None,
                 TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
 
-            var bytes = Utf8.GetBytes(user);
+            var bytes = _utf8.GetBytes(user);
             var writing = Task.Run(() =>
             {
-                using (input) input.Write(bytes, 0, bytes.Length);
+                using (input)
+                {
+                    input.Write(bytes, 0, bytes.Length);
+                }
             }, CancellationToken.None);
-            _ = writing.ContinueWith(task => { _ = task.Exception; }, CancellationToken.None,
+            _ = writing.ContinueWith(task => _ = task.Exception, CancellationToken.None,
                 TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
             await ProcessExitWait.WaitForExitAsync(writing, cancellationToken).ConfigureAwait(false);
             var inputRefused = false;
@@ -171,7 +199,7 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
 
             await ProcessExitWait.WaitForExitAsync(drained, cancellationToken).ConfigureAwait(false);
             var exited = Task.Run(process.WaitForExit, CancellationToken.None);
-            _ = exited.ContinueWith(task => { _ = task.Exception; }, CancellationToken.None,
+            _ = exited.ContinueWith(task => _ = task.Exception, CancellationToken.None,
                 TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
             await ProcessExitWait.WaitForExitAsync(exited, cancellationToken).ConfigureAwait(false);
             if (process.ExitCode != 0)
@@ -179,7 +207,11 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
                 throw new InvalidOperationException(string.Format(CultureInfo.InvariantCulture,
                     "The effort judge exited with code {0}.", process.ExitCode));
             }
-            if (inputRefused) throw new InvalidOperationException("The effort judge exited before reading the message.");
+            if (inputRefused)
+            {
+                throw new InvalidOperationException("The effort judge exited before reading the message.");
+            }
+
             return await reply.ConfigureAwait(false);
         }
         finally
@@ -196,11 +228,18 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
         }
     }
 
+    /// <summary>
+    /// Terminates the specified process if it is still running, suppressing any exceptions that occur during termination.
+    /// </summary>
+    /// <param name="process">The process.</param>
     private static void Terminate(Process process)
     {
         try
         {
-            if (!process.HasExited) process.Kill();
+            if (!process.HasExited)
+            {
+                process.Kill();
+            }
         }
         catch (InvalidOperationException)
         {

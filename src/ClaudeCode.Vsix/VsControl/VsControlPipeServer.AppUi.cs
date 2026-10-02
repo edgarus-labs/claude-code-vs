@@ -17,36 +17,123 @@ namespace ClaudeCode.Vsix.VsControl;
 
 internal sealed partial class VsControlPipeServer
 {
+    /// <summary>
+    /// The default element depth.
+    /// </summary>
     private const int _defaultElementDepth = 12;
+    /// <summary>
+    /// The max element depth.
+    /// </summary>
     private const int _maxElementDepth = 64;
+    /// <summary>
+    /// The default element count.
+    /// </summary>
     private const int _defaultElementCount = 500;
+    /// <summary>
+    /// The max element count.
+    /// </summary>
     private const int _maxElementCount = 5_000;
+    /// <summary>
+    /// The max element value chars.
+    /// </summary>
     private const int _maxElementValueChars = 200;
+    /// <summary>
+    /// The max capture side.
+    /// </summary>
     private const int _maxCaptureSide = 1920;
 
+    /// <summary>
+    /// The max capture bytes.
+    /// </summary>
     private const int _maxCaptureBytes = 4 * 1024 * 1024;
+    /// <summary>
+    /// The max capture encode attempts.
+    /// </summary>
     private const int _maxCaptureEncodeAttempts = 3;
 
+    /// <summary>
+    /// The max outstanding print windows.
+    /// </summary>
     private const int _maxOutstandingPrintWindows = 3;
+    /// <summary>
+    /// The max outstanding ui bodies.
+    /// </summary>
     private const int _maxOutstandingUiBodies = 3;
+    /// <summary>
+    /// The ui action timeout ms.
+    /// </summary>
     private const int _uiActionTimeoutMs = 5_000;
+    /// <summary>
+    /// The pump probe timeout ms.
+    /// </summary>
     private const uint _pumpProbeTimeoutMs = 1_000;
+    /// <summary>
+    /// The max zorder windows.
+    /// </summary>
     private const int _maxZOrderWindows = 1_000;
+    /// <summary>
+    /// The pw render full content.
+    /// </summary>
     private const uint _pwRenderFullContent = 0x2;
+    /// <summary>
+    /// The gw hwnd prev.
+    /// </summary>
     private const uint _gwHwndPrev = 3;
+    /// <summary>
+    /// The gw owner.
+    /// </summary>
     private const uint _gwOwner = 4;
+    /// <summary>
+    /// The ga root.
+    /// </summary>
     private const uint _gaRoot = 2;
+    /// <summary>
+    /// The wm null.
+    /// </summary>
     private const uint _wmNull = 0x0;
+    /// <summary>
+    /// The smto abort if hung.
+    /// </summary>
     private const uint _smtoAbortIfHung = 0x2;
+    /// <summary>
+    /// The dwmwa cloaked.
+    /// </summary>
     private const int _dwmwaCloaked = 14;
+    /// <summary>
+    /// The dwmwa extended frame bounds.
+    /// </summary>
     private const int _dwmwaExtendedFrameBounds = 9;
+    /// <summary>
+    /// The gwl ex style.
+    /// </summary>
     private const int _gwlExStyle = -20;
+    /// <summary>
+    /// The ws ex transparent.
+    /// </summary>
     private const int _wsExTransparent = 0x20;
+    /// <summary>
+    /// The ws ex layered.
+    /// </summary>
     private const int _wsExLayered = 0x80000;
+    /// <summary>
+    /// The rgn error.
+    /// </summary>
     private const int _rgnError = 0;
+    /// <summary>
+    /// The sm xvirtual screen.
+    /// </summary>
     private const int _smXVirtualScreen = 76;
+    /// <summary>
+    /// The sm yvirtual screen.
+    /// </summary>
     private const int _smYVirtualScreen = 77;
+    /// <summary>
+    /// The sm cx virtual screen.
+    /// </summary>
     private const int _smCxVirtualScreen = 78;
+    /// <summary>
+    /// The sm cy virtual screen.
+    /// </summary>
     private const int _smCyVirtualScreen = 79;
 
     private static async Task<JObject> ListAppWindowsAsync(CancellationToken cancellationToken = default)
@@ -140,21 +227,27 @@ internal sealed partial class VsControlPipeServer
                 case "invoke":
                     RequirePattern<InvokePattern>(element, InvokePattern.Pattern, action).Invoke();
                     break;
+
                 case "toggle":
                     RequirePattern<TogglePattern>(element, TogglePattern.Pattern, action).Toggle();
                     break;
+
                 case "select":
                     RequirePattern<SelectionItemPattern>(element, SelectionItemPattern.Pattern, action).Select();
                     break;
+
                 case "expand":
                     RequirePattern<ExpandCollapsePattern>(element, ExpandCollapsePattern.Pattern, action).Expand();
                     break;
+
                 case "collapse":
                     RequirePattern<ExpandCollapsePattern>(element, ExpandCollapsePattern.Pattern, action).Collapse();
                     break;
+
                 case "focus":
                     element.SetFocus();
                     break;
+
                 default:
                     throw UnknownElementAction(action);
             }
@@ -497,14 +590,11 @@ internal sealed partial class VsControlPipeServer
         return scaled;
     }
 
-    private static void ObserveFault(Task task)
-    {
-        _ = task.ContinueWith(
-            t => { _ = t.Exception; },
+    private static void ObserveFault(Task task) => _ = task.ContinueWith(
+            t => _ = t.Exception,
             CancellationToken.None,
             TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
-    }
 
     private static async Task<IntPtr> ResolveDebuggedWindowAsync(JObject args, CancellationToken cancellationToken)
     {
@@ -637,7 +727,11 @@ internal sealed partial class VsControlPipeServer
         };
 
         var actions = new JArray();
-        if (element.TryGetCurrentPattern(InvokePattern.Pattern, out _)) actions.Add("invoke");
+        if (element.TryGetCurrentPattern(InvokePattern.Pattern, out _))
+        {
+            actions.Add("invoke");
+        }
+
         if (element.TryGetCurrentPattern(TogglePattern.Pattern, out var toggle))
         {
             actions.Add("toggle");
@@ -663,7 +757,11 @@ internal sealed partial class VsControlPipeServer
             node["value"] = CapValue(((ValuePattern)value).Current.Value);
         }
 
-        if (current.IsKeyboardFocusable) actions.Add("focus");
+        if (current.IsKeyboardFocusable)
+        {
+            actions.Add("focus");
+        }
+
         node["actions"] = actions;
 
         var walker = TreeWalker.ControlViewWalker;
@@ -708,10 +806,26 @@ internal sealed partial class VsControlPipeServer
             ["isEnabled"] = current.IsEnabled,
         };
 
-        if (element.TryGetCurrentPattern(TogglePattern.Pattern, out var toggle)) json["toggleState"] = ((TogglePattern)toggle).Current.ToggleState.ToString();
-        if (element.TryGetCurrentPattern(ValuePattern.Pattern, out var value)) json["value"] = CapValue(((ValuePattern)value).Current.Value);
-        if (element.TryGetCurrentPattern(SelectionItemPattern.Pattern, out var selection)) json["isSelected"] = ((SelectionItemPattern)selection).Current.IsSelected;
-        if (element.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out var expand)) json["expandCollapseState"] = ((ExpandCollapsePattern)expand).Current.ExpandCollapseState.ToString();
+        if (element.TryGetCurrentPattern(TogglePattern.Pattern, out var toggle))
+        {
+            json["toggleState"] = ((TogglePattern)toggle).Current.ToggleState.ToString();
+        }
+
+        if (element.TryGetCurrentPattern(ValuePattern.Pattern, out var value))
+        {
+            json["value"] = CapValue(((ValuePattern)value).Current.Value);
+        }
+
+        if (element.TryGetCurrentPattern(SelectionItemPattern.Pattern, out var selection))
+        {
+            json["isSelected"] = ((SelectionItemPattern)selection).Current.IsSelected;
+        }
+
+        if (element.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out var expand))
+        {
+            json["expandCollapseState"] = ((ExpandCollapsePattern)expand).Current.ExpandCollapseState.ToString();
+        }
+
         return json;
     }
 
@@ -765,9 +879,21 @@ internal sealed partial class VsControlPipeServer
         [StructLayout(LayoutKind.Sequential)]
         public struct RECT
         {
+            /// <summary>
+            /// The left.
+            /// </summary>
             public int Left;
+            /// <summary>
+            /// The top.
+            /// </summary>
             public int Top;
+            /// <summary>
+            /// The right.
+            /// </summary>
             public int Right;
+            /// <summary>
+            /// The bottom.
+            /// </summary>
             public int Bottom;
         }
 

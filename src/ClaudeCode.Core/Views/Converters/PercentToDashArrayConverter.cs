@@ -16,6 +16,7 @@ public sealed class PercentToDashArrayConverter : IValueConverter
 
         int percent = value is int i ? i : 0;
         var (dash, gap) = CircularProgressGeometry.ComputeDash(percent, radius, thickness);
+
         return new DoubleCollection { dash, gap };
     }
 

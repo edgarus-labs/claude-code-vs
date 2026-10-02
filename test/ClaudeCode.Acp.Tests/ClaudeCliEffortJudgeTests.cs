@@ -1,11 +1,9 @@
-using ClaudeCode.Acp;
 using ClaudeCode.Contracts;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -15,7 +13,10 @@ namespace ClaudeCode.Acp.Tests;
 
 public sealed class ClaudeCliEffortJudgeTests : IDisposable
 {
-    private const string FakeAdapter = """
+    /// <summary>
+    /// The fake adapter.
+    /// </summary>
+    private const string _fakeAdapter = """
         const fs = require('fs');
         const [mode, log] = process.argv.slice(2, 4);
         const args = process.argv.slice(4);
@@ -56,6 +57,7 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
             case 'flood':
               process.stderr.write('e'.repeat(100000), () => process.stdout.write('o'.repeat(20000), () => process.exit(1)));
               break;
+
             case 'hang': setInterval(() => {}, 1000); break;
           }
         });
@@ -64,14 +66,17 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
     private readonly string _directory = Path.Combine(Path.GetTempPath(), "effort-judge-" + Guid.NewGuid().ToString("N"));
     private readonly string _script;
     private readonly string _log;
-    private string _pidFile => _log + ".pid";
+    /// <summary>
+    /// Gets the pid file.
+    /// </summary>
+    private string PidFile => _log + ".pid";
 
     public ClaudeCliEffortJudgeTests()
     {
         Directory.CreateDirectory(_directory);
         _script = Path.Combine(_directory, "fake-adapter.js");
         _log = Path.Combine(_directory, "calls.jsonl");
-        File.WriteAllText(_script, FakeAdapter);
+        File.WriteAllText(_script, _fakeAdapter);
     }
 
     public void Dispose()
@@ -225,13 +230,13 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
         await AssertChildGone();
     }
 
-    private static readonly string OversizedMessage = new string('ż', 5000);
+    private static readonly string _oversizedMessage = new string('ż', 5000);
 
     [Fact]
     public async Task Classify_CliExitsBeforeReadingStdin_ReportsExitCodeNotABrokenPipe()
     {
         var error = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => Judge("fail-early").ClassifyAsync(OversizedMessage, CancellationToken.None));
+            () => Judge("fail-early").ClassifyAsync(_oversizedMessage, CancellationToken.None));
 
         Assert.Contains("code 1", error.Message);
     }
@@ -241,7 +246,7 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
     {
         var watch = Stopwatch.StartNew();
         await Assert.ThrowsAsync<TimeoutException>(
-            () => Judge("stall", TimeSpan.FromSeconds(2)).ClassifyAsync(OversizedMessage, CancellationToken.None));
+            () => Judge("stall", TimeSpan.FromSeconds(2)).ClassifyAsync(_oversizedMessage, CancellationToken.None));
 
         Assert.True(watch.Elapsed < TimeSpan.FromSeconds(10), watch.Elapsed.ToString());
         await AssertChildGone();
@@ -297,11 +302,8 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
     }
 
     [Fact(Skip = "Timing-dependent: relies on a 300 ms margin over two real node runs; flaky on CI runners.")]
-    public async Task Classify_OneDeadlineCoversEveryAttempt()
-    {
-        await Assert.ThrowsAsync<TimeoutException>(
+    public async Task Classify_OneDeadlineCoversEveryAttempt() => await Assert.ThrowsAsync<TimeoutException>(
             () => Judge("slow-retry", TimeSpan.FromMilliseconds(1500)).ClassifyAsync("ok", CancellationToken.None));
-    }
 
     [Theory]
     [InlineData(0)]
@@ -379,24 +381,32 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
         }
     }
 
-    private int? ReadPid() => ReadPidFile(_pidFile);
+    private int? ReadPid() => ReadPidFile(PidFile);
 
     private static async Task<int> WaitForPid(string path, string failure)
     {
         var giveUp = DateTime.UtcNow + TimeSpan.FromSeconds(10);
         while (true)
         {
-            if (ReadPidFile(path) is { } pid) return pid;
+            if (ReadPidFile(path) is { } pid)
+            {
+                return pid;
+            }
+
             Assert.True(DateTime.UtcNow < giveUp, failure);
             await Task.Delay(20);
         }
     }
 
-    private async Task WaitForPidFile() => await WaitForPid(_pidFile, "the fake adapter never started");
+    private async Task WaitForPidFile() => await WaitForPid(PidFile, "the fake adapter never started");
 
     private async Task AssertChildGone()
     {
-        if (ReadPid() is not { } pid) return;
+        if (ReadPid() is not { } pid)
+        {
+            return;
+        }
+
         await AssertGone(pid);
     }
 

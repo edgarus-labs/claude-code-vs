@@ -47,10 +47,7 @@ public static class VsBuildChannelRules
     /// <paramref name="defaultChars"/> when none is given and clamps the result to the range 1 to
     /// <paramref name="maxChars"/>.
     /// </summary>
-    public static int ClampOutputChars(int? requestedMaxChars, int defaultChars, int maxChars)
-    {
-        return Math.Min(maxChars, Math.Max(1, requestedMaxChars ?? defaultChars));
-    }
+    public static int ClampOutputChars(int? requestedMaxChars, int defaultChars, int maxChars) => Math.Min(maxChars, Math.Max(1, requestedMaxChars ?? defaultChars));
 
     /// <summary>
     /// The language-independent GUID of the Build, Debug or General Output pane, matched

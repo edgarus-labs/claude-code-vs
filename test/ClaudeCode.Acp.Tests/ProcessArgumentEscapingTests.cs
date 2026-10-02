@@ -1,6 +1,5 @@
 using System;
 using System.Runtime.InteropServices;
-using ClaudeCode.Acp;
 using Xunit;
 
 namespace ClaudeCode.Acp.Tests;
@@ -61,16 +60,10 @@ public sealed class ProcessArgumentEscapingTests
     }
 
     [Fact]
-    public void ToArgumentsString_NoWhitespaceOrQuotes_IsNotQuoted()
-    {
-        Assert.Equal("plain-arg", ProcessArgumentEscaping.ToArgumentsString(new[] { "plain-arg" }));
-    }
+    public void ToArgumentsString_NoWhitespaceOrQuotes_IsNotQuoted() => Assert.Equal("plain-arg", ProcessArgumentEscaping.ToArgumentsString(new[] { "plain-arg" }));
 
     [Fact]
-    public void ToArgumentsString_EmptyArgumentList_ProducesEmptyString()
-    {
-        Assert.Equal(string.Empty, ProcessArgumentEscaping.ToArgumentsString(Array.Empty<string>()));
-    }
+    public void ToArgumentsString_EmptyArgumentList_ProducesEmptyString() => Assert.Equal(string.Empty, ProcessArgumentEscaping.ToArgumentsString(Array.Empty<string>()));
 
     private static string[] ParseViaWindowsApi(string commandLine)
     {

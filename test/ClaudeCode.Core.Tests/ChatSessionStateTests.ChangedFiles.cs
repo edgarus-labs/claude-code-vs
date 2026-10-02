@@ -99,7 +99,10 @@ public sealed partial class ChatSessionStateTests
 
         var pending = new ClaudeCode.Contracts.ToolCallUpdate
         {
-            ToolCallId = "edit-1", Title = "Edit Edited.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
+            ToolCallId = "edit-1",
+            Title = "Edit Edited.cs",
+            Kind = "edit",
+            Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
             Content = [new ClaudeCode.Contracts.ToolCallContent { Path = targetPath, OldText = "before\n", NewText = "after\nmore\n" }],
         };
         connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(pending));
@@ -108,7 +111,10 @@ public sealed partial class ChatSessionStateTests
         File.WriteAllText(targetPath, "after\nmore\n");
         var completed = new ClaudeCode.Contracts.ToolCallUpdate
         {
-            ToolCallId = "edit-1", Title = "Edit Edited.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
+            ToolCallId = "edit-1",
+            Title = "Edit Edited.cs",
+            Kind = "edit",
+            Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
             Content = pending.Content,
         };
         connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(completed));
@@ -140,10 +146,14 @@ public sealed partial class ChatSessionStateTests
         {
             connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
             {
-                ToolCallId = "old-1", Title = "Edit Old.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
+                ToolCallId = "old-1",
+                Title = "Edit Old.cs",
+                Kind = "edit",
+                Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
                 Content = [new ClaudeCode.Contracts.ToolCallContent { Path = targetPath, OldText = "x", NewText = "already applied\n" }],
             }), sessionId);
             connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.AgentMessageChunk("replayed reply"), sessionId);
+
             return Task.FromResult(new ClaudeCode.Contracts.NewSessionResult(sessionId, []));
         };
 
@@ -155,7 +165,11 @@ public sealed partial class ChatSessionStateTests
 
     private static async Task WaitUntilAsync(Func<bool> condition)
     {
-        for (var i = 0; i < 300 && !condition(); i++) await Task.Delay(10);
+        for (var i = 0; i < 300 && !condition(); i++)
+        {
+            await Task.Delay(10);
+        }
+
         Assert.True(condition(), "timed out waiting for the expected state");
     }
 
@@ -189,7 +203,10 @@ public sealed partial class ChatSessionStateTests
         File.WriteAllText(targetPath, "after\nmore\n");
         connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
         {
-            ToolCallId = "write-1", Title = "Write Edited.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
+            ToolCallId = "write-1",
+            Title = "Write Edited.cs",
+            Kind = "edit",
+            Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
             Content = [new ClaudeCode.Contracts.ToolCallContent { Path = targetPath, OldText = "before\n", NewText = "after\nmore\n" }],
         }));
         await WaitUntilAsync(() => vm.ChangedFiles.Count == 1);
@@ -222,7 +239,10 @@ public sealed partial class ChatSessionStateTests
         File.WriteAllText(targetPath, "after\nmore\n");
         connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
         {
-            ToolCallId = "edit-1", Title = "Edit Edited.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
+            ToolCallId = "edit-1",
+            Title = "Edit Edited.cs",
+            Kind = "edit",
+            Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
             Content = [new ClaudeCode.Contracts.ToolCallContent { Path = targetPath, OldText = "before", NewText = "after\nmore" }],
         }));
         await WaitUntilAsync(() => vm.ChangedFiles.Count == 1);
@@ -258,14 +278,20 @@ public sealed partial class ChatSessionStateTests
         File.WriteAllText(targetPath, "before\nmore\n");
         var pending = new ClaudeCode.Contracts.ToolCallUpdate
         {
-            ToolCallId = "edit-1", Title = "Edit Edited.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
+            ToolCallId = "edit-1",
+            Title = "Edit Edited.cs",
+            Kind = "edit",
+            Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
             Content = [new ClaudeCode.Contracts.ToolCallContent { Path = targetPath, OldText = "before", NewText = "before\nmore" }],
         };
         connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(pending));
         await WaitUntilAsync(() => vm.ChangedFiles.Count == 1);
         connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
         {
-            ToolCallId = "edit-1", Title = "Edit Edited.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
+            ToolCallId = "edit-1",
+            Title = "Edit Edited.cs",
+            Kind = "edit",
+            Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
             Content = [new ClaudeCode.Contracts.ToolCallContent { Path = targetPath, OldText = "before", NewText = "before\nmore" }],
         }));
         await WaitUntilAsync(() => !vm.ChangedFiles[0].CanRevert);
@@ -295,7 +321,10 @@ public sealed partial class ChatSessionStateTests
 
         connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
         {
-            ToolCallId = "edit-1", Title = "Edit Guarded.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
+            ToolCallId = "edit-1",
+            Title = "Edit Guarded.cs",
+            Kind = "edit",
+            Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
             Content = [new ClaudeCode.Contracts.ToolCallContent { Path = targetPath, OldText = "x", NewText = "the user's work\n" }],
         }));
         await WaitUntilAsync(() => vm.ChangedFiles.Count == 1);
@@ -327,7 +356,10 @@ public sealed partial class ChatSessionStateTests
 
         ClaudeCode.Contracts.ToolCallUpdate Update(string id, string path, string? oldText, string newText, ClaudeCode.Contracts.ToolCallStatus status) => new()
         {
-            ToolCallId = id, Title = "Edit " + Path.GetFileName(path), Kind = "edit", Status = status,
+            ToolCallId = id,
+            Title = "Edit " + Path.GetFileName(path),
+            Kind = "edit",
+            Status = status,
             Content = [new ClaudeCode.Contracts.ToolCallContent { Path = path, OldText = oldText, NewText = newText }],
         };
         connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(Update("edit-1", edited, "before", "after", ClaudeCode.Contracts.ToolCallStatus.Pending)));
@@ -391,7 +423,10 @@ public sealed partial class ChatSessionStateTests
         File.WriteAllText(targetPath, "brand new\nfile\n");
         var pending = new ClaudeCode.Contracts.ToolCallUpdate
         {
-            ToolCallId = "write-1", Title = "Write Created.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
+            ToolCallId = "write-1",
+            Title = "Write Created.cs",
+            Kind = "edit",
+            Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
             Content = [new ClaudeCode.Contracts.ToolCallContent { Path = targetPath, OldText = null, NewText = "brand new\nfile\n" }],
         };
         connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(pending));
@@ -399,7 +434,10 @@ public sealed partial class ChatSessionStateTests
 
         connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
         {
-            ToolCallId = "write-1", Title = "Write Created.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
+            ToolCallId = "write-1",
+            Title = "Write Created.cs",
+            Kind = "edit",
+            Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
             Content = [new ClaudeCode.Contracts.ToolCallContent { Path = targetPath, OldText = "", NewText = "brand new\nfile\n" }],
         }));
         await WaitUntilAsync(() => vm.ChangedFiles[0].AddedLines == 2);
@@ -436,7 +474,10 @@ public sealed partial class ChatSessionStateTests
         File.WriteAllText(targetPath, "brand new\nfile\n");
         connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
         {
-            ToolCallId = "write-1", Title = "Write Created.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
+            ToolCallId = "write-1",
+            Title = "Write Created.cs",
+            Kind = "edit",
+            Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
             Content = [new ClaudeCode.Contracts.ToolCallContent { Path = targetPath, OldText = null, NewText = "brand new\nfile" }],
         }));
         while (vm.ChangedFiles.Count == 0) { ui.Drain(); await Task.Yield(); }
@@ -448,9 +489,13 @@ public sealed partial class ChatSessionStateTests
         {
             connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
             {
-                ToolCallId = "write-1", Title = "Write Created.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
+                ToolCallId = "write-1",
+                Title = "Write Created.cs",
+                Kind = "edit",
+                Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
                 Content = [new ClaudeCode.Contracts.ToolCallContent { Path = targetPath, OldText = "", NewText = "brand new\nfile\n" }],
             }));
+
             return Task.CompletedTask;
         });
         await WaitUntilAsync(() => file.OriginalText is { Length: 0 });
@@ -485,14 +530,20 @@ public sealed partial class ChatSessionStateTests
         File.WriteAllText(targetPath, "brand new\r\nfile\r\n");
         connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
         {
-            ToolCallId = "write-1", Title = "Write Created.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
+            ToolCallId = "write-1",
+            Title = "Write Created.cs",
+            Kind = "edit",
+            Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
             Content = [new ClaudeCode.Contracts.ToolCallContent { Path = targetPath, OldText = null, NewText = "brand new\nfile\n" }],
         }));
         await WaitUntilAsync(() => vm.ChangedFiles.Count == 1);
 
         connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
         {
-            ToolCallId = "write-1", Title = "Write Created.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
+            ToolCallId = "write-1",
+            Title = "Write Created.cs",
+            Kind = "edit",
+            Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
             Content = [new ClaudeCode.Contracts.ToolCallContent { Path = targetPath, OldText = "", NewText = "brand new\nfile\n" }],
         }));
         await WaitUntilAsync(() => vm.ChangedFiles[0].AddedLines == 2);
@@ -534,7 +585,10 @@ public sealed partial class ChatSessionStateTests
 
         ClaudeCode.Contracts.ToolCallUpdate Update(ClaudeCode.Contracts.ToolCallStatus status, string? oldText) => new()
         {
-            ToolCallId = "write-1", Title = "Write Created.cs", Kind = "edit", Status = status,
+            ToolCallId = "write-1",
+            Title = "Write Created.cs",
+            Kind = "edit",
+            Status = status,
             Content = [new ClaudeCode.Contracts.ToolCallContent { Path = targetPath, OldText = oldText, NewText = "brand new\nfile\n" }],
         };
         connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(Update(ClaudeCode.Contracts.ToolCallStatus.Completed, "")));
@@ -570,36 +624,56 @@ public sealed partial class ChatSessionStateTests
 
         connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
         {
-            ToolCallId = "write-1", Title = "Write Created.txt", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
+            ToolCallId = "write-1",
+            Title = "Write Created.txt",
+            Kind = "edit",
+            Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
             Content = [new ClaudeCode.Contracts.ToolCallContent { Path = created, OldText = null, NewText = "alpha\nbeta\ngamma\ndelta\n" }],
         }));
         await WaitUntilAsync(() => vm.ChangedFiles.Count == 1);
         File.WriteAllText(created, "alpha\nbeta\ngamma\ndelta\n");
         connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
         {
-            ToolCallId = "write-1", Title = "Write Created.txt", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
+            ToolCallId = "write-1",
+            Title = "Write Created.txt",
+            Kind = "edit",
+            Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
             Content = [new ClaudeCode.Contracts.ToolCallContent { Path = created, OldText = "", NewText = "alpha\nbeta\ngamma\ndelta\n" }],
         }));
         connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
         {
-            ToolCallId = "write-1", Title = "Write Created.txt", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Completed, Content = [],
+            ToolCallId = "write-1",
+            Title = "Write Created.txt",
+            Kind = "edit",
+            Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
+            Content = [],
         }));
 
         connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
         {
-            ToolCallId = "edit-1", Title = "Edit Modify.txt", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
+            ToolCallId = "edit-1",
+            Title = "Edit Modify.txt",
+            Kind = "edit",
+            Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
             Content = [new ClaudeCode.Contracts.ToolCallContent { Path = edited, OldText = "line two", NewText = "line TWO changed" }],
         }));
         await WaitUntilAsync(() => vm.ChangedFiles.Count == 2);
         File.WriteAllText(edited, "line one\nline TWO changed\nline three\n");
         connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
         {
-            ToolCallId = "edit-1", Title = "Edit Modify.txt", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
+            ToolCallId = "edit-1",
+            Title = "Edit Modify.txt",
+            Kind = "edit",
+            Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
             Content = [new ClaudeCode.Contracts.ToolCallContent { Path = edited, OldText = "line one\nline two\nline three\n", NewText = "line one\nline TWO changed\nline three\n" }],
         }));
         connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
         {
-            ToolCallId = "edit-1", Title = "Edit Modify.txt", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Completed, Content = [],
+            ToolCallId = "edit-1",
+            Title = "Edit Modify.txt",
+            Kind = "edit",
+            Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
+            Content = [],
         }));
 
         await WaitUntilAsync(() => vm.ChangedFiles.All(file => file.AddedLines > 0));
@@ -633,13 +707,19 @@ public sealed partial class ChatSessionStateTests
 
         connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
         {
-            ToolCallId = "edit-1", Title = "Edit Modify.txt", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
+            ToolCallId = "edit-1",
+            Title = "Edit Modify.txt",
+            Kind = "edit",
+            Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
             Content = [new ClaudeCode.Contracts.ToolCallContent { Path = edited, OldText = "line one", NewText = "line ONE" }],
         }));
         await WaitUntilAsync(() => vm.ChangedFiles.Count == 1);
         connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
         {
-            ToolCallId = "edit-1", Title = "Edit Modify.txt", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Failed,
+            ToolCallId = "edit-1",
+            Title = "Edit Modify.txt",
+            Kind = "edit",
+            Status = ClaudeCode.Contracts.ToolCallStatus.Failed,
             Content = [new ClaudeCode.Contracts.ToolCallContent { Text = "Permission denied" }],
         }));
         await WaitUntilAsync(() => vm.ChangedFiles.Count == 0);
@@ -654,7 +734,10 @@ public sealed partial class ChatSessionStateTests
     private static ClaudeCode.Contracts.SessionUpdate.ToolCall EditCall(string id, string path, ClaudeCode.Contracts.ToolCallStatus status, string? oldText, string? newText) =>
         new(new ClaudeCode.Contracts.ToolCallUpdate
         {
-            ToolCallId = id, Title = "Edit " + Path.GetFileName(path), Kind = "edit", Status = status,
+            ToolCallId = id,
+            Title = "Edit " + Path.GetFileName(path),
+            Kind = "edit",
+            Status = status,
             Content = newText is null ? [] : [new ClaudeCode.Contracts.ToolCallContent { Path = path, OldText = oldText, NewText = newText }],
         });
 
@@ -735,7 +818,10 @@ public sealed partial class ChatSessionStateTests
         File.WriteAllText(created, "brand new\n");
         connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
         {
-            ToolCallId = "write-1", Title = "Write Created.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
+            ToolCallId = "write-1",
+            Title = "Write Created.cs",
+            Kind = "edit",
+            Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
             Content = [new ClaudeCode.Contracts.ToolCallContent { Path = created, OldText = null, NewText = "brand new\n" }],
         }));
         await WaitUntilAsync(() => vm.ChangedFiles.Count == 1);
@@ -767,7 +853,10 @@ public sealed partial class ChatSessionStateTests
         File.WriteAllText(created, "brand new\nfile\n");
         connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
         {
-            ToolCallId = "write-1", Title = "Write Created.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
+            ToolCallId = "write-1",
+            Title = "Write Created.cs",
+            Kind = "edit",
+            Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
             Content = [new ClaudeCode.Contracts.ToolCallContent { Path = created, OldText = "", NewText = "brand new\nfile\n" }],
         }));
         await WaitUntilAsync(() => vm.ChangedFiles.Count == 1);
@@ -798,7 +887,10 @@ public sealed partial class ChatSessionStateTests
         File.WriteAllText(created, "brand new\nfile\n");
         ClaudeCode.Contracts.ToolCallUpdate Update(ClaudeCode.Contracts.ToolCallStatus status) => new()
         {
-            ToolCallId = "write-1", Title = "Write Created.cs", Kind = "edit", Status = status,
+            ToolCallId = "write-1",
+            Title = "Write Created.cs",
+            Kind = "edit",
+            Status = status,
             Content = [new ClaudeCode.Contracts.ToolCallContent { Path = created, OldText = "", NewText = "brand new\nfile\n" }],
         };
         connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(Update(ClaudeCode.Contracts.ToolCallStatus.Pending)));
@@ -834,7 +926,10 @@ public sealed partial class ChatSessionStateTests
 
         connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
         {
-            ToolCallId = "write-1", Title = "Write Existing.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
+            ToolCallId = "write-1",
+            Title = "Write Existing.cs",
+            Kind = "edit",
+            Status = ClaudeCode.Contracts.ToolCallStatus.Completed,
             Content = [new ClaudeCode.Contracts.ToolCallContent { Path = targetPath, OldText = null, NewText = "the user's work\n" }],
         }));
         await WaitUntilAsync(() => vm.ChangedFiles.Count == 1);
@@ -868,17 +963,20 @@ public sealed partial class ChatSessionStateTests
         services.OpenDocumentHandler = (_, _, _) =>
         {
             openContexts.Add(SynchronizationContext.Current);
+
             return Task.CompletedTask;
         };
         services.ReadOpenDocumentHandler = (_, _) =>
         {
             snapshotContexts.Add(SynchronizationContext.Current);
+
             return Task.FromResult<string?>("before\n");
         };
         services.WriteOpenDocumentHandler = (path, text, _) =>
         {
             revertContexts.Add(SynchronizationContext.Current);
             services.OpenDocuments[path] = text;
+
             return Task.FromResult(true);
         };
 
@@ -888,7 +986,10 @@ public sealed partial class ChatSessionStateTests
         var sending = vm.SendAsync();
         connection.RaiseSessionUpdate(new ClaudeCode.Contracts.SessionUpdate.ToolCall(new ClaudeCode.Contracts.ToolCallUpdate
         {
-            ToolCallId = "edit-1", Title = "Edit Tracked.cs", Kind = "edit", Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
+            ToolCallId = "edit-1",
+            Title = "Edit Tracked.cs",
+            Kind = "edit",
+            Status = ClaudeCode.Contracts.ToolCallStatus.Pending,
             Content = [new ClaudeCode.Contracts.ToolCallContent { Path = targetPath, OldText = "before\n", NewText = "after\n" }],
         }));
         await WaitUntilAsync(() => vm.ChangedFiles.Count == 1);
@@ -976,7 +1077,10 @@ public sealed partial class ChatSessionStateTests
     [Fact]
     public async Task OpenChangedFileCommand_ForAFileGoneSinceItWasTracked_DoesNotHandTheHostAnUnpinnedPath()
     {
-        if (!OperatingSystem.IsWindows()) return;
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
 
         using var workspace = new TempWorkspace();
         var targetPath = workspace.PathUnder("gone.cs");

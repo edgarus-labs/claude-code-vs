@@ -1,6 +1,6 @@
+using ClaudeCode.Contracts;
 using System;
 using System.Globalization;
-using ClaudeCode.Contracts;
 using Xunit;
 
 namespace ClaudeCode.Acp.Tests;
@@ -27,12 +27,9 @@ public sealed class UsageResetTimestampTests
     }
 
     [Fact]
-    public void FromJsonValue_ParsesTheIsoStringFormTheEndpointSends()
-    {
-        Assert.Equal(
+    public void FromJsonValue_ParsesTheIsoStringFormTheEndpointSends() => Assert.Equal(
             new DateTimeOffset(2026, 5, 4, 12, 30, 0, TimeSpan.Zero),
             UsageResetTimestamp.FromJsonValue("2026-05-04T12:30:00Z"));
-    }
 
     [Fact]
     public void FromJsonValue_ParsesANonIsoStringTimestampInvariantlyUnderAHostileCurrentCulture()

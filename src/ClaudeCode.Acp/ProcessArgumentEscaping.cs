@@ -5,6 +5,11 @@ namespace ClaudeCode.Acp;
 
 public static class ProcessArgumentEscaping
 {
+    /// <summary>
+    /// Creates a single command-line argument string by appending each supplied argument with proper escaping.
+    /// </summary>
+    /// <param name="arguments">The collection of arguments.</param>
+    /// <returns>The string result.</returns>
     public static string ToArgumentsString(IEnumerable<string> arguments)
     {
         var builder = new StringBuilder();
@@ -16,6 +21,11 @@ public static class ProcessArgumentEscaping
         return builder.ToString();
     }
 
+    /// <summary>
+    /// Appends the given argument to the StringBuilder, inserting a leading space and automatically quoting and escaping it when the argument contains whitespace or quotation marks.
+    /// </summary>
+    /// <param name="builder">The builder.</param>
+    /// <param name="argument">The argument.</param>
     private static void AppendArgument(StringBuilder builder, string argument)
     {
         if (builder.Length != 0)
@@ -71,6 +81,11 @@ public static class ProcessArgumentEscaping
         builder.Append('"');
     }
 
+    /// <summary>
+    /// Validates that the input string contains neither whitespace characters nor double‑quote characters.
+    /// </summary>
+    /// <param name="s">The s.</param>
+    /// <returns>true if the operation succeeded; otherwise, false.</returns>
     private static bool ContainsNoWhitespaceOrQuotes(string s)
     {
         foreach (char c in s)

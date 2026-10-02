@@ -15,6 +15,13 @@ internal sealed class ClaudeCodeConnectionFactory : IAcpAgentConnectionFactory
     private readonly Func<string?> _workingDirectoryProvider;
     private readonly VsControlSessionRegistry _vsControlSessionRegistry;
 
+    /// <summary>
+    /// Initializes a new instance of the ClaudeCodeConnectionFactory class, ensuring that the options provider, working directory provider, and VS control session registry are non‑null.
+    /// </summary>
+    /// <param name="optionsProvider">The options provider.</param>
+    /// <param name="workingDirectoryProvider">The working directory provider.</param>
+    /// <param name="vsControlSessionRegistry">The vs control session registry.</param>
+    /// <exception cref="ArgumentNullException">Thrown when an error occurs during execution.</exception>
     public ClaudeCodeConnectionFactory(
         Func<ClaudeCodeOptionsPage> optionsProvider,
         Func<string?> workingDirectoryProvider,

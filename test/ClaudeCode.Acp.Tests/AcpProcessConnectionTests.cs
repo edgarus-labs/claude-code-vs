@@ -158,7 +158,10 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         _connection.SessionUpdate += (_, update) =>
         {
             notifications.Add(update);
-            if (notifications.Count == 2) received.TrySetResult(notifications);
+            if (notifications.Count == 2)
+            {
+                received.TrySetResult(notifications);
+            }
         };
 
         await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer,
@@ -1019,7 +1022,10 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         _connection.SessionUpdate += (_, update) =>
         {
             notifications.Add(update);
-            if (notifications.Count == 3) received.TrySetResult(notifications);
+            if (notifications.Count == 3)
+            {
+                received.TrySetResult(notifications);
+            }
         };
 
         await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer,
@@ -1367,6 +1373,7 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         string line = await PipeTestHelpers.ReadLineAsync(_toAgent.Reader).WaitAsync(TimeSpan.FromSeconds(5));
         JsonObject request = JsonNode.Parse(line)!.AsObject();
         Assert.Equal(expectedMethod, request["method"]!.GetValue<string>());
+
         return request;
     }
 

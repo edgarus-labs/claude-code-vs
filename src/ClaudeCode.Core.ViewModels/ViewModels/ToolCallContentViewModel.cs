@@ -4,6 +4,9 @@ using System.Collections.Generic;
 
 namespace ClaudeCode.Core.ViewModels;
 
+/// <summary>
+/// Represents a view model containing the content of a tool call, with optional text, file path, a flag indicating diff mode, and a collection of diff line view models.
+/// </summary>
 public sealed class ToolCallContentViewModel
 {
     public ToolCallContentViewModel(ToolCallContent content, IReadOnlyList<DiffLineViewModel>? diffLines = null)
@@ -19,12 +22,24 @@ public sealed class ToolCallContentViewModel
         DiffLines = IsDiff ? diffLines ?? DiffBuilder.Build(content.OldText ?? string.Empty, content.NewText ?? string.Empty) : Array.Empty<DiffLineViewModel>();
     }
 
+    /// <summary>
+    /// Gets the text.
+    /// </summary>
     public string? Text { get; }
 
+    /// <summary>
+    /// Gets the path.
+    /// </summary>
     public string? Path { get; }
 
+    /// <summary>
+    /// Gets a value indicating whether is diff.
+    /// </summary>
     public bool IsDiff { get; }
 
+    /// <summary>
+    /// Gets the collection of diff lines.
+    /// </summary>
     public IReadOnlyList<DiffLineViewModel> DiffLines { get; }
 
     private static readonly char[] _infoStringDisallowedChars = { ' ', '\t', '`' };
@@ -113,6 +128,14 @@ public sealed class ToolCallContentViewModel
         return false;
     }
 
+    /// <summary>
+    /// Determines whether a substring represents a closing fence line for a Markdown code block by verifying the fence length and surrounding whitespace.
+    /// </summary>
+    /// <param name="text">The text.</param>
+    /// <param name="start">The start.</param>
+    /// <param name="end">The end.</param>
+    /// <param name="openingFenceLength">The opening fence length.</param>
+    /// <returns>true if the condition is met; otherwise, false.</returns>
     private static bool IsClosingFenceLine(string text, int start, int end, int openingFenceLength)
     {
         var index = start;

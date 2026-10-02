@@ -1,6 +1,5 @@
 using System;
 using System.IO;
-using ClaudeCode.Acp;
 using Xunit;
 
 namespace ClaudeCode.Acp.Tests;
@@ -305,6 +304,7 @@ public sealed class AcpExecutableResolverTests : IDisposable
         string path = Path.Combine(_root, relativePath);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, string.Empty);
+
         return path;
     }
 

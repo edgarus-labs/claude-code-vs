@@ -1,4 +1,3 @@
-using ClaudeCode.Acp;
 using ClaudeCode.Contracts;
 using System;
 using Xunit;
@@ -89,8 +88,5 @@ public sealed class AcpAuthCommandOutcomesTests
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
-    public void AuthCommandOutcome_RejectsAnEmptyMessage(string message)
-    {
-        Assert.Throws<ArgumentException>(() => new AuthCommandOutcome(false, message));
-    }
+    public void AuthCommandOutcome_RejectsAnEmptyMessage(string message) => Assert.Throws<ArgumentException>(() => new AuthCommandOutcome(false, message));
 }

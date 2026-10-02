@@ -86,6 +86,9 @@ public sealed class AcpProcessConnectionStderrTests
 
     private sealed class CollectingTraceListener : TraceListener
     {
+        /// <summary>
+        /// Gets the messages.
+        /// </summary>
         public ConcurrentBag<string> Messages { get; } = new ConcurrentBag<string>();
 
         public override void Write(string? message)

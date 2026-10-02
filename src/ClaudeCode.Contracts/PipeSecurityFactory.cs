@@ -10,6 +10,12 @@ namespace ClaudeCode.Contracts;
 /// </summary>
 public static class PipeSecurityFactory
 {
+    /// <summary>
+    /// Creates a PipeSecurity instance that grants the specified PipeAccessRights exclusively to the current Windows user, throwing an InvalidOperationException if the current user identity cannot be determined.
+    /// </summary>
+    /// <param name="rights">The rights.</param>
+    /// <returns>The pipe security result.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when an error occurs during execution.</exception>
     public static PipeSecurity CreateCurrentUserOnly(PipeAccessRights rights)
     {
         using var identity = WindowsIdentity.GetCurrent();

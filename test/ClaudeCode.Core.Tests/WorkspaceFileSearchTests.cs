@@ -19,12 +19,16 @@ public sealed class WorkspaceFileSearchTests : IDisposable
         var path = Path.Combine(_root, Path.Combine(segments));
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, "x");
+
         return path;
     }
 
     private void CreateFiller(int count, params string[] folder)
     {
-        for (var i = 0; i < count; i++) CreateFile([.. folder, "filler" + i + ".js"]);
+        for (var i = 0; i < count; i++)
+        {
+            CreateFile([.. folder, "filler" + i + ".js"]);
+        }
     }
 
     private static string Suffix(string reference) => Path.DirectorySeparatorChar + reference;

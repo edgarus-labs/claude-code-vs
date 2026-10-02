@@ -129,6 +129,11 @@ public static class AcpExecutableResolver
     private static bool IsDirectorySeparator(char value) =>
         value == Path.DirectorySeparatorChar || value == Path.AltDirectorySeparatorChar;
 
+    /// <summary>
+    /// Determines whether the specified directory path contains a segment named “node_modules” or “.bin”, indicating a package directory.
+    /// </summary>
+    /// <param name="directory">The directory.</param>
+    /// <returns>true if the condition is met; otherwise, false.</returns>
     private static bool IsPackageDirectory(string directory)
     {
         int segmentStart = 0;
@@ -152,6 +157,12 @@ public static class AcpExecutableResolver
         return false;
     }
 
+    /// <summary>
+    /// Searches the provided directories for the specified file name, returning the first matching full path or null if the file is not found.
+    /// </summary>
+    /// <param name="fileName">The file name.</param>
+    /// <param name="searchPath">The search path.</param>
+    /// <returns>The string? result.</returns>
     private static string? FindOnPath(string fileName, string? searchPath)
     {
         foreach (string directory in GetSearchDirectories(searchPath))

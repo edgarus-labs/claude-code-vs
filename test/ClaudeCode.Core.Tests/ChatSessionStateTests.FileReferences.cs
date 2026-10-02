@@ -106,7 +106,11 @@ public sealed partial class ChatSessionStateTests
     [Fact]
     public async Task OpenFileReference_FileThatDoesNotExist_ReportsWithoutFaulting()
     {
-        if (!OperatingSystem.IsWindows()) return;
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
         using var workspace = new TempWorkspace();
         var (vm, _, services) = await ConnectWithWorkspaceAsync(workspace.Root);
         using var _vm = vm;
@@ -205,6 +209,7 @@ public sealed partial class ChatSessionStateTests
     {
         var missing = "missing-" + reference;
         await vm.OpenFileReferenceAsync(Href(missing));
+
         return vm.StatusMessage?.Replace(missing, reference, StringComparison.Ordinal);
     }
 
@@ -275,7 +280,11 @@ public sealed partial class ChatSessionStateTests
     [Fact]
     public async Task OpenFileReference_BareNameOfAFileTheAgentReadOutsideTheWorkspace_IsRefused()
     {
-        if (!OperatingSystem.IsWindows()) return;
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
         using var workspace = new TempWorkspace();
         using var outside = new TempWorkspace();
         var secret = outside.PathUnder("secrets.cs");
@@ -316,7 +325,11 @@ public sealed partial class ChatSessionStateTests
     [Fact]
     public async Task OpenFileReference_BareNameOfASearchResultThatClimbsOutOfTheWorkspace_IsRefused()
     {
-        if (!OperatingSystem.IsWindows()) return;
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
         using var workspace = new TempWorkspace();
         using var outside = new TempWorkspace();
         var secret = outside.PathUnder("secrets.cs");

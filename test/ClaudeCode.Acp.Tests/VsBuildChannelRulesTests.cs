@@ -11,22 +11,13 @@ namespace ClaudeCode.Acp.Tests;
 public sealed class VsBuildChannelRulesTests
 {
     [Fact]
-    public void MatchesProject_BareUniqueName_MatchesTheRequestedProject()
-    {
-        Assert.True(VsBuildChannelRules.MatchesProject("ClaudeCode.Core", "claudecode.core"));
-    }
+    public void MatchesProject_BareUniqueName_MatchesTheRequestedProject() => Assert.True(VsBuildChannelRules.MatchesProject("ClaudeCode.Core", "claudecode.core"));
 
     [Fact]
-    public void MatchesProject_SolutionRelativeProjectPath_MatchesTheRequestedProject()
-    {
-        Assert.True(VsBuildChannelRules.MatchesProject(@"src\ClaudeCode.Core\ClaudeCode.Core.csproj", "ClaudeCode.Core"));
-    }
+    public void MatchesProject_SolutionRelativeProjectPath_MatchesTheRequestedProject() => Assert.True(VsBuildChannelRules.MatchesProject(@"src\ClaudeCode.Core\ClaudeCode.Core.csproj", "ClaudeCode.Core"));
 
     [Fact]
-    public void MatchesProject_DifferentProject_DoesNotMatch()
-    {
-        Assert.False(VsBuildChannelRules.MatchesProject(@"src\ClaudeCode.Acp\ClaudeCode.Acp.csproj", "ClaudeCode.Core"));
-    }
+    public void MatchesProject_DifferentProject_DoesNotMatch() => Assert.False(VsBuildChannelRules.MatchesProject(@"src\ClaudeCode.Acp\ClaudeCode.Acp.csproj", "ClaudeCode.Core"));
 
     [Fact]
     public void MatchesProject_DottedBareName_IsNotTreatedAsAProjectFileName()
@@ -50,16 +41,10 @@ public sealed class VsBuildChannelRulesTests
     }
 
     [Fact]
-    public void ClampOutputChars_OmittedRequest_UsesTheDefault()
-    {
-        Assert.Equal(20_000, VsBuildChannelRules.ClampOutputChars(null, 20_000, 200_000));
-    }
+    public void ClampOutputChars_OmittedRequest_UsesTheDefault() => Assert.Equal(20_000, VsBuildChannelRules.ClampOutputChars(null, 20_000, 200_000));
 
     [Fact]
-    public void ClampOutputChars_HonoursTheCeiling()
-    {
-        Assert.Equal(200_000, VsBuildChannelRules.ClampOutputChars(int.MaxValue, 20_000, 200_000));
-    }
+    public void ClampOutputChars_HonoursTheCeiling() => Assert.Equal(200_000, VsBuildChannelRules.ClampOutputChars(int.MaxValue, 20_000, 200_000));
 
     [Fact]
     public void ClampOutputChars_NeverYieldsAZeroLengthWindow()
@@ -69,10 +54,7 @@ public sealed class VsBuildChannelRulesTests
     }
 
     [Fact]
-    public void ClampOutputChars_LegalRequestPassesThrough()
-    {
-        Assert.Equal(4_096, VsBuildChannelRules.ClampOutputChars(4_096, 20_000, 200_000));
-    }
+    public void ClampOutputChars_LegalRequestPassesThrough() => Assert.Equal(4_096, VsBuildChannelRules.ClampOutputChars(4_096, 20_000, 200_000));
 
     [Fact]
     public void TakeOutputTail_ShortEnoughTextIsReturnedWhole()
@@ -82,10 +64,7 @@ public sealed class VsBuildChannelRulesTests
     }
 
     [Fact]
-    public void TakeOutputTail_KeepsTheEndOfTheLogNotTheStart()
-    {
-        Assert.Equal("error CS1002", VsBuildChannelRules.TakeOutputTail("warning CS0168\nerror CS1002", 12));
-    }
+    public void TakeOutputTail_KeepsTheEndOfTheLogNotTheStart() => Assert.Equal("error CS1002", VsBuildChannelRules.TakeOutputTail("warning CS0168\nerror CS1002", 12));
 
     [Fact]
     public void TakeOutputTail_EmptyPaneIsEmptyNotNull()

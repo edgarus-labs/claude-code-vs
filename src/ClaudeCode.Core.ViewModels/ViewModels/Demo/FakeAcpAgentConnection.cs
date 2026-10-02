@@ -18,8 +18,14 @@ public sealed class FakeAcpAgentConnection : IAcpAgentConnection
         _chunkDelay = chunkDelay ?? TimeSpan.Zero;
     }
 
+    /// <summary>
+    /// Gets or sets a value indicating whether is initialized.
+    /// </summary>
     public bool IsInitialized { get; private set; }
 
+    /// <summary>
+    /// Gets a value indicating whether supports prompt queueing.
+    /// </summary>
     public bool SupportsPromptQueueing => false;
 
     public Task InitializeAsync(CancellationToken cancellationToken)
@@ -41,7 +47,10 @@ public sealed class FakeAcpAgentConnection : IAcpAgentConnection
     public Task<IReadOnlyList<SessionConfigOption>> SetSessionConfigOptionAsync(string sessionId, string configId, string value, CancellationToken cancellationToken)
     {
         if (configId != "model" || (value != "sonnet" && value != "opus"))
+        {
             throw new ArgumentException("Unknown demo configuration value.", nameof(value));
+        }
+
         _model = value;
         return Task.FromResult<IReadOnlyList<SessionConfigOption>>(GetConfigOptions());
     }
@@ -99,17 +108,35 @@ public sealed class FakeAcpAgentConnection : IAcpAgentConnection
     public Task<RemoteControlState> SetRemoteControlAsync(string sessionId, bool enabled, string? name, CancellationToken cancellationToken) =>
         Task.FromException<RemoteControlState>(new InvalidOperationException("Remote Control is not available in the demo connection."));
 
+    /// <summary>
+    /// Occurs when session update.
+    /// </summary>
     public event EventHandler<SessionUpdateEventArgs>? SessionUpdate;
 
 #pragma warning disable CS0067
+    /// <summary>
+    /// Occurs when permission requested.
+    /// </summary>
     public event EventHandler<PermissionRequestEventArgs>? PermissionRequested;
 
+    /// <summary>
+    /// Occurs when elicitation requested.
+    /// </summary>
     public event EventHandler<ElicitationRequestEventArgs>? ElicitationRequested;
 
+    /// <summary>
+    /// Occurs when file read requested.
+    /// </summary>
     public event EventHandler<FileReadRequestEventArgs>? FileReadRequested;
 
+    /// <summary>
+    /// Occurs when file write requested.
+    /// </summary>
     public event EventHandler<FileWriteRequestEventArgs>? FileWriteRequested;
 
+    /// <summary>
+    /// Occurs when disconnected.
+    /// </summary>
     public event EventHandler<Exception?>? Disconnected;
 #pragma warning restore CS0067
 

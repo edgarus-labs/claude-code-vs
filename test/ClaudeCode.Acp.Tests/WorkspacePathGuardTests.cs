@@ -1,10 +1,10 @@
+using ClaudeCode.Contracts;
 using System;
 using System.Diagnostics;
 using System.IO;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
-using ClaudeCode.Contracts;
 using Xunit;
 
 namespace ClaudeCode.Acp.Tests;
@@ -20,6 +20,7 @@ public sealed class WorkspacePathGuardTests
         {
             path = Path.Combine(path, segment);
         }
+
         return path;
     }
 
@@ -81,10 +82,7 @@ public sealed class WorkspacePathGuardTests
     [InlineData(@"\\attacker\share\x.txt")]
     [InlineData(@"\\?\C:\repo\file.txt")]
     [InlineData(@"\\.\C:\repo\file.txt")]
-    public void TryResolveWithinWorkspace_UncOrDeviceNamespacePath_IsRejected(string candidate)
-    {
-        Assert.False(WorkspacePathGuard.TryResolveWithinWorkspace(_root, candidate, out _));
-    }
+    public void TryResolveWithinWorkspace_UncOrDeviceNamespacePath_IsRejected(string candidate) => Assert.False(WorkspacePathGuard.TryResolveWithinWorkspace(_root, candidate, out _));
 
     [Theory]
     [InlineData(null)]
@@ -158,7 +156,10 @@ public sealed class WorkspacePathGuardTests
     [InlineData("new.txt")]
     public void TryResolveWithinWorkspace_UnixSymlinkOutsideRoot_IsRejected(string leaf)
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
 
         string workspace = Directory.CreateTempSubdirectory("wpg-workspace-").FullName;
         string outside = Directory.CreateTempSubdirectory("wpg-outside-").FullName;
@@ -179,7 +180,10 @@ public sealed class WorkspacePathGuardTests
     [Fact]
     public void TryResolveWithinWorkspace_UnixDanglingSymlink_IsRejected()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
 
         string workspace = Directory.CreateTempSubdirectory("wpg-workspace-").FullName;
         try
@@ -218,9 +222,16 @@ public sealed class WorkspacePathGuardTests
         }
         finally
         {
-            if (Directory.Exists(junctionPath)) Directory.Delete(junctionPath);
+            if (Directory.Exists(junctionPath))
+            {
+                Directory.Delete(junctionPath);
+            }
+
             Directory.Delete(workspace, recursive: true);
-            if (Directory.Exists(outside)) Directory.Delete(outside, recursive: true);
+            if (Directory.Exists(outside))
+            {
+                Directory.Delete(outside, recursive: true);
+            }
         }
     }
 
@@ -233,6 +244,7 @@ public sealed class WorkspacePathGuardTests
         }
 
         Directory.CreateDirectory(deep);
+
         return deep;
     }
 
@@ -291,10 +303,21 @@ public sealed class WorkspacePathGuardTests
         }
         finally
         {
-            if (Directory.Exists(deepJunctionPath)) Directory.Delete(deepJunctionPath);
-            if (Directory.Exists(junctionPath)) Directory.Delete(junctionPath);
+            if (Directory.Exists(deepJunctionPath))
+            {
+                Directory.Delete(deepJunctionPath);
+            }
+
+            if (Directory.Exists(junctionPath))
+            {
+                Directory.Delete(junctionPath);
+            }
+
             Directory.Delete(workspace, recursive: true);
-            if (Directory.Exists(outside)) Directory.Delete(outside, recursive: true);
+            if (Directory.Exists(outside))
+            {
+                Directory.Delete(outside, recursive: true);
+            }
         }
     }
 
@@ -322,17 +345,31 @@ public sealed class WorkspacePathGuardTests
         }
         finally
         {
-            if (Directory.Exists(deepJunctionPath)) Directory.Delete(deepJunctionPath);
-            if (Directory.Exists(junctionPath)) Directory.Delete(junctionPath);
+            if (Directory.Exists(deepJunctionPath))
+            {
+                Directory.Delete(deepJunctionPath);
+            }
+
+            if (Directory.Exists(junctionPath))
+            {
+                Directory.Delete(junctionPath);
+            }
+
             Directory.Delete(workspace, recursive: true);
-            if (Directory.Exists(outside)) Directory.Delete(outside, recursive: true);
+            if (Directory.Exists(outside))
+            {
+                Directory.Delete(outside, recursive: true);
+            }
         }
     }
 
     [Fact]
     public void AcquireDocument_WindowsBlocksPathReplacementUntilDisposed()
     {
-        if (!OperatingSystem.IsWindows()) return;
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
 
         string workspace = Directory.CreateTempSubdirectory("wpg-lease-").FullName;
         string folder = Directory.CreateDirectory(Path.Combine(workspace, "folder")).FullName;
@@ -360,7 +397,10 @@ public sealed class WorkspacePathGuardTests
     [Fact]
     public void AcquireFile_WindowsAtomicWrite_PreservesRestrictedDacl()
     {
-        if (!OperatingSystem.IsWindows()) return;
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
 
         string workspace = Directory.CreateTempSubdirectory("wpg-acl-").FullName;
         var file = new FileInfo(Path.Combine(workspace, "private.txt"));
@@ -374,7 +414,9 @@ public sealed class WorkspacePathGuardTests
             file.SetAccessControl(security);
 
             using (var lease = WorkspacePathGuard.AcquireFile(workspace, file.FullName))
+            {
                 lease.WriteAllText("private replacement");
+            }
 
             Assert.Equal("private replacement", File.ReadAllText(file.FullName));
             FileSecurity replacementSecurity = file.GetAccessControl();
@@ -397,7 +439,10 @@ public sealed class WorkspacePathGuardTests
     [Fact]
     public void AcquireFile_ReadAllText_IsRepeatable()
     {
-        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux()) return;
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
+        {
+            return;
+        }
 
         string workspace = Directory.CreateTempSubdirectory("wpg-read-").FullName;
         string file = Path.Combine(workspace, "notes.txt");
@@ -418,7 +463,10 @@ public sealed class WorkspacePathGuardTests
     [Fact]
     public void AcquireFile_WriteThenRead_ThroughOneLease_RoundTrips()
     {
-        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux()) return;
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
+        {
+            return;
+        }
 
         string workspace = Directory.CreateTempSubdirectory("wpg-write-").FullName;
         string file = Path.Combine(workspace, "notes.txt");
@@ -440,7 +488,10 @@ public sealed class WorkspacePathGuardTests
     [Fact]
     public void AcquireFile_ReadThenWrite_ThroughOneLease_PreservesByteOrderMark()
     {
-        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux()) return;
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
+        {
+            return;
+        }
 
         string workspace = Directory.CreateTempSubdirectory("wpg-bom-").FullName;
         string file = Path.Combine(workspace, "notes.txt");
@@ -466,7 +517,10 @@ public sealed class WorkspacePathGuardTests
     [Fact]
     public void AcquireDocument_WindowsPermitsHostWriterWhilePinningAgainstDeletion()
     {
-        if (!OperatingSystem.IsWindows()) return;
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
 
         string workspace = Directory.CreateTempSubdirectory("wpg-doc-").FullName;
         string file = Path.Combine(workspace, "doc.txt");
@@ -496,7 +550,10 @@ public sealed class WorkspacePathGuardTests
     [Fact]
     public void AcquireFile_CommittedWrite_IsNotReportedAsAFailure_WhenTheNewLeafCannotBeReopened()
     {
-        if (!OperatingSystem.IsWindows()) return;
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
 
         string workspace = Directory.CreateTempSubdirectory("wpg-reopen-").FullName;
         string path = Path.Combine(workspace, "notes.txt");
@@ -522,7 +579,10 @@ public sealed class WorkspacePathGuardTests
     [Fact]
     public void AcquireDocument_KeepsPinningTheLeafAgainstDeletion_AfterAWrite()
     {
-        if (!OperatingSystem.IsWindows()) return;
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
 
         string workspace = Directory.CreateTempSubdirectory("wpg-doc-write-").FullName;
         string file = Path.Combine(workspace, "doc.txt");
@@ -548,7 +608,10 @@ public sealed class WorkspacePathGuardTests
     [Fact]
     public void AcquireDocument_FailedWrite_KeepsTheLeafPinnedAndReadable()
     {
-        if (!OperatingSystem.IsWindows()) return;
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
 
         string workspace = Directory.CreateTempSubdirectory("wpg-doc-fail-").FullName;
         string file = Path.Combine(workspace, "doc.txt");
@@ -600,7 +663,10 @@ public sealed class WorkspacePathGuardTests
                 lease.WriteAllText("replacement");
 
                 Assert.Equal("replacement", lease.ReadAllText());
-                if (document) Assert.Throws<IOException>(() => File.Delete(file));
+                if (document)
+                {
+                    Assert.Throws<IOException>(() => File.Delete(file));
+                }
             }
 
             Assert.Equal("replacement", File.ReadAllText(file));

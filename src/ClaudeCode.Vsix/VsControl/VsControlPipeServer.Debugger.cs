@@ -19,15 +19,45 @@ internal sealed partial class VsControlPipeServer
 {
     private enum DebuggerStep { Continue, Over, Into, Out }
 
+    /// <summary>
+    /// The debugger poll ms.
+    /// </summary>
     private const int _debuggerPollMs = 100;
+    /// <summary>
+    /// The max wait ms.
+    /// </summary>
     private const int _maxWaitMs = 45_000;
+    /// <summary>
+    /// The start debugging timeout ms.
+    /// </summary>
     private const int _startDebuggingTimeoutMs = 60_000;
+    /// <summary>
+    /// The default wait for break ms.
+    /// </summary>
     private const int _defaultWaitForBreakMs = 5_000;
+    /// <summary>
+    /// The max stack frames.
+    /// </summary>
     private const int _maxStackFrames = 100;
+    /// <summary>
+    /// The max locals.
+    /// </summary>
     private const int _maxLocals = 200;
+    /// <summary>
+    /// The max value chars.
+    /// </summary>
     private const int _maxValueChars = 1_000;
+    /// <summary>
+    /// The default evaluation ms.
+    /// </summary>
     private const int _defaultEvaluationMs = 3_000;
+    /// <summary>
+    /// The max evaluation ms.
+    /// </summary>
     private const int _maxEvaluationMs = 5_000;
+    /// <summary>
+    /// The max locals walk ms.
+    /// </summary>
     private const int _maxLocalsWalkMs = 5_000;
 
     private static async Task<Debugger> GetDebuggerAsync()
@@ -112,7 +142,10 @@ internal sealed partial class VsControlPipeServer
         foreach (EnvDTE.Project project in projects)
         {
             var found = FindDteProject(project, name);
-            if (found is not null) return found;
+            if (found is not null)
+            {
+                return found;
+            }
         }
 
         return null;
@@ -133,7 +166,10 @@ internal sealed partial class VsControlPipeServer
                 if (item.SubProject is EnvDTE.Project sub)
                 {
                     var found = FindDteProject(sub, name);
-                    if (found is not null) return found;
+                    if (found is not null)
+                    {
+                        return found;
+                    }
                 }
             }
         }
@@ -633,10 +669,7 @@ internal sealed partial class VsControlPipeServer
         _ => "none",
     };
 
-    private static int ReadWaitMs(JObject args, string propertyName, int defaultMs, int minMs = 0)
-    {
-        return VsDebuggerChannelRules.ClampWaitMs(args[propertyName]?.Value<int?>(), defaultMs, minMs, _maxWaitMs);
-    }
+    private static int ReadWaitMs(JObject args, string propertyName, int defaultMs, int minMs = 0) => VsDebuggerChannelRules.ClampWaitMs(args[propertyName]?.Value<int?>(), defaultMs, minMs, _maxWaitMs);
 
     private static int RequireInt(JObject args, string propertyName)
     {

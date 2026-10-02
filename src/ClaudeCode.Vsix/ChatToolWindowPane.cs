@@ -43,17 +43,29 @@ public sealed class ChatToolWindowPane : ToolWindowPane
     private void ActivateChatWindow()
     {
         ThreadHelper.ThrowIfNotOnUIThread();
-        if (_disposed || Frame is not IVsWindowFrame frame) return;
+        if (_disposed || Frame is not IVsWindowFrame frame)
+        {
+            return;
+        }
+
         ErrorHandler.ThrowOnFailure(frame.Show());
     }
 
     private void OnAttentionRequested(object? sender, ChatAttentionEventArgs e)
     {
         ThreadHelper.ThrowIfNotOnUIThread();
-        if (_disposed) return;
+        if (_disposed)
+        {
+            return;
+        }
+
         try
         {
-            if (Package is not ClaudeCodePackage package || !package.GetOptions().NotifyWhenInBackground) return;
+            if (Package is not ClaudeCodePackage package || !package.GetOptions().NotifyWhenInBackground)
+            {
+                return;
+            }
+
             _notifier.Notify(e.Title, e.Message);
         }
         catch (Exception exception)
@@ -118,9 +130,18 @@ public sealed class ChatToolWindowPane : ToolWindowPane
         _view.RefreshTranscriptTheme();
     }
 
+    /// <summary>
+    /// Asynchronously displays the specified plan in the Claude Code package, logging an error if the operation fails.
+    /// </summary>
+    /// <param name="sender">The sender.</param>
+    /// <param name="plan">The plan.</param>
     private void OnPlanReviewRequested(object? sender, PlanReviewViewModel plan)
     {
-        if (_disposed || Package is not ClaudeCodePackage package) return;
+        if (_disposed || Package is not ClaudeCodePackage package)
+        {
+            return;
+        }
+
         package.JoinableTaskFactory.RunAsync(async () =>
         {
             try { await package.ShowPlanAsync(plan); }

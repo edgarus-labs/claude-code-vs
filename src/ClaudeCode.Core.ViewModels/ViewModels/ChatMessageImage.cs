@@ -9,9 +9,18 @@ public sealed class ChatMessageImage
         Base64Data = base64Data;
     }
 
+    /// <summary>
+    /// Gets the name.
+    /// </summary>
     public string Name { get; }
 
+    /// <summary>
+    /// Gets the mime type.
+    /// </summary>
     public string MimeType { get; }
 
+    /// <summary>
+    /// Gets the base64 data.
+    /// </summary>
     public string Base64Data { get; }
 }

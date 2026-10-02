@@ -16,14 +16,29 @@ public sealed class PlanViewModel : ObservableObject
         CompletedCount = entries.Count(entry => entry.Status == PlanEntryStatus.Completed);
     }
 
+    /// <summary>
+    /// Gets the entries.
+    /// </summary>
     public ObservableCollection<PlanEntry> Entries { get; }
 
+    /// <summary>
+    /// Gets the completed count.
+    /// </summary>
     public int CompletedCount { get; }
 
+    /// <summary>
+    /// Gets the total count.
+    /// </summary>
     public int TotalCount => Entries.Count;
 
+    /// <summary>
+    /// Gets the progress label.
+    /// </summary>
     public string ProgressLabel => CompletedCount + "/" + TotalCount;
 
+    /// <summary>
+    /// Gets or sets a value indicating whether is expanded.
+    /// </summary>
     public bool IsExpanded
     {
         get => _isExpanded;

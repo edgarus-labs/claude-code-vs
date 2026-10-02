@@ -13,7 +13,7 @@ public sealed class PlanReviewViewModelTests
     private static PermissionOption Option(string id, PermissionOutcome outcome) =>
         new() { OptionId = id, Label = id, Outcome = outcome };
 
-    private static readonly IReadOnlyList<PermissionOption> BothOptions = new[]
+    private static readonly IReadOnlyList<PermissionOption> _bothOptions = new[]
     {
         Option("allow-once", PermissionOutcome.AllowOnce),
         Option("reject-once", PermissionOutcome.RejectOnce),
@@ -38,7 +38,7 @@ public sealed class PlanReviewViewModelTests
     public void ReviewCommand_AfterTheSessionAbandonedThePlan_CannotExecuteAndSendsNothing()
     {
         string? sent = null;
-        var plan = new PlanReviewViewModel("# Plan", BothOptions, _ => { }, comments => sent = comments);
+        var plan = new PlanReviewViewModel("# Plan", _bothOptions, _ => { }, comments => sent = comments);
         Assert.True(plan.ReviewCommand.CanExecute("please add a rollback step"));
 
         plan.MarkResolved("Session ended");
@@ -52,7 +52,7 @@ public sealed class PlanReviewViewModelTests
     public void ProceedCommand_AfterResolution_CannotExecuteAndDoesNotAnswerTwice()
     {
         var chosen = new List<string>();
-        var plan = new PlanReviewViewModel("# Plan", BothOptions, option => chosen.Add(option.OptionId), _ => { });
+        var plan = new PlanReviewViewModel("# Plan", _bothOptions, option => chosen.Add(option.OptionId), _ => { });
 
         plan.ProceedCommand.Execute(null);
         plan.MarkResolved("Accepted — implementing…");
@@ -65,7 +65,7 @@ public sealed class PlanReviewViewModelTests
     [Fact]
     public void ReviewCommand_BlankComments_CannotExecuteSoTheWindowKeepsTheTypedText()
     {
-        var plan = new PlanReviewViewModel("# Plan", BothOptions, _ => { }, _ => { });
+        var plan = new PlanReviewViewModel("# Plan", _bothOptions, _ => { }, _ => { });
 
         Assert.False(plan.ReviewCommand.CanExecute("   "));
         Assert.False(plan.ReviewCommand.CanExecute(null));
@@ -92,7 +92,7 @@ public sealed class PlanReviewViewModelTests
     public void ReviewCommand_SendsTheCommentsTrimmed()
     {
         string? sent = null;
-        var plan = new PlanReviewViewModel("# Plan", BothOptions, _ => { }, comments => sent = comments);
+        var plan = new PlanReviewViewModel("# Plan", _bothOptions, _ => { }, comments => sent = comments);
 
         plan.ReviewCommand.Execute("  add a rollback step \n");
 
@@ -104,11 +104,11 @@ public sealed class PlanReviewViewModelTests
     {
         var oversized = new string('x', MarkdownSafetyLimits.MaxMarkdownLength + 1);
 
-        var plan = new PlanReviewViewModel(oversized, BothOptions, _ => { }, _ => { });
+        var plan = new PlanReviewViewModel(oversized, _bothOptions, _ => { }, _ => { });
 
         Assert.Equal(
-            MarkdownSafetyLimits.MaxMarkdownLength + MarkdownSafetyLimits.TruncationNotice.Length,
+            MarkdownSafetyLimits.MaxMarkdownLength + MarkdownSafetyLimits._truncationNotice.Length,
             plan.Markdown.Length);
-        Assert.EndsWith(MarkdownSafetyLimits.TruncationNotice, plan.Markdown, StringComparison.Ordinal);
+        Assert.EndsWith(MarkdownSafetyLimits._truncationNotice, plan.Markdown, StringComparison.Ordinal);
     }
 }

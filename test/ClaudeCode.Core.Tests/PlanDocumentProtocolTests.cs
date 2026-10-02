@@ -18,8 +18,5 @@ public sealed class PlanDocumentProtocolTests
     [InlineData("file:///plan.html", false)]
     [InlineData("not a uri", false)]
     [InlineData(null, false)]
-    public void IsPlanDocumentUri_AcceptsOnlyTheExactPlanPage(string? uri, bool expected)
-    {
-        Assert.Equal(expected, PlanDocumentProtocol.IsPlanDocumentUri(uri));
-    }
+    public void IsPlanDocumentUri_AcceptsOnlyTheExactPlanPage(string? uri, bool expected) => Assert.Equal(expected, PlanDocumentProtocol.IsPlanDocumentUri(uri));
 }

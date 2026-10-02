@@ -172,7 +172,7 @@ public sealed class McpServerTests
     {
         string pipeName = $"vscontrol-test-truncate-{Guid.NewGuid():N}";
         using var serverStarted = new SemaphoreSlim(0, 1);
-        string hugeValue = new string('a', 300_000);
+        var hugeValue = new string('a', 300_000);
 
         Task serverTask = Task.Run(async () =>
         {

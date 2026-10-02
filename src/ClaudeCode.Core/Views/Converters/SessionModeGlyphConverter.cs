@@ -11,9 +11,21 @@ public sealed class SessionModeGlyphConverter : IValueConverter
     public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
     {
         var key = (value as string ?? string.Empty).ToLowerInvariant();
-        if (key.Contains("plan")) return "";
-        if (key.Contains("accept") || key.Contains("edit")) return "";
-        if (key.Contains("auto") || key.Contains("bypass") || key.Contains("yolo")) return "";
+        if (key.Contains("plan"))
+        {
+            return "";
+        }
+
+        if (key.Contains("accept") || key.Contains("edit"))
+        {
+            return "";
+        }
+
+        if (key.Contains("auto") || key.Contains("bypass") || key.Contains("yolo"))
+        {
+            return "";
+        }
+
         return "";
     }
 

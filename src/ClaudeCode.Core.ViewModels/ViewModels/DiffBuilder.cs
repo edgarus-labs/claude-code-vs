@@ -5,6 +5,9 @@ namespace ClaudeCode.Core.ViewModels;
 
 internal static class DiffBuilder
 {
+    /// <summary>
+    /// The max alignment cells.
+    /// </summary>
     private const long _maxAlignmentCells = 2_000_000;
 
     public static IReadOnlyList<DiffLineViewModel> Build(string oldText, string newText) => BuildCore(oldText, newText);
@@ -91,7 +94,11 @@ internal static class DiffBuilder
 
         var lines = text.Replace("\r\n", "\n").Split('\n');
         count = lines.Length;
-        if (stripTerminator && count > 1 && lines[count - 1].Length == 0) count--;
+        if (stripTerminator && count > 1 && lines[count - 1].Length == 0)
+        {
+            count--;
+        }
+
         return lines;
     }
 }

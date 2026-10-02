@@ -1,5 +1,4 @@
 using ClaudeCode.Core.ViewModels;
-using System;
 using Xunit;
 
 namespace ClaudeCode.Core.Tests;
@@ -44,10 +43,7 @@ public sealed class SessionTitleFormatTests
     }
 
     [Fact]
-    public void Describe_WhenALineIsNothingButControlCharacters_MovesOnToTheNextOne()
-    {
-        Assert.Equal("real title", SessionTitleFormat.Describe("\u202E\u200F\n real title ", null));
-    }
+    public void Describe_WhenALineIsNothingButControlCharacters_MovesOnToTheNextOne() => Assert.Equal("real title", SessionTitleFormat.Describe("\u202E\u200F\n real title ", null));
 
     [Fact]
     public void Describe_WithNoUsableTitle_FallsBackToTheSessionIdPrefix()

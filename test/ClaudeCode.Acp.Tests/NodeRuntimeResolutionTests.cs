@@ -1,16 +1,8 @@
 using System;
 using System.IO;
-using ClaudeCode.Acp;
 using Xunit;
 
 namespace ClaudeCode.Acp.Tests;
-
-/// <summary>Test collection that runs classes calling <see cref="Directory.SetCurrentDirectory(string)"/>
-/// sequentially.</summary>
-[CollectionDefinition("Process current directory", DisableParallelization = true)]
-public sealed class ProcessCurrentDirectoryScope
-{
-}
 
 /// <summary>Covers <see cref="AcpExecutableResolver.FindNodeOnPath(string?)"/>, the PATH search for a
 /// Node runtime used by the ACP adapter launch and the VSIX usage helper.</summary>
@@ -62,6 +54,7 @@ public sealed class NodeRuntimeResolutionTests : IDisposable
         string path = Path.Combine(_root, relativePath);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, string.Empty);
+
         return path;
     }
 

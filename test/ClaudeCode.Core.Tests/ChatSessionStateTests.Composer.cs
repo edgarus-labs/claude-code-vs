@@ -22,6 +22,7 @@ public sealed partial class ChatSessionStateTests
             CaptureHandler = _ =>
             {
                 captures++;
+
                 return Task.FromResult<EditorDocumentSnapshot?>(active);
             },
         };
@@ -124,7 +125,10 @@ public sealed partial class ChatSessionStateTests
         var connection = new RecordingAcpAgentConnection();
         var services = new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService());
         if (fails)
+        {
             services.CaptureHandler = _ => Task.FromException<EditorDocumentSnapshot?>(new InvalidOperationException("Editor unavailable"));
+        }
+
         using var vm = new ChatViewModel(services);
         await vm.Initialization;
         vm.InputText = "keep this draft";
@@ -211,8 +215,16 @@ public sealed partial class ChatSessionStateTests
         var ready = new TaskCompletionSource<NewSessionResult>();
         var config = new TaskCompletionSource<IReadOnlyList<SessionConfigOption>>();
         var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
-        if (gate == "connecting") connection.NewSessionHandler = _ => ready.Task;
-        if (gate == "configuring") connection.ConfigHandler = (_, _, _) => config.Task;
+        if (gate == "connecting")
+        {
+            connection.NewSessionHandler = _ => ready.Task;
+        }
+
+        if (gate == "configuring")
+        {
+            connection.ConfigHandler = (_, _, _) => config.Task;
+        }
+
         var captures = 0;
         IAcpAuthService auth = gate == "signed-out" ? new AdvisoryAuthService(AuthState.SignedOut) : new AlwaysSignedInAuthService();
         var services = new StubChatSessionServices(new SingleConnectionFactory(connection), auth)
@@ -220,17 +232,29 @@ public sealed partial class ChatSessionStateTests
             CaptureHandler = _ =>
             {
                 captures++;
+
                 return Task.FromResult<EditorDocumentSnapshot?>(new EditorDocumentSnapshot(@"C:\Workspace\blocked.cs", "blocked"));
             },
         };
         using var vm = new ChatViewModel(services);
         Task pending = Task.CompletedTask;
-        if (gate != "connecting") await vm.Initialization;
+        if (gate != "connecting")
+        {
+            await vm.Initialization;
+        }
+
         if (gate is "configuring" or "disposed")
         {
             vm.AddImageAttachment("retained.png", "image/png", "AQID");
-            if (gate == "configuring") pending = vm.SelectModelAsync(vm.AvailableModels[1]);
-            if (gate == "disposed") vm.Dispose();
+            if (gate == "configuring")
+            {
+                pending = vm.SelectModelAsync(vm.AvailableModels[1]);
+            }
+
+            if (gate == "disposed")
+            {
+                vm.Dispose();
+            }
         }
         vm.InputText = "/co";
         var attachments = vm.Attachments.ToArray();
@@ -268,6 +292,7 @@ public sealed partial class ChatSessionStateTests
             CaptureHandler = _ =>
             {
                 captures++;
+
                 return Task.FromResult<EditorDocumentSnapshot?>(new EditorDocumentSnapshot(@"C:\Workspace\blocked.cs", "blocked"));
             },
         };
@@ -696,7 +721,7 @@ public sealed partial class ChatSessionStateTests
         using var vm = Create(connection);
         await vm.Initialization;
         var finished = new List<ChatAttentionEventArgs>();
-        vm.AttentionRequested += (_, e) => { if (e.Kind == ChatAttentionKind.TurnCompleted) finished.Add(e); };
+        vm.AttentionRequested += (_, e) => { if (e.Kind == ChatAttentionKind.TurnCompleted) { finished.Add(e); } };
         vm.InputText = "first";
         var firstSend = vm.SendAsync();
         connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("one"));
@@ -844,7 +869,11 @@ public sealed partial class ChatSessionStateTests
         var second = Assert.Single(vm.Messages, message => message.Text == "second");
 
         var died = new InvalidOperationException("agent exited");
-        foreach (var text in runningFailsFirst ? new[] { "first", "second" } : new[] { "second", "first" }) turns.Fail(text, died);
+        foreach (var text in runningFailsFirst ? new[] { "first", "second" } : new[] { "second", "first" })
+        {
+            turns.Fail(text, died);
+        }
+
         connection.RaiseDisconnected();
         ui.Drain();
         ui.Drain();
@@ -890,8 +919,13 @@ public sealed partial class ChatSessionStateTests
         bool armed = true;
         vm.PropertyChanged += (_, e) =>
         {
-            if (!armed || e.PropertyName != nameof(ChatViewModel.IsBusy) || !vm.IsBusy) return;
+            if (!armed || e.PropertyName != nameof(ChatViewModel.IsBusy) || !vm.IsBusy)
+            {
+                return;
+            }
+
             armed = false;
+
             throw new InvalidOperationException("observer failed");
         };
 
@@ -970,7 +1004,10 @@ public sealed partial class ChatSessionStateTests
         var third = Assert.Single(vm.Messages, message => message.Text == "third");
         third.PropertyChanged += (_, e) =>
         {
-            if (e.PropertyName == nameof(ChatMessageViewModel.IsPending)) throw new InvalidOperationException("observer failed");
+            if (e.PropertyName == nameof(ChatMessageViewModel.IsPending))
+            {
+                throw new InvalidOperationException("observer failed");
+            }
         };
 
         turns.Complete("first");
@@ -1020,8 +1057,14 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(1, vm.RunningAgentCount);
 
         connection.NewSessionHandler = _ => Task.FromResult(new NewSessionResult("session-2", []));
-        if (replacement == "new chat") await vm.NewSessionAsync();
-        else await vm.OpenSessionAsync(new SessionSummary("session-2", "/workspace", "Older chat", null));
+        if (replacement == "new chat")
+        {
+            await vm.NewSessionAsync();
+        }
+        else
+        {
+            await vm.OpenSessionAsync(new SessionSummary("session-2", "/workspace", "Older chat", null));
+        }
 
         Assert.Equal(0, vm.RunningAgentCount);
     }
@@ -1035,9 +1078,14 @@ public sealed partial class ChatSessionStateTests
         public Task<string> Handle(IReadOnlyList<ContentBlock> content)
         {
             var text = content.OfType<ContentBlock.Text>().First().Value;
-            if (!_pending.TryGetValue(text, out var queue)) _pending[text] = queue = new Queue<TaskCompletionSource<string>>();
+            if (!_pending.TryGetValue(text, out var queue))
+            {
+                _pending[text] = queue = new Queue<TaskCompletionSource<string>>();
+            }
+
             var tcs = new TaskCompletionSource<string>();
             queue.Enqueue(tcs);
+
             return tcs.Task;
         }
 
@@ -1156,7 +1204,7 @@ public sealed partial class ChatSessionStateTests
         connection.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([new AvailableCommand("foreign", "Foreign", null)]), "foreign-session");
         connection.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([new AvailableCommand("review", "Review", "scope")]), "returned-session");
         connection.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([new AvailableCommand("foreign-latest", "Foreign", null)]), "foreign-session");
-        Assert.Equal(ClientSlashCommandNames, vm.SlashSuggestions.Select(c => c.Name));
+        Assert.Equal(_clientSlashCommandNames, vm.SlashSuggestions.Select(c => c.Name));
 
         ready.SetResult(new NewSessionResult("returned-session", []));
         await vm.Initialization;
@@ -1165,9 +1213,9 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("review", command.Name);
         Assert.Equal("scope", command.InputHint);
         Assert.True(vm.AreSlashSuggestionsVisible);
-        Assert.Equal(new[] { "review" }.Concat(ClientSlashCommandNames), vm.SlashSuggestions.Select(c => c.Name));
+        Assert.Equal(new[] { "review" }.Concat(_clientSlashCommandNames), vm.SlashSuggestions.Select(c => c.Name));
         connection.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([new AvailableCommand("wrong-session", "Wrong", null)]));
-        Assert.Equal(new[] { "review" }.Concat(ClientSlashCommandNames), vm.SlashSuggestions.Select(c => c.Name));
+        Assert.Equal(new[] { "review" }.Concat(_clientSlashCommandNames), vm.SlashSuggestions.Select(c => c.Name));
     }
 
     [Fact]
@@ -1182,7 +1230,7 @@ public sealed partial class ChatSessionStateTests
         ready.SetResult(new NewSessionResult(RecordingAcpAgentConnection.SessionId, []));
         await vm.Initialization;
 
-        Assert.Equal(ClientSlashCommandNames, vm.SlashSuggestions.Select(c => c.Name));
+        Assert.Equal(_clientSlashCommandNames, vm.SlashSuggestions.Select(c => c.Name));
         Assert.Equal("login", vm.SelectedSlashSuggestion?.Name);
         Assert.True(vm.AreSlashSuggestionsVisible);
         Assert.False(string.IsNullOrWhiteSpace(vm.CommandCatalogStatus));
@@ -1200,13 +1248,13 @@ public sealed partial class ChatSessionStateTests
         vm.SelectedSlashSuggestion = vm.SlashSuggestions[1];
         var removedSelection = vm.SelectedSlashSuggestion;
         connection.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([new AvailableCommand("help", "Help", null)]));
-        Assert.Equal(new[] { "help" }.Concat(ClientSlashCommandNames), vm.SlashSuggestions.Select(c => c.Name));
+        Assert.Equal(new[] { "help" }.Concat(_clientSlashCommandNames), vm.SlashSuggestions.Select(c => c.Name));
         Assert.NotSame(removedSelection, vm.SelectedSlashSuggestion);
         connection.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([]), "foreign-session");
-        Assert.Equal(new[] { "help" }.Concat(ClientSlashCommandNames), vm.SlashSuggestions.Select(c => c.Name));
+        Assert.Equal(new[] { "help" }.Concat(_clientSlashCommandNames), vm.SlashSuggestions.Select(c => c.Name));
         connection.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([]));
 
-        Assert.Equal(ClientSlashCommandNames, vm.SlashSuggestions.Select(c => c.Name));
+        Assert.Equal(_clientSlashCommandNames, vm.SlashSuggestions.Select(c => c.Name));
         Assert.Equal("login", vm.SelectedSlashSuggestion?.Name);
         Assert.True(vm.AreSlashSuggestionsVisible);
         Assert.False(string.IsNullOrWhiteSpace(vm.CommandCatalogStatus));
@@ -1229,6 +1277,7 @@ public sealed partial class ChatSessionStateTests
             {
                 SynchronizationContext.SetSynchronizationContext(previous);
             }
+
             return Task.CompletedTask;
         };
         using var vm = CreateOnUiContext(connection, ui);
@@ -1236,7 +1285,7 @@ public sealed partial class ChatSessionStateTests
         vm.InputText = "/";
         ui.Drain();
 
-        Assert.Equal(ClientSlashCommandNames, vm.SlashSuggestions.Select(c => c.Name));
+        Assert.Equal(_clientSlashCommandNames, vm.SlashSuggestions.Select(c => c.Name));
         Assert.True(vm.AreSlashSuggestionsVisible);
     }
 
@@ -1250,7 +1299,7 @@ public sealed partial class ChatSessionStateTests
         vm.InputText = "/";
         connection.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([new AvailableCommand("review", "Review", null)]));
         ui.Drain();
-        Assert.Equal(new[] { "review" }.Concat(ClientSlashCommandNames), vm.SlashSuggestions.Select(c => c.Name));
+        Assert.Equal(new[] { "review" }.Concat(_clientSlashCommandNames), vm.SlashSuggestions.Select(c => c.Name));
         await Task.Run(() => connection.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([new AvailableCommand("queued", "Queued", null)])));
         var previous = SynchronizationContext.Current;
         SynchronizationContext.SetSynchronizationContext(ui);
@@ -1266,7 +1315,7 @@ public sealed partial class ChatSessionStateTests
         connection.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([new AvailableCommand("after-disconnect", "Stale", null)]));
         ui.Drain();
 
-        Assert.Equal(ClientSlashCommandNames, vm.SlashSuggestions.Select(c => c.Name));
+        Assert.Equal(_clientSlashCommandNames, vm.SlashSuggestions.Select(c => c.Name));
         Assert.Equal("login", vm.SelectedSlashSuggestion?.Name);
         Assert.True(vm.AreSlashSuggestionsVisible);
         Assert.False(string.IsNullOrWhiteSpace(vm.CommandCatalogStatus));
@@ -1289,7 +1338,7 @@ public sealed partial class ChatSessionStateTests
         second.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([new AvailableCommand("current", "Current", null)]));
         first.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([new AvailableCommand("stale", "Stale", null)]));
 
-        Assert.Equal(new[] { "current" }.Concat(ClientSlashCommandNames), vm.SlashSuggestions.Select(c => c.Name));
+        Assert.Equal(new[] { "current" }.Concat(_clientSlashCommandNames), vm.SlashSuggestions.Select(c => c.Name));
     }
 
     [Theory]
@@ -1499,7 +1548,9 @@ public sealed partial class ChatSessionStateTests
         vm.InputText = "go";
         var prompt = vm.SendAsync();
         for (int i = 0; i < running; i++)
+        {
             connection.RaiseSessionUpdate(new SessionUpdate.ToolCall(new ToolCallUpdate { ToolCallId = "a" + i, Title = "Agent", IsSubagent = true, Status = ToolCallStatus.InProgress }));
+        }
 
         Assert.Equal(expected, vm.RunningAgentsLabel);
         completed.SetResult(true);
@@ -1729,6 +1780,7 @@ public sealed partial class ChatSessionStateTests
             if (e.PropertyName == nameof(ChatViewModel.InputText) && vm.InputText.Length == 0 && !thrown)
             {
                 thrown = true;
+
                 throw new InvalidOperationException("observer failed");
             }
         };
@@ -1759,15 +1811,24 @@ public sealed partial class ChatSessionStateTests
         vm.PropertyChanged += (_, e) =>
         {
             if (e.PropertyName == nameof(ChatViewModel.IsBusy) && !vm.IsBusy)
+            {
                 throw cancellation ? new OperationCanceledException("observer cancelled") : new InvalidOperationException("observer failed");
+            }
         };
 
         vm.Dispose();
         turns.Complete("first");
         await sending;
 
-        if (cancellation) Assert.Empty(services.LoggedErrors);
-        else Assert.Equal("observer failed", Assert.Single(services.LoggedErrors).Exception.Message);
+        if (cancellation)
+        {
+            Assert.Empty(services.LoggedErrors);
+        }
+        else
+        {
+            Assert.Equal("observer failed", Assert.Single(services.LoggedErrors).Exception.Message);
+        }
+
         Assert.True(string.IsNullOrEmpty(vm.StatusMessage), vm.StatusMessage);
     }
 
@@ -1785,6 +1846,7 @@ public sealed partial class ChatSessionStateTests
             if (e.PropertyName == nameof(ChatViewModel.InputText) && vm.InputText.StartsWith("Review comments", StringComparison.Ordinal) && !thrown)
             {
                 thrown = true;
+
                 throw new InvalidOperationException("observer failed");
             }
         };
@@ -1813,7 +1875,9 @@ public sealed partial class ChatSessionStateTests
         {
             if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Add &&
                 e.NewItems!.Cast<ChatMessageViewModel>().Any(message => message.Text == "second"))
+            {
                 throw new InvalidOperationException("observer failed");
+            }
         };
 
         await vm.SendAsync();
@@ -1836,7 +1900,10 @@ public sealed partial class ChatSessionStateTests
         vm.AddImageAttachment("draft.png", "image/png", "AQID");
         vm.Attachments.CollectionChanged += (_, e) =>
         {
-            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Reset) throw new InvalidOperationException("observer failed");
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Reset)
+            {
+                throw new InvalidOperationException("observer failed");
+            }
         };
         var (call, options) = PlanApprovalRequest();
         connection.RaisePermissionRequested(call, options);
@@ -1868,7 +1935,9 @@ public sealed partial class ChatSessionStateTests
         vm.PropertyChanged += (_, e) =>
         {
             if (e.PropertyName == nameof(ChatViewModel.InputText) && vm.InputText.Contains("half-written", StringComparison.Ordinal))
+            {
                 throw new InvalidOperationException("observer failed");
+            }
         };
 
         turns.Complete("plan the feature");
@@ -1893,7 +1962,10 @@ public sealed partial class ChatSessionStateTests
         vm.AddImageAttachment("draft.png", "image/png", "AQID");
         vm.Attachments.CollectionChanged += (_, e) =>
         {
-            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Add) throw new InvalidOperationException("observer failed");
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Add)
+            {
+                throw new InvalidOperationException("observer failed");
+            }
         };
         var (call, options) = PlanApprovalRequest();
         connection.RaisePermissionRequested(call, options);
@@ -1919,7 +1991,9 @@ public sealed partial class ChatSessionStateTests
         vm.PropertyChanged += (_, e) =>
         {
             if (e.PropertyName == nameof(ChatViewModel.InputText) && vm.InputText == "meanwhile, look at this")
+            {
                 throw new InvalidOperationException("observer failed");
+            }
         };
         var (call, options) = PlanApprovalRequest();
         connection.RaisePermissionRequested(call, options);
@@ -1965,7 +2039,9 @@ public sealed partial class ChatSessionStateTests
         {
             if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Add &&
                 e.NewItems!.Cast<ChatMessageViewModel>().Any(message => message.Text.StartsWith("Review comments", StringComparison.Ordinal)))
+            {
                 throw new InvalidOperationException("observer failed");
+            }
         };
         var (call, options) = PlanApprovalRequest();
         connection.RaisePermissionRequested(call, options);
@@ -2227,7 +2303,7 @@ public sealed partial class ChatSessionStateTests
         await switching;
 
         vm.InputText = "/";
-        Assert.Equal(new[] { "review" }.Concat(ClientSlashCommandNames), vm.SlashSuggestions.Select(c => c.Name));
+        Assert.Equal(new[] { "review" }.Concat(_clientSlashCommandNames), vm.SlashSuggestions.Select(c => c.Name));
         Assert.Empty(vm.CommandCatalogStatus);
     }
 

@@ -28,12 +28,24 @@ public sealed class ElicitationFieldViewModel : ObservableObject
             .ToList();
     }
 
+    /// <summary>
+    /// Gets the key.
+    /// </summary>
     public string Key { get; }
 
+    /// <summary>
+    /// Gets the title.
+    /// </summary>
     public string? Title { get; }
 
+    /// <summary>
+    /// Gets the description.
+    /// </summary>
     public string? Description { get; }
 
+    /// <summary>
+    /// Gets the kind.
+    /// </summary>
     public ElicitationFieldKind Kind { get; }
 
     /// <summary>Fixed for the lifetime of the form; only each option's <see cref="ElicitationOptionViewModel.IsSelected"/> changes.</summary>

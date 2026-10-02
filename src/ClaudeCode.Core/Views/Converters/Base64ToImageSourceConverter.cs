@@ -11,17 +11,28 @@ namespace ClaudeCode.Core.Views.Converters;
 /// are decoded as-is.</summary>
 public sealed class Base64ToImageSourceConverter : IValueConverter
 {
-    private const int ThumbnailDecodeWidth = 160;
+    /// <summary>
+    /// The thumbnail decode width.
+    /// </summary>
+    private const int _thumbnailDecodeWidth = 160;
 
     public object? Convert(object value, Type targetType, object parameter, CultureInfo culture)
     {
-        if (value is not string base64 || base64.Length == 0) return null;
+        if (value is not string base64 || base64.Length == 0)
+        {
+            return null;
+        }
+
         try
         {
             var bytes = System.Convert.FromBase64String(base64);
             using var stream = new MemoryStream(bytes);
             var probe = BitmapDecoder.Create(stream, BitmapCreateOptions.DelayCreation, BitmapCacheOption.None);
-            if (probe.Frames.Count == 0) return null;
+            if (probe.Frames.Count == 0)
+            {
+                return null;
+            }
+
             BitmapFrame probeFrame = probe.Frames[0];
             int sourceWidth = probeFrame.PixelWidth, sourceHeight = probeFrame.PixelHeight;
 
@@ -31,11 +42,14 @@ public sealed class Base64ToImageSourceConverter : IValueConverter
             image.CacheOption = BitmapCacheOption.OnLoad;
             if (sourceWidth >= sourceHeight)
             {
-                if (sourceWidth > ThumbnailDecodeWidth) image.DecodePixelWidth = ThumbnailDecodeWidth;
+                if (sourceWidth > _thumbnailDecodeWidth)
+                {
+                    image.DecodePixelWidth = _thumbnailDecodeWidth;
+                }
             }
-            else if (sourceHeight > ThumbnailDecodeWidth)
+            else if (sourceHeight > _thumbnailDecodeWidth)
             {
-                image.DecodePixelHeight = ThumbnailDecodeWidth;
+                image.DecodePixelHeight = _thumbnailDecodeWidth;
             }
 
             image.StreamSource = stream;

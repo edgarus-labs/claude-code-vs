@@ -1,3 +1,4 @@
+using ClaudeCode.Contracts;
 using System;
 using System.Diagnostics;
 using System.IO.Pipes;
@@ -5,7 +6,6 @@ using System.Linq;
 using System.Runtime.Versioning;
 using System.Security.AccessControl;
 using System.Security.Principal;
-using ClaudeCode.Contracts;
 using Xunit;
 
 namespace ClaudeCode.VsControl.Mcp.Tests;

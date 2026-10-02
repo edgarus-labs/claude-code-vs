@@ -1,4 +1,3 @@
-using ClaudeCode.Acp;
 using ClaudeCode.Contracts;
 using System;
 using System.Globalization;
@@ -10,6 +9,9 @@ namespace ClaudeCode.Acp.Tests;
 
 public sealed class EffortJudgePromptTests
 {
+    /// <summary>
+    /// Gets the collection of level names.
+    /// </summary>
     private static string[] LevelNames => Enum.GetNames<EffortLevel>();
 
     [Theory]
@@ -18,7 +20,11 @@ public sealed class EffortJudgePromptTests
     public void SystemPrompts_OfferExactlyTheEffortLevels(bool retry)
     {
         var prompt = retry ? EffortJudgePrompt.RetrySystemPrompt : EffortJudgePrompt.SystemPrompt;
-        foreach (var name in LevelNames) Assert.Contains("`" + name.ToLowerInvariant() + "`", prompt);
+        foreach (var name in LevelNames)
+        {
+            Assert.Contains("`" + name.ToLowerInvariant() + "`", prompt);
+        }
+
         Assert.DoesNotContain("xhigh", prompt, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("`max`", prompt, StringComparison.OrdinalIgnoreCase);
     }
@@ -27,7 +33,9 @@ public sealed class EffortJudgePromptTests
     public void ParseReply_ParsesEachLevelsAgentValueBackToThatLevel()
     {
         foreach (EffortLevel level in Enum.GetValues<EffortLevel>())
+        {
             Assert.Equal(level, EffortJudgePrompt.ParseReply(level.ToAgentValue()));
+        }
     }
 
     [Theory]
@@ -94,7 +102,11 @@ public sealed class EffortJudgePromptTests
     private static int CountOf(string text, string part)
     {
         int count = 0;
-        for (int at = text.IndexOf(part, StringComparison.Ordinal); at >= 0; at = text.IndexOf(part, at + part.Length, StringComparison.Ordinal)) count++;
+        for (int at = text.IndexOf(part, StringComparison.Ordinal); at >= 0; at = text.IndexOf(part, at + part.Length, StringComparison.Ordinal))
+        {
+            count++;
+        }
+
         return count;
     }
 
@@ -107,10 +119,7 @@ public sealed class EffortJudgePromptTests
     [InlineData("<task>Design the API for the new plugin system</task>", "<task>Design the API for the new plugin system</task>")]
     [InlineData("<task>Design the API for the new plugin system</task> ok go now please", "<task>Design the API for the new plugin system</task> ok go now please")]
     [InlineData("Fix <div className=\"x\">the layout of this thing</div> now please", "Fix <div className=\"x\">the layout of this thing</div> now please")]
-    public void Preprocess_StripsNoiseTinyJudgesCopy(string raw, string expected)
-    {
-        Assert.Equal(expected, EffortJudgePrompt.Preprocess(raw));
-    }
+    public void Preprocess_StripsNoiseTinyJudgesCopy(string raw, string expected) => Assert.Equal(expected, EffortJudgePrompt.Preprocess(raw));
 
     [Theory]
     [InlineData("explain this:\n```cs\nvar x = 1;\n```\nshort")]
@@ -257,18 +266,12 @@ public sealed class EffortJudgePromptTests
     [InlineData("low-hanging fruit, medium", EffortLevel.Medium)]
     [InlineData("a follow-high then low", EffortLevel.Low)]
     [InlineData("I'd say `high`.", EffortLevel.High)]
-    public void ParseReply_TakesTheEarliestWholeWordLabel(string reply, EffortLevel expected)
-    {
-        Assert.Equal(expected, EffortJudgePrompt.ParseReply(reply));
-    }
+    public void ParseReply_TakesTheEarliestWholeWordLabel(string reply, EffortLevel expected) => Assert.Equal(expected, EffortJudgePrompt.ParseReply(reply));
 
     [Theory]
     [InlineData("")]
     [InlineData("Nie mam kontekstu do wykonania tego polecenia.")]
     [InlineData("lowest highest")]
     [InlineData("low-level")]
-    public void ParseReply_NoLabel_IsNull(string reply)
-    {
-        Assert.Null(EffortJudgePrompt.ParseReply(reply));
-    }
+    public void ParseReply_NoLabel_IsNull(string reply) => Assert.Null(EffortJudgePrompt.ParseReply(reply));
 }

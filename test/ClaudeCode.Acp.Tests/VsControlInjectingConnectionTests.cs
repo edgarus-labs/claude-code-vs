@@ -164,14 +164,29 @@ public sealed class VsControlInjectingConnectionTests
     {
         private int _next;
 
+        /// <summary>
+        /// Gets or sets a value indicating whether is available.
+        /// </summary>
         public bool IsAvailable { get; set; } = true;
 
-        public List<string> Started { get; } = new List<string>();
+        /// <summary>
+        /// Gets the collection of started.
+        /// </summary>
+        public List<string> Started { get; } = [];
 
-        public List<string> Ended { get; } = new List<string>();
+        /// <summary>
+        /// Gets the collection of ended.
+        /// </summary>
+        public List<string> Ended { get; } = [];
 
-        public List<string?> WorkspaceRoots { get; } = new List<string?>();
+        /// <summary>
+        /// Gets the collection of workspace roots.
+        /// </summary>
+        public List<string?> WorkspaceRoots { get; } = [];
 
+        /// <summary>
+        /// Gets the collection of live.
+        /// </summary>
         public IEnumerable<string> Live => Started.Where(id => !Ended.Contains(id));
 
         public McpServerConfig StartSession(string? workspaceRoot, out string correlationId)
@@ -187,14 +202,29 @@ public sealed class VsControlInjectingConnectionTests
 
     private sealed class StubConnection : IAcpAgentConnection
     {
+        /// <summary>
+        /// Gets or sets the load failure.
+        /// </summary>
         public Exception? LoadFailure { get; set; }
 
+        /// <summary>
+        /// Gets or sets the new failure.
+        /// </summary>
         public Exception? NewFailure { get; set; }
 
+        /// <summary>
+        /// Gets or sets the collection of last mcp servers.
+        /// </summary>
         public IReadOnlyList<McpServerConfig>? LastMcpServers { get; private set; }
 
+        /// <summary>
+        /// Gets a value indicating whether is initialized.
+        /// </summary>
         public bool IsInitialized => true;
 
+        /// <summary>
+        /// Gets a value indicating whether supports prompt queueing.
+        /// </summary>
         public bool SupportsPromptQueueing => false;
 
         public Task InitializeAsync(CancellationToken cancellationToken) => Task.CompletedTask;
@@ -202,7 +232,11 @@ public sealed class VsControlInjectingConnectionTests
         public Task<NewSessionResult> NewSessionAsync(string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken)
         {
             LastMcpServers = mcpServers;
-            if (NewFailure is not null) throw NewFailure;
+            if (NewFailure is not null)
+            {
+                throw NewFailure;
+            }
+
             return Task.FromResult(new NewSessionResult("new", Array.Empty<SessionConfigOption>()));
         }
 
@@ -212,7 +246,11 @@ public sealed class VsControlInjectingConnectionTests
         public Task<NewSessionResult> LoadSessionAsync(string sessionId, string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken)
         {
             LastMcpServers = mcpServers;
-            if (LoadFailure is not null) throw LoadFailure;
+            if (LoadFailure is not null)
+            {
+                throw LoadFailure;
+            }
+
             return Task.FromResult(new NewSessionResult(sessionId, Array.Empty<SessionConfigOption>()));
         }
 
@@ -226,18 +264,39 @@ public sealed class VsControlInjectingConnectionTests
         public Task<RemoteControlState> SetRemoteControlAsync(string sessionId, bool enabled, string? name, CancellationToken cancellationToken) =>
             Task.FromException<RemoteControlState>(new NotSupportedException());
 
+        /// <summary>
+        /// Gets or sets the handler count.
+        /// </summary>
         public int HandlerCount { get; private set; }
 
+        /// <summary>
+        /// Occurs when session update.
+        /// </summary>
         public event EventHandler<SessionUpdateEventArgs>? SessionUpdate { add => HandlerCount++; remove => HandlerCount--; }
 
+        /// <summary>
+        /// Occurs when permission requested.
+        /// </summary>
         public event EventHandler<PermissionRequestEventArgs>? PermissionRequested { add => HandlerCount++; remove => HandlerCount--; }
 
+        /// <summary>
+        /// Occurs when elicitation requested.
+        /// </summary>
         public event EventHandler<ElicitationRequestEventArgs>? ElicitationRequested { add => HandlerCount++; remove => HandlerCount--; }
 
+        /// <summary>
+        /// Occurs when file read requested.
+        /// </summary>
         public event EventHandler<FileReadRequestEventArgs>? FileReadRequested { add => HandlerCount++; remove => HandlerCount--; }
 
+        /// <summary>
+        /// Occurs when file write requested.
+        /// </summary>
         public event EventHandler<FileWriteRequestEventArgs>? FileWriteRequested { add => HandlerCount++; remove => HandlerCount--; }
 
+        /// <summary>
+        /// Occurs when disconnected.
+        /// </summary>
         public event EventHandler<Exception?>? Disconnected { add => HandlerCount++; remove => HandlerCount--; }
 
         public ValueTask DisposeAsync() => default;

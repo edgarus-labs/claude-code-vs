@@ -21,12 +21,21 @@ public sealed class ElicitationOptionViewModel : ObservableObject
     /// <summary>The identifier sent back to the agent; never truncated.</summary>
     public string Value { get; }
 
+    /// <summary>
+    /// Gets the label.
+    /// </summary>
     public string Label { get; }
 
+    /// <summary>
+    /// Gets the description.
+    /// </summary>
     public string? Description { get; }
 
     private bool _isSelected;
 
+    /// <summary>
+    /// Gets or sets a value indicating whether is selected.
+    /// </summary>
     public bool IsSelected
     {
         get => _isSelected;

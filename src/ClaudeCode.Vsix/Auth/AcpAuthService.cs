@@ -16,8 +16,17 @@ namespace ClaudeCode.Vsix.Auth;
 
 internal sealed class AcpAuthService : IAcpAuthService
 {
+    /// <summary>
+    /// The login instructions.
+    /// </summary>
     private const string _loginInstructions = AcpAuthCommandOutcomes.LoginInstructions;
+    /// <summary>
+    /// The adapter missing message.
+    /// </summary>
     private const string _adapterMissingMessage = AcpAuthCommandOutcomes.AdapterMissingMessage;
+    /// <summary>
+    /// The log source.
+    /// </summary>
     private const string _logSource = "Claude Code";
     private static readonly TimeSpan _logoutTimeout = TimeSpan.FromSeconds(30);
     private readonly Func<string?> _adapterPathProvider;
@@ -29,11 +38,17 @@ internal sealed class AcpAuthService : IAcpAuthService
         _adapterPathProvider = adapterPathProvider ?? throw new ArgumentNullException(nameof(adapterPathProvider));
     }
 
+    /// <summary>
+    /// Gets the current state.
+    /// </summary>
     public AuthState CurrentState
     {
         get { lock (_stateLock) { return _currentState; } }
     }
 
+    /// <summary>
+    /// Occurs when state changed.
+    /// </summary>
     public event EventHandler<AuthStateChangedEventArgs>? StateChanged;
 
     public async Task<bool> IsSignedInAsync(CancellationToken cancellationToken)
@@ -92,6 +107,11 @@ internal sealed class AcpAuthService : IAcpAuthService
         throw new InvalidOperationException(detail);
     }
 
+    /// <summary>
+    /// Asynchronously signs out by clearing the Visual Studio sign‑in state, setting the authentication state to SignedOut, and returning a completed task.
+    /// </summary>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>A task representing the asynchronous operation.</returns>
     public Task SignOutAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -244,9 +264,9 @@ internal sealed class AcpAuthService : IAcpAuthService
             KillProcessTree(process);
             process.StandardOutput.Dispose();
             process.StandardError.Dispose();
-            _ = stdout.ContinueWith(task => { _ = task.Exception; },
+            _ = stdout.ContinueWith(task => _ = task.Exception,
                 CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
-            _ = stderr.ContinueWith(task => { _ = task.Exception; },
+            _ = stderr.ContinueWith(task => _ = task.Exception,
                 CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         }
     }
@@ -287,6 +307,12 @@ internal sealed class AcpAuthService : IAcpAuthService
         return output.ToString();
     }
 
+    /// <summary>
+    /// Asynchronously reads the authentication status from the specified ACP executable, parses its JSON output, and returns the corresponding AuthState (or AuthState.Unknown on timeout or parsing errors).
+    /// </summary>
+    /// <param name="executable">The executable.</param>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the auth state.</returns>
     private static async Task<AuthState> ReadNativeStatusAsync(AcpExecutableSpec executable, CancellationToken cancellationToken)
     {
         var arguments = AcpAuthCliArguments.Status(executable);
@@ -318,7 +344,7 @@ internal sealed class AcpAuthService : IAcpAuthService
             Task stderr = process.StandardError.BaseStream.CopyToAsync(Stream.Null);
             Task<string> output = ReadStatusOutputAsync(process.StandardOutput);
             Task complete = Task.WhenAll(stderr, output, exited.Task);
-            _ = complete.ContinueWith(task => { _ = task.Exception; },
+            _ = complete.ContinueWith(task => _ = task.Exception,
                 CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
             Task finished = await Task.WhenAny(complete, Task.Delay(TimeSpan.FromSeconds(5), cancellationToken)).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();

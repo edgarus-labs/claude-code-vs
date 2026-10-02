@@ -9,7 +9,7 @@ namespace ClaudeCode.Core.Tests;
 
 public sealed class FakeAcpAgentConnectionTests
 {
-    private static readonly ContentBlock[] Prompt = [new ContentBlock.Text("hello there")];
+    private static readonly ContentBlock[] _prompt = [new ContentBlock.Text("hello there")];
 
     [Fact]
     public async Task SendPromptAsync_CallerTokenCancelled_ThrowsOperationCanceled()
@@ -17,7 +17,7 @@ public sealed class FakeAcpAgentConnectionTests
         await using var connection = new FakeAcpAgentConnection(TimeSpan.FromSeconds(30));
         using var caller = new CancellationTokenSource();
 
-        var turn = connection.SendPromptAsync("s1", Prompt, caller.Token);
+        var turn = connection.SendPromptAsync("s1", _prompt, caller.Token);
         caller.Cancel();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => turn.WaitAsync(TimeSpan.FromSeconds(5)));
@@ -28,7 +28,7 @@ public sealed class FakeAcpAgentConnectionTests
     {
         await using var connection = new FakeAcpAgentConnection(TimeSpan.FromSeconds(30));
 
-        var turn = connection.SendPromptAsync("s1", Prompt, CancellationToken.None);
+        var turn = connection.SendPromptAsync("s1", _prompt, CancellationToken.None);
         await connection.CancelAsync("s1", CancellationToken.None);
 
         Assert.Equal("cancelled", await turn.WaitAsync(TimeSpan.FromSeconds(5)));

@@ -64,10 +64,7 @@ public sealed class DiffBuilderTests
     }
 
     [Fact]
-    public void Build_CreatedEmptyFile_ProducesNoLines()
-    {
-        Assert.Empty(DiffBuilder.Build(string.Empty, string.Empty));
-    }
+    public void Build_CreatedEmptyFile_ProducesNoLines() => Assert.Empty(DiffBuilder.Build(string.Empty, string.Empty));
 
     [Fact]
     public void Build_BothSidesEndingInNewline_DoesNotDiffThePhantomLastSegment()

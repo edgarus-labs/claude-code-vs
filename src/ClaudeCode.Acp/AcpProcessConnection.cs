@@ -233,7 +233,7 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         && claudeCode["promptQueueing"] is JsonValue flag
         && flag.GetValueKind() == System.Text.Json.JsonValueKind.True;
 
-    private const string ChatPanelSystemPromptSection =
+    private const string _chatPanelSystemPromptSection =
         "# Claude Code chat panel in Visual Studio\n" +
         "You are running inside the Claude Code chat panel in Visual Studio. Guidance above that text between tool " +
         "calls may not be shown to the user, or that you should close with a recap that stands on its own, does not " +
@@ -247,7 +247,7 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
 
     private static JsonObject SessionMeta() => new JsonObject
     {
-        ["systemPrompt"] = new JsonObject { ["append"] = ChatPanelSystemPromptSection },
+        ["systemPrompt"] = new JsonObject { ["append"] = _chatPanelSystemPromptSection },
     };
 
     /// <summary>
@@ -282,7 +282,10 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
     public async Task<RemoteControlState> SetRemoteControlAsync(string sessionId, bool enabled, string? name, CancellationToken cancellationToken)
     {
         var @params = new JsonObject { ["sessionId"] = sessionId, ["enabled"] = enabled };
-        if (!string.IsNullOrWhiteSpace(name)) @params["name"] = name;
+        if (!string.IsNullOrWhiteSpace(name))
+        {
+            @params["name"] = name;
+        }
 
         JsonNode? result = await _rpc.SendRequestAsync("_vs/remoteControl", @params, cancellationToken).ConfigureAwait(false);
         var obj = result as JsonObject ?? throw new AcpProtocolException("_vs/remoteControl response did not contain a result object.");
@@ -411,7 +414,7 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
                 {
                     if (await Task.WhenAny(_stderrPump, Task.Delay(gracefulShutdownTimeout)).ConfigureAwait(false) != _stderrPump)
                     {
-                        _ = _stderrPump.ContinueWith(task => { _ = task.Exception; },
+                        _ = _stderrPump.ContinueWith(task => _ = task.Exception,
                             CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
                         stderrTimedOut = true;
                     }
@@ -507,6 +510,11 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
     }
 
+    /// <summary>
+    /// Removes the specified pending permission request from the session’s tracking collection and deletes the session entry if no other pending permissions remain.
+    /// </summary>
+    /// <param name="sessionId">The unique identifier of the session.</param>
+    /// <param name="args">The args.</param>
     private void UntrackPendingPermission(string sessionId, PermissionRequestEventArgs args)
     {
         lock (_permissionGate)
@@ -522,6 +530,10 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
     }
 
+    /// <summary>
+    /// Cancels all pending permission requests for the specified session by completing each pending response with the cancelled permission option identifier.
+    /// </summary>
+    /// <param name="sessionId">The unique identifier of the session.</param>
     private void CancelPendingPermissions(string sessionId)
     {
         lock (_permissionGate)
@@ -536,6 +548,10 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
     }
 
+    /// <summary>
+    /// Fails all pending permission requests by recording the specified exception and setting it on each pending response.
+    /// </summary>
+    /// <param name="cause">The cause.</param>
     private void FailAllPendingPermissions(Exception cause)
     {
         lock (_permissionGate)
@@ -551,6 +567,11 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
     }
 
+    /// <summary>
+    /// Tracks a pending elicitation request for the given session by adding it to the session’s pending collection and, if a prior elicitation failure is recorded, propagates that exception to the request’s response.
+    /// </summary>
+    /// <param name="sessionId">The unique identifier of the session.</param>
+    /// <param name="args">The args.</param>
     private void TrackPendingElicitation(string sessionId, ElicitationRequestEventArgs args)
     {
         lock (_elicitationGate)
@@ -571,6 +592,11 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
     }
 
+    /// <summary>
+    /// Removes a pending elicitation request from the session&apos;s tracking collection and cleans up.
+    /// </summary>
+    /// <param name="sessionId">The unique identifier of the session.</param>
+    /// <param name="args">The args.</param>
     private void UntrackPendingElicitation(string sessionId, ElicitationRequestEventArgs args)
     {
         lock (_elicitationGate)
@@ -586,6 +612,10 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
     }
 
+    /// <summary>
+    /// Cancels all pending elicitation requests for the specified session by completing their responses with a cancel action and empty content.
+    /// </summary>
+    /// <param name="sessionId">The unique identifier of the session.</param>
     private void CancelPendingElicitations(string sessionId)
     {
         lock (_elicitationGate)
@@ -600,6 +630,10 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
     }
 
+    /// <summary>
+    /// Fails all pending elicitation requests by setting the specified exception on each response task.
+    /// </summary>
+    /// <param name="cause">The cause.</param>
     private void FailAllPendingElicitations(Exception cause)
     {
         lock (_elicitationGate)

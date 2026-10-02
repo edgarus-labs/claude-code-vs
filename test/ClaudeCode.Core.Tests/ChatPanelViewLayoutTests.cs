@@ -13,11 +13,11 @@ namespace ClaudeCode.Core.Tests;
 /// </summary>
 public sealed class ChatPanelViewLayoutTests
 {
-    private static readonly XNamespace X = "http://schemas.microsoft.com/winfx/2006/xaml";
+    private static readonly XNamespace _x = "http://schemas.microsoft.com/winfx/2006/xaml";
 
-    private static readonly string[] AlwaysEnabled = ["ModeButton", "ModelButton", "RemoteControlButton"];
+    private static readonly string[] _alwaysEnabled = ["ModeButton", "ModelButton", "RemoteControlButton"];
 
-    private static readonly string[] AlwaysGated = ["AttachButton"];
+    private static readonly string[] _alwaysGated = ["AttachButton"];
 
     [Fact]
     public void ConfigurationPillsAreNotInsideTheSubtreeDisabledWhileTheAgentWorks()
@@ -34,8 +34,8 @@ public sealed class ChatPanelViewLayoutTests
         {
             string[] trapped = gated
                 .DescendantsAndSelf()
-                .Select(element => (string?)element.Attribute(X + "Name"))
-                .Where(name => name is not null && AlwaysEnabled.Contains(name))
+                .Select(element => (string?)element.Attribute(_x + "Name"))
+                .Where(name => name is not null && _alwaysEnabled.Contains(name))
                 .Select(name => name!)
                 .ToArray();
 
@@ -54,12 +54,12 @@ public sealed class ChatPanelViewLayoutTests
     {
         string[] gated = DraftGatedRoots(XDocument.Load(ViewPath()))
             .SelectMany(root => root.Descendants())
-            .Select(element => (string?)element.Attribute(X + "Name"))
+            .Select(element => (string?)element.Attribute(_x + "Name"))
             .Where(name => name is not null)
             .Select(name => name!)
             .ToArray();
 
-        foreach (string name in AlwaysGated)
+        foreach (string name in _alwaysGated)
         {
             Assert.True(
                 gated.Contains(name),

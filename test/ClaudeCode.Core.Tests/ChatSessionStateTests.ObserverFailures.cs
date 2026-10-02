@@ -28,8 +28,13 @@ public sealed partial class ChatSessionStateTests
         bool armed = true;
         vm.PropertyChanged += (_, e) =>
         {
-            if (!armed || e.PropertyName != nameof(ChatViewModel.CanConfigure) || vm.CanConfigure) return;
+            if (!armed || e.PropertyName != nameof(ChatViewModel.CanConfigure) || vm.CanConfigure)
+            {
+                return;
+            }
+
             armed = false;
+
             throw new InvalidOperationException("observer failed");
         };
 
@@ -60,8 +65,13 @@ public sealed partial class ChatSessionStateTests
         bool armed = true;
         vm.PropertyChanged += (_, e) =>
         {
-            if (!armed || e.PropertyName != nameof(ChatViewModel.CanConfigure) || !vm.CanConfigure) return;
+            if (!armed || e.PropertyName != nameof(ChatViewModel.CanConfigure) || !vm.CanConfigure)
+            {
+                return;
+            }
+
             armed = false;
+
             throw new InvalidOperationException("observer failed");
         };
 
@@ -85,8 +95,13 @@ public sealed partial class ChatSessionStateTests
         bool armed = true;
         vm.PropertyChanged += (_, e) =>
         {
-            if (!armed || e.PropertyName != nameof(ChatViewModel.IsConfigBusy) || !vm.IsConfigBusy) return;
+            if (!armed || e.PropertyName != nameof(ChatViewModel.IsConfigBusy) || !vm.IsConfigBusy)
+            {
+                return;
+            }
+
             armed = false;
+
             throw new InvalidOperationException("observer failed");
         };
 
@@ -121,8 +136,13 @@ public sealed partial class ChatSessionStateTests
         bool armed = true;
         vm.PropertyChanged += (_, e) =>
         {
-            if (!armed || e.PropertyName != nameof(ChatViewModel.IsConfigBusy) || vm.IsConfigBusy) return;
+            if (!armed || e.PropertyName != nameof(ChatViewModel.IsConfigBusy) || vm.IsConfigBusy)
+            {
+                return;
+            }
+
             armed = false;
+
             throw new InvalidOperationException("observer failed");
         };
 
@@ -144,7 +164,10 @@ public sealed partial class ChatSessionStateTests
         await vm.Initialization;
         vm.PropertyChanged += (_, e) =>
         {
-            if (e.PropertyName == nameof(ChatViewModel.SelectedModel)) throw new InvalidOperationException("observer failed");
+            if (e.PropertyName == nameof(ChatViewModel.SelectedModel))
+            {
+                throw new InvalidOperationException("observer failed");
+            }
         };
 
         var failure = await Record.ExceptionAsync(() => vm.SelectModelAsync(vm.SelectedModel));
@@ -164,7 +187,10 @@ public sealed partial class ChatSessionStateTests
         await vm.Initialization;
         vm.PropertyChanged += (_, e) =>
         {
-            if (e.PropertyName == nameof(ChatViewModel.SelectedEffort)) throw new InvalidOperationException("observer failed");
+            if (e.PropertyName == nameof(ChatViewModel.SelectedEffort))
+            {
+                throw new InvalidOperationException("observer failed");
+            }
         };
 
         var failure = await Record.ExceptionAsync(() => vm.SelectEffortAsync(Auto(vm)));
@@ -183,6 +209,7 @@ public sealed partial class ChatSessionStateTests
         {
             var text = ((ContentBlock.Text)content[0]).Value;
             log.Add("prompt:" + text);
+
             return text == "first" ? firstTurn.Task : Task.CompletedTask;
         };
         var inner = connection.ConfigHandler!;
@@ -190,7 +217,11 @@ public sealed partial class ChatSessionStateTests
         var release = new TaskCompletionSource();
         connection.ConfigHandler = async (session, value, token) =>
         {
-            if (holdRequests) await release.Task;
+            if (holdRequests)
+            {
+                await release.Task;
+            }
+
             return await inner(session, value, token);
         };
         var services = ServicesFor(connection);
@@ -209,8 +240,13 @@ public sealed partial class ChatSessionStateTests
         bool armed = true;
         vm.PropertyChanged += (_, e) =>
         {
-            if (!armed || e.PropertyName != nameof(ChatViewModel.SelectedEffort) || vm.SelectedEffort?.Value != "xhigh") return;
+            if (!armed || e.PropertyName != nameof(ChatViewModel.SelectedEffort) || vm.SelectedEffort?.Value != "xhigh")
+            {
+                return;
+            }
+
             armed = false;
+
             throw new InvalidOperationException("observer failed");
         };
 
@@ -233,8 +269,13 @@ public sealed partial class ChatSessionStateTests
         bool armed = true;
         vm.PropertyChanged += (_, e) =>
         {
-            if (!armed || e.PropertyName != nameof(ChatViewModel.IsAuthCommandRunning) || !vm.IsAuthCommandRunning) return;
+            if (!armed || e.PropertyName != nameof(ChatViewModel.IsAuthCommandRunning) || !vm.IsAuthCommandRunning)
+            {
+                return;
+            }
+
             armed = false;
+
             throw new InvalidOperationException("observer failed");
         };
         vm.InputText = "/login";
@@ -262,7 +303,9 @@ public sealed partial class ChatSessionStateTests
         plan.PropertyChanged += (_, e) =>
         {
             if (e.PropertyName == nameof(PlanReviewViewModel.Status) && plan.Status == "Sent back for revision")
+            {
                 throw new InvalidOperationException("observer failed");
+            }
         };
 
         var failure = Record.Exception(() => plan.ReviewCommand.Execute("Add a rollback step."));
@@ -288,7 +331,9 @@ public sealed partial class ChatSessionStateTests
         vm.PropertyChanged += (_, e) =>
         {
             if (e.PropertyName == nameof(ChatViewModel.PendingPermission) && vm.PendingPermission is null)
+            {
                 throw new InvalidOperationException("observer failed");
+            }
         };
 
         var failure = Record.Exception(() => plan.ReviewCommand.Execute("Add a rollback step."));
@@ -320,7 +365,10 @@ public sealed partial class ChatSessionStateTests
         var queued = Assert.Single(vm.Messages, message => message.Text == "second");
         queued.PropertyChanged += (_, e) =>
         {
-            if (e.PropertyName == nameof(ChatMessageViewModel.IsPending)) throw new InvalidOperationException("observer failed");
+            if (e.PropertyName == nameof(ChatMessageViewModel.IsPending))
+            {
+                throw new InvalidOperationException("observer failed");
+            }
         };
 
         firstTurn.SetResult(true);

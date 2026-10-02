@@ -1,4 +1,3 @@
-using ClaudeCode.Acp;
 using System;
 using System.Diagnostics;
 using System.Threading.Tasks;

@@ -24,6 +24,9 @@ public sealed class ChatMessageViewModel : ObservableObject
         }
     }
 
+    /// <summary>
+    /// Gets the role.
+    /// </summary>
     public ChatRole Role { get; }
 
     private static int _nextId;
@@ -48,6 +51,9 @@ public sealed class ChatMessageViewModel : ObservableObject
     /// pending again.</summary>
     public void MarkSent() => IsPending = false;
 
+    /// <summary>
+    /// Gets the text.
+    /// </summary>
     public string Text => _text ??= _textBuilder.ToString();
 
     private int? _durationSeconds;
@@ -77,6 +83,9 @@ public sealed class ChatMessageViewModel : ObservableObject
         set => SetProperty(ref _tokensUsed, value);
     }
 
+    /// <summary>
+    /// Gets the tool calls.
+    /// </summary>
     public ObservableCollection<ToolCallCardViewModel> ToolCalls { get; } = new ObservableCollection<ToolCallCardViewModel>();
 
     /// <summary>Text and tool calls in the order they actually happened - see <see cref="ChatMessagePart"/>.</summary>
@@ -94,8 +103,8 @@ public sealed class ChatMessageViewModel : ObservableObject
         _textBuilder.Append(appended);
         if (chunk.Length > remaining)
         {
-            _textBuilder.Append(MarkdownSafetyLimits.TruncationNotice);
-            appended += MarkdownSafetyLimits.TruncationNotice;
+            _textBuilder.Append(MarkdownSafetyLimits._truncationNotice);
+            appended += MarkdownSafetyLimits._truncationNotice;
             _isTruncated = true;
         }
 
@@ -136,7 +145,11 @@ public sealed class ChatMessageViewModel : ObservableObject
         var remaining = MarkdownSafetyLimits.MaxMarkdownLength - _thinkingLength;
         var appended = chunk.Substring(0, Math.Min(chunk.Length, remaining));
         _thinkingLength += appended.Length;
-        if (chunk.Length > remaining) appended += MarkdownSafetyLimits.TruncationNotice;
+        if (chunk.Length > remaining)
+        {
+            appended += MarkdownSafetyLimits._truncationNotice;
+        }
+
         if (Parts.Count > 0 && Parts[Parts.Count - 1] is ChatThinkingPart lastThought)
         {
             lastThought.Append(appended);

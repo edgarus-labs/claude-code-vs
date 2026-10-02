@@ -1,4 +1,3 @@
-using ClaudeCode.Acp;
 using System;
 using System.Diagnostics;
 using System.Globalization;
@@ -205,6 +204,7 @@ public sealed class AcpProcessConnectionProcessTreeKillTests
 
         string output = proc.StandardOutput.ReadToEnd().Trim();
         proc.WaitForExit(5000);
+
         return int.TryParse(output, out int pid) ? pid : (int?)null;
     }
 
@@ -240,6 +240,7 @@ public sealed class AcpProcessConnectionProcessTreeKillTests
             try
             {
                 Directory.Delete(path, recursive: true);
+
                 return;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)

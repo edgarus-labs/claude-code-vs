@@ -25,11 +25,18 @@ public sealed class PlanReviewViewModel : ObservableObject
             ?? Options.FirstOrDefault(option => option.Outcome == PermissionOutcome.RejectAlways);
         ProceedCommand = new RelayCommand(() =>
         {
-            if (ProceedOption is not null && !IsResolved) choose(ProceedOption);
+            if (ProceedOption is not null && !IsResolved)
+            {
+                choose(ProceedOption);
+            }
         }, () => ProceedOption is not null && !IsResolved);
         ReviewCommand = new RelayCommand<string>(comments =>
         {
-            if (RejectOption is null || IsResolved || string.IsNullOrWhiteSpace(comments)) return;
+            if (RejectOption is null || IsResolved || string.IsNullOrWhiteSpace(comments))
+            {
+                return;
+            }
+
             review(comments!.Trim());
         }, comments => RejectOption is not null && !IsResolved && !string.IsNullOrWhiteSpace(comments));
     }
@@ -37,16 +44,34 @@ public sealed class PlanReviewViewModel : ObservableObject
     /// <summary>The plan body, bounded by <see cref="MarkdownSafetyLimits.LimitMarkdownLength"/>.</summary>
     public string Markdown { get; }
 
+    /// <summary>
+    /// Gets the collection of options.
+    /// </summary>
     public IReadOnlyList<PermissionOption> Options { get; }
 
+    /// <summary>
+    /// Gets the proceed option.
+    /// </summary>
     public PermissionOption? ProceedOption { get; }
 
+    /// <summary>
+    /// Gets the reject option.
+    /// </summary>
     public PermissionOption? RejectOption { get; }
 
+    /// <summary>
+    /// Gets the proceed command.
+    /// </summary>
     public IRelayCommand ProceedCommand { get; }
 
+    /// <summary>
+    /// Gets the review command.
+    /// </summary>
     public IRelayCommand<string> ReviewCommand { get; }
 
+    /// <summary>
+    /// Gets or sets a value indicating whether is resolved.
+    /// </summary>
     public bool IsResolved
     {
         get => _isResolved;

@@ -69,11 +69,8 @@ public sealed class VsDebuggerChannelRulesTests
     }
 
     [Fact]
-    public void MatchesBreakpointRemoval_LineWithoutPath_DoesNotMatchEveryBreakpoint()
-    {
-        Assert.Throws<InvalidOperationException>(
+    public void MatchesBreakpointRemoval_LineWithoutPath_DoesNotMatchEveryBreakpoint() => Assert.Throws<InvalidOperationException>(
             () => VsDebuggerChannelRules.MatchesBreakpointRemoval(null, 42, @"C:\repo\Other.cs", 7));
-    }
 
     [Fact]
     public void MatchesBreakpointRemoval_NoPathAndNoLine_MatchesEverything()
@@ -146,10 +143,7 @@ public sealed class VsDebuggerChannelRulesTests
     }
 
     [Fact]
-    public void ClampWaitMs_OmittedRequest_UsesTheDefault()
-    {
-        Assert.Equal(5_000, VsDebuggerChannelRules.ClampWaitMs(null, 5_000, 0, 45_000));
-    }
+    public void ClampWaitMs_OmittedRequest_UsesTheDefault() => Assert.Equal(5_000, VsDebuggerChannelRules.ClampWaitMs(null, 5_000, 0, 45_000));
 
     [Fact]
     public void ClampWaitMs_HonoursTheFloorAndTheCeiling()
@@ -187,10 +181,7 @@ public sealed class VsDebuggerChannelRulesTests
     }
 
     [Fact]
-    public void TruncateDebuggeeValue_LongValueIsCutAndMarked()
-    {
-        Assert.Equal("abcd…", VsDebuggerChannelRules.TruncateDebuggeeValue("abcdef", 4));
-    }
+    public void TruncateDebuggeeValue_LongValueIsCutAndMarked() => Assert.Equal("abcd…", VsDebuggerChannelRules.TruncateDebuggeeValue("abcdef", 4));
 
     [Fact]
     public void TruncateDebuggeeValue_NeverEmitsHalfOfASurrogatePair()
