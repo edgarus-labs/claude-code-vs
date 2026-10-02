@@ -860,19 +860,34 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     public void DismissAttachmentError() => RunOnUi(() => AttachmentError = null);
 
     private Task AttachActiveDocumentAsync(CancellationToken cancellationToken) =>
-        OnUiAsync(() => AttachActiveDocumentCoreAsync(cancellationToken));
+        OnUiAsync(() => RunReportingFailuresAsync(() => AttachActiveDocumentCoreAsync(cancellationToken)));
 
     private async Task AttachActiveDocumentCoreAsync(CancellationToken cancellationToken)
     {
         if (!CanEditDraft || _isCapturingDocument) return;
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
         _isCapturingDocument = true;
-        NotifyStateChanged();
-        AttachmentError = null;
         try
         {
-            var document = await _services.CaptureActiveDocumentAsync(linked.Token).ConfigureAwait(true);
-            linked.Token.ThrowIfCancellationRequested();
+            // Inside the try: an observer throwing as the capture starts must not leave it running for
+            // good, which would lock the composer and hold back review comments.
+            NotifyStateChanged();
+            AttachmentError = null;
+            await AttachCapturedDocumentAsync(linked.Token).ConfigureAwait(true);
+        }
+        finally
+        {
+            _isCapturingDocument = false;
+            RunEachStepReportingFailures(NotifyStateChanged, SendPendingPlanReview);
+        }
+    }
+
+    private async Task AttachCapturedDocumentAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var document = await _services.CaptureActiveDocumentAsync(cancellationToken).ConfigureAwait(true);
+            cancellationToken.ThrowIfCancellationRequested();
             if (!CanEditDraft) return;
             if (document is null)
             {
@@ -896,16 +911,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             }
             Attachments.Add(attachment);
         }
-        catch (OperationCanceledException) when (linked.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
         catch (Exception ex)
         {
+            LogFailure("Attaching the active document failed.", ex);
             if (!_disposed) AttachmentError = $"Could not attach the active document: {ex.Message}";
-        }
-        finally
-        {
-            _isCapturingDocument = false;
-            NotifyStateChanged();
-            SendPendingPlanReview();
         }
     }
 
@@ -964,9 +974,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         if (IsBusy) ActivityText = PendingPermission is null ? activity : "Waiting for permission…";
     }
 
-    public Task SelectModelAsync(SessionConfigValue? value) => OnUiAsync(() => ChangeConfigAsync(_modelOption, value));
-    public Task SelectEffortAsync(SessionConfigValue? value) => OnUiAsync(() => SelectEffortCoreAsync(value));
-    public Task SelectModeAsync(SessionConfigValue? value) => OnUiAsync(() => ChangeConfigAsync(_modeOption, value));
+    // The setters (SelectedModel, SelectedEffort, SelectedMode) discard the task, so nothing may escape it.
+    public Task SelectModelAsync(SessionConfigValue? value) => OnUiAsync(() => RunReportingFailuresAsync(() => ChangeConfigAsync(_modelOption, value)));
+    public Task SelectEffortAsync(SessionConfigValue? value) => OnUiAsync(() => RunReportingFailuresAsync(() => SelectEffortCoreAsync(value)));
+    public Task SelectModeAsync(SessionConfigValue? value) => OnUiAsync(() => RunReportingFailuresAsync(() => ChangeConfigAsync(_modeOption, value)));
 
     private async Task SelectEffortCoreAsync(SessionConfigValue? value)
     {
@@ -993,13 +1004,18 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
         // Auto is left only once the agent runs the picked level - acknowledged now, or already
         // current (no round trip). A rejected change keeps Auto, like any unacknowledged selection.
-        if (_autoEffortSelected && _effortOption?.CurrentValue == value.Value)
-        {
-            _autoEffortSelected = _isAutoEffort = false;
-            NotifySelectionsChanged();
-        }
-        // Only now is it known whether follow-ups are judged (Auto kept) or run under the picked level.
-        DispatchNextQueuedMessage();
+        // Then, once it is known whether follow-ups are judged (Auto kept) or run under the picked
+        // level, the queue goes - also when an observer throws as Auto is left.
+        RunEachStepReportingFailures(
+            () =>
+            {
+                if (_autoEffortSelected && _effortOption?.CurrentValue == value.Value)
+                {
+                    _autoEffortSelected = _isAutoEffort = false;
+                    NotifySelectionsChanged();
+                }
+            },
+            DispatchNextQueuedMessage);
     }
 
     // A verdict belongs to one Auto selection in one session.
@@ -1115,10 +1131,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
         var connection = _connection!;
         var sessionId = _sessionId!;
-        IsConfigBusy = true;
-        StatusMessage = null;
         try
         {
+            // Inside the try: an observer throwing as the change starts must not leave the composer
+            // locked for good.
+            IsConfigBusy = true;
+            StatusMessage = null;
             var options = await connection.SetSessionConfigOptionAsync(sessionId, option.Id, value.Value, _lifetime.Token).ConfigureAwait(true);
             if (IsCurrentSession(connection, sessionId))
                 ApplyConfigOptions(options);
@@ -1126,18 +1144,22 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex)
         {
+            LogFailure("Changing a session setting failed.", ex);
             if (!_disposed) StatusMessage = $"Could not change session settings: {ex.Message}";
         }
         finally
         {
             // Never publish an optimistic selection: failures retain the last acknowledged state.
-            IsConfigBusy = false;
-            NotifySelectionsChanged();
-            SendPendingPlanReview();
-            // A turn can end while this RPC is still in flight, and the queue refuses to dispatch
-            // into a config change; this is the blocker lifting, so whatever it held back goes now -
-            // except during an effort pick, which releases it itself once it has settled Auto.
-            if (!_isPickingEffort) DispatchNextQueuedMessage();
+            // Every step runs even when an observer throws on one, so neither the composer nor what
+            // waited for the change is stranded.
+            RunEachStepReportingFailures(
+                () => IsConfigBusy = false,
+                NotifySelectionsChanged,
+                SendPendingPlanReview,
+                // A turn can end while this RPC is still in flight, and the queue refuses to dispatch
+                // into a config change; this is the blocker lifting, so whatever it held back goes now -
+                // except during an effort pick, which releases it itself once it has settled Auto.
+                () => { if (!_isPickingEffort) DispatchNextQueuedMessage(); });
         }
     }
 
@@ -1160,6 +1182,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         catch (OperationCanceledException) when (linked.IsCancellationRequested) { }
         catch (Exception ex)
         {
+            LogFailure("Preparing Claude failed.", ex);
             if (!_disposed) StatusMessage = $"Could not prepare Claude: {ex.Message}";
         }
         finally
@@ -1282,7 +1305,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         {
             // Never a prompt: intercepted here, before the queue exists, so it can never be
             // buffered and later replayed into session/prompt by DispatchQueuedMessageAsync.
-            return RunClientCommandAsync(clientCommand);
+            // What escapes it (an observer throwing as it starts) is reported, not thrown at the command.
+            return RunReportingFailuresAsync(() => RunClientCommandAsync(clientCommand));
         }
 
         var attachments = Attachments.ToArray();
@@ -1344,12 +1368,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         InputText = string.Empty;
         StatusMessage = null;
 
-        IsAuthCommandRunning = true;
         _authCommandCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
         var token = _authCommandCts.Token;
         bool signedIn = false;
         try
         {
+            // Inside the try: an observer throwing as the command starts must not leave it running
+            // for good, refusing every later /login and /logout.
+            IsAuthCommandRunning = true;
             AuthCommandOutcome outcome;
             if (login)
             {
@@ -1376,13 +1402,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
+            LogFailure(login ? "Signing in failed." : "Signing out failed.", ex);
             if (!_disposed) StatusMessage = $"{(login ? "Sign-in" : "Sign-out")} failed: {ex.Message}";
         }
         finally
         {
             _authCommandCts?.Dispose();
             _authCommandCts = null;
-            IsAuthCommandRunning = false;
+            RunEachStepReportingFailures(() => IsAuthCommandRunning = false);
         }
 
         // After the sign-in itself has been reported, so a connect failure (which InitializeCoreAsync
@@ -1535,7 +1562,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 if (!joining) _currentAssistantMessage = null;
                 _submittedPrompts.Add(queued);
                 submitted = true;
-                if (_submittedPrompts.Count == 1) queued?.Bubble.MarkSent();
+                // The bubble stops reading as pending before its observers run: one throwing must not
+                // stop a prompt already tracked as submitted from going out, shown as delivered.
+                if (_submittedPrompts.Count == 1 && queued is not null) RunEachStepReportingFailures(queued.Bubble.MarkSent);
                 // Once the running prompt is submitted, acceptance is ambiguous on transport failure: it is
                 // not restored or resent. (A sent-ahead prompt is judged in OnPromptReturned.)
                 stopReason = await connection.SendPromptAsync(sessionId, content, _lifetime.Token).ConfigureAwait(true);
@@ -1736,17 +1765,35 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     // A failure nothing else reports - an observer throwing in the panel's own bookkeeping. Logged with
     // its type and stack when the host keeps a log (IChatErrorLog), since the status line has room for
-    // the message only, and appended to the status so whatever the turn already reported stays
+    // the message only, and appended to the status so whatever the operation already reported stays
     // readable. Once the panel is disposed, any cancellation is taken to be disposal's and dropped.
     private void ReportUnexpectedFailure(Exception ex)
     {
         if (_disposed && ex is OperationCanceledException) return;
-        LogFailure("Sending a message failed in the panel's own bookkeeping.", ex);
+        LogFailure("The chat panel failed in its own bookkeeping.", ex);
         if (_disposed) return;
         // Never throws - every caller is a catch block: the log is guarded (LogFailure), and a
         // status-line observer failing too is logged.
         try { AppendStatus($"Error: {ex.Message}"); }
         catch (Exception statusFailure) { LogFailure("Showing a failure in the status line failed.", statusFailure); }
+    }
+
+    // For an operation started from a command or a property setter: whatever escapes it - an observer
+    // throwing as the panel's state changes - is reported (ReportUnexpectedFailure), never thrown at the
+    // command, which would rethrow it on the UI thread, nor left to fault a task nobody awaits.
+    private async Task RunReportingFailuresAsync(Func<Task> operation)
+    {
+        try { await operation().ConfigureAwait(true); }
+        catch (Exception ex) { ReportUnexpectedFailure(ex); }
+    }
+
+    // For the steps that end an operation - clearing its busy flag, releasing what waited for it: every
+    // step runs (RunEachStep) and a failure is reported rather than thrown, which from a finally block
+    // would also replace whatever the operation was already throwing.
+    private void RunEachStepReportingFailures(params Action[] steps)
+    {
+        try { RunEachStep(steps); }
+        catch (Exception ex) { ReportUnexpectedFailure(ex); }
     }
 
     // Every log entry goes through here. IChatErrorLog must not throw, but this panel calls it from
@@ -1930,6 +1977,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             // The turn goes on, so sending ahead into it is safe again - including what was typed
             // while the stop was in flight.
             _isStopping = false;
+            LogFailure("Cancelling the turn failed.", ex);
             if (!_disposed) StatusMessage = $"Cancel failed: {ex.Message}";
             DispatchNextQueuedMessage();
         }
@@ -2484,15 +2532,22 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 // open past a newer request - must not clear the state of whatever is pending now.
                 if (!e.Response.TrySetResult(option.OptionId)) return;
                 _pendingPermissionResponse = null;
-                PendingPermission = null;
-                // Answered from the card, the plan document has to go dead with it. The plan's own
-                // callbacks mark it first, with their more specific status.
-                if (plan is { IsResolved: false })
-                {
-                    plan.MarkResolved(option.Outcome is PermissionOutcome.AllowOnce or PermissionOutcome.AllowAlways
-                        ? "Plan accepted — implementing…" : "Plan rejected");
-                }
-                UpdateActivity("Working…");
+                // The request is answered: an observer throwing as the card or the plan document goes
+                // dead with it is reported, not thrown at the command that answered it - every step
+                // still runs, and the review callback still sends the comments.
+                RunEachStepReportingFailures(
+                    () => PendingPermission = null,
+                    // Answered from the card, the plan document has to go dead with it. The plan's own
+                    // callbacks mark it first, with their more specific status.
+                    () =>
+                    {
+                        if (plan is { IsResolved: false })
+                        {
+                            plan.MarkResolved(option.Outcome is PermissionOutcome.AllowOnce or PermissionOutcome.AllowAlways
+                                ? "Plan accepted — implementing…" : "Plan rejected");
+                        }
+                    },
+                    () => UpdateActivity("Working…"));
             }
 
             PendingPermission = new PermissionRequestViewModel(ToolDisplayName.Describe(e.Call.Title), e.Options, Choose);
@@ -2522,7 +2577,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                         // Execute that bypasses CanExecute - can get here with nothing to answer.
                         if (plan!.RejectOption is not PermissionOption reject) return;
                         _pendingPlanReviewComments = comments;
-                        plan.MarkResolved("Sent back for revision");
+                        // An observer throwing as the plan is marked must not keep the request from
+                        // being answered (Choose) nor the review from going out.
+                        RunEachStepReportingFailures(() => plan.MarkResolved("Sent back for revision"));
                         Choose(reject);
                         // A locally driven turn owns IsBusy, so RunTurnReportingFailuresAsync delivers
                         // the review once the last in-flight prompt returns. A turn driven from claude.ai/code
