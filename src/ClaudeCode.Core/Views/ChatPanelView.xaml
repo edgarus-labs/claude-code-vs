@@ -154,6 +154,49 @@
         <Setter Property="KeyboardNavigation.DirectionalNavigation" Value="Contained" />
       </Style>
 
+      <!-- The Model/Effort list wrappers. Their bar mirrors the transcript's ::-webkit-scrollbar rules
+           (transcript.css), which follow the VS Code extension: a 10px lane with no track or arrow
+           buttons, and a rounded 4px thumb in the foreground colour at 28% (45% while hovered or dragged). -->
+      <Style x:Key="ConfigScrollViewerStyle" TargetType="ScrollViewer">
+        <Setter Property="VerticalScrollBarVisibility" Value="Auto" />
+        <Setter Property="HorizontalScrollBarVisibility" Value="Disabled" />
+        <Style.Resources>
+          <Style TargetType="ScrollBar">
+            <Setter Property="Width" Value="10" />
+            <Setter Property="MinWidth" Value="10" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Template">
+              <Setter.Value>
+                <ControlTemplate TargetType="ScrollBar">
+                  <Track x:Name="PART_Track" IsDirectionReversed="True">
+                    <Track.Thumb>
+                      <Thumb>
+                        <Thumb.Template>
+                          <ControlTemplate TargetType="Thumb">
+                            <Border Background="Transparent">
+                              <Border x:Name="ThumbFill" Margin="3" CornerRadius="2" Opacity="0.28"
+                                      Background="{DynamicResource ChatForegroundBrush}" />
+                            </Border>
+                            <ControlTemplate.Triggers>
+                              <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ThumbFill" Property="Opacity" Value="0.45" />
+                              </Trigger>
+                              <Trigger Property="IsDragging" Value="True">
+                                <Setter TargetName="ThumbFill" Property="Opacity" Value="0.45" />
+                              </Trigger>
+                            </ControlTemplate.Triggers>
+                          </ControlTemplate>
+                        </Thumb.Template>
+                      </Thumb>
+                    </Track.Thumb>
+                  </Track>
+                </ControlTemplate>
+              </Setter.Value>
+            </Setter>
+          </Style>
+        </Style.Resources>
+      </Style>
+
       <Style x:Key="ConfigItemStyle" TargetType="ListBoxItem">
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="Padding" Value="10,9" />
@@ -1105,7 +1148,7 @@
               <TextBlock Grid.Row="0" Text="Model" Margin="11,6,11,5"
                          FontSize="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=11}"
                          Foreground="{DynamicResource ChatSubtleForegroundBrush}" />
-              <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+              <ScrollViewer Grid.Row="1" Style="{StaticResource ConfigScrollViewerStyle}">
                 <ListBox x:Name="ModelList" ItemsSource="{Binding AvailableModels}" SelectedItem="{Binding SelectedModel, Mode=OneWay}"
                          IsEnabled="{Binding CanConfigure}" Style="{StaticResource ConfigListStyle}"
                          ItemContainerStyle="{StaticResource ConfigItemStyle}" ItemTemplate="{StaticResource ConfigValueTemplate}"
@@ -1150,7 +1193,7 @@
                              FontSize="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}" />
                 </StackPanel>
               </Button>
-              <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+              <ScrollViewer Grid.Row="1" Style="{StaticResource ConfigScrollViewerStyle}">
                 <ListBox x:Name="EffortList" ItemsSource="{Binding AvailableEfforts}" SelectedItem="{Binding SelectedEffort, Mode=OneWay}"
                          IsEnabled="{Binding CanConfigure}" Style="{StaticResource ConfigListStyle}"
                          ItemContainerStyle="{StaticResource ConfigItemStyle}" ItemTemplate="{StaticResource ConfigValueTemplate}"
