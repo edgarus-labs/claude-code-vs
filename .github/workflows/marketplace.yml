@@ -1,0 +1,54 @@
+name: Marketplace
+
+# Started by hand: pick the branch under "Use workflow from". The VSIX is built and tested from that
+# branch, stamped with the newest vX.Y.Z release tag it contains, and published to the Visual Studio
+# Marketplace.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: marketplace-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/build-vsix.yml
+
+  # Recovery is "Re-run failed jobs": it reuses the run's release-vsix artifact, so the published bits
+  # are the ones that were built and tested.
+  marketplace:
+    needs: build
+    runs-on: windows-latest
+    environment: marketplace
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Download release payload
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-vsix
+          path: release
+
+      - name: Locate VsixPublisher
+        id: publisher
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          $publisher = & $vswhere -latest -products * -find "VSSDK\VisualStudioIntegration\Tools\Bin\VsixPublisher.exe" | Select-Object -First 1
+          if (-not $publisher) { throw "VsixPublisher.exe was not found in the runner's Visual Studio installation." }
+          "path=$publisher" >> $env:GITHUB_OUTPUT
+
+      - name: Publish to Visual Studio Marketplace
+        shell: pwsh
+        env:
+          VS_MARKETPLACE_PAT: ${{ secrets.VS_MARKETPLACE_PAT }}
+          PUBLISHER_PATH: ${{ steps.publisher.outputs.path }}
+        run: |
+          $vsix = @(Get-ChildItem -Path release -Filter *.vsix)
+          if ($vsix.Count -ne 1) { throw "Expected exactly one .vsix in the release payload, found $($vsix.Count)." }
+          ./.github/scripts/Publish-Marketplace.ps1 -VsixPath $vsix[0].FullName -PublishManifestPath src/ClaudeCode.Vsix/publishManifest.json -PublisherPath $env:PUBLISHER_PATH -PersonalAccessToken $env:VS_MARKETPLACE_PAT
