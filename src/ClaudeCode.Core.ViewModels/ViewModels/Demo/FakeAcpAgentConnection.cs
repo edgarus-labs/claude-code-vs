@@ -20,7 +20,6 @@ public sealed class FakeAcpAgentConnection : IAcpAgentConnection
 
     public bool IsInitialized { get; private set; }
 
-    // The demo turn loop runs one prompt at a time; a concurrent prompt would interleave its echo.
     public bool SupportsPromptQueueing => false;
 
     public Task InitializeAsync(CancellationToken cancellationToken)
@@ -33,8 +32,6 @@ public sealed class FakeAcpAgentConnection : IAcpAgentConnection
     public Task<NewSessionResult> NewSessionAsync(string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken) =>
         Task.FromResult(new NewSessionResult(Guid.NewGuid().ToString("N"), GetConfigOptions()));
 
-    // The demo/fallback double never persists sessions, so there is nothing to list; History shows
-    // its empty state.
     public Task<IReadOnlyList<SessionSummary>> ListSessionsAsync(string? cwd, CancellationToken cancellationToken) =>
         Task.FromResult<IReadOnlyList<SessionSummary>>(Array.Empty<SessionSummary>());
 
@@ -81,8 +78,6 @@ public sealed class FakeAcpAgentConnection : IAcpAgentConnection
             SessionUpdate?.Invoke(this, new SessionUpdateEventArgs(sessionId, new SessionUpdate.TurnEnded("end_turn")));
             return "end_turn";
         }
-        // Only a stop by CancelAsync ends the turn "cancelled"; a cancelled caller token throws, as it
-        // does on the real connection.
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             SessionUpdate?.Invoke(this, new SessionUpdateEventArgs(sessionId, new SessionUpdate.TurnEnded("cancelled")));
@@ -106,10 +101,6 @@ public sealed class FakeAcpAgentConnection : IAcpAgentConnection
 
     public event EventHandler<SessionUpdateEventArgs>? SessionUpdate;
 
-    // FakeAcpAgentConnection is a scripted demo/fallback double: it never asks the client to read or
-    // write files, never requests permission, never asks the user a question, and never disconnects
-    // unexpectedly. These five events are required by IAcpAgentConnection and legitimately unused
-    // here, not dead code.
 #pragma warning disable CS0067
     public event EventHandler<PermissionRequestEventArgs>? PermissionRequested;
 

@@ -5,10 +5,6 @@ using System.Threading.Tasks;
 
 namespace ClaudeCode.Core.Tests;
 
-/// <summary>Configurable <see cref="IAcpAuthService"/> double for exercising /login and /logout:
-/// unlike <see cref="AlwaysSignedInAuthService"/>, this one actually tracks state and raises
-/// <see cref="StateChanged"/>, mirroring how the real service's status probe and command results
-/// drive <c>ChatViewModel</c>'s reconnect/disconnect plumbing.</summary>
 internal sealed class RecordingAuthService : IAcpAuthService
 {
     public RecordingAuthService(AuthState initialState = AuthState.SignedOut)

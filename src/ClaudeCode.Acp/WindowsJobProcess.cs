@@ -9,9 +9,6 @@ using System.Text;
 
 namespace ClaudeCode.Acp;
 
-// Owns the Windows process tree, not just the launcher. No adapter code executes before job
-// assignment succeeds. Nested jobs preserve restrictions imposed by Visual Studio's own host;
-// incompatible parent-job restrictions fail launch rather than allowing an uncontained fallback.
 internal sealed class WindowsJobProcess : IDisposable
 {
     private readonly SafeFileHandle _job;
@@ -60,27 +57,23 @@ internal sealed class WindowsJobProcess : IDisposable
             }
 
             var limits = new JobExtendedLimitInformation();
-            limits.BasicLimitInformation.LimitFlags = 0x2000; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            limits.BasicLimitInformation.LimitFlags = 0x2000;
             if (!SetInformationJobObject(job, 9, ref limits, Marshal.SizeOf<JobExtendedLimitInformation>()))
             {
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "Unable to configure ACP process containment.");
             }
 
-            // Inheritable handles never exist in the VS host: an unrelated Process.Start there
-            // could otherwise inherit our pipes despite the adapter's explicit handle list.
             string brokerPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe");
             var brokerStartup = new StartupInformationEx
             {
                 StartupInfo = new StartupInformation { Size = Marshal.SizeOf<StartupInformation>() },
             };
             if (!CreateProcessW(brokerPath, new char[1], IntPtr.Zero, IntPtr.Zero, false,
-                0x08000004, null, null, ref brokerStartup, out broker)) // NO_WINDOW | SUSPENDED
+                0x08000004, null, null, ref brokerStartup, out broker))
             {
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "Unable to create the suspended ACP launch broker.");
             }
 
-            // Preserve any inherited host-job restrictions. Incompatible nesting fails closed
-            // while the broker is suspended; neither it nor the adapter has executed any code.
             if (!AssignProcessToJobObject(job, broker.Process))
             {
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "Unable to contain the ACP launch broker.");
@@ -109,13 +102,13 @@ internal sealed class WindowsJobProcess : IDisposable
             IntPtr parentAttribute = IntPtr.Add(handleList, IntPtr.Size * 3);
             Marshal.WriteIntPtr(parentAttribute, broker.Process);
             if (!UpdateProcThreadAttribute(attributeList, 0, new IntPtr(0x20002), handleList,
-                new IntPtr(IntPtr.Size * 3), IntPtr.Zero, IntPtr.Zero)) // PROC_THREAD_ATTRIBUTE_HANDLE_LIST
+                new IntPtr(IntPtr.Size * 3), IntPtr.Zero, IntPtr.Zero))
             {
                 throw new Win32Exception(Marshal.GetLastWin32Error());
             }
 
             if (!UpdateProcThreadAttribute(attributeList, 0, new IntPtr(0x20000), parentAttribute,
-                new IntPtr(IntPtr.Size), IntPtr.Zero, IntPtr.Zero)) // PROC_THREAD_ATTRIBUTE_PARENT_PROCESS
+                new IntPtr(IntPtr.Size), IntPtr.Zero, IntPtr.Zero))
             {
                 throw new Win32Exception(Marshal.GetLastWin32Error());
             }
@@ -125,7 +118,7 @@ internal sealed class WindowsJobProcess : IDisposable
                 StartupInfo = new StartupInformation
                 {
                     Size = Marshal.SizeOf<StartupInformationEx>(),
-                    Flags = 0x100, // STARTF_USESTDHANDLES
+                    Flags = 0x100,
                     StandardInput = inheritedInput,
                     StandardOutput = inheritedOutput,
                     StandardError = inheritedError,
@@ -149,7 +142,6 @@ internal sealed class WindowsJobProcess : IDisposable
             var commandLine = new char[command.Length + 1];
             command.CopyTo(0, commandLine, 0, command.Length);
             beforeProcessCreate?.Invoke();
-            // SUSPENDED | NO_WINDOW | UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT.
             if (!CreateProcessW(null, commandLine, IntPtr.Zero, IntPtr.Zero, true,
                 0x08080404, environment.ToString(), string.IsNullOrEmpty(startInfo.WorkingDirectory) ? null : startInfo.WorkingDirectory,
                 ref startup, out nativeProcess))
@@ -167,8 +159,6 @@ internal sealed class WindowsJobProcess : IDisposable
                 throw new InvalidOperationException("The ACP adapter did not inherit its required process job.");
             }
 
-            // The broker never runs. Its private pipe handles are no longer needed after the
-            // adapter inherits them; terminate and drain it before allowing adapter execution.
             if (!TerminateProcess(broker.Process, 0))
             {
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "Unable to terminate the suspended ACP launch broker.");
@@ -199,7 +189,6 @@ internal sealed class WindowsJobProcess : IDisposable
             {
                 if (!started)
                 {
-                    // The original handle remains valid even if job assignment or Process setup fails.
                     if (nativeProcess.Process != IntPtr.Zero)
                     {
                         TerminateProcess(nativeProcess.Process, 1);
@@ -241,7 +230,6 @@ internal sealed class WindowsJobProcess : IDisposable
 
                 if (broker.Process != IntPtr.Zero)
                 {
-                    // Also covers failure before job assignment; no broker thread is ever resumed.
                     TerminateProcess(broker.Process, 1);
                     CloseHandle(broker.Process);
                 }
@@ -279,7 +267,7 @@ internal sealed class WindowsJobProcess : IDisposable
 
     private static IntPtr DuplicateIntoBroker(SafeFileHandle handle, IntPtr broker)
     {
-        if (!DuplicateHandle(GetCurrentProcess(), handle, broker, out IntPtr inherited, 0, true, 2)) // DUPLICATE_SAME_ACCESS
+        if (!DuplicateHandle(GetCurrentProcess(), handle, broker, out IntPtr inherited, 0, true, 2))
         {
             throw new Win32Exception(Marshal.GetLastWin32Error(), "Unable to transfer ACP pipe ownership to its launch broker.");
         }

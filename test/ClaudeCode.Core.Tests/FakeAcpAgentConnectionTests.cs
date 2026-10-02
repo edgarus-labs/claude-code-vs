@@ -7,9 +7,6 @@ using Xunit;
 
 namespace ClaudeCode.Core.Tests;
 
-// The demo connection is a production fallback for IAcpAgentConnection, so it must end a turn the
-// way AcpProcessConnection does: "cancelled" only when CancelAsync stopped it, while a cancelled
-// caller token surfaces as OperationCanceledException.
 public sealed class FakeAcpAgentConnectionTests
 {
     private static readonly ContentBlock[] Prompt = [new ContentBlock.Text("hello there")];

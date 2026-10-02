@@ -41,20 +41,13 @@ public sealed class ElicitationFieldViewModel : ObservableObject
 
     private string _textValue = string.Empty;
 
-    /// <summary>Never null: WPF two-way binding pushes null for an emptied TextBox, and this property
-    /// is declared non-nullable, so the setter coerces rather than handing a null back to converters,
-    /// validation predicates and the view - all of which run on the UI thread, where an
-    /// unhandled NullReferenceException tears down devenv.</summary>
+    /// <summary>The free-text answer. Never null: a null assignment is stored as the empty string.</summary>
     public string TextValue
     {
         get => _textValue;
         set => SetProperty(ref _textValue, value ?? string.Empty);
     }
 
-    /// <summary>Enforces single-selection. A RadioButton inside an ItemsControl sits in its own
-    /// ContentPresenter and so does not group with its siblings; without this the view can leave two
-    /// options checked for one question and the answer silently becomes the earliest one in wire
-    /// order rather than what the user clicked.</summary>
     internal void OnOptionSelected(ElicitationOptionViewModel selected)
     {
         if (Kind != ElicitationFieldKind.SingleSelect)

@@ -27,8 +27,6 @@ internal sealed class StubChatSessionServices : IChatSessionServices, IAutoEffor
 
     public IEffortClassifier? EffortClassifier { get; set; }
 
-    /// <summary>Injects a failure for the VSIX host's <c>WorkspaceRoot</c>, which is a live
-    /// callback into solution state and throws while a solution is closing or reloading.</summary>
     public Func<string?>? WorkspaceRootHandler { get; set; }
 
     public string? WorkspaceRoot => WorkspaceRootHandler is null ? _workspaceRoot : WorkspaceRootHandler();
@@ -51,8 +49,6 @@ internal sealed class StubChatSessionServices : IChatSessionServices, IAutoEffor
         ActiveDocumentChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    /// <summary>Mirrors the host opening or closing a solution: the root changes first, then the
-    /// notification follows.</summary>
     public void SetWorkspaceRoot(string? value)
     {
         _workspaceRoot = value;
@@ -70,8 +66,6 @@ internal sealed class StubChatSessionServices : IChatSessionServices, IAutoEffor
 
     public List<int?> OpenedDocumentLines { get; } = new();
 
-    /// <summary>Injects a failure for the real host's <c>VS.Documents.OpenAsync</c>, which can fail
-    /// for a deleted, renamed or locked document.</summary>
     public Func<string, int?, CancellationToken, Task>? OpenDocumentHandler { get; set; }
 
     public Task OpenDocumentAsync(string path, int? line, CancellationToken cancellationToken)
@@ -103,7 +97,6 @@ internal sealed class StubChatSessionServices : IChatSessionServices, IAutoEffor
 
     public List<CancellationToken> ConfirmSignOutRequests { get; } = new();
 
-    /// <summary>Injects a failure for the VSIX host's modal confirmation dialog.</summary>
     public Func<CancellationToken, Task<bool>>? ConfirmSignOutHandler { get; set; }
 
     public Task<bool> ConfirmSignOutEverywhereAsync(CancellationToken cancellationToken)

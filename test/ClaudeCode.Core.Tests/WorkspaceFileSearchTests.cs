@@ -29,8 +29,6 @@ public sealed class WorkspaceFileSearchTests : IDisposable
 
     private static string Suffix(string reference) => Path.DirectorySeparatorChar + reference;
 
-    // A web project's node_modules can hold more entries than the whole walk may visit. It must not
-    // spend them before the source folders are searched, or a source file reads as missing.
     [Fact]
     public void FindBySuffix_BuildOrToolFolderLargerThanTheBudget_StillFindsTheSourceFile()
     {
@@ -42,8 +40,6 @@ public sealed class WorkspaceFileSearchTests : IDisposable
         Assert.Equal(target, Assert.Single(found), ignoreCase: true);
     }
 
-    // A walk cut short cannot tell one match from the first of several: presenting the one it saw
-    // as the file would open an arbitrary namesake, so the click must hear the search was partial.
     [Fact]
     public void FindBySuffix_BudgetRunsOutAfterOneMatch_ReportsTheSearchIncompleteInsteadOfAUniqueFile()
     {
@@ -56,7 +52,6 @@ public sealed class WorkspaceFileSearchTests : IDisposable
         Assert.Contains("too many", ex.Message, StringComparison.Ordinal);
     }
 
-    // Closing the chat must stop a walk over a large tree instead of letting it run to the cap.
     [Fact]
     public void FindBySuffix_Cancelled_StopsTheWalk()
     {

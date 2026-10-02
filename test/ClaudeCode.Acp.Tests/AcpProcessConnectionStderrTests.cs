@@ -33,7 +33,6 @@ public sealed class AcpProcessConnectionStderrTests
                 connection.StandardErrorReceived += (_, line) => received.TrySetResult(line);
             }
 
-            // The adapter emits stderr only after receiving a request, allowing subscription first.
             await Assert.ThrowsAnyAsync<Exception>(() => connection.InitializeAsync(default).WaitAsync(TimeSpan.FromSeconds(10)));
             if (subscribe)
             {

@@ -10,14 +10,9 @@ namespace ClaudeCode.Acp;
 /// <summary>
 /// Adds the Visual Studio control MCP server to every session started through the inner connection.
 /// <para>
-/// Security invariant: the workspace root handed to <see cref="IVsControlSessionHost.StartSession"/>
-/// - which becomes the <c>WorkspacePathGuard</c> sandbox root for every VS-control tool call - is
-/// always taken from <c>trustedWorkspaceRootProvider</c>, the host's own solution directory. The
-/// <c>cwd</c> arguments of <see cref="NewSessionAsync"/> and <see cref="LoadSessionAsync"/> are never
-/// used for it: a caller could take <c>LoadSessionAsync</c>'s <c>cwd</c> from the agent's
-/// <c>session/list</c> response (see <see cref="SessionSummary.Cwd"/>), and honouring it would let the
-/// agent choose the directory it is then sandboxed to. The guard therefore holds even if a caller
-/// passes an agent-supplied path.
+/// The workspace root handed to <see cref="IVsControlSessionHost.StartSession"/> is always taken from
+/// <c>trustedWorkspaceRootProvider</c>; the <c>cwd</c> arguments of <see cref="NewSessionAsync"/> and
+/// <see cref="LoadSessionAsync"/> are never used for it.
 /// </para>
 /// </summary>
 public sealed class VsControlInjectingConnection : IAcpAgentConnection
@@ -50,7 +45,6 @@ public sealed class VsControlInjectingConnection : IAcpAgentConnection
     public async Task<NewSessionResult> NewSessionAsync(string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken)
     {
         var merged = new List<McpServerConfig>(mcpServers ?? Array.Empty<McpServerConfig>());
-        // Never `cwd`: the sandbox root must be the host's, not one supplied over the wire.
         string? correlationId = StartVsControlSession(merged);
 
         try
@@ -72,7 +66,6 @@ public sealed class VsControlInjectingConnection : IAcpAgentConnection
     public async Task<NewSessionResult> LoadSessionAsync(string sessionId, string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken)
     {
         var merged = new List<McpServerConfig>(mcpServers ?? Array.Empty<McpServerConfig>());
-        // Even if a caller passed an agent-reported cwd (SessionSummary.Cwd), it must never become the sandbox root.
         string? correlationId = StartVsControlSession(merged);
 
         try
@@ -83,8 +76,6 @@ public sealed class VsControlInjectingConnection : IAcpAgentConnection
         }
         catch
         {
-            // Only the session that failed to start dies here: the one the user is still in keeps
-            // its control server, so a rejected resume cannot disarm the live session.
             EndSession(correlationId);
             throw;
         }
@@ -116,8 +107,6 @@ public sealed class VsControlInjectingConnection : IAcpAgentConnection
 
     private string? StartVsControlSession(List<McpServerConfig> merged)
     {
-        // The VsControlMcp sidecar payload may not have been built/deployed beside this assembly - the
-        // session still starts, just without editor/solution tool support, rather than failing outright.
         if (!_registry.IsAvailable || Volatile.Read(ref _disposed) != 0) return null;
 
         merged.Add(_registry.StartSession(_trustedWorkspaceRootProvider(), out string correlationId));
@@ -125,8 +114,6 @@ public sealed class VsControlInjectingConnection : IAcpAgentConnection
 
         if (Volatile.Read(ref _disposed) != 0)
         {
-            // DisposeAsync drained the map between the start and the add; without this the server
-            // would outlive the connection with nothing left holding its correlation id.
             EndSession(correlationId);
             merged.RemoveAt(merged.Count - 1);
             return null;
@@ -135,12 +122,6 @@ public sealed class VsControlInjectingConnection : IAcpAgentConnection
         return correlationId;
     }
 
-    /// <summary>
-    /// Ends every control server this connection started before <paramref name="currentCorrelationId"/>.
-    /// A connection drives one session at a time ("New chat" and opening history both replace the
-    /// active session), and an abandoned server still serves the full VS-control surface to whoever
-    /// holds its token - including an MCP child the agent kept alive for the abandoned session.
-    /// </summary>
     private void EndSupersededSessions(string? currentCorrelationId)
     {
         foreach (string correlationId in _correlationIds.Keys)

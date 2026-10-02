@@ -7,9 +7,6 @@ using System.Threading.Tasks;
 
 namespace ClaudeCode.Core.Tests;
 
-/// <summary>A host with none of the optional capabilities: <see cref="StubChatSessionServices"/> seen
-/// through <see cref="IChatSessionServices"/> alone. A capability the stub gains later is not
-/// forwarded unless a subclass declares it.</summary>
 internal class PlainChatSessionServices : IChatSessionServices
 {
     private readonly StubChatSessionServices _inner;
@@ -56,8 +53,6 @@ internal class PlainChatSessionServices : IChatSessionServices
         _inner.ConfirmSignOutEverywhereAsync(cancellationToken);
 }
 
-/// <summary>A host that keeps a log but does not offer Auto effort. <see cref="ThrowOnLog"/> makes the
-/// log break its "must not throw" contract.</summary>
 internal sealed class ErrorLogOnlyServices : PlainChatSessionServices, IChatErrorLog
 {
     public ErrorLogOnlyServices(StubChatSessionServices inner) : base(inner) { }

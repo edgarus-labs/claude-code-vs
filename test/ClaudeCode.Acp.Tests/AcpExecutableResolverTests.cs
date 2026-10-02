@@ -5,7 +5,7 @@ using Xunit;
 
 namespace ClaudeCode.Acp.Tests;
 
-[Collection("Process current directory")] // SetCurrentDirectory below is process-wide; see ProcessCurrentDirectoryScope.
+[Collection("Process current directory")]
 public sealed class AcpExecutableResolverTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "claude acp & %resolver% " + Guid.NewGuid().ToString("N"));
@@ -89,7 +89,6 @@ public sealed class AcpExecutableResolverTests : IDisposable
             return;
         }
 
-        // A .bin shim directory remains untrusted even without a node_modules ancestor.
         string shim = CreateFile(Path.Combine("tools", ".bin", "claude-agent-acp.cmd"));
         string script = CreateFile(Path.Combine("tools", "@agentclientprotocol", "claude-agent-acp", "dist", "index.js"));
         string plantedNode = CreateFile(Path.Combine("tools", ".bin", "node.exe"));
@@ -237,9 +236,6 @@ public sealed class AcpExecutableResolverTests : IDisposable
     [Fact]
     public void ExplicitJsEntryPoint_PrefersPathNodeOverAdjacentPackageNode()
     {
-        // Unlike an npm-global .cmd shim (which legitimately colocates its own node.exe), an explicit
-        // .js entry point's directory is untrusted package content (node_modules); a "node.exe" sitting
-        // next to it must never be preferred over a PATH-resolved node.
         string nodeName = OperatingSystem.IsWindows() ? "node.exe" : "node";
         string script = CreateFile(Path.Combine("node_modules", "@agentclientprotocol", "claude-agent-acp", "dist", "index.js"));
         CreateFile(Path.Combine("node_modules", "@agentclientprotocol", "claude-agent-acp", "dist", nodeName));
@@ -263,9 +259,6 @@ public sealed class AcpExecutableResolverTests : IDisposable
             string adapterName = OperatingSystem.IsWindows() ? "claude-agent-acp.exe" : "claude-agent-acp";
             CreateFile(Path.Combine("relative-dir", adapterName));
 
-            // A relative PATH entry must never be resolved against the current working directory - a
-            // malicious repository could otherwise plant an adapter executable that gets launched just
-            // because the process's CWD happens to be inside (or under) the opened workspace.
             Assert.Null(AcpExecutableResolver.TryResolveDefault("relative-dir"));
         }
         finally

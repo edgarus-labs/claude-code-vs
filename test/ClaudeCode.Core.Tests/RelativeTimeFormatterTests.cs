@@ -11,15 +11,15 @@ public sealed class RelativeTimeFormatterTests
 
     [Theory]
     [InlineData(0, "just now")]
-    [InlineData(59, "just now")]            // last second of the "just now" bucket
-    [InlineData(60, "1m ago")]              // minute boundary
-    [InlineData(3599, "59m ago")]           // last second of the minute bucket
-    [InlineData(3600, "1h ago")]            // hour boundary
-    [InlineData(86_399, "23h ago")]         // last second of the hour bucket
-    [InlineData(86_400, "yesterday")]       // 24h boundary
-    [InlineData(172_799, "yesterday")]      // last second of "yesterday"
-    [InlineData(172_800, "2d ago")]         // 48h boundary
-    [InlineData(604_799, "6d ago")]         // last second before the date fallback
+    [InlineData(59, "just now")]
+    [InlineData(60, "1m ago")]
+    [InlineData(3599, "59m ago")]
+    [InlineData(3600, "1h ago")]
+    [InlineData(86_399, "23h ago")]
+    [InlineData(86_400, "yesterday")]
+    [InlineData(172_799, "yesterday")]
+    [InlineData(172_800, "2d ago")]
+    [InlineData(604_799, "6d ago")]
     public void Describe_BucketBoundaries(int ageSeconds, string expected)
     {
         DateTimeOffset timestamp = Now.AddSeconds(-ageSeconds);
@@ -59,8 +59,6 @@ public sealed class RelativeTimeFormatterTests
     [Fact]
     public void Describe_NullCulture_FallsBackToTheCurrentCultureNotToAHardCodedOne()
     {
-        // Pinned to a culture whose "MMM d" differs from the invariant one, so the assertion cannot
-        // be satisfied by an implementation that quietly formats with CultureInfo.InvariantCulture.
         DateTimeOffset timestamp = Now.AddDays(-30);
         var pinned = new CultureInfo("fr-FR");
         CultureInfo previous = CultureInfo.CurrentCulture;

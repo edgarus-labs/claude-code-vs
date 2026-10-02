@@ -6,9 +6,8 @@ using Xunit;
 
 namespace ClaudeCode.Core.Tests;
 
-/// <summary>The kill switches the plan document window relies on: it gates its "Send review" button
-/// on <c>ReviewCommand.CanExecute</c>, so these guards are the only thing standing between a dead or
-/// un-rejectable plan and a prompt injected into whatever session is live now.</summary>
+/// <summary>Covers the guards on <c>ReviewCommand.CanExecute</c>, which the plan document window uses
+/// to enable its "Send review" button.</summary>
 public sealed class PlanReviewViewModelTests
 {
     private static PermissionOption Option(string id, PermissionOutcome outcome) =>
@@ -72,8 +71,6 @@ public sealed class PlanReviewViewModelTests
         Assert.False(plan.ReviewCommand.CanExecute(null));
     }
 
-    // An agent that offers only the "always" variants still gets a Proceed and a Review button:
-    // the outcome fallback is what keeps the plan window answerable on that option set.
     [Fact]
     public void Options_WithOnlyAlwaysVariants_FallBackToThemForProceedAndReview()
     {
@@ -105,8 +102,6 @@ public sealed class PlanReviewViewModelTests
     [Fact]
     public void Markdown_BeyondTheRenderableLimit_IsBoundedBeforeThePlanWindowCanSerializeIt()
     {
-        // PlanDocumentView.Render() serialises Markdown straight into an ExecuteScriptAsync payload,
-        // so the agent-sized plan has to be cut here or nowhere.
         var oversized = new string('x', MarkdownSafetyLimits.MaxMarkdownLength + 1);
 
         var plan = new PlanReviewViewModel(oversized, BothOptions, _ => { }, _ => { });

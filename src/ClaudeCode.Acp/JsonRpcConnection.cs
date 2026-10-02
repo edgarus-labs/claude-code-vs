@@ -24,7 +24,6 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
     private readonly CancellationTokenSource _cts = new CancellationTokenSource();
     private readonly CancellationToken _shutdownToken;
     private readonly object _operationGate = new object();
-    // Disposal releases the connection's reference; the final operation releases its resources.
     private int _activeOperations = 1;
     private long _nextId;
     private Task? _pumpTask;
@@ -39,14 +38,6 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
 
     public JsonRpcRequestHandler? RequestHandler { get; set; }
 
-    /// <summary>
-    /// Raised synchronously on the pump's read loop for every inbound notification (unlike inbound
-    /// requests, which are dispatched off the pump via <c>Task.Run</c>). This preserves the wire's
-    /// exact arrival order for e.g. streaming <c>session/update</c> chunks, but means a subscriber
-    /// that blocks or does slow synchronous work stalls reading of every subsequent
-    /// notification/response/request on this connection. Subscribers MUST return quickly (dispatch
-    /// their own real work elsewhere) rather than block here.
-    /// </summary>
     public event EventHandler<JsonRpcNotification>? NotificationReceived;
 
     public event EventHandler<Exception?>? Disconnected;
@@ -125,7 +116,6 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
         {
             byte[] bytes = Encoding.UTF8.GetBytes(envelope.ToJsonString() + "\n");
 
-            // Cancellation must unblock backpressure even when closing the stream does not.
             using CancellationTokenSource linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdownToken);
             CancellationToken linkedToken = linkedCts.Token;
             await _writeLock.WaitAsync(linkedToken).ConfigureAwait(false);
@@ -150,11 +140,6 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
         Exception? failure = null;
         try
         {
-            // Manual byte-buffered line reads (rather than StreamReader.ReadLineAsync, which has no
-            // CancellationToken overload on netstandard2.0) so DisposeAsync can reliably unblock a pending
-            // read via _cts regardless of the underlying Stream implementation - a disposed/closed stream
-            // does not reliably unblock an in-flight read on every Stream type (e.g. System.IO.Pipelines'
-            // PipeReader-backed streams used in tests), whereas cancelling the token does.
             var readBuffer = new byte[8192];
             var pendingLine = new List<byte>(256);
             while (true)
@@ -162,7 +147,7 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
                 int read = await _input.ReadAsync(readBuffer, 0, readBuffer.Length, _shutdownToken).ConfigureAwait(false);
                 if (read == 0)
                 {
-                    break; // clean EOF: peer closed its stdout (process exited).
+                    break;
                 }
 
                 for (int i = 0; i < read; i++)
@@ -192,7 +177,6 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
         }
         catch (OperationCanceledException) when (_shutdownToken.IsCancellationRequested)
         {
-            // Intentional shutdown via DisposeAsync(); not a connection failure.
         }
         catch (Exception ex)
         {
@@ -225,14 +209,12 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
             }
 
             obj = parsed;
-            // A JsonObject is materialized by its first property lookup, so a repeated key in the
-            // envelope surfaces here (as ArgumentException), not from Parse.
             obj.TryGetPropertyValue("method", out methodNode);
             obj.TryGetPropertyValue("id", out idNode);
         }
         catch (Exception)
         {
-            return; // malformed line on the wire; nothing sane to do but drop it and keep reading.
+            return;
         }
 
         string? method = methodNode is JsonValue methodValue && methodValue.TryGetValue<string>(out var methodStr) ? methodStr : null;
@@ -243,10 +225,6 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
             obj.TryGetPropertyValue("params", out var paramsNode);
             if (hasId)
             {
-                // Dispatched off the pump so a slow (e.g. user-permission) handler never blocks reading
-                // subsequent notifications/responses that arrive while it's in flight. Concurrency is
-                // capped by _inboundRequestThrottle so a peer flooding inbound requests cannot fan out
-                // unbounded concurrent handler executions.
                 JsonNode? idNodeCapture = idNode;
                 string methodCapture = method;
                 JsonNode? paramsCapture = paramsNode;
@@ -254,7 +232,6 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
             }
             else
             {
-                // Invoked inline on the pump - see the XML doc on NotificationReceived for why.
                 NotificationReceived?.Invoke(this, new JsonRpcNotification(method, paramsNode));
             }
 
@@ -263,12 +240,12 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
 
         if (!hasId)
         {
-            return; // neither a request/notification (no method) nor a response (no id): not a message we understand.
+            return;
         }
 
         if (!TryGetCorrelationId(idNode, out long requestId) || !_pending.TryRemove(requestId, out var tcs))
         {
-            return; // response to an id we never sent (or already completed via cancellation) - ignore.
+            return;
         }
 
         if (obj.TryGetPropertyValue("error", out var errorNode) && errorNode is JsonObject errorObj)
@@ -282,8 +259,6 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
         }
     }
 
-    // `error` and `error.data` are peer-supplied objects whose own repeated keys surface only when
-    // read here; the request has already left _pending, so it must be completed either way.
     private static AcpRemoteException ReadRemoteError(JsonObject errorObj)
     {
         try
@@ -329,7 +304,7 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
         }
         catch (Exception)
         {
-            return; // id wasn't a number or string; nothing we can correlate a response to.
+            return;
         }
 
         var handler = RequestHandler;
@@ -353,15 +328,10 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
             }
             catch (Exception)
             {
-                // Connection is gone; Disconnected has already fired (or is about to) from the pump.
             }
         }
         catch (Exception)
         {
-            // Never echo a local (non-AcpRemoteException) exception's message back to the remote
-            // agent process - it can contain local file paths, stack/internal details, or other
-            // information the agent has no business seeing. Only AcpRemoteException (the remote
-            // peer's own, already-redacted error) is safe to round-trip.
             try
             {
                 await WriteErrorResponseAsync(id, -32603, "Internal error while handling the request.").ConfigureAwait(false);
@@ -443,17 +413,15 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
             {
                 try
                 {
-                    CloseOutput(); // best-effort: signal EOF to the remote peer's stdin.
+                    CloseOutput();
                 }
                 finally
                 {
-                    // Cancellation callbacks belong to handlers and may throw.
                     _cts.Cancel();
                 }
             }
             finally
             {
-                // Neither a throwing callback nor a blocked pump may strand outbound requests.
                 FailAllPending(new IOException("The JSON-RPC connection was closed."));
 
                 try
@@ -473,8 +441,6 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
                         }
                         else
                         {
-                            // A subscriber can block the pump. Bound this wait, but observe any
-                            // eventual fault after disposal returns.
                             _ = _pumpTask.ContinueWith(t => _ = t.Exception, TaskScheduler.Default);
                         }
                     }

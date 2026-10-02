@@ -7,8 +7,8 @@ using System.Threading.Tasks;
 
 namespace ClaudeCode.Core.ViewModels;
 
-/// <summary>One workspace file the agent has written during the current session, with the content it
-/// had before the first write so the user can reject (restore) or accept (keep) the change.</summary>
+/// <summary>One workspace file the agent has written during the current session, with its content
+/// before the first write so the change can be rejected (restored) or accepted (kept).</summary>
 public sealed class ChangedFileViewModel : ObservableObject
 {
     private int _addedLines;
@@ -34,27 +34,14 @@ public sealed class ChangedFileViewModel : ObservableObject
 
     public bool IsNew => OriginalText is null;
 
-    /// <summary>The tool call whose notification created this row, or null when a client-side file
-    /// write did. Only that call's later notifications may correct the snapshot it took.</summary>
     internal string? CreatedByToolCallId { get; }
 
-    /// <summary>Corrects a snapshot taken after the agent's own write already landed (see
-    /// ChatViewModel.TrackChangeBeforeWriteAsync): the row already existed by the time the diff that
-    /// could prove that arrived, so the wrong snapshot was never replaced. Plain assignment, no
-    /// change notification: nothing binds to the text itself, and the caller reads it back at once
-    /// to decide revertability, so it must not be posted.</summary>
     internal void CorrectOriginalSnapshot(string original) => OriginalText = original;
 
-    /// <summary>False once <see cref="OriginalText"/> is known not to be the pre-edit content (the
-    /// snapshot raced the agent's own write): a revert would only write the edit back over itself
-    /// and report success. Never returns to true.</summary>
+    /// <summary>False once <see cref="OriginalText"/> is known not to be the pre-edit content. Never
+    /// returns to true.</summary>
     public bool CanRevert => _canRevert;
 
-    /// <summary>Clears <see cref="CanRevert"/> with no notification, reporting whether this call is
-    /// the one that cleared it. The correction that forces the downgrade runs off the UI thread
-    /// while it holds the ledger lock, and the verdict has to become false with it: a Reject that
-    /// read the two apart saw the corrected snapshot behind a stale "yes" and wrote that snapshot
-    /// back. Only the notification may be posted, and that is what the pair exists for.</summary>
     internal bool TryMarkNotRevertable()
     {
         if (!_canRevert) return false;
@@ -62,8 +49,6 @@ public sealed class ChangedFileViewModel : ObservableObject
         return true;
     }
 
-    /// <summary>Announces a completed <see cref="TryMarkNotRevertable"/>. UI thread only: it
-    /// re-evaluates a command's CanExecute.</summary>
     internal void NotifyRevertabilityChanged()
     {
         OnPropertyChanged(nameof(CanRevert));
@@ -98,7 +83,6 @@ public sealed class ChangedFileViewModel : ObservableObject
         RemovedLines = removed;
     }
 
-    // Multiset line diff: cheap, order-insensitive, and good enough for a "+12 −3" badge.
     private static (int Added, int Removed) CountLineChanges(string? originalText, string currentText)
     {
         var remaining = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -120,8 +104,6 @@ public sealed class ChangedFileViewModel : ObservableObject
         return (added, removed);
     }
 
-    // An empty file has no lines at all; string.Split would report one empty line and inflate the badge.
-    // Likewise, a file ending in a standard newline must not count the trailing empty segment as an extra line.
     private static IEnumerable<string> SplitLines(string? text)
     {
         if (text is null || text.Length == 0) yield break;

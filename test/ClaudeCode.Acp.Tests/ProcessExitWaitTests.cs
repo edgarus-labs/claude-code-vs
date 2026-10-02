@@ -24,7 +24,6 @@ public sealed class ProcessExitWaitTests
     [Fact]
     public async Task Cancellation_EndsTheWait_EvenIfTheProcessNeverExits()
     {
-        // Models a kill that failed: the exit signal never arrives.
         var neverExits = new TaskCompletionSource<bool>();
         using var cts = new CancellationTokenSource();
         var waiting = ProcessExitWait.WaitForExitAsync(neverExits.Task, cts.Token);
@@ -46,8 +45,6 @@ public sealed class ProcessExitWaitTests
     [Fact]
     public async Task Cancel_NeverRunsTheWaitersContinuationOnTheCancellingThread()
     {
-        // The caller cancels from the UI thread; whatever follows the wait (process-tree cleanup)
-        // must not run inline there.
         var neverExits = new TaskCompletionSource<bool>();
         using var cts = new CancellationTokenSource();
         int continuationThread = -1;

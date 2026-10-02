@@ -48,10 +48,6 @@ public sealed class McpServerTests
     [Fact]
     public async Task RequestLineWithDuplicatePropertyNames_IsDroppedLikeAnyMalformedLine_AndTheSidecarKeepsServing()
     {
-        // JsonObject throws ArgumentException lazily, on the first lookup, for a payload with duplicate
-        // property names. The stdin peer is the Claude Code CLI, but a line it cannot be answered for
-        // (its `id` is the ambiguous member here) must be dropped exactly like unparsable JSON is -
-        // never let out of RunAsync, where it would take the whole sidecar down.
         await using var pipeClient = new VsControlPipeClient($"unused-{Guid.NewGuid():N}", handshakeToken: "token");
 
         JsonObject[] responses = await RunRequestLinesAsync(
@@ -67,8 +63,6 @@ public sealed class McpServerTests
     [Fact]
     public async Task ToolsCall_WithDuplicatePropertyNamesInsideParams_AnswersAParseError_AndTheSidecarKeepsServing()
     {
-        // The root object is unambiguous here, so the request can be answered: a JSON-RPC parse error
-        // carrying the caller's id, followed by normal service for the next line.
         await using var pipeClient = new VsControlPipeClient($"unused-{Guid.NewGuid():N}", handshakeToken: "token");
 
         JsonObject[] responses = await RunRequestLinesAsync(
@@ -113,10 +107,6 @@ public sealed class McpServerTests
     [Fact]
     public async Task ToolsList_AdvertisesRemoveBreakpoint_AsTheOneToolThatRejectsUnknownParameters()
     {
-        // Sending removeBreakpoint with neither path nor line is the documented "delete every
-        // breakpoint in the solution" form, and breakpoints the user set by hand cannot be restored.
-        // So a model that spells the parameter `file` or `filePath` must be rejected, not silently
-        // promoted to the destructive form - which is what an open schema would do.
         await using var pipeClient = new VsControlPipeClient($"unused-{Guid.NewGuid():N}", handshakeToken: "token");
 
         JsonObject response = await RunSingleRequestAsync(pipeClient, """{"jsonrpc":"2.0","id":1,"method":"tools/list"}""");
@@ -146,7 +136,7 @@ public sealed class McpServerTests
             using var reader = new StreamReader(server, new UTF8Encoding(false), false, 1024, leaveOpen: true);
             using var writer = new StreamWriter(server, new UTF8Encoding(false), 1024, leaveOpen: true) { AutoFlush = true, NewLine = "\n" };
 
-            _ = await reader.ReadLineAsync(); // handshake token line, written before any MCP request (F1)
+            _ = await reader.ReadLineAsync();
 
             string? requestLine = await reader.ReadLineAsync();
             Assert.NotNull(requestLine);
@@ -154,7 +144,6 @@ public sealed class McpServerTests
             Assert.NotNull(request);
             Assert.Equal("openDocument", request!.Method);
 
-            // Canned response echoing the caller's correlation id back, per VsControlProtocol.md.
             var canned = new VsControlResponse { Id = request.Id, ResultJson = "{}" };
             await writer.WriteLineAsync(JsonSerializer.Serialize(canned, _wireOptions));
         });
@@ -194,7 +183,7 @@ public sealed class McpServerTests
             using var reader = new StreamReader(server, new UTF8Encoding(false), false, 1024, leaveOpen: true);
             using var writer = new StreamWriter(server, new UTF8Encoding(false), 1024, leaveOpen: true) { AutoFlush = true, NewLine = "\n" };
 
-            _ = await reader.ReadLineAsync(); // handshake token
+            _ = await reader.ReadLineAsync();
             string? requestLine = await reader.ReadLineAsync();
             var request = JsonSerializer.Deserialize<VsControlRequest>(requestLine!, _wireOptions);
 
@@ -325,10 +314,6 @@ public sealed class McpServerTests
     [Fact]
     public async Task ToolsCall_ResultWithoutAnImage_IsForwardedVerbatim_EvenWhenNestedDeeperThanJsonNodeParses()
     {
-        // Every non-captureWindow result reaches the model exactly as the host wrote it - no
-        // re-serialization, no normalization - and getWindowElements trees requested with a large
-        // maxDepth nest deeper than JsonNode.Parse's 64-level default. Such a result must still be
-        // forwarded untouched, and finding out it carries no image must not cost a parse attempt.
         const int depth = 80;
         string tree = string.Concat(Enumerable.Repeat("{ \"children\": [", depth)) + "{ }" + string.Concat(Enumerable.Repeat("] }", depth));
         string resultJson = "{ \"hwnd\": 1234, \"root\": " + tree + ", \"truncated\": false }";
@@ -355,11 +340,8 @@ public sealed class McpServerTests
         Assert.Equal("text", text["type"]!.GetValue<string>());
         string body = text["text"]!.GetValue<string>();
         Assert.Contains("\"hwnd\":1234", body);
-        Assert.DoesNotContain(png, body); // the base64 payload goes in the image block, not into the model's text
+        Assert.DoesNotContain(png, body);
 
-        // A screenshot of a workspace-built app is exactly as untrusted as the text, and the text
-        // block's delimiters cannot enclose a sibling block, so the label is its own block right
-        // before the picture.
         var label = Assert.IsType<JsonObject>(content[1]);
         Assert.Equal("text", label["type"]!.GetValue<string>());
         Assert.Contains("untrusted", label["text"]!.GetValue<string>(), StringComparison.OrdinalIgnoreCase);
@@ -371,12 +353,12 @@ public sealed class McpServerTests
     }
 
     [Theory]
-    [InlineData("""{"hwnd":1234,"captured":true,"_image":{"mimeType":"image/png","data":1234}}""")] // a JSON value of the wrong primitive type
-    [InlineData("""{"hwnd":1234,"captured":true,"_image":{"mimeType":["image/png"],"data":["abc"]}}""")] // not a JSON value at all
-    [InlineData("""{"hwnd":1234,"captured":true,"_image":{}}""")] // neither member present
-    [InlineData("""{"hwnd":1234,"captured":true,"_image":"not-an-object"}""")] // _image is not an object
-    [InlineData("""{"hwnd":1234,"captured":true,"_image":{"mimeType":"image/svg+xml","data":"PHN2Zz48L3N2Zz4="}}""")] // media type off the allow-list
-    [InlineData("""{"hwnd":1234,"captured":true,"_image":{"mimeType":"image/png","data":"@@not-base64@@"}}""")] // data is not base64, so no MCP client could decode the block
+    [InlineData("""{"hwnd":1234,"captured":true,"_image":{"mimeType":"image/png","data":1234}}""")]
+    [InlineData("""{"hwnd":1234,"captured":true,"_image":{"mimeType":["image/png"],"data":["abc"]}}""")]
+    [InlineData("""{"hwnd":1234,"captured":true,"_image":{}}""")]
+    [InlineData("""{"hwnd":1234,"captured":true,"_image":"not-an-object"}""")]
+    [InlineData("""{"hwnd":1234,"captured":true,"_image":{"mimeType":"image/svg+xml","data":"PHN2Zz48L3N2Zz4="}}""")]
+    [InlineData("""{"hwnd":1234,"captured":true,"_image":{"mimeType":"image/png","data":"@@not-base64@@"}}""")]
     public async Task ToolsCall_ResultWithUnusableImagePayload_ReturnsTextThatSaysTheCaptureDidNotArrive(string resultJson)
     {
         JsonObject result = await RunToolCallAsync(resultJson);
@@ -388,20 +370,11 @@ public sealed class McpServerTests
         string body = text["text"]!.GetValue<string>();
         Assert.Contains("\"hwnd\":1234", body);
 
-        // The host said captured:true. Forwarding that with no picture and no marker leaves the model
-        // retrying captureWindow forever, so the sidecar adds its own key. It must NOT rewrite
-        // `captured`: that flag plus one of the host's eight reasons means "the host declined to read
-        // those pixels", a different failure with a different remedy.
         Assert.Contains("\"attachmentDropped\":true", body);
         Assert.Contains("\"captured\":true", body);
         Assert.DoesNotContain("\"captured\":false", body);
     }
 
-    // Two failures must stay distinguishable on the wire: a host refusal (captured:false with one of
-    // the eight host reasons, carrying no width/height/scale) and a dropped attachment (the capture
-    // worked, this process could not forward it). Their remedies are opposite — change the window's
-    // state versus ask for a smaller window — and the dimensions are precisely what tells the agent
-    // the window was too large to encode, so they must survive.
     [Fact]
     public async Task ToolsCall_WhenTheAttachmentIsDropped_KeepsTheCaptureResultAndSaysWhyNoPictureArrived()
     {
@@ -423,10 +396,6 @@ public sealed class McpServerTests
     [InlineData(1, false)]
     public async Task ToolsCall_ImagePayload_IsForwardedUpToTheEncodedPngCapAndNotOneCharacterPast(int overCap, bool expectImage)
     {
-        // The attachment is the one payload exempt from the 256 KiB text cap, so it carries its own
-        // ceiling: the base64 length the VS host's 4 MiB encoded-PNG cap inflates to. Derive that
-        // length from the BCL rather than restating the production expression, so an off-by-one in the
-        // ceiling arithmetic shows up here instead of silently moving the boundary.
         int cap = Base64.GetMaxEncodedToUtf8Length(4 * 1024 * 1024);
         string data = new('A', cap + overCap);
 
@@ -436,7 +405,7 @@ public sealed class McpServerTests
         var content = Assert.IsType<JsonArray>(result["content"]);
         string body = Assert.IsType<JsonObject>(content[0])["text"]!.GetValue<string>();
         Assert.Contains("\"hwnd\":1234", body);
-        Assert.DoesNotContain("AAAA", body); // never in the model's text, whichever side of the cap
+        Assert.DoesNotContain("AAAA", body);
 
         if (expectImage)
         {
@@ -456,9 +425,6 @@ public sealed class McpServerTests
     [Fact]
     public async Task ToolsCall_ResultWithDuplicatePropertyNames_ReturnsAToolResultInsteadOfKillingTheSidecar()
     {
-        // CreateToolResult runs outside the tools/call try/catch, so anything thrown while inspecting
-        // the result escapes RunAsync and takes the MCP sidecar down. JsonObject throws
-        // ArgumentException from the very first lookup on a payload with duplicate property names.
         JsonObject result = await RunToolCallAsync(
             """{"hwnd":1234,"hwnd":5678,"_image":{"mimeType":"image/png","data":"abc"}}""");
 

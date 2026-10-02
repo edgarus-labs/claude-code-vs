@@ -10,10 +10,9 @@ public interface IAcpAgentConnection : IAsyncDisposable
     bool IsInitialized { get; }
 
     /// <summary>True when the agent advertised, in its <c>initialize</c> response, that it accepts a
-    /// further <see cref="SendPromptAsync"/> while one is still running and queues it itself -
-    /// taking it up at its next input boundary instead of rejecting it or interrupting the running
-    /// turn. False until <see cref="InitializeAsync"/> completes, and whenever the agent did not
-    /// say so.</summary>
+    /// further <see cref="SendPromptAsync"/> while one is still running and queues it itself until
+    /// its next input boundary. False until <see cref="InitializeAsync"/> completes, and whenever the
+    /// agent did not advertise it.</summary>
     bool SupportsPromptQueueing { get; }
 
     Task InitializeAsync(CancellationToken cancellationToken);
@@ -22,23 +21,18 @@ public interface IAcpAgentConnection : IAsyncDisposable
 
     /// <summary>
     /// Lists sessions previously recorded by the agent, optionally filtered to <paramref name="cwd"/>.
-    /// Only the first page the agent returns is surfaced - there is no cursor-based paging here.
-    /// Every field of every returned <see cref="SessionSummary"/> is agent-reported and therefore
-    /// untrusted; see <see cref="SessionSummary.Cwd"/> in particular.
+    /// Returns only the first page the agent reports. Every field of every returned
+    /// <see cref="SessionSummary"/> is agent-reported and untrusted.
     /// </summary>
     Task<IReadOnlyList<SessionSummary>> ListSessionsAsync(string? cwd, CancellationToken cancellationToken);
 
     /// <summary>
     /// Resumes a previously recorded session identified by <paramref name="sessionId"/>, rooted at
     /// <paramref name="cwd"/>. The agent replays the session's prior history as ordinary
-    /// <see cref="SessionUpdate"/> notifications through <see cref="SessionUpdate"/> before this call
-    /// returns.
-    /// <para><paramref name="cwd"/> is sent to the remote agent process as-is - implementations do not
-    /// validate, canonicalize, or sandbox it in any way, and a host MUST NOT adopt it as the root of its
-    /// own workspace sandbox. The caller MUST pass only a path it already trusts (its own workspace
-    /// root, or one already checked against a workspace boundary). In particular it MUST NOT pass
-    /// <see cref="SessionSummary.Cwd"/> straight back: that value is agent-supplied, so doing so lets
-    /// the agent choose the directory the client confines itself to.</para>
+    /// <see cref="SessionUpdate"/> notifications before this call returns.
+    /// <para><paramref name="cwd"/> is sent to the agent process as-is, without validation,
+    /// canonicalization, or sandboxing. The caller passes only a path it already trusts, never
+    /// <see cref="SessionSummary.Cwd"/>.</para>
     /// </summary>
     Task<NewSessionResult> LoadSessionAsync(string sessionId, string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken);
 
@@ -46,9 +40,8 @@ public interface IAcpAgentConnection : IAsyncDisposable
 
     /// <summary>Runs one prompt turn and returns the agent's <c>stopReason</c> for it once the turn
     /// has ended (<c>"end_turn"</c> when the agent gave none). <c>"cancelled"</c> means the turn was
-    /// stopped by <see cref="CancelAsync"/>. For a prompt still waiting in the agent's queue (see
-    /// <see cref="SupportsPromptQueueing"/>) it does not say whether the agent had already folded it
-    /// into the stopped turn, so a caller must not assume it never ran.</summary>
+    /// stopped by <see cref="CancelAsync"/>; for a prompt still waiting in the agent's queue it does
+    /// not indicate whether the agent had already folded it into the stopped turn.</summary>
     Task<string> SendPromptAsync(string sessionId, IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken);
 
     Task CancelAsync(string sessionId, CancellationToken cancellationToken);

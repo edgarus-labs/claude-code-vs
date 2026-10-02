@@ -43,8 +43,6 @@ public sealed class MarkdownSafetyLimitsTests
     [Fact]
     public void IsNavigableLink_RejectsAllZeroesHost()
     {
-        // Uri.IsLoopback does not classify 0.0.0.0 as loopback, but it routes to the local host on
-        // most platforms (Windows in particular) and must be rejected the same way 127.0.0.1 is.
         Assert.False(MarkdownSafetyLimits.IsNavigableLink(new Uri("http://0.0.0.0/")));
     }
 

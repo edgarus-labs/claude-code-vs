@@ -2,9 +2,8 @@ using System;
 
 namespace ClaudeCode.Core.ViewModels;
 
-/// <summary>Something happened that the user may want to come back for: a finished turn, a pending
-/// permission, or a plan awaiting review. Hosts surface it (e.g. a system notification) when the
-/// IDE is not in the foreground.</summary>
+/// <summary>Describes an event the user may want to return for: a finished turn, a pending
+/// permission, or a plan awaiting review.</summary>
 public sealed class ChatAttentionEventArgs : EventArgs
 {
     public ChatAttentionEventArgs(ChatAttentionKind kind, string title, string message)

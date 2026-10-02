@@ -27,17 +27,10 @@ internal sealed class ClaudeCodeConnectionFactory : IAcpAgentConnectionFactory
 
     public async Task<IAcpAgentConnection> ConnectAsync(CancellationToken cancellationToken)
     {
-        // GetDialogPage (behind _optionsProvider) is UI-thread affine: read the option values here,
-        // then leave the thread. The adapter and native SDK own credential discovery and refresh,
-        // including CLAUDE_CONFIG_DIR.
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
         var overridePath = _optionsProvider().CliExecutablePath;
         var workingDirectory = _workingDirectoryProvider();
 
-        // Resolving the adapter probes the filesystem (one File.Exists per fully-qualified PATH entry,
-        // then the launcher and <package>/dist/acp-agent.js; a single unreachable UNC or mapped-drive
-        // entry blocks on an SMB timeout) and spawning it is CreateProcess: none of it may run on the
-        // UI thread. Same rule as ClaudeUsageService: hop to the thread pool first.
         var connection = await Task.Run(async () =>
         {
             var resolved = string.IsNullOrWhiteSpace(overridePath)
@@ -53,8 +46,6 @@ internal sealed class ClaudeCodeConnectionFactory : IAcpAgentConnectionFactory
                     + "The native Claude CLI alone is not an ACP adapter.");
             }
 
-            // Only the assembly-location lookup stays here; the mapping itself lives in ClaudeCode.Acp
-            // next to AcpExecutableResolver, where it is unit-tested without a VS host.
             var launcher = System.IO.Path.Combine(
                 System.IO.Path.GetDirectoryName(typeof(ClaudeCodeConnectionFactory).Assembly.Location) ?? string.Empty,
                 "Resources", "Scripts", "claude-acp-vs.mjs");

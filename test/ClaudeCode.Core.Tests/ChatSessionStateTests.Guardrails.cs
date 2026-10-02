@@ -12,8 +12,6 @@ namespace ClaudeCode.Core.Tests;
 
 public sealed partial class ChatSessionStateTests
 {
-    // M12 (permission-request-overwritten): a second permission request arriving while the first
-    // is still pending must not silently abandon the first — it is explicitly rejected.
     [Fact]
     public async Task SecondPermissionRequest_DoesNotSilentlyAbandonTheFirst()
     {
@@ -31,7 +29,6 @@ public sealed partial class ChatSessionStateTests
         var secondOptions = new List<PermissionOption> { new PermissionOption { OptionId = "allow-b", Label = "Allow", Outcome = PermissionOutcome.AllowOnce } };
         var second = connection.RaisePermissionRequested(secondCall, secondOptions);
 
-        // The first request must be resolved (not left hanging), and the second must remain live.
         await Assert.ThrowsAsync<OperationCanceledException>(() => first.Response.Task);
         Assert.Equal("Edit b.cs", vm.PendingPermission!.Title);
 
@@ -39,8 +36,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("allow-b", await second.Response.Task);
     }
 
-    // stop-button-stays-enabled: the cancel button must not remain enabled once the connection that
-    // owned the in-flight turn is gone.
     [Fact]
     public async Task CancelCommand_DisconnectedDuringStream_BecomesDisabled()
     {
@@ -81,8 +76,6 @@ public sealed partial class ChatSessionStateTests
         await prompt;
     }
 
-    // sync-context-silent-inline: constructing a ChatViewModel off a UI-affine thread must fail fast
-    // instead of silently degrading RunOnUi/OnUiAsync to always-inline execution.
     [Fact]
     public async Task Constructor_WithoutAmbientSynchronizationContext_ThrowsInvalidOperationException()
     {
@@ -98,8 +91,6 @@ public sealed partial class ChatSessionStateTests
         Assert.IsType<InvalidOperationException>(thrown);
     }
 
-    // attachment-size-unbounded: oversized attachments are rejected with a visible error instead of
-    // being queued for an unbounded prompt payload.
     [Fact]
     public async Task AddImageAttachment_ExceedsFiveMegabyteLimit_SetsErrorAndDoesNotAttach()
     {
@@ -131,8 +122,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("Document exceeds the 1 MB attachment limit.", vm.AttachmentError);
     }
 
-    // dispose-cts-not-released: disposing twice must stay idempotent even though the second call now
-    // also has to tolerate the CancellationTokenSource/SemaphoreSlim already being disposed.
     [Fact]
     public async Task Dispose_CalledTwice_DoesNotThrow()
     {
@@ -146,9 +135,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Null(ex);
     }
 
-    // pending-state-leaks-on-release: losing the connection must resolve every request the user was
-    // still being asked about — an abandoned TaskCompletionSourceSlot never completes its awaiter,
-    // and a form left on screen would answer a connection that no longer exists.
     [Fact]
     public async Task Disconnected_ResolvesPendingPermissionAndElicitation_AndClearsTheirUi()
     {
@@ -174,9 +160,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Null(vm.PendingElicitation);
     }
 
-    // #54: a question lives exactly as long as the request it answers. Stop makes the connection end
-    // the turn's pending requests (a permission as "cancelled", an elicitation as Cancel), and the
-    // card or form that asked them must leave the chat with them - not stay up looking answerable.
     [Fact]
     public async Task Stop_WhenTheConnectionCancelsAPendingPermission_ItsCardLeavesTheChat()
     {
@@ -253,8 +236,6 @@ public sealed partial class ChatSessionStateTests
 
         await vm.CancelAsync();
 
-        // The card is cleared before the plan is marked resolved, in one UI callback that the test's
-        // synchronization context runs on another thread - wait for both, not just the first.
         await WaitUntilAsync(() => vm.PendingPermission is null && plan.IsResolved);
         Assert.False(plan.ProceedCommand.CanExecute(null));
         Assert.False(plan.ReviewCommand.CanExecute("late comments"));
@@ -263,8 +244,6 @@ public sealed partial class ChatSessionStateTests
         await sending;
     }
 
-    // The same holds for any other way the request ends (here the connection failing it): the card
-    // never outlives the request it answers.
     [Fact]
     public async Task PermissionRequest_EndingWithoutAnAnswerFromTheCard_RemovesItsCard()
     {
@@ -281,8 +260,6 @@ public sealed partial class ChatSessionStateTests
         await WaitUntilAsync(() => vm.PendingPermission is null);
     }
 
-    // poisoned-session-id-after-failed-load: a session/load that fails must not leave the viewmodel
-    // believing it owns a session the agent never loaded.
     [Fact]
     public async Task OpenSession_LoadFails_DoesNotAdoptTheSessionTheAgentNeverLoaded()
     {
@@ -297,16 +274,11 @@ public sealed partial class ChatSessionStateTests
         await vm.OpenSessionAsync(new SessionSummary("session-never-loaded", "/workspace", "Older chat", null));
 
         Assert.Contains("Could not open session", vm.StatusMessage!, StringComparison.Ordinal);
-        // The presented state must roll back with the id: the panel must not be left titled after a
-        // session the agent never loaded while every prompt still goes to the previous one.
         Assert.Equal("Untitled", vm.SessionTitle);
 
-        // Updates tagged with the session that failed to load must not be adopted as the transcript.
         connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("ghost text"), "session-never-loaded");
         Assert.Empty(vm.Messages);
 
-        // The session the agent really has must still drive the transcript, so the user can keep
-        // working (and send prompts) without manually starting a new session.
         connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("live text"));
         Assert.Equal("live text", Assert.Single(vm.Messages).Text);
         vm.InputText = "carry on";
@@ -314,9 +286,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Single(connection.Prompts);
     }
 
-    // The rollback puts the user back in the conversation they were in, so everything
-    // ResetTranscriptState destroyed on the way into the load has to come back with it: a pending
-    // Accept/Reject row whose edit is still on disk, the context ring, and the slash catalog.
     [Fact]
     public async Task OpenSession_LoadFails_RestoresTheTranscriptItClearedBeforeTheLoad()
     {
@@ -347,15 +316,11 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { "review" }.Concat(ClientSlashCommandNames), vm.SlashSuggestions.Select(c => c.Name));
         vm.InputText = string.Empty;
 
-        // The agent's edit is still on disk, so the row that offers to revert it must survive too.
         var tracked = Assert.Single(vm.ChangedFiles);
         await tracked.RejectCommand.ExecuteAsync(null);
         Assert.Equal("original\n", File.ReadAllText(targetPath));
     }
 
-    // C-D3 (CRITICAL, agent-supplied cwd): SessionSummary.Cwd is copied verbatim out of the agent's
-    // session/list reply and, passed to session/load, becomes the WorkspacePathGuard root of every
-    // VS-control tool for the resumed session. Resuming must use the client's own workspace root.
     [Fact]
     public async Task OpenSession_ResumesWithTheClientsWorkspaceRoot_NotTheAgentReportedCwd()
     {
@@ -371,8 +336,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(@"C:\trusted\workspace", loaded.Cwd);
     }
 
-    // A prompt accepted while session/new or session/load is still in flight is sent to the *old*
-    // session and then wiped by ResetTranscriptState, so the switch must gate the composer.
     [Fact]
     public async Task SessionSwitchInFlight_BlocksTheComposerAndASecondSwitch()
     {
@@ -401,10 +364,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Single(vm.Messages);
     }
 
-    // The previous session's pickers stay populated through a session/load, and _sessionId is
-    // already the incoming id so replayed updates are accepted. Without this gate a model change
-    // or Remote Control toggle mid-replay addresses a session the agent has not finished loading -
-    // and may roll back.
     [Fact]
     public async Task SessionLoadInFlight_DisablesSettingsAndRemoteControl()
     {
@@ -427,9 +386,6 @@ public sealed partial class ChatSessionStateTests
         Assert.True(vm.ToggleRemoteControlCommand.CanExecute(null));
     }
 
-    // #40: session/new and session/load each make the agent start a fresh Claude Code process and
-    // wait for it to load the user's settings and plugins, so they take seconds. The click must be
-    // acknowledged at once instead of looking like it did nothing.
     [Fact]
     public async Task NewChat_ReportsProgressUntilTheAgentHasStartedTheSession()
     {
@@ -464,8 +420,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Null(vm.StatusMessage);
     }
 
-    // Rapid clicks while a history item is still loading: each extra click would otherwise start
-    // another session/load or session/new whose replies race to become the panel's session.
     [Fact]
     public async Task SessionLoadInFlight_FurtherOpenAndNewChatClicks_StartNoSecondSession()
     {
@@ -486,8 +440,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("Older chat", vm.SessionTitle);
     }
 
-    // C-D3 for the other session path: session/new is issued on every connect and every New Chat,
-    // and both must carry the client's own workspace root, never anything that came off the wire.
     [Fact]
     public async Task NewSession_UsesTheClientsWorkspaceRoot_OnTheInitialConnectAndOnNewChat()
     {
@@ -503,11 +455,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { @"C:\trusted\workspace", @"C:\trusted\workspace" }, connection.NewSessionCwds);
     }
 
-    // EnsureConnectedAsync creates a session of its own whenever it has to connect, so New Chat
-    // from a disconnected state must adopt that one: a second session/new leaves the first
-    // orphaned on the agent, and with RemoteControlAtStartup the orphan can be the session
-    // published to claude.ai/code - enabled, invisible, and unreachable from a toggle that only
-    // ever addresses the session the UI knows about.
     [Fact]
     public async Task NewChat_AfterADisconnect_AdoptsTheSessionTheReconnectCreated_InsteadOfOrphaningIt()
     {
@@ -521,14 +468,11 @@ public sealed partial class ChatSessionStateTests
 
         connection.NewSessionHandler = _ =>
         {
-            // The reconnect's session/new publishes its catalog before its id is known, exactly as
-            // the initial connect does; adopting the reconnect's session must not discard it.
             connection.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([new AvailableCommand("review", "Review", "scope")]), "session-reconnected");
             return Task.FromResult(new NewSessionResult("session-reconnected", []));
         };
         await vm.NewSessionAsync();
 
-        // One session/new for the initial connect, one for the reconnect - not three.
         Assert.Equal(2, connection.NewSessionCwds.Count);
         Assert.Empty(vm.Messages);
         Assert.Equal("Untitled", vm.SessionTitle);

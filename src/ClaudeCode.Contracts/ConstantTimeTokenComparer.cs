@@ -3,11 +3,8 @@ using System;
 namespace ClaudeCode.Contracts;
 
 /// <summary>
-/// Constant-time comparison for the VsControl named-pipe handshake token (see
-/// <see cref="WorkspacePathGuard"/> for the sibling path-containment contract). A naive
-/// <c>string.Equals</c> short-circuits on the first mismatched character, letting another local
-/// process recover the expected token byte-by-byte via a timing side channel; this walks the full
-/// length of both inputs regardless of where they first differ, with no early return.
+/// Constant-time comparison for the VsControl named-pipe handshake token. Walks the full length of
+/// both inputs regardless of where they first differ, with no early return.
 /// </summary>
 public static class ConstantTimeTokenComparer
 {

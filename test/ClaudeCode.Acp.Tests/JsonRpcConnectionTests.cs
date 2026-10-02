@@ -9,10 +9,6 @@ namespace ClaudeCode.Acp.Tests;
 
 public sealed class JsonRpcConnectionTests : IAsyncLifetime, IAsyncDisposable
 {
-    // "toTest" = what the connection under test WRITES (its outbound requests/notifications/responses);
-    // the test reads from toTest.Reader to observe them.
-    // "fromTest" = what the connection under test READS (its inbound stream); the test writes fake
-    // peer messages into fromTest.Writer.
     private readonly Pipe _toTest = new Pipe();
 
     private readonly Pipe _fromTest = new Pipe();
@@ -28,8 +24,6 @@ public sealed class JsonRpcConnectionTests : IAsyncLifetime, IAsyncDisposable
 
     public async Task DisposeAsync() => await _connection.DisposeAsync();
 
-    // Explicit IAsyncDisposable purely so CA1001 recognizes this type as disposable; xUnit drives
-    // teardown through IAsyncLifetime.DisposeAsync() (Task-returning) above, not through this.
     ValueTask IAsyncDisposable.DisposeAsync() => new ValueTask(DisposeAsync());
 
     [Fact]
@@ -41,10 +35,8 @@ public sealed class JsonRpcConnectionTests : IAsyncLifetime, IAsyncDisposable
         long firstId = await ReadRequestIdAsync("first");
         long secondId = await ReadRequestIdAsync("second");
 
-        // An unrelated notification arrives on the wire before either response - must not disturb correlation.
         await PipeTestHelpers.WriteLineAsync(_fromTest.Writer, "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{}}");
 
-        // Respond out of order relative to the requests being sent (second's id answered before first's).
         await PipeTestHelpers.WriteLineAsync(_fromTest.Writer, $"{{\"jsonrpc\":\"2.0\",\"id\":{secondId},\"result\":{{\"which\":\"second\"}}}}");
         await PipeTestHelpers.WriteLineAsync(_fromTest.Writer, $"{{\"jsonrpc\":\"2.0\",\"id\":{firstId},\"result\":{{\"which\":\"first\"}}}}");
 
@@ -135,9 +127,9 @@ public sealed class JsonRpcConnectionTests : IAsyncLifetime, IAsyncDisposable
     public async Task Disconnected_WhenPeerClosesStream_FailsStillPendingRequests()
     {
         Task<JsonNode?> request = _connection.SendRequestAsync("session/new", new JsonObject(), CancellationToken.None);
-        await ReadRequestIdAsync(); // drain the write so the request is actually in flight.
+        await ReadRequestIdAsync();
 
-        _fromTest.Writer.Complete(); // simulate the child process exiting / closing its stdout.
+        _fromTest.Writer.Complete();
 
         await Assert.ThrowsAnyAsync<Exception>(() => request.WaitAsync(TimeSpan.FromSeconds(5)));
     }
@@ -145,8 +137,6 @@ public sealed class JsonRpcConnectionTests : IAsyncLifetime, IAsyncDisposable
     [Fact]
     public async Task PumpAsync_LineExceedsMaximumLength_DisconnectsInsteadOfBufferingUnbounded()
     {
-        // A misbehaving or malicious peer that never sends a newline must not be able to make the
-        // client buffer an unbounded amount of memory; the pump must give up past a hard cap.
         var disconnected = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
         _connection.Disconnected += (_, ex) => disconnected.TrySetResult(ex);
         Task<JsonNode?> request = _connection.SendRequestAsync("session/new", new JsonObject(), CancellationToken.None);
@@ -155,7 +145,7 @@ public sealed class JsonRpcConnectionTests : IAsyncLifetime, IAsyncDisposable
         byte[] oversized = new byte[(32 * 1024 * 1024) + 1024];
         for (int i = 0; i < oversized.Length; i++)
         {
-            oversized[i] = (byte)'x'; // no newline anywhere in the payload.
+            oversized[i] = (byte)'x';
         }
 
         await _fromTest.Writer.WriteAsync(oversized);
@@ -168,9 +158,6 @@ public sealed class JsonRpcConnectionTests : IAsyncLifetime, IAsyncDisposable
     [Fact]
     public async Task DispatchLine_ManyConcurrentInboundRequests_ThrottlesConcurrentHandlerExecution()
     {
-        // A flood of inbound requests from the peer must not fan out into unbounded concurrent
-        // handler executions (and the thread-pool pressure that comes with it) - concurrency must
-        // be capped even though every request is still eventually served.
         const int totalRequests = 24;
         const int expectedMaxConcurrency = 16;
         int concurrent = 0;
@@ -199,7 +186,7 @@ public sealed class JsonRpcConnectionTests : IAsyncLifetime, IAsyncDisposable
         }
 
         await reachedCap.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        await Task.Delay(TimeSpan.FromMilliseconds(300)); // let any wrongly-unthrottled handlers start too.
+        await Task.Delay(TimeSpan.FromMilliseconds(300));
         Assert.Equal(expectedMaxConcurrency, Volatile.Read(ref maxObservedConcurrent));
 
         release.TrySetResult(true);
@@ -212,9 +199,6 @@ public sealed class JsonRpcConnectionTests : IAsyncLifetime, IAsyncDisposable
     [Fact]
     public async Task HandleInboundRequestAsync_LocalHandlerThrows_RespondsWithGenericMessage_NotTheLocalExceptionText()
     {
-        // A non-AcpRemoteException thrown by our own (local) request handler must never have its raw
-        // .Message echoed back to the remote agent process - it can contain local file paths or other
-        // details the agent has no business seeing. Only AcpRemoteException (already redacted) is safe.
         const string sensitivePath = "C:\\Users\\alice\\.ssh\\id_rsa";
         _connection.RequestHandler = (method, @params, ct) => throw new InvalidOperationException("Failed reading " + sensitivePath);
 

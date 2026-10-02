@@ -25,13 +25,8 @@ public partial class PlanDocumentView : UserControl, IDisposable
     private PlanReviewViewModel? _plan;
     private bool _ready;
     private bool _disposed;
-    // Set when NavigationStarting cancels an off-document navigation, so the NavigationCompleted
-    // failure that cancel produces is not mistaken for the plan page itself failing to load.
     private ulong? _cancelledNavigationId;
-    // One reload per successful load: if the reload we issued is itself what just failed, stop
-    // rather than spinning navigate -> fail -> navigate on the UI thread.
     private bool _reloadAttempted;
-    // The notice that must stay on screen for the rest of the window's life (see ShowNotice).
     private string? _persistentNotice;
 
     public PlanDocumentView()
@@ -79,13 +74,9 @@ public partial class PlanDocumentView : UserControl, IDisposable
             core.Settings.AreDefaultContextMenusEnabled = false;
             core.Settings.AreDevToolsEnabled = false;
             core.Settings.IsStatusBarEnabled = false;
-            // Ctrl+S/Ctrl+P/Ctrl+F/F5 belong to the IDE, not to Chromium, inside a tool window.
             core.Settings.AreBrowserAcceleratorKeysEnabled = false;
-            // Nothing is ever exposed via AddHostObjectToScript; don't leave the door that permits it open.
             core.Settings.AreHostObjectsAllowed = false;
             core.SetVirtualHostNameToFolderMapping("claudecode.plan", GetAssetsPath(), CoreWebView2HostResourceAccessKind.Deny);
-            // A file or URL dropped onto the plan body would otherwise start a top-level navigation
-            // away from the one document this view knows how to drive.
             PlanView.AllowExternalDrop = false;
             core.WebMessageReceived += OnWebMessageReceived;
             core.ProcessFailed += OnProcessFailed;
@@ -96,11 +87,6 @@ public partial class PlanDocumentView : UserControl, IDisposable
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            // Most likely causes: the WebView2 Runtime isn't installed, or the plan assets weren't
-            // deployed next to this assembly (SetVirtualHostNameToFolderMapping rejects the relative
-            // path GetAssetsPath falls back to). The header actions still work, but the body stays
-            // blank - say so instead of leaving the user staring at nothing, because this task is
-            // fire-and-forget and an escaping exception would be an unobserved, undiagnosable fault.
             if (!_disposed)
             {
                 ShowNotice("The plan could not be displayed. The Microsoft Edge WebView2 Runtime is required: " + ex.Message, persistent: true);
@@ -110,19 +96,10 @@ public partial class PlanDocumentView : UserControl, IDisposable
 
     private static void OnNewWindowRequested(object? sender, CoreWebView2NewWindowRequestedEventArgs e) => e.Handled = true;
 
-    // Host-side backstop: the plan document may only ever sit on its own virtual host, so a
-    // future CSP relaxation in plan.html cannot turn agent markdown into a top-level navigation.
     private void OnNavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)
     {
-        // Path-exact, not prefix: plan.html and index.html are served from the same mapped asset
-        // folder, so a prefix check would let plan.html/../index.html navigate the frame to a
-        // document this view does not drive (no window.claudePlan to render into).
         if (PlanDocumentProtocol.IsPlanDocumentUri(e.Uri)) return;
 
-        // Cancelling leaves the plan document exactly where it was. Remember the id: the cancel
-        // still raises NavigationCompleted with IsSuccess=false, and treating that as "the plan
-        // page failed to load" dropped the ready latch for good - every later ShowPlan then swapped
-        // the header's commands to the new plan while the body kept showing the previous one.
         e.Cancel = true;
         _cancelledNavigationId = e.NavigationId;
     }
@@ -134,13 +111,10 @@ public partial class PlanDocumentView : UserControl, IDisposable
         {
             if (e.NavigationId == _cancelledNavigationId)
             {
-                // Our own guard cancelled this one; the plan document is still live.
                 _cancelledNavigationId = null;
                 return;
             }
 
-            // Never leave a stale "ready" latch behind a failed load - and never leave the body
-            // blank under a live Proceed/Review header without saying so.
             ReloadPlanPage();
             return;
         }
@@ -152,10 +126,6 @@ public partial class PlanDocumentView : UserControl, IDisposable
         Render();
     }
 
-    // Only a dead renderer needs host action here: WebView2 restarts its GPU/utility processes by
-    // itself and "unresponsive" resolves on its own, so latching the window off for those kinds would
-    // blank a plan that was about to come back. Re-navigating is what restores the document, and
-    // NavigationCompleted re-pushes the theme and the plan body.
     private void OnProcessFailed(object? sender, CoreWebView2ProcessFailedEventArgs e)
     {
         if (_disposed) return;
@@ -165,16 +135,12 @@ public partial class PlanDocumentView : UserControl, IDisposable
                 ReloadPlanPage();
                 break;
             case CoreWebView2ProcessFailedKind.BrowserProcessExited:
-                // The whole CoreWebView2 is gone; there is nothing left on this control to re-navigate.
                 _ready = false;
                 ShowNotice(PlanLostMessage, persistent: true);
                 break;
         }
     }
 
-    // Recovery for the one failure that actually loses the document: navigate back to the page,
-    // once. If that reload is what just failed, or cannot be issued, the window is dead for the
-    // rest of its life and the notice stays up so an empty body is never mistaken for a plan.
     private void ReloadPlanPage()
     {
         _ready = false;
@@ -219,11 +185,6 @@ public partial class PlanDocumentView : UserControl, IDisposable
         PostToPlan($"window.claudePlan.applyTheme({json});");
     }
 
-    // A browser-process crash or an Edge Evergreen update under a running devenv invalidates
-    // CoreWebView2, after which ExecuteScriptAsync throws at the COM boundary; RefreshTheme runs
-    // from the host's theme-change handler, where an escaping exception would be an unhandled
-    // dispatcher exception. Fail closed instead: drop the ready latch, and let ProcessFailed decide
-    // whether the document is recoverable.
     private void PostToPlan(string script)
     {
         if (!_ready || _disposed || PlanView.CoreWebView2 is null) return;
@@ -251,8 +212,6 @@ public partial class PlanDocumentView : UserControl, IDisposable
 
     private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
-        // The page renders untrusted agent-authored markdown, so the envelope is untrusted too - and
-        // only the plan document itself, never some future subframe, may drive the host.
         if (_disposed || !PlanDocumentProtocol.IsPlanDocumentUri(e.Source)) return;
 
         string? url;
@@ -264,13 +223,12 @@ public partial class PlanDocumentView : UserControl, IDisposable
         }
         catch (Exception)
         {
-            return; // Malformed page message: ignore.
+            return;
         }
 
         OpenPlanLink(url);
     }
 
-    // Mirrors ChatPanelView.OpenTranscriptLink: the same JS-side code path must give the same answer.
     private void OpenPlanLink(string? target)
     {
         if (!Uri.TryCreate(target, UriKind.Absolute, out Uri? uri) || !MarkdownSafetyLimits.IsNavigableLink(uri))
@@ -304,8 +262,6 @@ public partial class PlanDocumentView : UserControl, IDisposable
     {
         var comments = ReviewBox.Text;
         if (_plan is null || string.IsNullOrWhiteSpace(comments)) return;
-        // The agent controls the option list, so a plan can arrive with no reject option at all, and a
-        // session reset resolves the plan underneath this window. Never swallow the typed comments.
         if (!_plan.ReviewCommand.CanExecute(comments))
         {
             ShowNotice(_plan.IsResolved
@@ -319,13 +275,9 @@ public partial class PlanDocumentView : UserControl, IDisposable
         ReviewPanel.Visibility = Visibility.Collapsed;
     }
 
-    // A persistent notice outlives the timer and the next ShowPlan: a later transient notice may
-    // replace it on screen, but when that one times out - or a new plan hides it - the persistent
-    // text comes back instead of the line collapsing. Used for the viewer-lost states, which last
-    // for the rest of the window's life while the Proceed/Review header stays live.
     private void ShowNotice(string message, bool persistent = false)
     {
-        if (_disposed) return; // never restart the timer after its Tick handler is gone
+        if (_disposed) return;
         if (persistent) _persistentNotice = message;
         PlanNotice.Text = message;
         PlanNotice.Visibility = Visibility.Visible;

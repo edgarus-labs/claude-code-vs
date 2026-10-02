@@ -57,8 +57,6 @@ internal sealed class RecordingAcpAgentConnection : IAcpAgentConnection
         return ConfigHandler?.Invoke(configId, value, cancellationToken) ?? Task.FromResult(ConfigOptions);
     }
 
-    // A handler returning Task<string> supplies the stop reason; any other Task (or a null reason)
-    // ends as "end_turn". Like AcpProcessConnection, TurnEnded is raised just before returning.
     public async Task<string> SendPromptAsync(string sessionId, IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken)
     {
         Prompts.Add(content);
@@ -128,8 +126,6 @@ internal sealed class RecordingAcpAgentConnection : IAcpAgentConnection
         return args;
     }
 
-    /// <summary>Holds <see cref="DisposeAsync"/> open so a test can observe the view model's state
-    /// while an agent teardown is still in flight.</summary>
     public Func<Task>? DisposeHandler { get; set; }
 
     public ValueTask DisposeAsync()

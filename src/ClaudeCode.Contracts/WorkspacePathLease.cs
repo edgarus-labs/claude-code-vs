@@ -57,8 +57,8 @@ public sealed class WorkspacePathLease : IDisposable
     }
 
     /// <summary>
-    /// Pins an existing Windows editor path for a host callback. Missing files have no live
-    /// disk-backed editor document. Linux has no VS host and must use the handle-based I/O methods.
+    /// Pins the existing document path for a host callback on Windows; returns null on other
+    /// platforms.
     /// </summary>
     public IDisposable? ProtectDocument()
     {
@@ -76,13 +76,6 @@ public sealed class WorkspacePathLease : IDisposable
         return reader.ReadToEnd();
     }
 
-    /// <summary>
-    /// Reads through the retained handle without surrendering it: a <see cref="FileStream"/> built
-    /// directly over <c>_file</c> closes that handle on dispose, which both breaks every later
-    /// operation on the lease and drops the sharing pin the lease exists to hold. Callers must
-    /// hold a <see cref="HandleReference"/> for the returned stream's lifetime, because the raw
-    /// handle value borrowed here outlives <see cref="SafeHandle"/>'s own reference counting.
-    /// </summary>
     private FileStream OpenRetainedRead()
     {
         var borrowed = new SafeFileHandle(_file!.DangerousGetHandle(), ownsHandle: false);
@@ -90,7 +83,6 @@ public sealed class WorkspacePathLease : IDisposable
         try
         {
             stream = new FileStream(borrowed, FileAccess.Read);
-            // The handle's file position is shared with every earlier read, so rewind explicitly.
             stream.Seek(0, SeekOrigin.Begin);
             return stream;
         }
@@ -102,11 +94,6 @@ public sealed class WorkspacePathLease : IDisposable
         }
     }
 
-    /// <summary>
-    /// Keeps the retained handle's reference count raised for the duration of a read, so a
-    /// concurrent <see cref="Dispose"/> cannot close the kernel handle — and let the OS recycle
-    /// its value under a different object — while a borrowed wrapper is still reading through it.
-    /// </summary>
     private readonly struct HandleReference : IDisposable
     {
         private readonly SafeFileHandle _handle;
@@ -132,8 +119,6 @@ public sealed class WorkspacePathLease : IDisposable
         ThrowIfDisposed();
         byte[]? securityDescriptor = _windows && _file is not null ? ReadWindowsDacl(_file) : null;
         Encoding encoding = DetectEncoding();
-        // The leaf is never retained without delete sharing during an atomic replacement. The
-        // destination rename replaces a directory entry; it does not follow a newly inserted link.
         _file?.Dispose();
         _file = null;
         string temporary = ".claude-" + Guid.NewGuid().ToString("N") + ".tmp";
@@ -171,9 +156,6 @@ public sealed class WorkspacePathLease : IDisposable
                         throw NativeIOException("Could not remove the temporary workspace file.");
                 }
 
-                // The replacement never committed, so the original entry is still in place: give
-                // later reads their handle back and a document lease the no-delete pin it must
-                // never live without, exactly as the success path does for the new entry.
                 _file = OpenLeaf(_document);
                 if (_document && _file is null)
                 {
@@ -187,25 +169,14 @@ public sealed class WorkspacePathLease : IDisposable
             throw;
         }
 
-        // The lease outlives the replacement: reopen the new leaf through the still-pinned parent
-        // so later reads, DACL capture and BOM detection keep working against the current entry,
-        // and a document lease regains the no-delete pin its contract promises.
         try
         {
             _file = OpenLeaf(_document);
-            // OpenLeaf answers null rather than throwing when the entry is gone, and another
-            // process can still delete the freshly renamed child: the ancestor pins block renaming
-            // and deleting the directories, not unlinking an entry inside them. Acquire enforces
-            // "document implies pinned", so a document lease must not outlive losing that pin.
             if (_document && _file is null)
             {
                 throw new IOException("The replaced workspace document could not be re-pinned.");
             }
         }
-        // The replacement already committed, so a transient failure to reopen the new entry (an
-        // indexer or scanner holding it, a tightened DACL) must not be reported to the caller as a
-        // failed write. A null leaf handle is a supported state for a file lease; a document lease
-        // whose whole contract is the pin still fails loudly rather than living on unpinned.
         catch (IOException) when (!_document) { _file = null; }
         catch (UnauthorizedAccessException) when (!_document) { _file = null; }
     }
@@ -227,8 +198,6 @@ public sealed class WorkspacePathLease : IDisposable
     {
         if (_windows)
         {
-            // Every path here is already GetFullPath-normalized, so the un-normalized device form
-            // is safe and keeps the lease usable at any length the guard resolves.
             string target = WorkspacePathGuard.LongPathSafe(fullPath);
             SafeFileHandle handle;
             if (securityDescriptor is null)
@@ -237,8 +206,6 @@ public sealed class WorkspacePathLease : IDisposable
             }
             else
             {
-                // Supply the original DACL at creation: applying it later leaves a window in which
-                // a broader inherited ACL can grant another process a read handle to private content.
                 var pinned = GCHandle.Alloc(securityDescriptor, GCHandleType.Pinned);
                 try
                 {
@@ -313,9 +280,6 @@ public sealed class WorkspacePathLease : IDisposable
     {
         if (_windows)
         {
-            // A zero-access metadata handle cannot enforce the document's no-delete sharing.
-            // A document lease shares read and write so the host editor can still open and save
-            // the file, and withholds only FILE_SHARE_DELETE so the path cannot be replaced.
             var handle = CreateFileW(WorkspacePathGuard.LongPathSafe(FullPath), GenericRead, document ? FileShareReadWrite : FileShareReadWriteDelete, IntPtr.Zero, 3, OpenReparsePoint, IntPtr.Zero);
             if (handle.IsInvalid && Marshal.GetLastWin32Error() == 2)
             {

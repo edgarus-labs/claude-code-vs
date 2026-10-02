@@ -29,17 +29,6 @@ public sealed class ToolCallContentViewModel
 
     private static readonly char[] _infoStringDisallowedChars = { ' ', '\t', '`' };
 
-    /// <summary>
-    /// Session-resume replay from the ACP agent sometimes wraps a tool call's plain-text content in
-    /// a Markdown fenced code block (e.g. "```console\n...\n```") - a convention meant for a Markdown
-    /// renderer. The transcript renders this text verbatim (see buildPlainBody in
-    /// Resources/Transcript/transcript.js), so left alone the fence markers would show up as literal
-    /// text. Strip a wrapper only when the trailing fence provably closes the leading one and so
-    /// spans the *entire* text; anything else - two separate blocks, a fence appearing only in part
-    /// of the text, a closing run shorter than the opening one, or a close that does not start its
-    /// own line - is left untouched. Content the agent printed is never worth deleting to hide a
-    /// fence marker, so every ambiguous case returns the input unchanged.
-    /// </summary>
     internal static string? StripFenceWrapper(string? text)
     {
         if (string.IsNullOrEmpty(text))
@@ -71,8 +60,6 @@ public sealed class ToolCallContentViewModel
             return text;
         }
 
-        // The closing fence is the trailing backtick run. CommonMark lets it be longer than the
-        // opening fence but never shorter, and it must start its own line.
         var closingFenceStart = trimmed.Length;
         while (closingFenceStart > 0 && trimmed[closingFenceStart - 1] == '`')
         {
@@ -89,8 +76,6 @@ public sealed class ToolCallContentViewModel
         var inner = trimmed.Substring(firstNewline + 1, closingFenceStart - (firstNewline + 1));
         if (ContainsClosingFenceLine(inner, openingFenceLength))
         {
-            // An earlier fence may already have closed the leading one (two separate blocks), so the
-            // trailing fence is not provably this block's close. Leave the payload alone.
             return text;
         }
 
@@ -106,10 +91,6 @@ public sealed class ToolCallContentViewModel
         return inner;
     }
 
-    /// <summary>CommonMark closes a backtick fence only with a line that, after at most three
-    /// spaces of indentation, is a run of at least the opening length of backticks and nothing but
-    /// blanks after it. Backticks anywhere else in a line - a numbered Read of a README carrying
-    /// "5\t```bash" - cannot have closed the opener, so they do not make the wrapper ambiguous.</summary>
     private static bool ContainsClosingFenceLine(string inner, int openingFenceLength)
     {
         var lineStart = 0;

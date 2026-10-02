@@ -3,9 +3,8 @@ using System.Globalization;
 
 namespace ClaudeCode.Acp;
 
-/// <summary>Maps the result of the adapter CLI's interactive login/logout - its exit code and the
-/// status probe that follows it - to the message the user sees. Kept free of process and VS code so
-/// every branch is unit-testable.</summary>
+/// <summary>Maps the exit code and follow-up status probe of the adapter CLI's interactive login/logout
+/// to the message the user sees.</summary>
 public static class AcpAuthCommandOutcomes
 {
     public const string LoginInstructions = "Type /login to try again, run 'claude auth login' in a terminal, or "
@@ -30,8 +29,8 @@ public static class AcpAuthCommandOutcomes
     public static AuthCommandOutcome LogoutTimedOut { get; } =
         new AuthCommandOutcome(false, "Sign-out did not finish in time. " + LogoutInstructions);
 
-    /// <summary>The status probe, not the exit code, decides success: a console the user closed early
-    /// can still exit 0 without completing OAuth.</summary>
+    /// <summary>Returns the login outcome; success is decided by <paramref name="stateAfterProbe"/>, not by
+    /// <paramref name="exitCode"/>.</summary>
     public static AuthCommandOutcome ForLogin(AuthState stateAfterProbe, int exitCode) => stateAfterProbe switch
     {
         AuthState.SignedIn => new AuthCommandOutcome(true, "Signed in to Claude."),
@@ -43,8 +42,8 @@ public static class AcpAuthCommandOutcomes
             + "was inconclusive. Run 'claude-agent-acp --cli auth status --json' in a terminal to check. " + LoginInstructions),
     };
 
-    /// <summary>A zero exit only counts once the status probe agrees: credentials from an API key or a
-    /// third-party provider in the environment survive <c>auth logout</c>.</summary>
+    /// <summary>Returns the logout outcome; succeeds only when <paramref name="exitCode"/> is zero and the
+    /// status probe agrees.</summary>
     public static AuthCommandOutcome ForLogout(int exitCode, AuthState stateAfterProbe)
     {
         if (exitCode != 0)

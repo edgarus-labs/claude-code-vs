@@ -13,9 +13,6 @@ namespace ClaudeCode.Acp.Tests;
 
 public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
 {
-    // "toAgent" = what the connection under test WRITES (requests/notifications/responses it sends
-    // toward the "agent"); the test reads from toAgent.Reader to observe them.
-    // "fromAgent" = what the connection under test READS; the test writes fake agent messages here.
     private readonly Pipe _toAgent = new Pipe();
 
     private readonly Pipe _fromAgent = new Pipe();
@@ -30,8 +27,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
 
     public async Task DisposeAsync() => await _connection.DisposeAsync();
 
-    // Explicit IAsyncDisposable purely so CA1001 recognizes this type as disposable; xUnit drives
-    // teardown through IAsyncLifetime.DisposeAsync() (Task-returning) above, not through this.
     ValueTask IAsyncDisposable.DisposeAsync() => new ValueTask(DisposeAsync());
 
     [Fact]
@@ -199,9 +194,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
 
         await firstCall.WaitAsync(TimeSpan.FromSeconds(5));
 
-        // A second call must be a no-op: no further bytes are written toward the agent, so a
-        // short read timeout proves nothing else was sent (a real second "initialize" would have
-        // arrived immediately since there is no other work pending).
         await _connection.InitializeAsync(CancellationToken.None);
 
         Task<string> secondReadAttempt = PipeTestHelpers.ReadLineAsync(_toAgent.Reader);
@@ -217,17 +209,12 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
 
         Assert.NotNull(request["params"]!["clientCapabilities"]!["elicitation"]!["form"]);
 
-        // url mode is deliberately NOT advertised: HandleCreateElicitationAsync cannot render it and
-        // answers such a request with -32602, so claiming the capability would invite exactly the
-        // secret-bearing flows this client cannot honour.
         Assert.Null(request["params"]!["clientCapabilities"]!["elicitation"]!["url"]);
 
         await ReplyAsync(request, """{"protocolVersion":1}""");
         await pending.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
-    // claude-agent-acp advertises that it queues a session/prompt sent while another is running;
-    // the chat view model only sends one mid-turn when the agent said so.
     [Fact]
     public async Task InitializeAsync_ReportsPromptQueueing_WhenTheAgentAdvertisesIt()
     {
@@ -241,8 +228,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         Assert.True(_connection.SupportsPromptQueueing);
     }
 
-    // Agent-supplied and therefore untrusted: only a literal JSON true opts in, so an agent that
-    // says nothing (or something malformed) keeps the one-prompt-at-a-time behavior.
     [Theory]
     [InlineData("""{"protocolVersion":1}""")]
     [InlineData("""{"protocolVersion":1,"agentCapabilities":{"_meta":{"claudeCode":{"promptQueueing":"true"}}}}""")]
@@ -259,9 +244,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         Assert.False(_connection.SupportsPromptQueueing);
     }
 
-    // Reading the capability materializes the response object, and System.Text.Json throws
-    // ArgumentException there for a repeated key: that is a malformed response, reported like every
-    // other one, not a raw collection error.
     [Fact]
     public async Task InitializeAsync_ResponseWithADuplicateKey_FaultsAsMalformed()
     {
@@ -333,15 +315,12 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         Assert.Equal("accept", response["result"]!["action"]!.GetValue<string>());
         Assert.Equal("red", response["result"]!["content"]!["question_0"]!.GetValue<string>());
         Assert.Equal(2, response["result"]!["content"]!["question_1"]!.AsArray().Count);
-        Assert.Null(response["result"]!["content"]!["question_0_custom"]); // left blank -> omitted, not an empty string.
+        Assert.Null(response["result"]!["content"]!["question_0_custom"]);
     }
 
     [Fact]
     public async Task InboundElicitationCreateRequest_UnsupportedMode_RespondsWithInvalidParams()
     {
-        // ACP: "Requests using a mode the Client has not advertised produce JSON-RPC -32602". A
-        // `decline` here would be read as "the user refused", which would let a conforming agent
-        // retry the same sensitive flow as a form instead of giving up on url mode.
         await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer,
             """{"jsonrpc":"2.0","id":22,"method":"elicitation/create","params":{"mode":"url","sessionId":"s1","message":"Open this","url":"https://example.test"}}""");
 
@@ -353,10 +332,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
     [Fact]
     public async Task InboundElicitationCreateRequest_RequestScopedForm_RespondsWithInvalidParamsNotInternalError()
     {
-        // ACP's request scope (`requestId` instead of `sessionId`, for prompts raised before any
-        // session exists) is spec-valid; this client has no surface for it. -32602 names the
-        // unsupported scope so a conforming agent can fall back, where reporting a missing required
-        // field gives the agent a generic -32603 "Internal error" - "the client is broken".
         _connection.ElicitationRequested += (_, e) =>
             e.Response.TrySetResult(new ElicitationAnswer(ElicitationAction.Accept, new Dictionary<string, IReadOnlyList<string>>()));
 
@@ -375,9 +350,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
     [Fact]
     public async Task InboundElicitationCreateRequest_NonStringTypedField_IsOmittedInsteadOfAnsweredWithAJsonString()
     {
-        // ACP's ElicitationPropertySchema also covers boolean/number/integer. Those render as free
-        // text here, but answering {"type":"boolean"} with the JSON string "true" violates the very
-        // schema the agent published, so the field must come back unanswered.
         var received = new TaskCompletionSource<ElicitationRequestEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         _connection.ElicitationRequested += (_, e) => received.TrySetResult(e);
 
@@ -406,9 +378,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
     [Fact]
     public async Task InboundElicitationCreateRequest_UntitledEnumSchemas_ParseAsSelectFieldsNotFreeText()
     {
-        // ACP's StringPropertySchema: "When `enum` or `oneOf` is set, this represents a single-select
-        // enum"; MultiSelectItems likewise allows `items.enum`. Rendering either as a text box would
-        // let the user answer outside the closed set the agent declared.
         var received = new TaskCompletionSource<ElicitationRequestEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         _connection.ElicitationRequested += (_, e) => received.TrySetResult(e);
 
@@ -444,8 +413,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
     [Fact]
     public async Task InboundElicitationCreateRequest_OptionWithoutTitle_FallsBackToItsConstAsTheLabel()
     {
-        // `title` is an optional JSON Schema annotation - an agent may legitimately emit an option
-        // carrying only `const`. Such a prompt must still reach the user, not fail the request.
         ElicitationRequestEventArgs? captured = null;
         _connection.ElicitationRequested += (_, e) =>
         {
@@ -500,9 +467,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
     [Fact]
     public async Task CancelAsync_ResolvesStillPendingPermissionRequest_AsCancelledOutcome()
     {
-        // Handler deliberately never completes e.Response - simulating a UI permission dialog the user
-        // never answered before the turn was cancelled. Signals once tracked/raised so the test can wait
-        // for the request to actually be in flight before racing CancelAsync against it.
         var permissionRequestReceived = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         _connection.PermissionRequested += (_, _) => permissionRequestReceived.TrySetResult(true);
 
@@ -516,7 +480,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
 
         await _connection.CancelAsync("s1", CancellationToken.None);
 
-        // A session/cancel notification (no "id") is written first; scan past it to the id:3 response.
         JsonObject response = await ReadResponseWithIdAsync(_toAgent.Reader, 3);
         Assert.Equal("cancelled", response["result"]!["outcome"]!["outcome"]!.GetValue<string>());
     }
@@ -545,14 +508,10 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         await permissionReceived.Task.WaitAsync(TimeSpan.FromSeconds(5));
         await elicitationReceived.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        // The session/cancel write itself fails (here: an already-cancelled token, the same shape as
-        // an IOException from a dead transport) - precisely when the in-flight prompts most need
-        // resolving. The caller still observes the failure...
         using var cts = new CancellationTokenSource();
         cts.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => _connection.CancelAsync("s1", cts.Token));
 
-        // ...but neither prompt may be left hanging in the UI forever.
         var responses = new Dictionary<int, JsonObject>();
         while (responses.Count < 2)
         {
@@ -587,8 +546,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
     [Fact]
     public async Task DisposeAsync_OnAHealthyConnection_DoesNotRaiseDisconnected()
     {
-        // The consumer initiated this shutdown itself by calling DisposeAsync(); it must not also
-        // receive an unsolicited "the connection was lost" notification for its own intentional action.
         int disconnectedCount = 0;
         _connection.Disconnected += (_, _) => Interlocked.Increment(ref disconnectedCount);
 
@@ -601,7 +558,7 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
     public async Task HandleReadTextFileAsync_CancelledWhilePending_UnblocksInsteadOfHangingForever()
     {
         var handlerInvoked = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _connection.FileReadRequested += (_, e) => handlerInvoked.TrySetResult(true); // deliberately never resolves e.Response.
+        _connection.FileReadRequested += (_, e) => handlerInvoked.TrySetResult(true);
 
         using var cts = new CancellationTokenSource();
         MethodInfo method = typeof(AcpProcessConnection).GetMethod("HandleReadTextFileAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
@@ -617,7 +574,7 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
     public async Task HandleWriteTextFileAsync_CancelledWhilePending_UnblocksInsteadOfHangingForever()
     {
         var handlerInvoked = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _connection.FileWriteRequested += (_, e) => handlerInvoked.TrySetResult(true); // deliberately never resolves e.Response.
+        _connection.FileWriteRequested += (_, e) => handlerInvoked.TrySetResult(true);
 
         using var cts = new CancellationTokenSource();
         MethodInfo method = typeof(AcpProcessConnection).GetMethod("HandleWriteTextFileAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
@@ -636,7 +593,7 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
     public async Task HandleRequestPermissionAsync_CancelledWhilePending_UnblocksInsteadOfHangingForever()
     {
         var handlerInvoked = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _connection.PermissionRequested += (_, e) => handlerInvoked.TrySetResult(true); // deliberately never resolves e.Response.
+        _connection.PermissionRequested += (_, e) => handlerInvoked.TrySetResult(true);
 
         using var cts = new CancellationTokenSource();
         MethodInfo method = typeof(AcpProcessConnection).GetMethod("HandleRequestPermissionAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
@@ -676,8 +633,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
                 start.Wait();
                 for (int iteration = 0; iteration < 2000; iteration++)
                 {
-                    // Each pair races the last completion in a session with a new pending request.
-                    // Distinct sessions let the race repeat without retaining an always-nonempty bag.
                     string sessionId = "race-" + iteration;
                     foreach (string toolCallId in new[] { "complete", "pending" })
                     {
@@ -716,9 +671,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         }
     }
 
-    // Like the VS Code extension, every session (new or resumed) appends a section to Claude Code's
-    // own system prompt telling Claude that its text between tool calls is shown to the user in this
-    // chat panel - so it replies to a message sent mid-turn in visible text, not only in its thinking.
     [Fact]
     public async Task NewAndLoadSession_AppendTheChatPanelSectionToTheSystemPrompt()
     {
@@ -997,8 +949,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         Assert.Equal(0, disconnected);
     }
 
-    // The chat view model tells a queued prompt the agent never started ("cancelled" by Stop) from
-    // one that ran by this value, so it must be the agent's own stopReason.
     [Theory]
     [InlineData("""{"stopReason":"cancelled"}""", "cancelled")]
     [InlineData("""{"stopReason":"end_turn"}""", "end_turn")]
@@ -1064,10 +1014,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
     [Fact]
     public async Task SessionUpdate_UsageUpdateWithOutOfRangeNumbers_DegradesThoseFieldsAndKeepsThePumpAlive()
     {
-        // `cost.amount` is an unbounded JSON double on the wire; (decimal)1e29 throws OverflowException
-        // inline on the JSON-RPC read pump, which would exit the read loop and fault every in-flight
-        // request. `used`/`size` are uint64 there, so an unchecked (long) cast wraps to a negative or
-        // garbage token count. Every one of those must degrade the field, not the connection.
         var received = new TaskCompletionSource<List<SessionUpdateEventArgs>>(TaskCreationOptions.RunContinuationsAsynchronously);
         var notifications = new List<SessionUpdateEventArgs>();
         _connection.SessionUpdate += (_, update) =>
@@ -1093,7 +1039,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         Assert.Equal(0, negative.ContextWindowSize);
         Assert.Null(negative.CostAmount);
 
-        // The third notification only arrives if the pump survived the first two.
         var healthy = Assert.IsType<SessionUpdate.UsageUpdate>(updates[2].Update);
         Assert.Equal(42, healthy.UsedTokens);
         Assert.Equal(0.5m, healthy.CostAmount);
@@ -1108,7 +1053,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         Assert.True(request["params"]!["enabled"]!.GetValue<bool>());
         Assert.Equal("My laptop", request["params"]!["name"]!.GetValue<string>());
 
-        // The launcher also emits `connectUrl`; nothing in the client reads it, so it is ignored.
         await ReplyAsync(request, """{"enabled":true,"sessionUrl":"https://claude.ai/code/s1","connectUrl":"https://claude.ai/code/connect"}""");
 
         RemoteControlState state = await pending.WaitAsync(TimeSpan.FromSeconds(5));
@@ -1123,7 +1067,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         JsonObject request = await ReadRequestAsync("_vs/remoteControl");
         Assert.Null(request["params"]!["name"]);
 
-        // The agent is authoritative: it refused to enable, so the UI must not show Remote Control as on.
         await ReplyAsync(request, """{"enabled":false}""");
 
         RemoteControlState state = await pending.WaitAsync(TimeSpan.FromSeconds(5));
@@ -1134,8 +1077,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
     [Fact]
     public async Task SetRemoteControlAsync_ResponseOmitsEnabled_FailsInsteadOfAssumingTheToggleApplied()
     {
-        // An unacknowledged toggle must not be reported as success: the user would believe the session
-        // is (or is no longer) exposed at claude.ai/code when the agent never said so.
         Task<RemoteControlState> pending = _connection.SetRemoteControlAsync("s1", enabled: true, null, CancellationToken.None);
         JsonObject request = await ReadRequestAsync("_vs/remoteControl");
         await ReplyAsync(request, """{"sessionUrl":"https://claude.ai/code/s1"}""");
@@ -1160,11 +1101,8 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
             """)!.ToJsonString());
         await received.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        // The agent's stdout closes - the form can never be answered, so it must not stay open forever.
         _fromAgent.Writer.Complete();
 
-        // A TimeoutException from WaitAsync would mean the form is still pending - the exact bug
-        // this covers - so the disconnect cause itself has to be the assertion.
         await Assert.ThrowsAsync<IOException>(() => captured!.Response.Task.WaitAsync(TimeSpan.FromSeconds(5)));
     }
 
@@ -1181,7 +1119,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         Assert.Null(response["result"]);
         Assert.NotNull(response["error"]);
 
-        // The pump must still be serving requests afterwards.
         await PipeTestHelpers.WriteLineAsync(_fromAgent.Writer, JsonNode.Parse("""
             {"jsonrpc":"2.0","id":28,"method":"elicitation/create","params":{
               "mode":"form","sessionId":"s1","message":"Pick one",
@@ -1192,8 +1129,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         Assert.Equal("accept", accepted["result"]!["action"]!.GetValue<string>());
     }
 
-    // claude-agent-acp names the underlying Claude Code tool in _meta.claudeCode.toolName; a subagent
-    // is the Agent (formerly Task) tool. The composer counts those while they run.
     [Theory]
     [InlineData("Agent", true)]
     [InlineData("Task", true)]
@@ -1211,9 +1146,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         Assert.Equal(isSubagent, call.IsSubagent);
     }
 
-    // claude-agent-acp reports the file a Read/Edit/Write works on as locations[].path. The chat
-    // resolves a bare file name the agent later writes ("`Program.cs:12`") against those paths, so
-    // they must survive parsing; entries without a string path carry nothing to resolve against.
     [Fact]
     public async Task SessionUpdate_ToolCall_ReportsTheLocationPaths()
     {
@@ -1227,8 +1159,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         Assert.Equal(new[] { @"C:\repo\src\Program.cs" }, call.Locations);
     }
 
-    // Most tool_call_update notifications carry no locations at all; the chat iterates the list on
-    // the UI thread for every one of them, so "none" has to be an empty list, never null.
     [Fact]
     public async Task SessionUpdate_ToolCallUpdateWithoutLocations_ReportsNoLocations()
     {
@@ -1243,12 +1173,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         Assert.Empty(call.Locations);
     }
 
-    // Glob and Grep report no locations: the files they found reach the client only in the
-    // PostToolUse update's _meta.claudeCode.toolResponse (claude-agent-acp), as paths relative to
-    // the session cwd - `filenames` for Glob and Grep's file modes, and for Grep's default content
-    // mode only the "path:line:text" lines. A bare "`OrderService.cs:5`" the agent writes after such
-    // a search names one of those files, so they must survive parsing (payloads as captured from
-    // claude-agent-acp 0.81.2).
     [Theory]
     [InlineData("""{"toolName":"Glob","toolResponse":{"filenames":["src\\Core\\Order.cs","src\\Core\\Services\\OrderService.cs"],"numFiles":2,"truncated":false}}""",
         new[] { @"src\Core\Order.cs", @"src\Core\Services\OrderService.cs" })]
@@ -1277,9 +1201,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
     [Fact]
     public async Task SessionUpdate_ToolCallWithoutAToolCallId_DropsThatNotificationAndKeepsThePumpAlive()
     {
-        // ParseToolCallUpdate requires `toolCallId` and runs inline on the JSON-RPC read pump, so an
-        // escaping AcpProtocolException ends the read loop and faults every in-flight request - one
-        // malformed message from the untrusted agent would kill the whole session.
         var received = new TaskCompletionSource<SessionUpdateEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         var seen = new List<SessionUpdateEventArgs>();
         _connection.SessionUpdate += (_, update) => { seen.Add(update); received.TrySetResult(update); };
@@ -1292,17 +1213,12 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         SessionUpdateEventArgs survivor = await received.Task.WaitAsync(TimeSpan.FromSeconds(5));
         var chunk = Assert.IsType<SessionUpdate.AgentMessageChunk>(survivor.Update);
         Assert.Equal("still here", chunk.Text);
-        Assert.Single(seen); // the malformed tool_call was dropped, not surfaced as a default-filled call.
+        Assert.Single(seen);
     }
 
     [Fact]
     public async Task SessionUpdate_WithADuplicateKeyInTheUpdate_DropsThatNotificationAndKeepsThePumpAlive()
     {
-        // System.Text.Json materializes an object on its first property access and throws
-        // ArgumentException - not AcpProtocolException - for a repeated key. ParseSessionUpdate runs
-        // inline on the JSON-RPC read pump, so a catch that covers only AcpProtocolException still lets
-        // one malformed notification from the untrusted agent fault every in-flight request and
-        // disconnect the session.
         var disconnected = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
         _connection.Disconnected += (_, ex) => disconnected.TrySetResult(ex);
         var received = new TaskCompletionSource<SessionUpdateEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1318,7 +1234,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
         Assert.Equal("still here", Assert.IsType<SessionUpdate.AgentMessageChunk>(survivor.Update).Text);
         Assert.Single(seen);
 
-        // A request issued afterwards must still round-trip through the same pump.
         Task<IReadOnlyList<SessionSummary>> pending = _connection.ListSessionsAsync("/workspace", CancellationToken.None);
         JsonObject request = await ReadRequestAsync("session/list");
         await ReplyAsync(request, """{"sessions":[]}""");
@@ -1329,8 +1244,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
     [Fact]
     public async Task InboundLine_WithADuplicateKeyInTheEnvelope_IsDroppedAndKeepsThePumpAlive()
     {
-        // The same materialization hole exists one level up: the envelope's own `method`/`id` lookups
-        // run on the pump before any handler is involved.
         var received = new TaskCompletionSource<SessionUpdateEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         _connection.SessionUpdate += (_, update) => received.TrySetResult(update);
 
@@ -1346,8 +1259,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
     [Fact]
     public async Task ErrorResponse_WithADuplicateKeyInsideError_StillFaultsTheCallerInsteadOfStrandingIt()
     {
-        // The response's `error` object is only materialized after the request has left the pending
-        // registry; if that read escaped, the pump would die AND the caller would never complete.
         Task<IReadOnlyList<SessionSummary>> pending = _connection.ListSessionsAsync("/workspace", CancellationToken.None);
         JsonObject request = await ReadRequestAsync("session/list");
 
@@ -1364,8 +1275,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
     [Fact]
     public async Task SessionUpdate_UsageUpdateWithANonNumericUsed_DropsTheUpdateInsteadOfReportingZeroTokens()
     {
-        // "unknown" is not "0 used": reporting zero would draw an empty context-window bar for a
-        // window that may be nearly full.
         var received = new TaskCompletionSource<SessionUpdateEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         var seen = new List<SessionUpdateEventArgs>();
         _connection.SessionUpdate += (_, update) => { seen.Add(update); received.TrySetResult(update); };
@@ -1386,8 +1295,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
     {
         Task<IReadOnlyList<SessionSummary>> pending = _connection.ListSessionsAsync(null, CancellationToken.None);
         JsonObject request = await ReadRequestAsync("session/list");
-        // `cwd` is optional and nullable in ACP's ListSessionsRequest; sending an explicit null for
-        // an unfiltered list is equivalent to omitting the key, so neither form is asserted here.
 
         await ReplyAsync(request, """
             {
@@ -1408,9 +1315,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
     [Fact]
     public async Task ListSessionsAsync_RowWithADuplicateKey_SkipsThatRowInsteadOfDiscardingTheHistory()
     {
-        // A repeated key inside one row makes the row's first property read throw ArgumentException
-        // (System.Text.Json materializes the object on first access). Like a row missing required
-        // fields, it must degrade that row only - not hide the rest of the history.
         Task<IReadOnlyList<SessionSummary>> pending = _connection.ListSessionsAsync("/workspace", CancellationToken.None);
         JsonObject request = await ReadRequestAsync("session/list");
 
@@ -1427,9 +1331,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
     [Fact]
     public async Task ListSessionsAsync_ResponseWithADuplicatedSessionsKey_FaultsAsMalformedAndKeepsThePumpAlive()
     {
-        // A repeated top-level "sessions" key is a malformed response body, not one bad row: report
-        // it as the same AcpProtocolException the missing-array case raises, and leave the pump able
-        // to serve the next request.
         Task<IReadOnlyList<SessionSummary>> pending = _connection.ListSessionsAsync("/workspace", CancellationToken.None);
         JsonObject request = await ReadRequestAsync("session/list");
 
@@ -1446,8 +1347,6 @@ public sealed class AcpProcessConnectionTests : IAsyncLifetime, IAsyncDisposable
     [Fact]
     public async Task NewSessionAsync_ConfigOptionWithADuplicateKey_SkipsThatOptionInsteadOfAborting()
     {
-        // A repeated key in one config option must degrade that option only; the session id is still
-        // valid and the remaining options still reach the picker.
         Task<NewSessionResult> pending = _connection.NewSessionAsync("/workspace", null, CancellationToken.None);
         JsonObject request = await ReadRequestAsync("session/new");
 

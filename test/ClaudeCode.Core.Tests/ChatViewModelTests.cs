@@ -11,12 +11,6 @@ namespace ClaudeCode.Core.Tests;
 
 public sealed class ChatViewModelTests
 {
-    // F-7-15: NullChatSessionServices + FakeAcpAgentConnection/FakeAcpAgentConnectionFactory (in
-    // ViewModels/Demo/) are a live production fallback (ChatPanelView.xaml.cs falls back to
-    // NullChatSessionServices when no host-provided IChatSessionServices is available) that had no
-    // test coverage. This asserts the combination is wired correctly end to end: sending a prompt
-    // produces a visible assistant reply. It intentionally does not assert the exact echo wording,
-    // which is an implementation detail of the demo double, not an observable contract.
     [Fact]
     public async Task SendAsync_WithNullChatSessionServices_ProducesAssistantMessage()
     {
@@ -47,11 +41,8 @@ public sealed class ChatViewModelTests
         }));
         Assert.Equal("Write tests", Assert.Single(vm.CurrentPlan!.Entries).Content);
 
-        // Agents emit a plan update per todo transition, so a collapsed Tasks list must stay
-        // collapsed across the swap - otherwise it pops back open several times per turn.
         vm.CurrentPlan!.IsExpanded = false;
 
-        // A later plan update replaces the prior one wholesale; it does not merge/append entries.
         connection.RaiseSessionUpdate(new SessionUpdate.Plan(new List<PlanEntry>
         {
             new PlanEntry { Content = "Ship feature", Status = PlanEntryStatus.InProgress },
@@ -92,9 +83,6 @@ public sealed class ChatViewModelTests
         Assert.Null(vm.PendingPermission);
     }
 
-    // The permission prompt is the one place the user has to decide whether to let the agent act,
-    // and MCP tools reach it as a routing identifier (mcp__visual-studio__listAppWindows). Nobody
-    // can consent to that string, so both the prompt and the transcript card must read as English.
     [Fact]
     public async Task PermissionRequested_ForAnMcpTool_AsksInWordsRatherThanARoutingIdentifier()
     {
@@ -115,8 +103,6 @@ public sealed class ChatViewModelTests
         connection.RaisePermissionRequested(call,
             [new PermissionOption { OptionId = "allow-once", Label = "Allow", Outcome = PermissionOutcome.AllowOnce }]);
 
-        // The wording itself belongs to ToolDisplayNameTests; what this path owns is that neither
-        // consent surface can present the raw routing identifier as the thing being approved.
         Assert.DoesNotContain("mcp__", vm.PendingPermission!.Title, StringComparison.Ordinal);
         Assert.Contains("windows", vm.PendingPermission.Title, StringComparison.OrdinalIgnoreCase);
         var card = Assert.Single(vm.Messages.SelectMany(message => message.ToolCalls), tool => tool.ToolCallId == "tc-mcp");
@@ -142,13 +128,11 @@ public sealed class ChatViewModelTests
         await vm.NewSessionCommand.ExecuteAsync(null);
 
         Assert.Equal(1, newSessionCalls);
-        Assert.Equal(callsBefore, connection.DisposeCount); // the ACP process/connection is reused, not torn down.
+        Assert.Equal(callsBefore, connection.DisposeCount);
         Assert.Empty(vm.Messages);
         Assert.Null(vm.CurrentPlan);
     }
 
-    // Issue #25: the tool window outlives any solution, so without this the transcript of project A
-    // stays on screen - and keeps talking to an agent still rooted in A - after the user opens B.
     [Fact]
     public async Task WorkspaceRootChanged_ToADifferentSolution_ClearsTranscriptAndStartsTheNextSessionInTheNewRoot()
     {
@@ -168,11 +152,8 @@ public sealed class ChatViewModelTests
         services.SetWorkspaceRoot("/solution-b");
 
         await WaitUntilAsync(() => vm.Messages.Count == 0 && second.NewSessionCwds.Count == 1);
-        // A's agent process is rooted in A's directory for its whole life, so the switch has to end
-        // it rather than reuse it for B.
         Assert.Equal(1, first.DisposeCount);
         Assert.Equal("/solution-b", second.NewSessionCwds[0]);
-        // B starts empty: no prior conversation - A's or B's own - is loaded back in.
         Assert.Empty(second.LoadedSessions);
 
         vm.InputText = "and this one?";
@@ -180,9 +161,6 @@ public sealed class ChatViewModelTests
         Assert.Single(second.Prompts);
     }
 
-    // Closing a solution and reopening the same one (a reload, or File > Close Solution followed by
-    // reopening it) is not a project switch: wiping a live conversation there is data loss, not the
-    // fix for #25. Exactly one teardown proves only the genuine A -> B switch reset anything.
     [Fact]
     public async Task WorkspaceRootChanged_ForTheSameSolutionReopened_KeepsTheConversation()
     {
@@ -198,8 +176,8 @@ public sealed class ChatViewModelTests
         first.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("It builds A."));
         var messagesBeforeReload = vm.Messages.Count;
 
-        services.SetWorkspaceRoot(null);          // solution closed
-        services.SetWorkspaceRoot("/solution-a"); // ...and the same one reopened
+        services.SetWorkspaceRoot(null);
+        services.SetWorkspaceRoot("/solution-a");
         Assert.Equal(messagesBeforeReload, vm.Messages.Count);
         Assert.Equal(0, first.DisposeCount);
 
@@ -210,10 +188,6 @@ public sealed class ChatViewModelTests
         Assert.Equal("/solution-b", Assert.Single(second.NewSessionCwds));
     }
 
-    // Tearing down project A's agent is not instant. While it runs, the old transcript is still on
-    // screen, so an enabled composer invites a prompt that ResetTranscriptState then erases while it
-    // is already in flight against a freshly spawned session - the same mid-switch prompt loss
-    // NewSessionCoreAsync and OpenSessionCoreAsync guard against.
     [Fact]
     public async Task WorkspaceRootChanged_WhileTheOutgoingAgentIsStillClosing_RefusesNewPrompts()
     {
@@ -288,7 +262,7 @@ public sealed class ChatViewModelTests
         using var vm = new ChatViewModel(new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService(), @"D:\dev\my-solution"));
         await vm.InitializeAsync();
         vm.InputText = "hi";
-        await vm.SendAsync(); // ensures a session exists
+        await vm.SendAsync();
         Assert.False(vm.IsRemoteControlEnabled);
         Assert.Empty(connection.RemoteControlCalls);
 
@@ -360,14 +334,11 @@ public sealed class ChatViewModelTests
             new ToolCallUpdate { ToolCallId = "t1", Title = "Edit Program.cs", Status = ToolCallStatus.Pending },
             [new PermissionOption { OptionId = "allow-once", Label = "Yes", Outcome = PermissionOutcome.AllowOnce }]);
         vm.PendingPermission!.ChooseCommand.Execute(vm.PendingPermission.Options[0]);
-        // \r alone is a line break to WPF and to a Windows toast, so the one-line notification
-        // text must stop at it just as it stops at \n.
         connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("All done.\rDetails follow.\nMore."));
-        turn.SetResult(true); // the prompt returns, and with it the turn's TurnEnded
+        turn.SetResult(true);
         await sending;
         var (planCall, planOptions) = PlanApprovalRequest("# Plan");
         connection.RaisePermissionRequested(planCall, planOptions);
-        // A form blocks the turn exactly as a permission request does, so it needs the same nudge.
         connection.RaiseElicitationRequested("Which environment?", [new ElicitationField("q0", null, null, ElicitationFieldKind.Text, [])]);
 
         Assert.Collection(raised,
@@ -446,8 +417,6 @@ public sealed class ChatViewModelTests
         Assert.True(vm.PendingPlan.IsResolved);
     }
 
-    // The composer stays live while the rejected plan's turn finishes, so the user can be mid-
-    // sentence when the review goes out. The review is its own prompt; the draft is not its input.
     [Fact]
     public async Task PlanReview_SendsItsOwnPrompt_WithoutConsumingTheUsersDraft()
     {
@@ -557,8 +526,6 @@ public sealed class ChatViewModelTests
         private int _calls;
         public int Percent { get; set; } = 10;
         public DateTimeOffset? ResetsAt { get; set; }
-        /// <summary>Thrown synchronously from the next fetches while set - the harsher of the two
-        /// ways an <see cref="IUsageService"/> can fail on a caller.</summary>
         public Exception? Failure { get; set; }
 
         public Task<UsageSnapshot?> GetUsageAsync(CancellationToken cancellationToken)
@@ -624,8 +591,6 @@ public sealed class ChatViewModelTests
         var target = new SessionSummary("session-old", "/workspace", "Older chat", null);
         connection.LoadSessionHandler = (sessionId, cwd, mcpServers, _) =>
         {
-            // The agent replays history as ordinary session/update notifications before the
-            // session/load response resolves.
             connection.RaiseSessionUpdate(new SessionUpdate.UserMessageChunk("What does this do?"), sessionId);
             connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("It does X."), sessionId);
             return Task.FromResult(new NewSessionResult(sessionId, []));
@@ -696,9 +661,6 @@ public sealed class ChatViewModelTests
         Assert.Equal(ElicitationAction.Cancel, answer.Action);
     }
 
-    // The warning state machine is three interacting variables (threshold, dismissal, and the
-    // percent at which it was dismissed) and drives a banner in the composer area; a "<" vs "<="
-    // slip makes it either impossible to silence or impossible to re-raise.
     [Fact]
     public async Task UsageWarning_AppearsAtTheThreshold_StaysDismissedUntilUsageClimbs_AndClearsWhenItDrops()
     {
@@ -717,14 +679,12 @@ public sealed class ChatViewModelTests
         vm.DismissUsageWarning();
         Assert.Null(vm.UsageWarning);
 
-        // Same percent a poll later: a dismissal must not be undone by the very next fetch.
         await PollUsageAsync(vm, usageService, 80);
         Assert.Null(vm.UsageWarning);
 
         await PollUsageAsync(vm, usageService, 85);
         Assert.NotNull(vm.UsageWarning);
 
-        // Back under the threshold clears the banner and forgets the dismissal.
         await PollUsageAsync(vm, usageService, 10);
         Assert.Null(vm.UsageWarning);
         await PollUsageAsync(vm, usageService, 80);
@@ -763,9 +723,6 @@ public sealed class ChatViewModelTests
         Assert.Null(vm.TurnTokens);
     }
 
-    // SessionSummary.Title is agent-reported and is bound straight into the single-row panel header
-    // plus its tooltip, so it gets the same first-line/80-char normalization as a locally derived
-    // title - the trusted source was capped and the untrusted one was not.
     [Fact]
     public async Task OpenSession_NormalizesTheAgentSuppliedTitle()
     {
@@ -780,8 +737,6 @@ public sealed class ChatViewModelTests
         Assert.Equal(80, vm.SessionTitle.Length);
     }
 
-    // A superseded form can still be on screen in a host surface; submitting it must not wipe the
-    // form the user is actually looking at (whose slot would then never be answered).
     [Fact]
     public async Task SupersededElicitation_SubmittedLate_DoesNotClearTheCurrentForm()
     {
@@ -804,8 +759,6 @@ public sealed class ChatViewModelTests
         Assert.Equal(ElicitationAction.Accept, (await secondArgs.Response.Task.WaitAsync(TimeSpan.FromSeconds(5))).Action);
     }
 
-    // An abandoned plan keeps a live Proceed/Review in any still-open plan window; clicking Review
-    // there would overwrite the new session's composer draft and send the comments to it.
     [Fact]
     public async Task NewSession_ResolvesAnAbandonedPlan_SoItsCommandsGoDead()
     {
@@ -827,9 +780,6 @@ public sealed class ChatViewModelTests
         Assert.False(abandoned.ReviewCommand.CanExecute("late comments"));
     }
 
-    // A switch_mode request has two surfaces, the permission card and the plan document. Answering
-    // from the card must settle the document too: a still-live Proceed there would answer a request
-    // that is already resolved.
     [Fact]
     public async Task PlanApproval_AnsweredFromThePermissionCard_ResolvesThePlanDocument()
     {
@@ -842,7 +792,7 @@ public sealed class ChatViewModelTests
         var request = connection.RaisePermissionRequested(call, options);
         var plan = vm.PendingPlan!;
 
-        vm.PendingPermission!.ChooseCommand.Execute(vm.PendingPermission.Options[1]); // "No, keep planning"
+        vm.PendingPermission!.ChooseCommand.Execute(vm.PendingPermission.Options[1]);
 
         Assert.Equal("reject-once", await request.Response.Task);
         Assert.Null(vm.PendingPermission);
@@ -851,9 +801,6 @@ public sealed class ChatViewModelTests
         Assert.False(plan.ReviewCommand.CanExecute("late comments"));
     }
 
-    // Both surfaces can outlive their request. Answering a stale one must not disturb the request
-    // that replaced it: clearing the newer card would leave its slot unanswered until the
-    // connection is torn down, and the plan document must go dead rather than stay clickable.
     [Fact]
     public async Task StalePlanSurfaces_AnsweredAfterANewerPermissionArrived_LeaveTheNewerRequestIntact()
     {
@@ -883,8 +830,6 @@ public sealed class ChatViewModelTests
         Assert.Null(vm.PendingPermission);
     }
 
-    // The launcher can refuse a toggle (no claude.ai session, network). The UI must then keep the
-    // last acknowledged state, say why, and hand the toggle back rather than leave it stuck busy.
     [Fact]
     public async Task RemoteControl_WhenTheToggleFails_KeepsTheAcknowledgedStateReportsItAndStaysUsable()
     {
@@ -912,10 +857,6 @@ public sealed class ChatViewModelTests
         Assert.Null(vm.StatusMessage);
     }
 
-    // UsagePollingLoopAsync waits out this exact decision between attempts (real 15s/5min intervals,
-    // too slow to await in a unit test). Asserted as relationships rather than literals so retuning
-    // either interval stays a free change and only a real regression - no fast retry at all, or a
-    // fast retry that never gives up - fails the test.
     [Fact]
     public void NextUsagePollDelay_RetriesSoonAfterAFailedFetch_ThenSettlesBackToTheNormalCadence()
     {
@@ -924,13 +865,9 @@ public sealed class ChatViewModelTests
         Assert.True(ChatViewModel.NextUsagePollDelay(1) < normalDelay,
             "The fetch that failed at startup must be retried sooner than the normal poll cadence.");
 
-        // An agent that keeps failing is not a startup race: the fast retry has to stop somewhere
-        // rather than polling a permanently broken usage service every few seconds all session.
         Assert.Equal(normalDelay, ChatViewModel.NextUsagePollDelay(100));
     }
 
-    // Usage is best-effort presentation: a fetch that throws - on open, after a turn - must neither
-    // surface to the caller nor disturb the last good snapshot, and the next fetch must still run.
     [Fact]
     public async Task UsageService_ThatThrows_LeavesTheLastSnapshotAndRecoversOnTheNextFetch()
     {
@@ -959,9 +896,6 @@ public sealed class ChatViewModelTests
         await WaitUntilAsync(() => vm.Usage!.Limits[0].Percent == 42);
     }
 
-    // The reset label is the culture's own short time: devenv hosts this assembly on net472, where
-    // NLS gives de-DE, fr-FR, it-IT an empty AM/PM designator, and "h:mm tt" would show a 15:00
-    // reset as "3:00 " - twelve hours off for those users.
     [Theory]
     [InlineData(2)]
     [InlineData(72)]
@@ -994,9 +928,6 @@ public sealed class ChatViewModelTests
         }
     }
 
-    // The agent keeps every session it created, so a session left published to claude.ai/code
-    // stays there - enabled, invisible, and unreachable from a toggle that only addresses the
-    // current session. Leaving a session turns its Remote Control off first, on both switch paths.
     [Fact]
     public async Task LeavingASession_WithRemoteControlOn_TurnsItOffBeforeAdoptingTheNextOne()
     {
@@ -1035,9 +966,6 @@ public sealed class ChatViewModelTests
         Assert.False(vm.IsRemoteControlEnabled);
     }
 
-    // A toggle still in flight when the session changes must not cost the incoming session its
-    // startup enable: the stale result is discarded, and the enable is issued for whichever
-    // session is current once the toggle returns.
     [Fact]
     public async Task RemoteControlAtStartup_WithAToggleInFlightDuringNewChat_StillEnablesTheNewSession()
     {
@@ -1049,7 +977,7 @@ public sealed class ChatViewModelTests
         var inFlight = new TaskCompletionSource<RemoteControlState>();
         connection.RemoteControlHandler = _ => inFlight.Task;
         var toggling = vm.ToggleRemoteControlCommand.ExecuteAsync(null);
-        connection.RemoteControlHandler = null; // only that one call stays in flight
+        connection.RemoteControlHandler = null;
         Assert.True(vm.IsRemoteControlBusy);
         connection.NewSessionHandler = _ => Task.FromResult(new NewSessionResult("session-2", []));
         await vm.NewSessionCommand.ExecuteAsync(null);
@@ -1062,9 +990,6 @@ public sealed class ChatViewModelTests
         Assert.Contains(connection.RemoteControlCalls, c => c.SessionId == "session-2" && c.Enabled);
     }
 
-    // The other half of the same orphan: an enable that was in flight for the session being left
-    // lands after the switch. Its result is stale for the UI, but on the agent that session is now
-    // published - so it is turned back off.
     [Fact]
     public async Task RemoteControlEnable_LandingAfterTheSessionWasLeft_TurnsThatSessionOffAgain()
     {
@@ -1076,7 +1001,7 @@ public sealed class ChatViewModelTests
         var inFlight = new TaskCompletionSource<RemoteControlState>();
         connection.RemoteControlHandler = _ => inFlight.Task;
         var enabling = vm.ToggleRemoteControlCommand.ExecuteAsync(null);
-        connection.RemoteControlHandler = null; // only that one call stays in flight
+        connection.RemoteControlHandler = null;
         connection.NewSessionHandler = _ => Task.FromResult(new NewSessionResult("session-2", []));
         await vm.NewSessionCommand.ExecuteAsync(null);
 
@@ -1092,9 +1017,6 @@ public sealed class ChatViewModelTests
     private static RemoteControlState RemoteControl(bool enabled) =>
         new(enabled, enabled ? "https://claude.ai/code/session/test" : null);
 
-    // A Bash/PowerShell title is the command itself, and this client (no terminal capability)
-    // gets nothing else to show, so the whole command - every line - has to reach the card the
-    // user answers from. Height is bounded by the card's ScrollViewer, not by cutting text.
     [Fact]
     public async Task PermissionRequested_ForAMultiLineShellCommand_ShowsEveryLineOfTheCommand()
     {

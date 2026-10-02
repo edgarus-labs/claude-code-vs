@@ -14,9 +14,6 @@ public sealed class PercentToDashArrayConverter : IValueConverter
     {
         var (radius, thickness) = CircularProgressGeometry.ParseSpec(parameter as string);
 
-        // Both bindings supply an int (ChatViewModel.ContextUsagePercent, UsageLimitDisplay.Percent);
-        // anything else - including the unresolved-binding sentinel - draws nothing. Kept identical
-        // to the sibling PercentToStarWidthConverter so the two can never disagree.
         int percent = value is int i ? i : 0;
         var (dash, gap) = CircularProgressGeometry.ComputeDash(percent, radius, thickness);
         return new DoubleCollection { dash, gap };

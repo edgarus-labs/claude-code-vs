@@ -34,9 +34,6 @@ public sealed partial class ChatSessionStateTests
     private static ChatViewModel Create(RecordingAcpAgentConnection connection) =>
         new(new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService()));
 
-    // /login and /logout are never advertised by the adapter; ChatViewModel adds them to every
-    // slash-popup match locally (see issue #34), so any assertion on the adapter's own catalog has
-    // to account for these two trailing entries too.
     private static readonly string[] ClientSlashCommandNames = { "login", "logout" };
 
     [Fact]
@@ -165,8 +162,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Null(vm.SelectedMode);
     }
 
-    // The agent's response is authoritative for mode exactly as it is for model/effort: the stub
-    // deliberately answers with a mode that was not the one clicked.
     [Fact]
     public async Task SelectModeAsync_SendsConfigChange_AndUpdatesSelectionFromResponse()
     {
@@ -254,9 +249,6 @@ public sealed partial class ChatSessionStateTests
         Assert.False(vm.CanConfigure);
     }
 
-    // Every send leaves the composer at once, not only one Auto judges: while the connection is still
-    // being made the message shows pending in the transcript, and when the connect fails it comes
-    // back ahead of what was typed meanwhile.
     [Fact]
     public async Task Reconnecting_MessageLeavesTheComposerAtOnce_AndComesBackAheadOfWhatWasTypedIfTheConnectFails()
     {
@@ -279,12 +271,10 @@ public sealed partial class ChatSessionStateTests
 
         Assert.Equal("first" + Environment.NewLine + Environment.NewLine + "typed since", vm.InputText);
         Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User);
-        // The error says why; the notice says where the message went, now joined to the typed text.
         Assert.Equal("Error: Unavailable Your message is back in the message box, together with what was already there.", vm.StatusMessage);
         Assert.False(vm.IsBusy);
     }
 
-    // A message's images come back in the order they were attached.
     [Fact]
     public async Task ReconnectFailure_ReturnsTheMessagesImagesInTheOrderTheyWereAttached()
     {
@@ -303,8 +293,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { "first.png", "second.png" }, vm.Attachments.Select(attachment => attachment.Name));
     }
 
-    // A message that was only an image comes back as just the image: no empty paragraph is put
-    // ahead of what was typed since.
     [Fact]
     public async Task Reconnecting_AnImageOnlyMessage_ComesBackWithoutAnEmptyParagraphIfTheConnectFails()
     {
@@ -328,9 +316,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("Error: Unavailable " + "Your message is back in the message box, together with what was already there.", vm.StatusMessage);
     }
 
-    // A transcript observer that throws while an unsent message is taken back out of the transcript
-    // must not leave the panel busy for good (nothing could be sent again), and the send reports it
-    // rather than throwing it at the command that ran it.
     [Fact]
     public async Task ReconnectFailure_ObserverThrowsWhileTheMessageIsRestored_PanelDoesNotStayBusy_AndReportsIt()
     {
@@ -354,13 +339,9 @@ public sealed partial class ChatSessionStateTests
         Assert.Empty(vm.Messages);
         Assert.Contains("Unavailable", vm.StatusMessage, StringComparison.Ordinal);
         Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
-        // The status line has room for the messages only: the exceptions themselves are logged, the
-        // turn's own failure as well as the observer's.
         Assert.Equal(new[] { "Unavailable", "observer failed" }, services.LoggedErrors.Select(logged => logged.Exception.Message));
     }
 
-    // Keeping a log does not depend on offering Auto effort: a host with a log but no Auto still gets
-    // the failure with its type and stack.
     [Fact]
     public async Task ReconnectFailure_ObserverThrowsWhileTheMessageIsRestored_IsLogged_ByAHostWithoutAuto()
     {
@@ -382,7 +363,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { "Unavailable", "observer failed" }, services.LoggedErrors.Select(logged => logged.Exception.Message));
     }
 
-    // A host without a log still has every failure shown, and nothing thrown at the send command.
     [Fact]
     public async Task ReconnectFailure_ObserverThrowsWhileTheMessageIsRestored_ByAHostWithoutALog_IsShown()
     {
@@ -405,8 +385,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
     }
 
-    // A log that breaks its "must not throw" contract does not turn a reported failure into one thrown
-    // at the send command: the failure is still shown.
     [Fact]
     public async Task ReconnectFailure_ALogThatThrows_DoesNotThrowAtTheSend_AndTheFailureIsStillShown()
     {
@@ -427,8 +405,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Contains("Unavailable", vm.StatusMessage, StringComparison.Ordinal);
     }
 
-    // An observer can throw a cancellation of its own while the panel is live: it is a failure like
-    // any other - shown and logged, not dropped as if disposal had caused it.
     [Fact]
     public async Task ReconnectFailure_ObserverThrowsACancellationWhileThePanelIsLive_IsShownAndLogged()
     {
@@ -451,8 +427,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Contains(services.LoggedErrors, logged => logged.Exception.Message == "observer cancelled");
     }
 
-    // An observer throwing as a returned message's text goes back into the composer does not cost its
-    // image, nor leave its bubble behind: every step of the return still runs.
     [Fact]
     public async Task ReconnectFailure_ObserverThrowsAsTheTextComesBack_TheImageComesBackAndTheBubbleGoes()
     {
@@ -482,8 +456,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
     }
 
-    // The user's send clears the old status first; a status-line observer throwing as it does is
-    // reported, not thrown at the send command, and the message still goes out.
     [Fact]
     public async Task Send_StatusObserverThrowsAsTheOldErrorIsCleared_DoesNotThrow_AndSends()
     {
@@ -513,8 +485,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("first", Text(Assert.Single(connection.Prompts)));
     }
 
-    // Reporting a failure can fail too, when a status-line observer throws: the send still does not
-    // throw at its command, and both failures are logged.
     [Fact]
     public async Task ReconnectFailure_ObserverThrowsAsTheFailureIsReported_DoesNotThrow_AndLogsBoth()
     {
@@ -545,8 +515,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Contains(services.LoggedErrors, logged => logged.Exception.Message == "status observer failed");
     }
 
-    // The send itself runs inside the turn's error handling: a transcript observer that throws as the
-    // message enters the transcript fails the send visibly, and the message goes back to the composer.
     [Fact]
     public async Task Send_ObserverThrowsAsTheMessageEntersTheTranscript_ReportsIt_AndKeepsTheMessage()
     {
@@ -638,10 +606,6 @@ public sealed partial class ChatSessionStateTests
     [Fact]
     public async Task IsBusy_StillPermitsChangingSessionSettings_ViaItsOwnConcurrentAcpRequest()
     {
-        // Model/mode/effort changes are their own ACP RPC call over the same JSON-RPC connection as
-        // an in-flight prompt, which already supports concurrent in-flight requests. Other clients
-        // (the reference VS Code extension, the CLI) let you switch settings mid-turn, so this one
-        // must not force you to interrupt/cancel first just to do the same thing.
         var completion = new TaskCompletionSource<bool>();
         var connection = new RecordingAcpAgentConnection { ConfigOptions = Options(), PromptHandler = _ => completion.Task };
         using var vm = Create(connection);

@@ -9,8 +9,7 @@ namespace ClaudeCode.Core.ViewModels;
 public sealed class ChatMessageViewModel : ObservableObject
 {
     /// <param name="isPending">True for a message sent while an earlier turn is still in
-    /// flight; see <see cref="IsPending"/>. Only a <see cref="ChatRole.User"/> message is ever
-    /// queued, because only the composer can produce one.</param>
+    /// flight; see <see cref="IsPending"/>.</param>
     public ChatMessageViewModel(ChatRole role, string text = "", bool isPending = false)
     {
         Role = role;
@@ -29,9 +28,7 @@ public sealed class ChatMessageViewModel : ObservableObject
 
     private static int _nextId;
 
-    /// <summary>Unique for the life of the process; lets the transcript key per-message UI state (a
-    /// collapsed thinking block) to the message itself rather than its position, which shifts when a
-    /// bubble is removed.</summary>
+    /// <summary>Identifier unique for the life of the process.</summary>
     public int Id { get; } = System.Threading.Interlocked.Increment(ref _nextId);
 
     private readonly StringBuilder _textBuilder;
@@ -39,31 +36,23 @@ public sealed class ChatMessageViewModel : ObservableObject
     private bool _isTruncated;
     private bool _isPending;
 
-    /// <summary>True while the agent has not started on this message yet - typed and sent while a
-    /// previous turn was still in flight, and either held locally or already waiting in the agent's own
-    /// prompt queue. The transcript dims a pending bubble so it cannot be mistaken for one that was
-    /// delivered.</summary>
+    /// <summary>True while the agent has not started on this message yet: it was sent while a
+    /// previous turn was still in flight and is held locally or waiting in the agent's prompt queue.</summary>
     public bool IsPending
     {
         get => _isPending;
         private set => SetProperty(ref _isPending, value);
     }
 
-    /// <summary>Records that this message no longer waits to go out: the agent is running it, or
-    /// has answered it. One-way on purpose:
-    /// a message that has gone out can never become pending again, so the flag is not a setter
-    /// anyone outside can flip back.</summary>
+    /// <summary>Records that this message no longer waits to go out. A sent message never becomes
+    /// pending again.</summary>
     public void MarkSent() => IsPending = false;
 
     public string Text => _text ??= _textBuilder.ToString();
 
     private int? _durationSeconds;
 
-    /// <summary>How long this turn took, set once when it ends. Per-turn cost would belong here too,
-    /// but the ACP adapter this extension talks to (@agentclientprotocol/claude-agent-acp, an
-    /// external npm package) reads the SDK "result" message's cost/usage and does not forward it -
-    /// only `stopReason` survives into the ACP response. Context tokens arrive separately as
-    /// <c>usage_update</c> (see <see cref="TokensUsed"/>).</summary>
+    /// <summary>How long this turn took, in seconds, set once when it ends.</summary>
     public int? DurationSeconds
     {
         get => _durationSeconds;
@@ -126,21 +115,17 @@ public sealed class ChatMessageViewModel : ObservableObject
         OnPropertyChanged(nameof(Text));
     }
 
-    /// <summary>Appends a tool call to the ordered sequence. Only for a *new* tool call (the first
-    /// time this ToolCallId is seen) - updates to an existing one mutate the same
-    /// <see cref="ToolCallCardViewModel"/> instance already referenced by its part, so they need no
-    /// separate Parts entry.</summary>
+    /// <summary>Appends a new tool call to the ordered sequence. Updates to an existing tool call
+    /// mutate the <see cref="ToolCallCardViewModel"/> already referenced by its part.</summary>
     public void AppendToolCall(ToolCallCardViewModel card) => Parts.Add(new ChatToolCallPart(card));
 
     private int _thinkingLength;
 
-    /// <summary>Bumped on every thought appended, so the transcript repaints (see
-    /// TranscriptHostProtocol.AffectsTranscript); the thinking itself lives in <see cref="Parts"/>.</summary>
+    /// <summary>Incremented on every thought appended; the thinking itself lives in <see cref="Parts"/>.</summary>
     public int ThinkingVersion { get; private set; }
 
     /// <summary>Appends a chunk of Claude's thinking to the ordered sequence - see
-    /// <see cref="ChatThinkingPart"/>. Agent-supplied, so it has the same total bound as the reply's
-    /// own text.</summary>
+    /// <see cref="ChatThinkingPart"/>. Bounded by the same total length as the reply's own text.</summary>
     public void AppendThought(string chunk)
     {
         if (string.IsNullOrEmpty(chunk) || _thinkingLength >= MarkdownSafetyLimits.MaxMarkdownLength)
@@ -151,7 +136,6 @@ public sealed class ChatMessageViewModel : ObservableObject
         var remaining = MarkdownSafetyLimits.MaxMarkdownLength - _thinkingLength;
         var appended = chunk.Substring(0, Math.Min(chunk.Length, remaining));
         _thinkingLength += appended.Length;
-        // Said, not silent - same as the reply text's cut (AppendText).
         if (chunk.Length > remaining) appended += MarkdownSafetyLimits.TruncationNotice;
         if (Parts.Count > 0 && Parts[Parts.Count - 1] is ChatThinkingPart lastThought)
         {

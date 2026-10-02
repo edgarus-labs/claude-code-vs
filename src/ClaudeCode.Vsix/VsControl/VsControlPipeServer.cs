@@ -25,17 +25,8 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         ContractResolver = new CamelCasePropertyNamesContractResolver(),
     };
 
-    // RPC_E_SERVERCALL_RETRYLATER: the VS main-thread COM message pump momentarily refused this call
-    // (e.g. it is mid another automation call or a modal dialog is up); not a real failure.
     private const int _rpcServerCallRetryLaterHResult = unchecked((int)0x8001010A);
 
-    // This allow-list is what keeps `runCommand` from becoming a generic "execute any DTE command by
-    // name" surface for an ACP agent (or anything impersonating one over this pipe): adding an entry
-    // here adds a capability. It is deliberately NOT a claim that this channel cannot execute code
-    // from the open solution - build and debug execution are exposed through the dedicated,
-    // individually documented `buildSolution`, `buildProject` and `startDebugging` methods below
-    // (see docs/VsControlProtocol.md), so the absence of Build.* / Debug.Start command names here
-    // does not remove that capability.
     private static readonly HashSet<string> _allowedCommands = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
         "Edit.FormatDocument",
@@ -45,13 +36,8 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         "View.ErrorList",
     };
 
-    // Matches the client's 5s connect timeout: a peer that has not sent its token by then is not a
-    // legitimate client and must not keep the single retained pipe instance occupied.
     private static readonly TimeSpan _handshakeTimeout = TimeSpan.FromSeconds(5);
 
-    // The handshake token is a 32-byte RNG value base64-encoded by VsControlSessionRegistry - 44
-    // characters - so no longer line can ever authenticate. Capping the read keeps an
-    // unauthenticated peer from streaming newline-free bytes into this process for the whole window.
     private const int _maxHandshakeLineChars = 512;
 
     private readonly string _pipeName;
@@ -75,9 +61,6 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
 
     public void Start()
     {
-        // VSSDK007 does not see across methods: _listenTask is captured here and joined in
-        // DisposeAsync (below) as part of the shutdown sequence. Start() intentionally returns
-        // immediately; this is a tracked, not fire-and-forget, background listen loop.
 #pragma warning disable VSSDK007
         _listenTask = ThreadHelper.JoinableTaskFactory.RunAsync(() => RunAsync(_cts.Token));
 #pragma warning restore VSSDK007
@@ -85,8 +68,6 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
 
     private async Task RunAsync(CancellationToken cancellationToken)
     {
-        // Keep the sole server instance alive across reconnects. Recreating it would release the
-        // pipe name between clients, allowing another process to occupy that name.
         using var pipe = new NamedPipeServerStream(
             _pipeName,
             PipeDirection.InOut,
@@ -112,10 +93,6 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
 
                 if (!await TryHandshakeAsync(reader, cancellationToken).ConfigureAwait(false))
                 {
-                    // Missing/wrong token: another process on this machine (permitted by the pipe ACL
-                    // because it runs as the same Windows user) guessed the pipe name. Drop the
-                    // connection without processing any request and wait for the next one, instead of
-                    // tearing down the whole listener.
                     continue;
                 }
 
@@ -124,7 +101,7 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
                     var line = await reader.ReadLineAsync().ConfigureAwait(false);
                     if (line is null)
                     {
-                        break; // client disconnected
+                        break;
                     }
 
                     if (string.IsNullOrWhiteSpace(line))
@@ -138,17 +115,13 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
             }
             catch (OperationCanceledException)
             {
-                break; // Session ended; expected on dispose.
+                break;
             }
             catch (IOException)
             {
-                // Pipe broken or closed by the client mid-request; expected when the Mcp server
-                // process exits abruptly. Loop back and accept the next connection instead of ending
-                // the listener.
             }
             catch (ObjectDisposedException)
             {
-                // Pipe disposed concurrently with a pending read/write; expected on dispose.
                 break;
             }
             finally
@@ -161,7 +134,6 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
                     }
                     catch (ObjectDisposedException) when (cancellationToken.IsCancellationRequested)
                     {
-                        // Session disposal closed the retained pipe while this client exited.
                     }
                 }
             }
@@ -170,11 +142,6 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
 
     private async Task<bool> TryHandshakeAsync(StreamReader reader, CancellationToken cancellationToken)
     {
-        // The sole server instance is retained across reconnects, so a peer that connects and then
-        // stays silent would hold the only listener forever. Bound the handshake read twice over: by
-        // time (here) and by length (PipeHandshakeLineReader), because the pipe name is enumerable by
-        // any process running as this Windows user. On timeout or shutdown the caller drops the
-        // connection and goes back to accepting.
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(_handshakeTimeout);
 
@@ -185,8 +152,6 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
             var timeoutTask = Task.Delay(Timeout.Infinite, timeoutCts.Token);
             if (await Task.WhenAny(readTask, timeoutTask).ConfigureAwait(false) != readTask)
             {
-                // Observe the abandoned read so tearing the pipe down under it cannot surface as an
-                // unobserved task exception.
                 _ = readTask.ContinueWith(task => { _ = task.Exception; },
                     CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
                 return false;
@@ -397,9 +362,6 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         bool rejected;
         try
         {
-            // A read-only region or a conflicting edit makes Replace return false and sets
-            // HasFailedChanges without ever setting Canceled, so checking Canceled alone would
-            // report success for a replacement that never landed.
             if (!edit.Replace(span.Span, text) || edit.HasFailedChanges)
             {
                 rejected = true;
@@ -432,15 +394,6 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         return new JObject();
     }
 
-    /// <summary>
-    /// Activates the solution configuration named <paramref name="configurationName"/> if one
-    /// exists, and returns the configuration that is active afterwards. Visual Studio matches on
-    /// <c>SolutionConfiguration.Name</c>, which is the bare name (<c>Release</c>), so a
-    /// platform-qualified request (<c>Release|Any CPU</c>) matches nothing and the existing active
-    /// configuration is kept. The caller reports the returned name so that substitution is visible
-    /// to the agent instead of being reported as a successful build of what it asked for.
-    /// Pass <see langword="null"/> to read the active configuration without changing it.
-    /// </summary>
     private static async Task<string?> TrySetActiveConfigurationAsync(string? configurationName)
     {
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
@@ -470,8 +423,6 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         }
         catch (COMException)
         {
-            // This read only reports what happened; a solution still loading can refuse it, and
-            // that must not turn the build the caller actually asked for into an error reply.
             return null;
         }
     }
@@ -538,13 +489,6 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         return new JObject();
     }
 
-    /// <summary>
-    /// The error a failed synchronous DTE call is reported as. Raw COM/HRESULT text ("Exception from
-    /// HRESULT: 0x80010001") is meaningless to the agent on the other end of the pipe and can leak
-    /// host implementation detail, so it is replaced with a flat, actionable message; the one
-    /// HRESULT that is not a real failure - Visual Studio rejecting the call because it is busy with
-    /// another automation call or a modal dialog - is reported as a retry instead.
-    /// </summary>
     private static InvalidOperationException ActionableDteError(COMException error, string failureMessage) =>
         error.HResult == _rpcServerCallRetryLaterHResult
             ? new InvalidOperationException("Visual Studio is busy, try again.")
@@ -561,16 +505,6 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         return new JObject { ["project"] = project.Name, ["path"] = fullPath };
     }
 
-    /// <summary>
-    /// Adds an existing project file to the open solution. <c>Solution.AddFromFile</c> is a
-    /// synchronous, uncancellable COM call that loads the project and can trigger a NuGet restore,
-    /// so - unlike every method whose wait this server owns - it cannot be bounded here: there is
-    /// no completion signal to race a <see cref="CancellationToken"/> against, and abandoning the
-    /// wait would only leave Visual Studio still loading. The budget therefore has to live on the
-    /// client, which puts this method in the same long bucket as the build methods
-    /// (<c>VsControlPipeClient._buildTimeout</c>); a 60 s budget here would time out mid-load and
-    /// invite a retry that adds the project a second time.
-    /// </summary>
     private async Task<JObject> AddProjectToSolutionAsync(JObject args)
     {
         var path = RequireString(args, "path");
@@ -597,16 +531,6 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         return new JObject { ["name"] = project?.Name, ["path"] = fullPath };
     }
 
-    /// <summary>
-    /// Closes the current solution (saving first) and opens another one from inside the workspace.
-    /// <c>Solution.Close</c> and <c>Solution.Open</c> are synchronous, uncancellable COM calls, so
-    /// this method carries no server-side bound for the same reason
-    /// <see cref="AddProjectToSolutionAsync"/> does not, and is on the client's long budget
-    /// (<c>VsControlPipeClient._buildTimeout</c>). That budget is load-bearing rather than
-    /// cosmetic: under the 60 s request budget the agent is told the call timed out while Visual
-    /// Studio is still loading, and the natural retry closes and reopens the user's solution a
-    /// second time.
-    /// </summary>
     private async Task<JObject> OpenSolutionAsync(JObject args)
     {
         var path = RequireString(args, "path");
@@ -676,8 +600,6 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         return results;
     }
 
-    /// <summary>Counts Error List errors/warnings, optionally narrowed to one project so a
-    /// single-project build does not report unrelated projects' diagnostics as its own.</summary>
     private static async Task<(int ErrorCount, int WarningCount)> CountBuildDiagnosticsAsync(string? projectName = null)
     {
         var items = await GetErrorListItemsAsync();

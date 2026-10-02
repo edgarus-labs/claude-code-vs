@@ -17,9 +17,6 @@ public sealed class PlanReviewViewModel : ObservableObject
 
     public PlanReviewViewModel(string markdown, IReadOnlyList<PermissionOption> options, Action<PermissionOption> choose, Action<string> review)
     {
-        // Agent-authored and only bounded by the JSON-RPC line cap. PlanDocumentView serialises this
-        // whole string into an ExecuteScriptAsync payload, so it gets the same host-side bound the
-        // transcript applies to assistant markdown - here, so the oversized copy is never retained.
         Markdown = MarkdownSafetyLimits.LimitMarkdownLength(markdown ?? string.Empty);
         Options = options ?? Array.Empty<PermissionOption>();
         ProceedOption = Options.FirstOrDefault(option => option.Outcome == PermissionOutcome.AllowOnce)
@@ -37,8 +34,7 @@ public sealed class PlanReviewViewModel : ObservableObject
         }, comments => RejectOption is not null && !IsResolved && !string.IsNullOrWhiteSpace(comments));
     }
 
-    /// <summary>The plan body, bounded by <see cref="MarkdownSafetyLimits.LimitMarkdownLength"/>: an
-    /// over-long plan ends with the standard truncation notice instead of being rendered whole.</summary>
+    /// <summary>The plan body, bounded by <see cref="MarkdownSafetyLimits.LimitMarkdownLength"/>.</summary>
     public string Markdown { get; }
 
     public IReadOnlyList<PermissionOption> Options { get; }

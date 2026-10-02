@@ -26,8 +26,6 @@ public sealed class WindowsJobProcessInheritanceTests
                 Arguments = "/c exit 0",
             }, beforeProcessCreate: () =>
             {
-                // Start an ordinary child while the adapter's child pipe handles exist. Without
-                // isolated inheritance, this child retains the writer and prevents adapter EOF.
                 ordinary = Process.Start(new ProcessStartInfo
                 {
                     FileName = Path.Combine(Environment.SystemDirectory, "ping.exe"),
@@ -70,7 +68,6 @@ public sealed class WindowsJobProcessInheritanceTests
                 }
                 catch (ObjectDisposedException)
                 {
-                    // On a failed assertion, adapter disposal can close the pending read first.
                 }
             }
         }

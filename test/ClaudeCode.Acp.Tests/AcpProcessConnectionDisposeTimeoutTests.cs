@@ -7,10 +7,8 @@ using Xunit;
 namespace ClaudeCode.Acp.Tests;
 
 /// <summary>
-/// SetSessionConfigOptionAsync's error-recovery path used to dispose via the same graceful-shutdown
-/// timeout (3s) as a normal, healthy shutdown, even though the connection is already known to be
-/// broken at that point - needlessly slow. DisposeAsync gained an internal overload that accepts the
-/// graceful-shutdown timeout explicitly so the error path can use a shorter one.
+/// Covers the <c>DisposeAsync</c> overload that bounds the graceful-shutdown wait with an explicit
+/// timeout before killing the process.
 /// </summary>
 public sealed class AcpProcessConnectionDisposeTimeoutTests
 {
@@ -22,12 +20,6 @@ public sealed class AcpProcessConnectionDisposeTimeoutTests
             return;
         }
 
-        // ping ignores stdin closing entirely and keeps running regardless, so the graceful-shutdown
-        // wait is bounded by the 200ms timeout before DisposeAsync moves on to killing it. The
-        // process spawn, tree kill and stderr drain add their own ~1-2s of overhead that is
-        // independent of that wait, so the assertion cannot be a tight absolute bound. It only has
-        // to prove the SHORT timeout was used: a regression back to the default 3s would add the
-        // full 3s on top of the same overhead, so finishing inside the default window proves it.
         var connection = new AcpProcessConnection("cmd.exe", new[] { "/c", "ping", "-n", "60", "127.0.0.1" });
 
         var stopwatch = Stopwatch.StartNew();

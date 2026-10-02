@@ -10,24 +10,9 @@ using Xunit;
 namespace ClaudeCode.Core.Tests;
 
 /// <summary>
-/// Pins the height invariant of the elicitation card, which no view model can express.
-/// <para>
-/// Every string on this card is agent-authored and <c>ElicitationRequestViewModel.MaxDisplayTextLength</c>
-/// deliberately admits a 4 000-character message. <c>ChatPanelView.xaml</c> hosts the card in an
-/// <c>Auto</c> grid row whose only <c>*</c> sibling is the transcript, so whatever the card does not
-/// height-bound is granted its full desired height: WPF then collapses the transcript to zero and
-/// arranges the composer - and the card's own Decline/Send buttons - past the bottom of the tool
-/// window, where they are clipped. The user can neither answer nor decline the form and the agent's
-/// <c>elicitation/create</c> stays blocked. The agent-authored body must therefore sit inside a
-/// scroll region bounded by the hosting chat panel, and the answer buttons must stay outside it so
-/// they are never scrolled out of reach.
-/// </para>
-/// <para>
-/// TDD exception, stated deliberately: this test project targets net10.0 without WPF, so the card
-/// cannot be measured and arranged for real. These facts read the markup as XML instead, which is
-/// the only way the layout contract can be pinned at all; they are a ratchet against the exact
-/// regressions that were shipped, not a substitute for a layout test.
-/// </para>
+/// Covers the height layout of the elicitation card markup, read as XML: the agent-authored body sits
+/// inside a scroll region bounded by the hosting chat panel, and the Decline/Send buttons sit outside
+/// it.
 /// </summary>
 public sealed class ElicitationCardViewLayoutTests
 {
@@ -47,10 +32,6 @@ public sealed class ElicitationCardViewLayoutTests
             element => element.Attribute("MaxHeight") is not null);
         string maxHeight = Regex.Replace((string)scroll.Attribute("MaxHeight")!, @"\s+", " ");
 
-        // The bound must come from the chat panel that hosts the card. Binding to the nearest Window
-        // looked right in a floating pane and was wrong everywhere else: docked, the nearest Window
-        // is the whole IDE, so a long form got a scroll region taller than the tool window and the
-        // Decline/Send buttons were pushed off the bottom edge - the defect this file exists for.
         Assert.Matches(@"^\{Binding (Path=)?ActualHeight,", maxHeight);
         Assert.Matches(
             @"RelativeSource=\{RelativeSource AncestorType=\{x:Type views:ChatPanelView\}\}",
@@ -86,10 +67,6 @@ public sealed class ElicitationCardViewLayoutTests
         }
     }
 
-    // WPF resolves a DynamicResource from the element's own dictionary first and only then walks up
-    // to the parent, so a card that merges the standalone dark palette into its own Resources never
-    // sees the VS-themed brushes the host writes onto ChatPanelView.Resources: under the Light and
-    // Blue themes it painted a dark box with light text inside a light tool window.
     [Fact]
     public void CardCarriesNoBrushPaletteOfItsOwnSoTheHostThemeReachesIt()
     {
@@ -102,12 +79,6 @@ public sealed class ElicitationCardViewLayoutTests
             attribute => attribute.Value.StartsWith("{StaticResource Chat", System.StringComparison.Ordinal));
     }
 
-    // The options were drawn with the stock WPF RadioButton/CheckBox chrome: a system-sized circle
-    // or box next to chat-styled text, inside a card whose every other surface is a rounded,
-    // theme-brushed row (issue #23). What matters for the user is not the shape of the markup but
-    // that the default chrome is gone, that the content still has somewhere to render, and that the
-    // chosen option is told apart from a merely hovered or focused one - a retemplate whose
-    // selection visual is also its hover visual answers nothing.
     [Fact]
     public void OptionRowsTellSelectionApartFromHoverAndFocus()
     {
@@ -117,7 +88,6 @@ public sealed class ElicitationCardViewLayoutTests
         {
             XElement template = OptionRowTemplate(view, option);
 
-            // No ContentPresenter means the label and description have nowhere to render at all.
             Assert.NotEmpty(template.Descendants(Xaml + "ContentPresenter"));
 
             HashSet<string> selected = TriggerEffects(template, "IsChecked");
@@ -130,12 +100,6 @@ public sealed class ElicitationCardViewLayoutTests
                     + "paint on hover, so the answered option cannot be told from the one under the "
                     + "pointer.");
 
-            // The defect, not its syntax: hover must not repaint the fill of a row that IS the
-            // answer. A hover trigger that does not say "and not checked" wins on Background over
-            // the checked trigger by precedence, so an answered row kept its outline and check mark
-            // but lost the accent fill - in a multi-select question the chosen rows then painted
-            // differently depending on where the pointer rested. Any trigger shape is fine as long
-            // as it cannot fire while checked.
             Assert.Empty(HoverTriggersThatRepaintAChosenRow(template));
         }
     }
@@ -144,11 +108,9 @@ public sealed class ElicitationCardViewLayoutTests
         view.Descendants().Where(
             element => element.Name == Xaml + "RadioButton" || element.Name == Xaml + "CheckBox");
 
-    /// <summary>The ControlTemplate the option's style applies, following BasedOn.</summary>
     private static XElement OptionRowTemplate(XDocument view, XElement option) =>
         Assert.Single(StyleChain(view, option).SelectMany(style => style.Descendants(Xaml + "ControlTemplate")));
 
-    /// <summary>The option's style and everything it derives from, nearest first.</summary>
     private static List<XElement> StyleChain(XDocument view, XElement option)
     {
         var chain = new List<XElement>();
@@ -162,8 +124,6 @@ public sealed class ElicitationCardViewLayoutTests
         {
             Match key = Regex.Match(reference, @"^\{(?:Static|Dynamic)Resource (?<key>[^}\s]+)\}$");
             Assert.True(key.Success, $"Unexpected option style reference: {reference}");
-            // A DynamicResource BasedOn cycle is expressible (the reference resolves lazily), and an
-            // unbounded walk would hang the whole test process instead of failing with a message.
             Assert.True(seen.Add(key.Groups["key"].Value), $"Cyclic BasedOn chain at {key.Groups["key"].Value}.");
             XElement style = Assert.Single(
                 view.Descendants(Xaml + "Style"),
@@ -177,11 +137,6 @@ public sealed class ElicitationCardViewLayoutTests
         return chain;
     }
 
-    /// <summary>What every trigger keyed on <paramref name="property"/> being true paints, as
-    /// target/property/value triples. Covers <c>MultiTrigger</c>, since a state that must not fire
-    /// unconditionally is expressed as one condition among several. A pure query: callers assert on
-    /// what they actually require, so a row that deliberately drops one of these states fails only
-    /// the facts that care.</summary>
     private static HashSet<string> TriggerEffects(XElement template, string property) =>
         new(template
             .Descendants()
@@ -196,8 +151,6 @@ public sealed class ElicitationCardViewLayoutTests
                 condition => (string?)condition.Attribute("Property") == property
                     && (string?)condition.Attribute("Value") == "True");
 
-    /// <summary>Hover triggers that repaint the row's fill without excluding the answered state,
-    /// whatever shape they take.</summary>
     private static XElement[] HoverTriggersThatRepaintAChosenRow(XElement template) =>
         template
             .Descendants()
@@ -213,8 +166,6 @@ public sealed class ElicitationCardViewLayoutTests
     private static string SetterKey(params XAttribute?[] parts) =>
         string.Join("=", parts.Select(part => (string?)part ?? string.Empty));
 
-    // Ctrl+wheel scaling drives ChatPanelView.ChatTextFontSize; a row that hard-codes a size stays
-    // put while the text around it grows, which is the scaling half of issue #23.
     [Fact]
     public void OptionRowTextScalesWithTheChatFontSize()
     {
@@ -238,12 +189,6 @@ public sealed class ElicitationCardViewLayoutTests
         }
     }
 
-    // A form with three questions rendered all three at once: the bounded scroll region then held a
-    // wall of options, and the user had to scroll past questions they had already answered to reach
-    // the answer buttons below it. The card steps through the form one question at a time, where a
-    // question is the choice field plus the free-text "Other" box Claude sends alongside it - the
-    // view model groups those into one step, so the card must render the whole of CurrentStepFields
-    // and never the whole Fields collection.
     [Fact]
     public void CardShowsOneQuestionStepAtATimeRatherThanTheWholeForm()
     {
@@ -268,7 +213,6 @@ public sealed class ElicitationCardViewLayoutTests
                 + "screen - or pages it as a question of its own.");
     }
 
-    /// <summary>Whether the attribute is a binding whose path is exactly <paramref name="path"/>.</summary>
     private static bool IsBindingTo(XAttribute? attribute, string path) =>
         attribute is not null
         && Regex.IsMatch((string)attribute, $@"^\{{Binding (Path=)?{path}[,}}]");

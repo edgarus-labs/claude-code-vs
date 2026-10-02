@@ -10,9 +10,8 @@ using Xunit;
 namespace ClaudeCode.Acp.Tests;
 
 /// <summary>
-/// DisposeAsync used to await the pump task with no time bound. If a Disconnected subscriber blocks
-/// synchronously (the pump's finally block invokes it inline), DisposeAsync could hang forever
-/// instead of eventually giving up and completing disposal anyway.
+/// Covers <c>DisposeAsync</c> completing within a bound when subscribers block, failing pending
+/// requests, and cancelling inbound requests that arrive or are queued during disposal.
 /// </summary>
 public sealed class JsonRpcConnectionDisposeBoundTests
 {
@@ -25,9 +24,9 @@ public sealed class JsonRpcConnectionDisposeBoundTests
         connection.Start();
 
         var release = new ManualResetEventSlim(false);
-        connection.Disconnected += (_, _) => release.Wait(); // simulates a badly-behaved subscriber.
+        connection.Disconnected += (_, _) => release.Wait();
 
-        fromTest.Writer.Complete(); // clean EOF -> the pump's finally block invokes Disconnected inline.
+        fromTest.Writer.Complete();
 
         try
         {
@@ -35,7 +34,7 @@ public sealed class JsonRpcConnectionDisposeBoundTests
         }
         finally
         {
-            release.Set(); // let the blocked pump thread go so it doesn't leak past this test.
+            release.Set();
         }
     }
 
@@ -154,8 +153,6 @@ public sealed class JsonRpcConnectionDisposeBoundTests
 
         try
         {
-            // Direct invocation of the dispatch helper deterministically fills every slot before
-            // creating the queued operation, without relying on thread-pool scheduling.
             for (int i = 0; i < 16; i++)
             {
                 runningHandlers.Add(connection.HandleInboundRequestThrottledAsync(JsonValue.Create((long)i), "held", null));
@@ -170,7 +167,6 @@ public sealed class JsonRpcConnectionDisposeBoundTests
 
             await connection.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
 
-            // The other ordering models Task.Run work that starts only after teardown finishes.
             queued ??= connection.HandleInboundRequestThrottledAsync(JsonValue.Create(16L), "queued", null);
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => queued.WaitAsync(TimeSpan.FromSeconds(5)));
             Assert.Equal(16, handlerCalls);

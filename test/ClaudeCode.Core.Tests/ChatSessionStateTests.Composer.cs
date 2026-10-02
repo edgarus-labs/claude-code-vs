@@ -257,10 +257,6 @@ public sealed partial class ChatSessionStateTests
         await vm.Initialization;
     }
 
-    // Unlike the other gates above, a turn already in flight must not block sending the next
-    // message outright: it queues instead (shown pending in the transcript, see
-    // ChatMessageViewModel.IsPending) and goes out once the current turn ends. Capture and
-    // attachment mutation stay blocked mid-turn just like the other gates.
     [Fact]
     public async Task Busy_BlocksCaptureAndAttachmentMutation_ButQueuesSendUntilTurnEnds()
     {
@@ -302,7 +298,7 @@ public sealed partial class ChatSessionStateTests
         Assert.True(queued.IsPending);
         Assert.Equal(string.Empty, vm.InputText);
         Assert.Empty(vm.Attachments);
-        Assert.Single(connection.Prompts); // only "first" has actually gone out so far
+        Assert.Single(connection.Prompts);
 
         completed.SetResult(true);
         await firstTurn;
@@ -312,9 +308,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("second, queued", Assert.IsType<ContentBlock.Text>(Assert.Single(connection.Prompts[1])).Value);
     }
 
-    // The Send button and Enter key drive SendCommand, not SendAsync: a turn started through the
-    // command keeps that command executing until the turn ends, so the command itself must not
-    // report CanExecute=false for that whole time or the queue above is unreachable from the UI.
     [Fact]
     public async Task SendCommand_StaysExecutableWhileTheTurnItStartedIsInFlight_AndQueues()
     {
@@ -340,10 +333,6 @@ public sealed partial class ChatSessionStateTests
         Assert.False(queued.IsPending);
     }
 
-    // CanEditDraft's own comment (ChatViewModel.cs) documents the exact hazard this guards against
-    // for a *live* send: "a prompt accepted mid-switch is sent to the outgoing session and then
-    // wiped from the transcript by ResetTranscriptState". A message queued while a turn is in
-    // flight must not reopen that hole through the auto-dispatch path once the turn ends.
     [Fact]
     public async Task QueuedMessage_IsNotDispatchedIntoANewWorkspaceIfTheTurnEndsMidSwitch()
     {
@@ -368,21 +357,13 @@ public sealed partial class ChatSessionStateTests
         var queued = Assert.Single(vm.Messages, message => message.Role == ChatRole.User && message.Text == "queued while on project A");
         Assert.True(queued.IsPending);
 
-        // Mirrors OnWorkspaceRootChanged: the root changes, then VS notifies. ReleaseConnectionAsync
-        // nulls _connection/_sessionId synchronously and then suspends on DisposeAsync (releaseGate),
-        // so at this point the switch is "in flight" exactly like the real, slow agent-process teardown.
         services.SetWorkspaceRoot(@"C:\ProjectB");
 
-        // The turn ends *while the switch is still suspended in DisposeAsync* - the scenario the
-        // finding describes, reproduced deterministically instead of relying on real timing. The
-        // dispatch must hold off entirely while the switch is in flight, not just avoid using the
-        // new workspace: no second session/new call yet, and the bubble still reads pending.
         firstTurn.SetResult(true);
         await firstSend;
         Assert.True(queued.IsPending);
         Assert.Single(connection.NewSessionCwds);
 
-        // Let the switch finish and settle.
         releaseGate.SetResult(true);
         await WaitUntilAsync(() => vm.SessionTitle == "Untitled" && !vm.IsBusy);
 
@@ -391,9 +372,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Empty(vm.Messages);
     }
 
-    // A queued message belongs to the session it was typed into. When that session dies the message
-    // can never be delivered, so it must not linger in the transcript: the bubble goes with it and
-    // the user is told, because they wrote it and it is now gone.
     [Fact]
     public async Task AgentDisconnect_DiscardsQueuedMessages_AndSaysSoInsteadOfLeavingThemInTheTranscript()
     {
@@ -418,8 +396,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Single(connection.Prompts);
     }
 
-    // Stop cancels the running turn, not what the user has already written next: a queued follow-up
-    // goes out as soon as the cancellation has landed, and is never reported as "not sent".
     [Fact]
     public async Task Cancel_DispatchesWhateverIsQueued_OnceTheStoppedTurnHasEnded()
     {
@@ -434,7 +410,7 @@ public sealed partial class ChatSessionStateTests
         var queued = Assert.Single(vm.Messages, message => message.Text == "queued behind the first");
 
         await vm.CancelCommand.ExecuteAsync(null);
-        Assert.Single(connection.Prompts); // nothing goes out until the stopped turn has actually ended
+        Assert.Single(connection.Prompts);
         Assert.True(queued.IsPending);
 
         firstTurn.SetResult(true);
@@ -448,10 +424,6 @@ public sealed partial class ChatSessionStateTests
         Assert.DoesNotContain("not sent", vm.StatusMessage ?? string.Empty, StringComparison.OrdinalIgnoreCase);
     }
 
-    // An agent that queues prompts itself (claude-agent-acp's promptQueueing) takes a follow-up in
-    // at its next input boundary - between the running turn's operations - so the follow-up is
-    // handed over while that turn is still running rather than after it has finished. The running
-    // tool call is left alone: nothing is cancelled to make room.
     [Fact]
     public async Task QueueingAgent_FollowUpIsSentDuringAMultiOperationTurn_BeforeThatTurnCompletes()
     {
@@ -472,9 +444,8 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(0, connection.CancelCount);
         Assert.Equal(RecordingAcpAgentConnection.SessionId, Assert.Single(connection.PromptSessionIds.Distinct()));
         var followUp = Assert.Single(vm.Messages, message => message.Text == "follow-up");
-        Assert.True(followUp.IsPending); // handed over, but the agent has not taken it up yet
+        Assert.True(followUp.IsPending);
 
-        // The agent settles the first prompt when it takes the follow-up in; the follow-up now runs.
         turns.Complete("first");
         await firstSend;
         Assert.False(followUp.IsPending);
@@ -510,9 +481,6 @@ public sealed partial class ChatSessionStateTests
         Assert.All(vm.Messages.Where(message => message.Role == ChatRole.User), message => Assert.False(message.IsPending));
     }
 
-    // Stop stops the work, not the conversation: session/cancel answers every follow-up the agent
-    // was holding "cancelled", and once the stop has landed they are sent again, in order, to be
-    // answered - the draft being typed is left alone.
     [Fact]
     public async Task QueueingAgent_Cancel_SendsTheFollowUpsTheAgentWasHolding_OnceTheStopLands_InOrder()
     {
@@ -532,7 +500,7 @@ public sealed partial class ChatSessionStateTests
         turns.Complete("second", "cancelled");
         turns.Complete("third", "cancelled");
         vm.InputText = "draft";
-        Assert.Equal("draft", vm.InputText); // nothing is touched until the stopped turn has ended
+        Assert.Equal("draft", vm.InputText);
 
         turns.Complete("first", "cancelled");
         await firstSend;
@@ -549,9 +517,6 @@ public sealed partial class ChatSessionStateTests
         Assert.All(vm.Messages.Where(message => message.Role == ChatRole.User), message => Assert.False(message.IsPending));
     }
 
-    // A follow-up handed to the agent but not taken up yet still belongs to the session it was typed
-    // into. If that session dies it is lost like any other queued message - said so, bubble removed -
-    // and never re-sent into whatever session comes next.
     [Fact]
     public async Task QueueingAgent_Disconnect_DropsFollowUpsTheAgentHadNotStarted_AndNeverResendsThem()
     {
@@ -577,9 +542,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(["first", "second"], connection.Prompts.Select(Text));
     }
 
-    // A follow-up the agent refused while it was still waiting behind the running turn never ran, so
-    // it is not lost: the error is shown, the message stays pending and goes out once more, as a
-    // normal send, when the running turn ends.
     [Fact]
     public async Task QueueingAgent_FailedFollowUp_ShowsTheError_AndIsSentAgainOnceTheTurnEnds()
     {
@@ -596,7 +558,7 @@ public sealed partial class ChatSessionStateTests
         turns.Fail("follow-up", new InvalidOperationException("prompt rejected"));
         Assert.Contains("prompt rejected", vm.StatusMessage, StringComparison.Ordinal);
         Assert.True(followUp.IsPending);
-        Assert.True(vm.IsBusy); // the first turn is still running
+        Assert.True(vm.IsBusy);
 
         turns.Complete("first");
         await firstSend;
@@ -607,9 +569,6 @@ public sealed partial class ChatSessionStateTests
         await WaitUntilAsync(() => !vm.IsBusy);
     }
 
-    // Stop can land just after the agent has already taken the follow-up in (the first prompt's
-    // end_turn is on its way). The follow-up is then the turn being stopped - it ran - and must not
-    // be sent a second time.
     [Fact]
     public async Task QueueingAgent_CancelDuringAHandOff_DoesNotResendTheFollowUpTheAgentHadStarted()
     {
@@ -624,17 +583,15 @@ public sealed partial class ChatSessionStateTests
         var followUp = Assert.Single(vm.Messages, message => message.Text == "follow-up");
 
         await vm.CancelCommand.ExecuteAsync(null);
-        turns.Complete("first");                    // settled by the hand-off, before Stop reached the agent
+        turns.Complete("first");
         await firstSend;
-        turns.Complete("follow-up", "cancelled");   // the running follow-up, stopped
+        turns.Complete("follow-up", "cancelled");
         await WaitUntilAsync(() => !vm.IsBusy);
 
         Assert.Equal(["first", "follow-up"], connection.Prompts.Select(Text));
         Assert.False(followUp.IsPending);
     }
 
-    // A Stop that never reached the agent leaves every queued follow-up with the agent, which still
-    // runs them: none may be sent a second time.
     [Fact]
     public async Task QueueingAgent_CancelThatFails_SendsNothingTwice()
     {
@@ -663,8 +620,6 @@ public sealed partial class ChatSessionStateTests
         Assert.All(vm.Messages.Where(message => message.Role == ChatRole.User), message => Assert.False(message.IsPending));
     }
 
-    // A message typed while a Stop is still landing is not sent ahead into the turn being cancelled
-    // (the agent would drop it). It goes out after the returned follow-up, never ahead of it.
     [Fact]
     public async Task QueueingAgent_MessageSentWhileStopping_IsSentAfterTheReturnedOne_InOrder()
     {
@@ -693,8 +648,6 @@ public sealed partial class ChatSessionStateTests
         await WaitUntilAsync(() => !vm.IsBusy);
     }
 
-    // Same after a failed turn: a follow-up typed after one the agent refused is held behind it, and
-    // goes back into the message box with it rather than being sent into the connection that failed.
     [Fact]
     public async Task QueueingAgent_FailedTurn_LaterFollowUpGoesBackToTheComposerBehindTheReturnedOne()
     {
@@ -718,7 +671,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("second" + Environment.NewLine + Environment.NewLine + "third", vm.InputText);
     }
 
-    // A turn that fails without a disconnect sends no final status for its subagents either.
     [Fact]
     public async Task RunningAgentCount_DropsToZero_WhenTheTurnFails()
     {
@@ -736,9 +688,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(0, vm.RunningAgentCount);
     }
 
-    // The agent settles the first prompt when it takes the follow-up in, so that prompt's
-    // TurnEnded arrives while Claude is still working on the follow-up. "Claude finished" is only
-    // true once nothing is left running.
     [Fact]
     public async Task QueueingAgent_HandOff_DoesNotSayClaudeFinished_WhileTheFollowUpIsStillRunning()
     {
@@ -764,8 +713,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("two", Assert.Single(finished).Message);
     }
 
-    // A withdrawn prompt's "cancelled" answer arrives before the stopped turn's own; it must
-    // not close off the stopped turn's bubble, which still gets its duration when that turn ends.
     [Fact]
     public async Task QueueingAgent_Cancel_WithdrawnPromptsTurnEnd_DoesNotCloseTheStoppedTurnsBubble()
     {
@@ -781,22 +728,19 @@ public sealed partial class ChatSessionStateTests
         var stopped = Assert.Single(vm.Messages, message => message.Role == ChatRole.Assistant);
 
         await vm.CancelCommand.ExecuteAsync(null);
-        turns.Complete("second", "cancelled"); // the withdrawn "second"
+        turns.Complete("second", "cancelled");
         connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk(" answer"));
         Assert.Null(stopped.DurationSeconds);
         Assert.Equal("partial answer", stopped.Text);
 
-        turns.Complete("first", "cancelled"); // the stopped "first"
+        turns.Complete("first", "cancelled");
         Assert.NotNull(stopped.DurationSeconds);
         await firstSend;
-        await WaitUntilAsync(() => connection.Prompts.Count == 3); // the withdrawn "second", sent again
+        await WaitUntilAsync(() => connection.Prompts.Count == 3);
         turns.Complete("second");
         await WaitUntilAsync(() => !vm.IsBusy);
     }
 
-    // Taking a queued message in does not end Claude's turn: it answers and carries on with the
-    // work. The transcript shows one continuing turn - no "Responded in" footer where the follow-up
-    // was taken in, and the stats at the very end cover the whole turn from its start.
     [Fact]
     public async Task QueueingAgent_HandOff_IsOneContinuingTurn_StatsCoverItFromTheStart()
     {
@@ -826,9 +770,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(1_300, end.TokensUsed);
     }
 
-    // If the agent answers Stop the other way round - the stopped turn first - the follow-up still
-    // behind it was not confirmed as started: it must not read as delivered, and is sent again once
-    // both have returned, like any other.
     [Fact]
     public async Task QueueingAgent_Cancel_StoppedTurnAnsweredFirst_FollowUpIsStillSentAgain()
     {
@@ -857,7 +798,6 @@ public sealed partial class ChatSessionStateTests
         await WaitUntilAsync(() => !vm.IsBusy);
     }
 
-    // A message typed after a follow-up the agent refused goes out after it, not ahead of it.
     [Fact]
     public async Task QueueingAgent_MessageAfterARefusedFollowUp_KeepsItsPlaceBehindIt()
     {
@@ -883,9 +823,6 @@ public sealed partial class ChatSessionStateTests
         await WaitUntilAsync(() => !vm.IsBusy);
     }
 
-    // When the agent process dies every pending prompt fails, before the disconnect itself is
-    // processed. A follow-up that never ran is never shown as delivered and never re-sent into the
-    // dead connection: its bubble goes and its text is back in the message box.
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -906,8 +843,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(["first", "second"], connection.Prompts.Select(Text));
         var second = Assert.Single(vm.Messages, message => message.Text == "second");
 
-        // Off the UI thread, like the connection's reader: every pending prompt faults, then
-        // Disconnected - each posted to the UI thread in that order.
         var died = new InvalidOperationException("agent exited");
         foreach (var text in runningFailsFirst ? new[] { "first", "second" } : new[] { "second", "first" }) turns.Fail(text, died);
         connection.RaiseDisconnected();
@@ -915,11 +850,10 @@ public sealed partial class ChatSessionStateTests
         ui.Drain();
 
         Assert.DoesNotContain(second, vm.Messages);
-        Assert.Equal("second", vm.InputText); // never lost: back in the message box, not delivered anywhere
+        Assert.Equal("second", vm.InputText);
         Assert.Equal(["first", "second"], connection.Prompts.Select(Text));
     }
 
-    // An agent that did not advertise queueing keeps the one-prompt-at-a-time contract.
     [Fact]
     public async Task NonQueueingAgent_FollowUpWaitsForTheRunningTurnToEnd()
     {
@@ -941,9 +875,6 @@ public sealed partial class ChatSessionStateTests
         await WaitUntilAsync(() => !vm.IsBusy);
     }
 
-    // A queued message leaves the queue before its turn starts. If that start fails before the
-    // message reaches the agent - here an observer of IsBusy throws - nothing else holds it: it must
-    // come back to the message box, not sit pending forever with its text gone.
     [Fact]
     public async Task QueuedMessage_StartFailsBeforeItReachesTheAgent_GoesBackToTheComposer()
     {
@@ -974,8 +905,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
     }
 
-    // Whether follow-ups that came back unstarted are sent again depends on the prompt that was
-    // running: once it failed the agent may be gone, whichever prompt happens to answer last.
     [Fact]
     public async Task QueueingAgent_RunningPromptFails_ThenAFollowUpEndsLast_RefusedFollowUpGoesBackToTheComposer()
     {
@@ -1001,8 +930,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("second", vm.InputText);
     }
 
-    // The mirror case: the running prompt ended cleanly (here: stopped), so a follow-up the agent
-    // refused is sent again like any other - even when its refusal is the last answer to arrive.
     [Fact]
     public async Task QueueingAgent_Stop_RefusedFollowUpAnswersLast_IsStillSentAgain()
     {
@@ -1027,9 +954,6 @@ public sealed partial class ChatSessionStateTests
         await WaitUntilAsync(() => !vm.IsBusy);
     }
 
-    // A returning prompt's bookkeeping raises notifications host code observes. An observer that
-    // throws there must not leave the panel busy for good, and the error must be shown - not lost
-    // with the background task that sent the queued prompt.
     [Fact]
     public async Task QueueingAgent_ObserverThrowsWhileAPromptReturns_PanelStillGoesIdle_AndShowsTheError()
     {
@@ -1049,17 +973,15 @@ public sealed partial class ChatSessionStateTests
             if (e.PropertyName == nameof(ChatMessageViewModel.IsPending)) throw new InvalidOperationException("observer failed");
         };
 
-        turns.Complete("first"); // hand-off: "second" is taken in
+        turns.Complete("first");
         await firstSend;
-        turns.Complete("second"); // hand-off: "third" is taken in, and its observer throws
+        turns.Complete("second");
         turns.Complete("third");
         await WaitUntilAsync(() => !vm.IsBusy);
 
         Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
     }
 
-    // While Stop is in flight nothing is sent ahead. If the cancel fails the turn goes on, so a
-    // message typed meanwhile goes to the agent then - not only once the whole turn has ended.
     [Fact]
     public async Task QueueingAgent_StopFails_MessageTypedMeanwhileIsSentAhead()
     {
@@ -1085,8 +1007,6 @@ public sealed partial class ChatSessionStateTests
         await WaitUntilAsync(() => !vm.IsBusy);
     }
 
-    // The running-agents pill belongs to the session: a new chat or another session never inherits
-    // agents from the one it replaced (e.g. a turn driven from claude.ai/code that sent no final status).
     [Theory]
     [InlineData("new chat")]
     [InlineData("open session")]
@@ -1108,15 +1028,12 @@ public sealed partial class ChatSessionStateTests
 
     private static string Text(IReadOnlyList<ContentBlock> content) => Assert.IsType<ContentBlock.Text>(Assert.Single(content)).Value;
 
-    /// <summary>One pending result per prompt, released by text, so a test decides when each
-    /// session/prompt returns - the way the agent settles each one on its own schedule.</summary>
     private sealed class PromptGate
     {
         private readonly Dictionary<string, Queue<TaskCompletionSource<string>>> _pending = [];
 
         public Task<string> Handle(IReadOnlyList<ContentBlock> content)
         {
-            // Keyed by the prompt's text alone, so a prompt carrying attachments is released the same way.
             var text = content.OfType<ContentBlock.Text>().First().Value;
             if (!_pending.TryGetValue(text, out var queue)) _pending[text] = queue = new Queue<TaskCompletionSource<string>>();
             var tcs = new TaskCompletionSource<string>();
@@ -1124,15 +1041,11 @@ public sealed partial class ChatSessionStateTests
             return tcs.Task;
         }
 
-        /// <summary>Returns the oldest pending prompt with this text, with the agent's stop reason.</summary>
         public void Complete(string text, string stopReason = "end_turn") => _pending[text].Dequeue().SetResult(stopReason);
 
         public void Fail(string text, Exception error) => _pending[text].Dequeue().SetException(error);
     }
 
-    // A config change is its own RPC and deliberately allowed mid-turn, so a turn can end while one
-    // is still in flight. Dispatching into that window is the hazard CanQueueOrSendDraft exists to
-    // stop - but the queue must not be stranded there either: it goes out when the change lands.
     [Fact]
     public async Task QueuedMessage_WaitsForAnInFlightConfigChange_AndStillGoesOutWhenItCompletes()
     {
@@ -1152,7 +1065,7 @@ public sealed partial class ChatSessionStateTests
 
         firstTurn.SetResult(true);
         await firstSend;
-        Assert.Single(connection.Prompts); // the config change still owns the session
+        Assert.Single(connection.Prompts);
 
         config.SetResult(Options("opus"));
         await configChange;
@@ -1161,8 +1074,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("queued behind the first", Assert.IsType<ContentBlock.Text>(Assert.Single(connection.Prompts[1])).Value);
     }
 
-    // The queue is a queue: two follow-ups typed during one turn go out in the order they were
-    // written, not reversed or collapsed.
     [Fact]
     public async Task QueuedMessages_AreDispatchedInTheOrderTheyWereSent()
     {
@@ -1191,8 +1102,6 @@ public sealed partial class ChatSessionStateTests
         Assert.All(vm.Messages.Where(message => message.Role == ChatRole.User), message => Assert.False(message.IsPending));
     }
 
-    // Disposal races the turn that was in flight: the queue must die with the view model rather than
-    // reconnecting a disposed session to deliver a message nobody is listening for.
     [Fact]
     public async Task Dispose_WhileAMessageIsQueued_DispatchesNothingAndFaultsNothing()
     {
@@ -1212,14 +1121,10 @@ public sealed partial class ChatSessionStateTests
         Assert.Single(connection.Prompts);
     }
 
-    // The error a failed turn reported is the only thing telling the user it failed. Automatically
-    // dispatching the next queued message must not wipe it off the screen before they can read it.
     [Fact]
     public async Task FailedTurn_KeepsItsErrorVisible_WhenTheNextQueuedMessageIsDispatched()
     {
         var firstTurn = new TaskCompletionSource<bool>();
-        // Only the first turn fails: the queued follow-up must succeed, or the error would survive
-        // just because the second turn reported the same one.
         var connection = new RecordingAcpAgentConnection
         {
             PromptHandler = content => content.Any(block => block is ContentBlock.Text text && text.Value == "first")
@@ -1251,8 +1156,6 @@ public sealed partial class ChatSessionStateTests
         connection.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([new AvailableCommand("foreign", "Foreign", null)]), "foreign-session");
         connection.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([new AvailableCommand("review", "Review", "scope")]), "returned-session");
         connection.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([new AvailableCommand("foreign-latest", "Foreign", null)]), "foreign-session");
-        // Before the session resolves there is no adapter catalog yet, but /login and /logout are
-        // always available: they are exactly how a still-disconnected user would get signed in.
         Assert.Equal(ClientSlashCommandNames, vm.SlashSuggestions.Select(c => c.Name));
 
         ready.SetResult(new NewSessionResult("returned-session", []));
@@ -1303,7 +1206,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { "help" }.Concat(ClientSlashCommandNames), vm.SlashSuggestions.Select(c => c.Name));
         connection.RaiseSessionUpdate(new SessionUpdate.AvailableCommandsChanged([]));
 
-        // The adapter's catalog is now empty, but /login and /logout remain - they never depend on it.
         Assert.Equal(ClientSlashCommandNames, vm.SlashSuggestions.Select(c => c.Name));
         Assert.Equal("login", vm.SelectedSlashSuggestion?.Name);
         Assert.True(vm.AreSlashSuggestionsVisible);
@@ -1474,7 +1376,6 @@ public sealed partial class ChatSessionStateTests
         var thinking = vm.ActivityText;
         Assert.False(string.IsNullOrWhiteSpace(thinking));
         Assert.NotEqual(working, thinking);
-        // Shown as thinking (like the VS Code extension), never as the answer's text.
         Assert.Equal(string.Empty, Assert.Single(vm.Messages, message => message.Role == ChatRole.Assistant).Text);
         connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("visible "));
         var responding = vm.ActivityText;
@@ -1502,8 +1403,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("visible answer", Assert.Single(vm.Messages, message => message.Role == ChatRole.Assistant).Text);
     }
 
-    // The composer shows how many subagents are running, like the VS Code extension's "N agents" pill.
-    // An update that does not name the tool (most status updates) keeps the call counted as a subagent.
     [Fact]
     public async Task RunningAgentCount_CountsSubagentCallsUntilTheyFinish()
     {
@@ -1530,8 +1429,6 @@ public sealed partial class ChatSessionStateTests
         await prompt;
     }
 
-    // A dead agent or a stopped turn sends no final status for its subagents: the pill must not keep
-    // claiming agents are running.
     [Fact]
     public async Task RunningAgentCount_DropsToZero_WhenTheAgentDisconnects()
     {
@@ -1563,16 +1460,13 @@ public sealed partial class ChatSessionStateTests
         connection.RaiseSessionUpdate(new SessionUpdate.ToolCall(new ToolCallUpdate { ToolCallId = "a1", Title = "Explore", IsSubagent = true, Status = ToolCallStatus.InProgress }));
 
         await vm.CancelCommand.ExecuteAsync(null);
-        Assert.Equal(1, vm.RunningAgentCount); // still running until the stop has landed
+        Assert.Equal(1, vm.RunningAgentCount);
         completed.SetResult(true);
         await prompt;
 
         Assert.Equal(0, vm.RunningAgentCount);
     }
 
-    // A subagent's final status can arrive after the assistant bubble it started in was closed off
-    // (a hand-off, a TurnEnded): it lands on a new card that the update alone does not name a
-    // subagent, and must still end the count.
     [Fact]
     public async Task RunningAgentCount_DropsWhenTheFinalStatusArrivesInALaterBubble()
     {
@@ -1612,9 +1506,6 @@ public sealed partial class ChatSessionStateTests
         await prompt;
     }
 
-    // When the running prompt fails but the connection stays up (the agent answered with an error),
-    // no disconnect follows to drop the follow-ups that came back unstarted: they must not sit
-    // pending with nothing to send them - they go back into the message box.
     [Fact]
     public async Task QueueingAgent_RunningPromptFails_WithoutADisconnect_FollowUpGoesBackToTheComposer()
     {
@@ -1636,12 +1527,10 @@ public sealed partial class ChatSessionStateTests
         Assert.DoesNotContain(second, vm.Messages);
         Assert.Equal("second", vm.InputText);
         Assert.Equal(2, connection.Prompts.Count);
-        Assert.Contains("agent error", vm.StatusMessage, StringComparison.Ordinal); // the cause stays visible
+        Assert.Contains("agent error", vm.StatusMessage, StringComparison.Ordinal);
         Assert.Contains("message box", vm.StatusMessage, StringComparison.Ordinal);
     }
 
-    // A follow-up that goes back into the message box (the agent failed) takes its attachments with
-    // it: the user's screenshot must not vanish, nor land twice next to what they attached since.
     [Fact]
     public async Task QueueingAgent_FailedTurn_PutsTheFollowUpsAttachmentsBackInTheComposer_BesideTheDrafts()
     {
@@ -1670,7 +1559,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Single(vm.Attachments, attachment => ReferenceEquals(attachment, drafted));
     }
 
-    // The panel is busy while any prompt is in flight, whichever order the agent answers them in.
     [Fact]
     public async Task QueueingAgent_FollowUpReturnsBeforeTheRunningPrompt_StaysBusyUntilBothHave()
     {
@@ -1693,8 +1581,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(2, connection.Prompts.Count);
     }
 
-    // Review comments on a rejected plan are the next prompt, so they wait for every prompt already
-    // with the agent - not just the one the plan came from - and go out exactly once.
     [Fact]
     public async Task QueueingAgent_PlanReview_GoesOutOnce_AfterTheLastPromptWithTheAgentReturns()
     {
@@ -1721,8 +1607,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(3, connection.Prompts.Count);
     }
 
-    // Review comments go out before a message queued during the rejected plan's turn, so their
-    // bubble goes above it: the transcript shows messages in the order Claude receives them.
     [Fact]
     public async Task PlanReview_SentAsTheTurnEnds_ShowsAboveAMessageQueuedDuringIt()
     {
@@ -1750,8 +1634,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("second", users[2]);
     }
 
-    // The review goes out by itself as the rejected plan's turn ends; it is not the user's own send,
-    // so it does not wipe that turn's error before it can be read.
     [Fact]
     public async Task PlanReview_SentAsTheTurnFails_KeepsThatTurnsErrorReadable()
     {
@@ -1773,8 +1655,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Contains("agent crashed", vm.StatusMessage, StringComparison.Ordinal);
     }
 
-    // The review is its own prompt: the images attached to the user's draft are not sent with it,
-    // and stay with the draft in the composer.
     [Fact]
     public async Task PlanReview_LeavesTheDraftsAttachmentsWithTheDraft()
     {
@@ -1783,7 +1663,6 @@ public sealed partial class ChatSessionStateTests
         await vm.Initialization;
         vm.InputText = "meanwhile, look at this";
         vm.AddImageAttachment("draft.png", "image/png", "AQID");
-        // No local turn owns IsBusy (a plan from a remote-driven turn): the review goes out at once.
         var (call, options) = PlanApprovalRequest();
         connection.RaisePermissionRequested(call, options);
 
@@ -1795,7 +1674,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("AQID", Assert.Single(vm.Attachments).Base64Data);
     }
 
-    // The user's own send is what clears the error a failed turn left behind.
     [Fact]
     public async Task Send_ByTheUser_ClearsTheErrorThePreviousTurnLeft()
     {
@@ -1817,8 +1695,6 @@ public sealed partial class ChatSessionStateTests
         Assert.True(string.IsNullOrEmpty(vm.StatusMessage), vm.StatusMessage);
     }
 
-    // Typing while Claude works is not a message coming back: a turn that ends normally says nothing
-    // about it, and leaves what was typed alone.
     [Fact]
     public async Task Send_TextTypedWhileTheTurnRuns_GetsNoNoticeWhenTheTurnEndsNormally()
     {
@@ -1837,9 +1713,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("typed meanwhile", vm.InputText);
     }
 
-    // A message sent while a turn runs is queued before the composer is cleared of it: an observer
-    // throwing as the composer empties is reported rather than thrown at the send command, and the
-    // message still goes out after the running turn.
     [Fact]
     public async Task SendWhileBusy_ObserverThrowsAsTheComposerEmpties_ReportsIt_AndStillSendsTheMessage()
     {
@@ -1871,8 +1744,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("second", Text(connection.Prompts[1]));
     }
 
-    // After disposal a turn's bookkeeping can still fail as its prompt returns. A cancellation then is
-    // expected and dropped; anything else is still logged, but the disposed panel's status is left alone.
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -1900,9 +1771,6 @@ public sealed partial class ChatSessionStateTests
         Assert.True(string.IsNullOrEmpty(vm.StatusMessage), vm.StatusMessage);
     }
 
-    // An observer throwing as the review's text enters the composer (the draft having been set aside):
-    // the review stays in the composer, unsent, ahead of the draft and with the draft's image, and the
-    // failure is reported.
     [Fact]
     public async Task PlanReview_ObserverThrowsAsTheReviewEntersTheComposer_KeepsTheReviewAndTheDraft()
     {
@@ -1931,8 +1799,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
     }
 
-    // Once queued, a message has left the composer even when a transcript observer throws as its
-    // bubble is added: it is not left there to be sent a second time.
     [Fact]
     public async Task SendWhileBusy_ObserverThrowsAsTheBubbleIsAdded_TheMessageLeavesTheComposer_AndGoesOutOnce()
     {
@@ -1960,9 +1826,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { "first", "second" }, connection.Prompts.Select(Text));
     }
 
-    // Setting the draft aside for the review must not lose it, nor the review: an observer throwing as
-    // the draft's attachments are cleared away is reported, and the draft, its image and the review
-    // comments all end up in the composer.
     [Fact]
     public async Task PlanReview_ObserverThrowsAsTheDraftIsSetAside_LosesNeitherTheDraftNorTheReview()
     {
@@ -1975,8 +1838,6 @@ public sealed partial class ChatSessionStateTests
         {
             if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Reset) throw new InvalidOperationException("observer failed");
         };
-        // No local turn owns IsBusy (a plan from a remote-driven turn), so the Review command itself
-        // sets the draft aside to send the review.
         var (call, options) = PlanApprovalRequest();
         connection.RaisePermissionRequested(call, options);
 
@@ -1989,9 +1850,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
     }
 
-    // The review goes out as the rejected plan's turn ends. An observer throwing as the draft set aside
-    // for it is put back is reported - not thrown at the send that started the turn - and the message
-    // queued during the turn still goes out after the review.
     [Fact]
     public async Task PlanReview_SentAsTheTurnEnds_ObserverThrowsAsTheDraftComesBack_IsReported_AndTheQueueStillGoesOut()
     {
@@ -2025,8 +1883,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
     }
 
-    // The Review command itself sends the review when no turn is running. An observer throwing on
-    // every attachment added, as the draft's image is put back, is reported, not thrown at the command.
     [Fact]
     public async Task PlanReview_ObserverThrowsAsTheDraftsImageComesBack_IsReported_NotThrownAtTheCommand()
     {
@@ -2052,8 +1908,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
     }
 
-    // An observer throwing as the draft's text is put back after the review went out does not cost the
-    // draft its image: every step of putting it back still runs.
     [Fact]
     public async Task PlanReview_ObserverThrowsAsTheDraftsTextComesBack_TheDraftsImageComesBackToo()
     {
@@ -2078,9 +1932,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
     }
 
-    // The agent's connection goes away mid-turn: the queued follow-up goes with it, which the status
-    // line says. The running prompt then fails on that closed connection - expected teardown, which
-    // must neither replace that notice nor be logged as a turn failure.
     [Fact]
     public async Task AgentDisconnects_WhileATurnRuns_TheDroppedQueueNoticeStays_AndTheTeardownIsNotLogged()
     {
@@ -2103,8 +1954,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Empty(services.LoggedErrors);
     }
 
-    // A review turn that fails at once has already given the review back when the draft set aside for
-    // it is put back: both are in the message box, the review ahead of the draft.
     [Fact]
     public async Task PlanReview_FailingAtOnce_KeepsBothTheReviewAndTheDraft()
     {
@@ -2118,7 +1967,6 @@ public sealed partial class ChatSessionStateTests
                 e.NewItems!.Cast<ChatMessageViewModel>().Any(message => message.Text.StartsWith("Review comments", StringComparison.Ordinal)))
                 throw new InvalidOperationException("observer failed");
         };
-        // No local turn owns IsBusy (a plan from a remote-driven turn): the review goes out at once.
         var (call, options) = PlanApprovalRequest();
         connection.RaisePermissionRequested(call, options);
 
@@ -2130,8 +1978,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
     }
 
-    // On a real UI thread, where continuations are posted rather than run inline, the review still
-    // leaves the composer before the draft set aside for it is put back.
     [Fact]
     public async Task PlanReview_OnTheUiThread_SendsTheReview_AndPutsTheDraftBack()
     {
@@ -2156,8 +2002,6 @@ public sealed partial class ChatSessionStateTests
         Assert.False(vm.IsBusy);
     }
 
-    // Disposal while the agent holds a follow-up: whatever the prompts return, nothing is sent again
-    // and nothing faults.
     [Fact]
     public async Task QueueingAgent_DisposeWithAFollowUpHeldByTheAgent_SendsNothingMore()
     {
@@ -2179,8 +2023,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(0, connection.CancelCount);
     }
 
-    // After a hand-off Claude is working on the follow-up, so its thinking belongs below that
-    // message, not appended to the reply above it.
     [Fact]
     public async Task QueueingAgent_ThoughtAfterAHandOff_LandsInANewReplyBelowTheFollowUp()
     {
@@ -2211,8 +2053,6 @@ public sealed partial class ChatSessionStateTests
         await WaitUntilAsync(() => !vm.IsBusy);
     }
 
-    // A workspace switch tears the agent down with the follow-ups it was holding: they are dropped
-    // and said so, never sent into the new workspace's session, and the panel is not left busy.
     [Fact]
     public async Task QueueingAgent_WorkspaceSwitch_DropsHeldFollowUps_AndLeavesThePanelUsable()
     {
@@ -2245,9 +2085,6 @@ public sealed partial class ChatSessionStateTests
         Assert.False(vm.IsBusy);
     }
 
-    // Like the VS Code extension, Claude's thinking is shown in the transcript, where it happened -
-    // Claude often settles a message sent mid-turn there, and what is not shown was never said. It
-    // stays separate from the reply's Text.
     [Fact]
     public async Task ThoughtChunks_AreShownInTheTranscript_InOrder_ButNotInTheReplyText()
     {
@@ -2357,9 +2194,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Empty(vm.SlashSuggestions);
     }
 
-    // SendCoreAsync already added the user's bubble; an agent that echoes the prompt back as
-    // user_message_chunk during the live turn must not produce a second one. Replay (a loaded
-    // session, IsBusy false) is the case that legitimately builds the bubble.
     [Fact]
     public async Task UserMessageChunk_EchoedDuringALiveTurn_DoesNotDuplicateTheUsersBubble()
     {
@@ -2378,9 +2212,6 @@ public sealed partial class ChatSessionStateTests
         await prompt;
     }
 
-    // New Chat issues the same session/new as the initial connect, so it needs the same buffering:
-    // the agent publishes the new session's catalog before the response resolves, while _sessionId
-    // still names the previous session.
     [Fact]
     public async Task NewChat_AdoptsACommandCatalogPublishedBeforeTheNewSessionIdIsKnown()
     {
@@ -2407,9 +2238,6 @@ public sealed partial class ChatSessionStateTests
             new PermissionOption { OptionId = "reject-once", Label = "No, keep planning", Outcome = PermissionOutcome.RejectOnce },
         ]);
 
-    // Review comments go out when the composer frees up, whichever blocker was holding it. A
-    // model/mode change (allowed mid-turn) still in flight when the rejected plan's turn returns
-    // must not strand them until the user's next unrelated Send.
     [Fact]
     public async Task PlanReview_HeldBackByAConfigChangeInFlight_GoesOutOnceTheChangeCompletes()
     {
@@ -2433,7 +2261,7 @@ public sealed partial class ChatSessionStateTests
 
         turn.SetResult(true);
         await sending;
-        Assert.Single(connection.Prompts); // the composer is still blocked by the config change
+        Assert.Single(connection.Prompts);
 
         config.SetResult(Options("opus"));
         await changing;
@@ -2443,8 +2271,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("opus", vm.SelectedModel!.Value);
     }
 
-    // With a document capture in flight the composer cannot send, so the review has to wait for
-    // the capture rather than be typed over the user's draft and left there unsent.
     [Fact]
     public async Task PlanReview_WhileADocumentCaptureIsInFlight_WaitsForItAndKeepsTheDraft()
     {
@@ -2458,8 +2284,6 @@ public sealed partial class ChatSessionStateTests
         await vm.Initialization;
         vm.InputText = "meanwhile, what about the CI job?";
         var attaching = vm.AttachActiveDocumentCommand.ExecuteAsync(null);
-        // No local turn owns IsBusy (a plan can arrive from a remote-driven turn), so the review is
-        // due as soon as the composer can take it.
         var (call, options) = PlanApprovalRequest();
         connection.RaisePermissionRequested(call, options);
 

@@ -5,10 +5,8 @@ using Xunit;
 namespace ClaudeCode.Acp.Tests;
 
 /// <summary>
-/// The decision logic behind the VS control channel's debugger methods, extracted from the EnvDTE
-/// glue because every input here comes from an untrusted ACP agent request: a wrong breakpoint
-/// match predicate destroys user state that no undo restores, and wrong frame arithmetic silently
-/// attributes one frame's locals to another.
+/// Covers the decision logic behind the VS control channel's debugger methods: breakpoint argument
+/// validation and removal matching, stack-frame indexing, and timeout and wait clamping.
 /// </summary>
 public sealed class VsDebuggerChannelRulesTests
 {
@@ -38,10 +36,6 @@ public sealed class VsDebuggerChannelRulesTests
     [Fact]
     public void RequireRemovalArguments_NullPathThatWasSupplied_IsRejectedInsteadOfRemovingEveryBreakpoint()
     {
-        // {"path": null} on the wire: the member is present, so it passes the unknown-member loop,
-        // but Newtonsoft reads the null JValue as a C# null - exactly how an omitted member reads.
-        // LLM tool calls routinely spell an omitted optional as an explicit null, and this one
-        // would otherwise delete the user's hand-set breakpoints.
         var error = Assert.Throws<InvalidOperationException>(
             () => VsDebuggerChannelRules.RequireRemovalArguments(new[] { "path" }, null, null));
 
@@ -69,8 +63,6 @@ public sealed class VsDebuggerChannelRulesTests
     [Fact]
     public void RequireRemovalArguments_TheDocumentedForms_AreAccepted()
     {
-        // Omitting both members is the documented "remove every breakpoint" request and must keep
-        // working: rejecting it would break the only way to clear the solution's breakpoints.
         VsDebuggerChannelRules.RequireRemovalArguments(_noArguments, null, null);
         VsDebuggerChannelRules.RequireRemovalArguments(new[] { "path" }, @"C:\repo\A.cs", null);
         VsDebuggerChannelRules.RequireRemovalArguments(new[] { "path", "line" }, @"C:\repo\A.cs", 42);
@@ -172,8 +164,6 @@ public sealed class VsDebuggerChannelRulesTests
     [Fact]
     public void ClampWaitMs_StepFloor_NeverYieldsAWaitShorterThanOnePoll()
     {
-        // A step issued with a zero wait would have its first poll observe the pre-step break and
-        // report the old frame as the landed step; the step methods floor the wait at one poll.
         Assert.Equal(100, VsDebuggerChannelRules.ClampWaitMs(0, 5_000, 100, 45_000));
         Assert.Equal(100, VsDebuggerChannelRules.ClampWaitMs(-5, 5_000, 100, 45_000));
         Assert.Equal(150, VsDebuggerChannelRules.ClampWaitMs(150, 5_000, 100, 45_000));
@@ -205,8 +195,6 @@ public sealed class VsDebuggerChannelRulesTests
     [Fact]
     public void TruncateDebuggeeValue_NeverEmitsHalfOfASurrogatePair()
     {
-        // "ab😀cd" is a,b,<high>,<low>,c,d - cutting at 3 would strand the high surrogate, which
-        // Newtonsoft serializes as a bare \udXXX escape that strict JSON readers reject.
         Assert.Equal("ab…", VsDebuggerChannelRules.TruncateDebuggeeValue("ab\uD83D\uDE00cd", 3));
         Assert.Equal("ab\uD83D\uDE00…", VsDebuggerChannelRules.TruncateDebuggeeValue("ab\uD83D\uDE00cd", 4));
     }
@@ -223,10 +211,7 @@ public sealed class VsDebuggerChannelRulesTests
     public void BreakWaitTimedOut_OnlyAStillRunningProgramIsATimeout()
     {
         Assert.True(VsDebuggerChannelRules.BreakWaitTimedOut(VsDebuggerChannelRules.Mode.Run));
-        // The step landed - this is the inversion that shipped once, reporting a completed step as
-        // timed out because a loop re-hit the breakpoint it started on.
         Assert.False(VsDebuggerChannelRules.BreakWaitTimedOut(VsDebuggerChannelRules.Mode.Break));
-        // The debuggee exited during the step; the program ending is not the wait expiring.
         Assert.False(VsDebuggerChannelRules.BreakWaitTimedOut(VsDebuggerChannelRules.Mode.Design));
     }
 
@@ -234,7 +219,6 @@ public sealed class VsDebuggerChannelRulesTests
     public void LaunchTimedOut_OnlyNeverLeavingDesignModeIsATimeout()
     {
         Assert.True(VsDebuggerChannelRules.LaunchTimedOut(VsDebuggerChannelRules.Mode.Design));
-        // A program that keeps running launched successfully; it simply never hit a breakpoint.
         Assert.False(VsDebuggerChannelRules.LaunchTimedOut(VsDebuggerChannelRules.Mode.Run));
         Assert.False(VsDebuggerChannelRules.LaunchTimedOut(VsDebuggerChannelRules.Mode.Break));
     }

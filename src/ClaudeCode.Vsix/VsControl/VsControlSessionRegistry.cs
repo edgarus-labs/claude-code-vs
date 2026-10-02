@@ -52,9 +52,6 @@ internal sealed class VsControlSessionRegistry : IVsControlSessionHost, IDisposa
     {
         if (_servers.TryRemove(correlationId, out var server))
         {
-            // AsTask() consumes the ValueTask exactly once immediately (satisfying CA2012's "must be
-            // used" contract) while keeping teardown fire-and-forget: EndSession is called from
-            // synchronous cleanup paths that must not block on the pipe server's shutdown grace period.
             _ = server.DisposeAsync().AsTask();
         }
     }

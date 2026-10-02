@@ -3,8 +3,7 @@ using System.Collections.Generic;
 
 namespace ClaudeCode.Acp;
 
-/// <summary>Builds the argument lists for the adapter's bundled CLI auth commands, so the status
-/// probe and the interactive login/logout commands agree on the exact invocation.</summary>
+/// <summary>Builds the argument lists for the adapter's bundled CLI auth commands.</summary>
 public static class AcpAuthCliArguments
 {
     public static IReadOnlyList<string> Status(AcpExecutableSpec executable) => Combine(executable, "status", "--json");

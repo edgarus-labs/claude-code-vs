@@ -8,11 +8,6 @@ using Xunit;
 
 namespace ClaudeCode.Core.Tests;
 
-// Issue #57: the guarantee the send path got in #55, for the rest of the panel. An observer (a WPF
-// binding, a view) throwing while the panel updates its state is logged and shown in the status line,
-// never thrown at a command nor lost with a task nobody awaits; a busy flag an operation set is always
-// cleared, and what waited for the operation (review comments, the queue) still goes out. Failures the
-// panel shows in its status line are logged too, with their type and stack.
 public sealed partial class ChatSessionStateTests
 {
     private static StubChatSessionServices ServicesFor(RecordingAcpAgentConnection connection) =>
@@ -61,7 +56,7 @@ public sealed partial class ChatSessionStateTests
         var (call, options) = PlanApprovalRequest();
         connection.RaisePermissionRequested(call, options);
         vm.PendingPlan!.ReviewCommand.Execute("Add a rollback step.");
-        Assert.Empty(connection.Prompts); // held back by the capture
+        Assert.Empty(connection.Prompts);
         bool armed = true;
         vm.PropertyChanged += (_, e) =>
         {
@@ -122,7 +117,7 @@ public sealed partial class ChatSessionStateTests
         var configChange = vm.SelectModelAsync(vm.AvailableModels[1]);
         firstTurn.SetResult(true);
         await firstSend;
-        Assert.Single(connection.Prompts); // the config change still owns the session
+        Assert.Single(connection.Prompts);
         bool armed = true;
         vm.PropertyChanged += (_, e) =>
         {
@@ -140,8 +135,6 @@ public sealed partial class ChatSessionStateTests
         Assert.True(WasLogged(services, "observer failed"));
     }
 
-    // The setters (SelectedModel, SelectedEffort, SelectedMode) discard the task: a failure in it would
-    // never be seen.
     [Fact]
     public async Task ConfigChange_ObserverThrowsAsAnUnchangedSelectionIsRepublished_IsReported()
     {
@@ -181,8 +174,6 @@ public sealed partial class ChatSessionStateTests
         Assert.True(WasLogged(services, "observer failed"));
     }
 
-    // A pick releases the queue itself once it has settled whether Auto is left (SelectEffortCoreAsync):
-    // an observer throwing as Auto is left must not strand the follow-up that waited for the pick.
     [Fact]
     public async Task ExplicitEffort_ObserverThrowsAsAutoIsLeft_StillSendsTheFollowUpThatWaited()
     {
@@ -284,8 +275,6 @@ public sealed partial class ChatSessionStateTests
         Assert.True(WasLogged(services, "observer failed"));
     }
 
-    // The request is answered before anything else; an observer throwing as the answered card leaves
-    // the panel must not skip sending the review nor throw at the command.
     [Fact]
     public async Task PlanReview_ObserverThrowsAsThePermissionCardCloses_StillSendsTheReview()
     {
@@ -312,8 +301,6 @@ public sealed partial class ChatSessionStateTests
         Assert.True(WasLogged(services, "observer failed"));
     }
 
-    // Marking the queued message sent runs once it is tracked as submitted: an observer throwing there
-    // must not stop it going out, which would leave it shown as delivered and never sent.
     [Fact]
     public async Task QueuedMessage_ObserverThrowsAsItIsMarkedSent_StillGoesOut()
     {

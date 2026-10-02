@@ -222,10 +222,7 @@ public sealed class VsControlPipeClientTests
             await server.WaitForConnectionAsync();
 
             using var reader = new StreamReader(server, new UTF8Encoding(false), false, 1024, leaveOpen: true);
-            _ = await reader.ReadLineAsync(); // read (and reject) the handshake token line
-
-            // Mismatched token: close without ever reading/answering the request line, mirroring
-            // VsControlPipeServer's handshake rejection behavior.
+            _ = await reader.ReadLineAsync();
         });
 
         await serverStarted.WaitAsync();
@@ -251,9 +248,6 @@ public sealed class VsControlPipeClientTests
 
         await serverTask;
 
-        // The server dropped the connection right after rejecting the handshake token, without ever
-        // processing the request: the client must observe an explicit failure quickly - either a
-        // thrown exception or an error-carrying response - never a hang.
         Assert.True(sw.Elapsed < TimeSpan.FromSeconds(5), $"Expected the failure to surface quickly; took {sw.Elapsed}.");
         Assert.True(thrown is not null || !string.IsNullOrEmpty(result?.Error), "Expected either a thrown exception or an error response.");
     }
@@ -272,10 +266,9 @@ public sealed class VsControlPipeClientTests
             await server.WaitForConnectionAsync();
 
             using var reader = new StreamReader(server, new UTF8Encoding(false), false, 1024, leaveOpen: true);
-            _ = await reader.ReadLineAsync(); // handshake token
-            _ = await reader.ReadLineAsync(); // request line
+            _ = await reader.ReadLineAsync();
+            _ = await reader.ReadLineAsync();
 
-            // Deliberately never write a response; keep the pipe open until the test is done asserting.
             await serverShouldExit.WaitAsync();
         });
 
@@ -319,12 +312,10 @@ public sealed class VsControlPipeClientTests
             using var reader = new StreamReader(server, new UTF8Encoding(false), false, 1024, leaveOpen: true);
             using var writer = new StreamWriter(server, new UTF8Encoding(false), 1024, leaveOpen: true) { AutoFlush = true, NewLine = "\n" };
 
-            _ = await reader.ReadLineAsync(); // handshake token
+            _ = await reader.ReadLineAsync();
             string? requestLine = await reader.ReadLineAsync();
             var request = JsonSerializer.Deserialize<VsControlRequest>(requestLine!, _wireOptions);
 
-            // Respond just after the short default request timeout would have fired, but well within
-            // the longer build timeout: proves every method that compiles actually gets the longer budget.
             await Task.Delay(TimeSpan.FromMilliseconds(250));
             var response = new VsControlResponse { Id = request!.Id, ResultJson = """{"succeeded":true,"errorCount":0,"warningCount":0}""" };
             await writer.WriteLineAsync(JsonSerializer.Serialize(response, _wireOptions));
@@ -369,13 +360,9 @@ public sealed class VsControlPipeClientTests
             using (var reader = new StreamReader(server, new UTF8Encoding(false), false, 1024, leaveOpen: true))
             {
                 Assert.Equal("token", await reader.ReadLineAsync());
-                // One char of the request read, the rest backpressured: the write is now in flight.
                 Assert.Equal(1, await reader.ReadAsync(new char[1]));
             }
 
-            // The VS host vanishes mid-request, so the read loop tears the connection down while
-            // that write is still running. Teardown must join the write instead of disposing the
-            // writer underneath it - otherwise the read loop faults and disposal rethrows.
             server.Disconnect();
 
             var disposeFailure = await Record.ExceptionAsync(

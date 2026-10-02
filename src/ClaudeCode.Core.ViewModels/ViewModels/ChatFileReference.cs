@@ -6,43 +6,17 @@ using System.Text;
 namespace ClaudeCode.Core.ViewModels;
 
 /// <summary>
-/// Turns file-like tokens in assistant-authored Markdown into clickable links the WebView2
-/// transcript can post back to the host, and parses those links back into a path/line pair. The
-/// markdown is untrusted model output, so this never uses regular expressions for the scan - a
-/// hand-rolled scanner whose scan index only ever moves forward, whose closing-delimiter lookahead
-/// is cached in monotone cursors, and whose link-destination lookahead is length-bounded (the
-/// caller already bounds input length via <see cref="MarkdownSafetyLimits.MaxMarkdownLength"/>)
-/// keeps the cost linear in the message length and rules out any catastrophic-backtracking
-/// exposure. Linearity is a hard requirement, not a nicety: this runs on the UI thread on every
-/// debounced transcript repaint, so re-scanning the rest of a line once per token surfaces as a
-/// frozen window on a capped-size message - measured at 14 s before those bounds existed.
-/// Fenced/indented code blocks, existing markdown links and images, and autolinked/bare URLs are
-/// all left untouched so the rewrite never nests inside content that already has its own
-/// destination.
+/// Turns file-like tokens in assistant-authored Markdown into clickable transcript links, and parses
+/// those links back into a path/line pair. Runs in time linear in the message length. Fenced/indented
+/// code blocks, existing markdown links and images, and autolinked/bare URLs are left untouched.
 /// </summary>
 public static class ChatFileReference
 {
     /// <summary>Href prefix of a transcript file-reference link.</summary>
     public const string LinkPrefix = "/__claudecode/open?";
 
-    /// <summary>
-    /// How far past a <c>](</c> the destination scan looks for the matching <c>)</c>. A destination
-    /// an agent writes is a path or a URL - a few hundred characters at the very most - whereas an
-    /// unbalanced <c>(</c> makes an unbounded scan run to the end of the line from every <c>[</c> on
-    /// it, which is quadratic: <c>"[]( "</c> repeated to the 200 000-char message cap measured 14 s
-    /// in this scanner, the same frozen-UI defect class as the quadratic diff-header regex this
-    /// repo already had to fix. When the bound cuts a scan short the run is copied through
-    /// verbatim (see <see cref="TryConsumeMarkdownLink"/>), so a destination this long costs the
-    /// reader nothing but an unlinked reference inside it.
-    /// </summary>
     private const int MaxLinkDestinationLength = 512;
 
-    /// <summary>
-    /// Extensions that make a token "look like a file" for linkification. A fixed allow-list
-    /// (rather than "any token with a dot") is what keeps version-ish or member-access-ish
-    /// backtick content such as <c>1.0.0</c>, <c>v1.2</c>, or <c>list.Add</c> from being mistaken
-    /// for a file, and what keeps a bare word like "Node.js" alone in prose from being linkified.
-    /// </summary>
     private static readonly HashSet<string> RecognizedExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
         "cs", "csx", "csproj", "vbproj", "fsproj", "vcxproj", "sln", "slnx", "vb", "fs", "fsx",
@@ -109,12 +83,9 @@ public static class ChatFileReference
 
     /// <summary>
     /// Parses a transcript file-reference link back into a path and optional line. Returns
-    /// <see langword="false"/> for anything that is not this app's own <see cref="LinkPrefix"/>
-    /// with a non-empty <c>path</c> query value - the host re-parses the raw href itself rather
-    /// than trusting split path/line fields from the WebView2 page, since that page renders
-    /// untrusted agent markdown. An unusable <c>line</c> value (missing, non-numeric,
-    /// zero/negative, or too large to fit an <see cref="int"/>) still yields the path, just
-    /// without a line: the file can still open.
+    /// <see langword="false"/> for anything that is not a <see cref="LinkPrefix"/> link with a
+    /// non-empty <c>path</c> query value. An unusable <c>line</c> value (missing, non-numeric,
+    /// zero/negative, or too large to fit an <see cref="int"/>) yields the path without a line.
     /// </summary>
     public static bool TryParseLink(string? href, out string path, out int? line)
     {
@@ -175,17 +146,6 @@ public static class ChatFileReference
         return line.Length >= 4 && line[0] == ' ' && line[1] == ' ' && line[2] == ' ' && line[3] == ' ';
     }
 
-    /// <summary>
-    /// Reports the fence marker of a code-fence line: three or more <c>`</c> or <c>~</c> after up
-    /// to three leading spaces, which is what markdown-it - the transcript's renderer - accepts.
-    /// Both the tilde form and the 1-3 space indent occur constantly in agent answers (an indented
-    /// fence is exactly what a code block nested in a bullet looks like), and an unrecognized fence
-    /// means every line of that block gets rewritten, showing the reader a raw
-    /// <c>/__claudecode/open?...</c> destination inside code. Reporting the marker rather than a
-    /// bool is what lets a fence close only on the character that opened it: a stray <c>```</c>
-    /// inside a <c>~~~</c> block would otherwise invert the state and mis-classify every remaining
-    /// line of the message.
-    /// </summary>
     private static bool TryGetFenceMarker(string line, out char marker)
     {
         marker = '\0';
@@ -215,13 +175,6 @@ public static class ChatFileReference
     {
         var result = new StringBuilder(line.Length);
 
-        // Monotone lookahead cursors for the delimiters that close a markdown link and an autolink.
-        // A fresh IndexOf from every '[' or '<' is quadratic whenever the delimiter never closes -
-        // a capped 200 000-char message of "[ " is ~10^10 character comparisons, on the UI thread,
-        // on every repaint - and it is pure waste: the scan index below only ever moves forward, so
-        // a cached hit stays the first one ahead of it until the scan passes it, and a miss (-1) is
-        // final for the rest of the line. Each cursor therefore costs one pass over the line in
-        // total, whatever the input shape.
         var nextCloseBracket = line.IndexOf(']');
         var nextCloseAngle = line.IndexOf('>');
         var i = 0;
@@ -271,8 +224,6 @@ public static class ChatFileReference
                 continue;
             }
 
-            // Emphasis glued to a code span ("**`src\Foo.cs`**"): copy the delimiter run through so
-            // the span itself is judged on the next pass and the link lands inside the emphasis.
             if (c == '*' || c == '_')
             {
                 var run = DelimiterRunLength(line, i);
@@ -334,13 +285,6 @@ public static class ChatFileReference
         }
     }
 
-    /// <summary>
-    /// Consumes a markdown link/image body starting at <paramref name="openBracket"/> (the
-    /// <c>[</c>), with <paramref name="closeBracket"/> supplied by the caller's monotone cursor for
-    /// the next <c>]</c> after it, returning 0 when the brackets/parens never resolve within
-    /// <see cref="MaxLinkDestinationLength"/> so the caller falls back to treating the character as
-    /// plain text.
-    /// </summary>
     private static int TryConsumeMarkdownLink(string line, int openBracket, int closeBracket, out string consumed)
     {
         consumed = string.Empty;
@@ -368,13 +312,6 @@ public static class ChatFileReference
 
         if (depth != 0)
         {
-            // Nothing closed the destination. If the line itself ran out, fall back to plain text:
-            // the prose path then reads the "[...](..." fragment as ordinary words, exactly as it
-            // always has. If instead the bound above cut the scan short, the whole
-            // whitespace-delimited run is copied through verbatim, because prose-scanning the tail
-            // of a 512+ character destination would linkify a path-shaped fragment inside a link
-            // and nest one link in another. Every character copied here is consumed, so the run
-            // costs one pass and the line stays linear.
             if (limit == line.Length)
             {
                 return 0;
@@ -439,20 +376,8 @@ public static class ChatFileReference
         var content = line.Substring(backtick + 1, close - backtick - 1);
         var consumed = close - backtick + 1;
 
-        // Split the location suffix off before judging the extension, exactly as the prose path
-        // does. Without this "`src\Foo.cs:12`" - the shape agent answers overwhelmingly use - reads
-        // as extension "cs:12", matches nothing, and silently stays plain text; and even a match
-        // would hand the host a path with ":12" glued on that no editor can open. The visible code
-        // span keeps only the file name and the suffix ("`Foo.cs:12`") - the path lives in the href -
-        // and needs no escaping: a code span is already literal.
         var (pathPart, suffix, lineNumber) = ExtractLocationSuffix(content);
 
-        // The two branches have to refuse the same things or they ship different bugs: prose never
-        // sees a URL because the line scanner consumes it first, so without the same check here
-        // "`https://example.com/docs/guide.html`" turns into an editor link to a file named
-        // "guide.html". An "=" is the other giveaway that a span is not a reference but a CLI flag
-        // or a setting ("--out=foo.json", "key=value.yml"), where the extension belongs to a value,
-        // not to a file the host could open.
         var isPathShaped = pathPart.Length > 0
             && !ContainsWhitespace(content)
             && !IsUrlStart(content, 0)
@@ -477,8 +402,6 @@ public static class ChatFileReference
         var core = rawToken.Substring(0, coreLength);
         var tail = rawToken.Substring(coreLength);
 
-        // Emphasis wrapping the whole path ("**src\Foo.cs**") stays outside the link. Only a run
-        // repeated at both ends counts: a leading-only run ("__init__.py:3") is part of the name.
         var run = DelimiterRunLength(core, 0);
         if (run > 0 && core.Length > 2 * run && string.CompareOrdinal(core, core.Length - run, core, 0, run) == 0)
         {
@@ -505,7 +428,6 @@ public static class ChatFileReference
         return "[" + EscapeLinkText(FileName(pathPart)) + suffix + "](" + BuildHref(pathPart, line) + ")";
     }
 
-    // Length of the run of the '*' or '_' emphasis delimiter starting at index (0 when none).
     private static int DelimiterRunLength(string text, int index)
     {
         var delimiter = text[index];
@@ -537,11 +459,6 @@ public static class ChatFileReference
     private static bool IsSentencePunctuation(char c) =>
         c == '.' || c == ',' || c == ';' || c == ':' || c == '!' || c == '?';
 
-    /// <summary>
-    /// Splits a trailing <c>:line</c>, <c>:line:col</c>, or <c>(line,col)</c> location suffix off
-    /// <paramref name="core"/>. The column, when present, is only used to validate the suffix
-    /// shape; callers never need it back.
-    /// </summary>
     private static (string PathPart, string Suffix, int? Line) ExtractLocationSuffix(string core)
     {
         if (core.Length > 0 && core[core.Length - 1] == ')')
@@ -640,11 +557,6 @@ public static class ChatFileReference
         return null;
     }
 
-    /// <summary>
-    /// True when the final path segment of <paramref name="path"/> has a <see cref="RecognizedExtensions"/>
-    /// extension. A dot that belongs to an earlier segment (<c>src.old/Foo</c>) or that has no name
-    /// before it in the final segment (<c>.gitignore</c>) does not count.
-    /// </summary>
     private static bool HasRecognizedExtension(string path)
     {
         var dot = path.LastIndexOf('.');
@@ -676,18 +588,8 @@ public static class ChatFileReference
         return result;
     }
 
-    // What a reference shows: the final segment of the path. The full path the agent wrote goes
-    // into the href, where it is used for navigation only.
     private static string FileName(string path) => path.Substring(LastSeparatorIndex(path) + 1);
 
-    /// <summary>
-    /// Escapes the characters markdown reads specially inside link text. A square bracket delimits
-    /// the link text itself: <c>a].md</c> emitted raw ends the text at the <c>]</c>, so markdown-it
-    /// renders the rest, destination included, as visible text. An underscore pair is emphasis:
-    /// <c>__init__.py</c> emitted raw renders as a bold <c>init</c> with the underscores gone. The
-    /// text is a file name, so it never holds a backslash - that is a path separator. The code-span
-    /// branch needs none of this because a code span binds tighter than the brackets and emphasis.
-    /// </summary>
     private static string EscapeLinkText(string fileName)
     {
         var needsEscaping = false;
@@ -727,19 +629,6 @@ public static class ChatFileReference
         return line.HasValue ? href + "&line=" + line.Value.ToString(CultureInfo.InvariantCulture) : href;
     }
 
-    /// <summary>
-    /// Percent-encodes the path for the query string. <see cref="Uri.EscapeDataString"/> alone is
-    /// not enough because it is not stable across target frameworks: on net472/net48 - what the
-    /// extension actually ships on - it follows RFC 2396 and leaves the marks <c>!*'()</c>
-    /// unescaped, while a modern .NET host (including the test host) follows RFC 3986 and escapes
-    /// them. The parentheses are what corrupts output: markdown-it ends a link destination at the
-    /// first unbalanced <c>)</c>, so a path such as <c>src/a(1).cs</c> would leak the rest of the
-    /// href into the rendered answer - in production only, invisibly to the tests. Encoding the
-    /// whole divergent set here makes the emitted markdown identical on every framework;
-    /// <see cref="TryParseLink"/> reads it back with <see cref="Uri.UnescapeDataString"/>, which
-    /// decodes all of them, and the raw <c>&amp;</c>/<c>=</c> split it does first is unaffected
-    /// because neither character is a mark.
-    /// </summary>
     private static string EncodePathValue(string path)
     {
         var escaped = Uri.EscapeDataString(path);

@@ -4,12 +4,8 @@ using System.Net;
 namespace ClaudeCode.Core.ViewModels;
 
 /// <summary>
-/// Pure string/Uri guardrails for untrusted assistant Markdown. Two WebView2 pages render it -
-/// the transcript (<c>Resources/Transcript/transcript.js</c>) and the plan document
-/// (<c>Resources/Transcript/plan.js</c>), both markdown-it with <c>html:false</c> plus DOMPurify -
-/// and both are bounded here before the text reaches either renderer: transcript message text in
-/// <see cref="ChatMessageViewModel"/>'s constructor and <c>AppendText</c>, plan text in
-/// <c>PlanReviewViewModel</c>'s constructor. Kept XAML-free so they are directly unit-testable.
+/// Length and link guardrails for untrusted assistant Markdown rendered in the transcript and plan
+/// document.
 /// </summary>
 public static class MarkdownSafetyLimits
 {
@@ -17,8 +13,7 @@ public static class MarkdownSafetyLimits
     internal const string TruncationNotice = "\n\n*(message truncated: exceeded the maximum renderable size)*";
 
     /// <summary>
-    /// Truncates markdown text before it is handed to the renderer, bounding parser work and
-    /// rendered DOM size for arbitrarily large model output.
+    /// Truncates markdown text to at most <paramref name="maxLength"/> characters plus a truncation notice.
     /// </summary>
     public static string LimitMarkdownLength(string markdown, int maxLength = MaxMarkdownLength)
     {
@@ -32,9 +27,7 @@ public static class MarkdownSafetyLimits
 
     /// <summary>
     /// True only for absolute http/https links whose host is neither loopback nor an unspecified
-    /// IP address. IPv4-mapped IPv6 addresses are checked as IPv4 destinations. The null/relative
-    /// branch is defensive only: every caller already gates on
-    /// <c>Uri.TryCreate(target, UriKind.Absolute, out var uri)</c> before calling in.
+    /// IP address. IPv4-mapped IPv6 addresses are checked as IPv4 destinations.
     /// </summary>
     public static bool IsNavigableLink(Uri? uri)
     {

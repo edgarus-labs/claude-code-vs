@@ -9,9 +9,9 @@ using Xunit;
 namespace ClaudeCode.Acp.Tests;
 
 /// <summary>
-/// Pins the two host-security properties of <see cref="VsControlInjectingConnection"/>: the sandbox
+/// Covers the host-security properties of <see cref="VsControlInjectingConnection"/>: the sandbox
 /// root handed to a VS-control server is the host's, never the wire-supplied <c>cwd</c>; and at most
-/// one control server is live per connection, so an abandoned session cannot keep driving the IDE.
+/// one control server is live per connection.
 /// </summary>
 public sealed class VsControlInjectingConnectionTests
 {
@@ -53,7 +53,6 @@ public sealed class VsControlInjectingConnectionTests
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => connection.LoadSessionAsync("gone", @"C:\agent\cwd", null, CancellationToken.None));
 
-        // The session the user is still in must survive a failed resume; only the stillborn one dies.
         Assert.Equal(new[] { host.Started[1] }, host.Ended);
         Assert.Equal(new[] { host.Started[0] }, host.Live);
     }
@@ -119,8 +118,6 @@ public sealed class VsControlInjectingConnectionTests
         var host = new RecordingSessionHost();
         await using var connection = new VsControlInjectingConnection(new StubConnection(), host, () => @"C:\host\solution");
 
-        // A caller could take `cwd` on this path from SessionSummary.Cwd - agent-reported, so honouring
-        // it would let the agent pick the directory it is then confined to.
         await connection.LoadSessionAsync("resumed", @"C:\agent\chosen", null, CancellationToken.None);
 
         Assert.Equal(new[] { @"C:\host\solution" }, host.WorkspaceRoots);
@@ -229,7 +226,6 @@ public sealed class VsControlInjectingConnectionTests
         public Task<RemoteControlState> SetRemoteControlAsync(string sessionId, bool enabled, string? name, CancellationToken cancellationToken) =>
             Task.FromException<RemoteControlState>(new NotSupportedException());
 
-        /// <summary>Net handlers currently attached across all six events; zero means the decorator detached.</summary>
         public int HandlerCount { get; private set; }
 
         public event EventHandler<SessionUpdateEventArgs>? SessionUpdate { add => HandlerCount++; remove => HandlerCount--; }

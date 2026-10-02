@@ -9,10 +9,8 @@ public static class ProcessExitWait
 {
     /// <summary>
     /// Completes when <paramref name="exited"/> does, or throws <see cref="OperationCanceledException"/>
-    /// as soon as <paramref name="cancellationToken"/> is cancelled - even if the process never exits
-    /// (a failed kill must not hang the caller). The cancellation callback only signals; the waiter's
-    /// continuation (typically process-tree cleanup) never runs inline on the thread that called
-    /// <c>Cancel()</c>, which is usually the UI thread.
+    /// as soon as <paramref name="cancellationToken"/> is cancelled, even if the process never exits.
+    /// Continuations never run inline on the thread that cancelled the token.
     /// </summary>
     public static async Task WaitForExitAsync(Task exited, CancellationToken cancellationToken)
     {

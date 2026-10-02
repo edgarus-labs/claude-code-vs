@@ -4,18 +4,14 @@ using System.Globalization;
 namespace ClaudeCode.Core.ViewModels;
 
 /// <summary>
-/// Pure relative-time labelling for session timestamps ("2h ago", "yesterday", or a short date once
-/// the entry is a week old). Kept here (XAML-free, with the clock passed in) so the bucket boundaries
-/// are directly unit-testable; <c>ClaudeCode.Core.Views.Converters.RelativeTimeConverter</c> is a thin
-/// binding shim that supplies <see cref="DateTimeOffset.Now"/> and the binding's culture.
+/// Relative-time labels for session timestamps ("2h ago", "yesterday", or a short date once
+/// the entry is a week old).
 /// </summary>
 public static class RelativeTimeFormatter
 {
     /// <summary>
-    /// Describes <paramref name="timestamp"/> relative to <paramref name="now"/>. A timestamp in the
-    /// future (clock skew, or an agent-reported time) is clamped to "now" rather than rendered as a
-    /// negative age. Every branch formats with <paramref name="culture"/> so one label never mixes
-    /// the binding culture with the ambient one.
+    /// Describes <paramref name="timestamp"/> relative to <paramref name="now"/>, formatted with
+    /// <paramref name="culture"/> (or the current culture when null). A future timestamp is treated as "now".
     /// </summary>
     public static string Describe(DateTimeOffset now, DateTimeOffset timestamp, CultureInfo? culture)
     {

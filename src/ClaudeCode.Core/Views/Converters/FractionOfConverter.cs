@@ -5,14 +5,9 @@ using System.Windows.Data;
 namespace ClaudeCode.Core.Views.Converters;
 
 /// <summary>
-/// Multiplies a length by the fraction in <c>ConverterParameter</c>, for bounding a panel against a
-/// share of its host rather than a pixel constant. A fixed <c>MaxHeight</c> cannot serve both a
-/// short tool window and a tall one: the same number that leaves a long prompt scrollable on a tall
-/// panel makes a two-line prompt scroll needlessly on a short one.
+/// Multiplies a length by the fraction in <c>ConverterParameter</c>.
 /// <para>
-/// Returns <see cref="double.PositiveInfinity"/> (i.e. no bound) for anything it cannot interpret,
-/// including the zero-height first measure pass, because an unbounded panel degrades to the old
-/// "grows and scrolls with its parent" behaviour while a zero bound would collapse it to nothing.
+/// Returns <see cref="double.PositiveInfinity"/> for anything it cannot interpret, including a zero length.
 /// </para>
 /// </summary>
 public sealed class FractionOfConverter : IValueConverter

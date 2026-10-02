@@ -4,7 +4,7 @@ using System.Threading.Tasks;
 
 namespace ClaudeCode.Contracts;
 
-/// <summary>The levels Auto effort may choose. Higher agent levels stay an explicit user choice.</summary>
+/// <summary>The levels Auto effort may choose.</summary>
 public enum EffortLevel
 {
     Low = 0,
@@ -14,9 +14,8 @@ public enum EffortLevel
 
 public static class EffortLevelExtensions
 {
-    /// <summary>The value the agent uses for this level: the one place a level becomes a string, so
-    /// reordering or extending <see cref="EffortLevel"/> cannot silently mis-map. Faults for a value
-    /// that is not a defined level, as a misbehaving <see cref="IEffortClassifier"/> could return.</summary>
+    /// <summary>Returns the value the agent uses for this level. Throws
+    /// <see cref="ArgumentOutOfRangeException"/> for a value that is not a defined level.</summary>
     public static string ToAgentValue(this EffortLevel level) => level switch
     {
         EffortLevel.Low => "low",
@@ -31,6 +30,6 @@ public interface IEffortClassifier
 {
     /// <summary>Classifies one prompt. Throws <see cref="System.OperationCanceledException"/> when
     /// <paramref name="cancellationToken"/> is cancelled; any other exception means no verdict could
-    /// be obtained (the caller decides the fallback rather than the classifier guessing).</summary>
+    /// be obtained.</summary>
     Task<EffortLevel> ClassifyAsync(string prompt, CancellationToken cancellationToken);
 }

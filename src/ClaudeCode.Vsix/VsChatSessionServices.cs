@@ -43,15 +43,12 @@ internal sealed class VsChatSessionServices : IChatSessionServices, IAutoEffortS
 
     public IEffortClassifier? EffortClassifier { get; }
 
-    // Errors go to the "Claude Code" Output pane (Output > Show output from) as well as the ActivityLog,
-    // which is only written when Visual Studio runs with /log. Only errors are logged here.
     private static OutputWindowPane? _outputPane;
 
     public void LogError(string message, Exception exception)
     {
         var line = "[Error] " + message + " " + exception.GetType().Name + ": " + exception.Message;
         ActivityLog.TryLogError("Claude Code", message + " " + exception);
-        // Failures are logged inside, and FileAndForget reports the fault to VS telemetry.
 #pragma warning disable VSSDK007
         ThreadHelper.JoinableTaskFactory.RunAsync(async () =>
         {
@@ -86,10 +83,6 @@ internal sealed class VsChatSessionServices : IChatSessionServices, IAutoEffortS
     public async Task OpenDocumentAsync(string path, int? line, CancellationToken cancellationToken)
     {
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
-        // A null view means the shell did not open the document (deleted, locked, or not something
-        // it can display). Returning normally there would report success for a click that did
-        // nothing; the contract on IChatSessionServices.OpenDocumentAsync is to fault so the
-        // caller can tell the user, which is what VsControlPipeServer.OpenDocumentAsync does too.
         var view = await VS.Documents.OpenAsync(path) ??
             throw new InvalidOperationException($"'{path}' could not be opened.");
         if (line.HasValue && view.TextView is not null && view.TextBuffer is not null)

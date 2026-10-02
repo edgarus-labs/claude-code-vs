@@ -8,20 +8,13 @@ using System.Windows.Forms;
 
 namespace ClaudeCode.Vsix;
 
-/// <summary>Shows a Windows notification (tray balloon → Action Center toast) when Claude needs the
-/// user and Visual Studio is not the foreground window, like the VS Code extension's notifications.
-/// Clicking the notification brings Visual Studio and the Claude Code window to the front.</summary>
 internal sealed class VsAttentionNotifier : IDisposable
 {
     private readonly NotifyIcon _icon;
-    /// <summary>The icon cloned from the packaged bitmap, which owns a native HICON; null when the
-    /// stock <see cref="SystemIcons.Information"/> (shared, never disposed) is in use instead.</summary>
     private readonly Icon? _ownedIcon;
     private readonly Action _activateChatWindow;
     private bool _disposed;
 
-    /// <param name="activateChatWindow">Brings the Claude Code window to the front. Invoked on the
-    /// UI thread when the user clicks the notification.</param>
     public VsAttentionNotifier(Action activateChatWindow)
     {
         ThreadHelper.ThrowIfNotOnUIThread();
@@ -52,8 +45,6 @@ internal sealed class VsAttentionNotifier : IDisposable
     private void OnBalloonClicked(object? sender, EventArgs e)
     {
         HideIcon();
-        // Fire-and-forget by design: a click on a system notification has no caller to await it;
-        // failures are logged inside, and FileAndForget reports the fault to VS telemetry.
 #pragma warning disable VSSDK007
         ThreadHelper.JoinableTaskFactory.RunAsync(async () =>
         {
@@ -93,9 +84,6 @@ internal sealed class VsAttentionNotifier : IDisposable
                 using var bitmap = new Bitmap(path);
                 using var sized = new Bitmap(bitmap, new Size(32, 32));
 
-                // GetHicon allocates a native handle that Icon.FromHandle wraps with
-                // ownHandle: false - disposing that Icon never calls DestroyIcon. Clone into a
-                // managed icon that owns its own handle, then release the native one.
                 IntPtr nativeHandle = sized.GetHicon();
                 try
                 {
@@ -110,7 +98,6 @@ internal sealed class VsAttentionNotifier : IDisposable
         }
         catch (Exception)
         {
-            // Fall through to the stock icon.
         }
 
         return null;
@@ -121,7 +108,6 @@ internal sealed class VsAttentionNotifier : IDisposable
         if (_disposed) return;
         _disposed = true;
         _icon.Visible = false;
-        // NotifyIcon.Dispose does not dispose the Icon assigned to it.
         _icon.Dispose();
         _ownedIcon?.Dispose();
     }

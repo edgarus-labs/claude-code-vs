@@ -58,8 +58,7 @@ public enum ElicitationAction
 }
 
 /// <summary>The user's answer to an <see cref="ElicitationRequestEventArgs"/>. A field key absent
-/// from <see cref="Content"/> means the user left that field blank - never send an empty list to
-/// mean "answered with nothing".</summary>
+/// from <see cref="Content"/> means the user left that field blank.</summary>
 public sealed class ElicitationAnswer
 {
     public ElicitationAnswer(ElicitationAction action, IReadOnlyDictionary<string, IReadOnlyList<string>> content)

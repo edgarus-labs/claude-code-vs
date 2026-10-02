@@ -11,14 +11,9 @@ using Xunit;
 namespace ClaudeCode.VsControl.Mcp.Tests;
 
 /// <summary>
-/// Exercises the real production ACL construction (<see cref="PipeSecurityFactory.CreateCurrentUserOnly"/>,
-/// src/ClaudeCode.Contracts/PipeSecurityFactory.cs) that <c>VsControlPipeServer.CreatePipeSecurity()</c>
-/// (src/ClaudeCode.Vsix/VsControl/VsControlPipeServer.cs, net48) delegates to. The factory lives in
-/// ClaudeCode.Contracts (netstandard2.0) specifically so this net8.0 xunit project - which cannot
-/// reference the net48 VS-SDK host project without pulling in the Microsoft.VsSDK.BuildTools
-/// toolchain - can call the actual production code path instead of duplicating it, applies the
-/// resulting <see cref="PipeSecurity"/> to a real Windows named pipe via
-/// <see cref="NamedPipeServerStreamAcl"/>, and asserts on the ACL the OS actually enforces.
+/// Covers <see cref="PipeSecurityFactory.CreateCurrentUserOnly"/> by applying the resulting
+/// <see cref="PipeSecurity"/> to a real Windows named pipe via <see cref="NamedPipeServerStreamAcl"/>
+/// and asserting on the ACL the OS enforces.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class PipeSecurityAclTests
@@ -48,7 +43,6 @@ public sealed class PipeSecurityAclTests
     [Fact]
     public void CreateCurrentUserOnly_CalledRepeatedly_DoesNotLeakWindowsIdentityHandles()
     {
-        // Warm up: absorb JIT/first-call handle allocations so they don't pollute the measurement.
         for (int i = 0; i < 50; i++)
         {
             PipeSecurityFactory.CreateCurrentUserOnly(PipeAccessRights.ReadWrite);
@@ -70,9 +64,6 @@ public sealed class PipeSecurityAclTests
         long after = process.HandleCount;
         long grown = after - before;
 
-        // An undisposed WindowsIdentity per call leaks one native token handle per iteration, so a
-        // leak would grow roughly proportionally to `iterations`. Tolerate generous background
-        // handle noise (GC, other threads) without requiring growth to be exactly zero.
         Assert.True(grown < iterations / 2,
             $"Handle count grew by {grown} across {iterations} CreateCurrentUserOnly calls; expected far less than {iterations / 2} if WindowsIdentity is disposed correctly.");
     }

@@ -55,7 +55,6 @@ public sealed class ToolCallCardViewModel : ObservableObject
 
         if (!string.IsNullOrEmpty(call.Title))
         {
-            // MCP tools arrive as a routing identifier (mcp__visual-studio__listAppWindows).
             Title = ToolDisplayName.Describe(call.Title);
         }
 
@@ -79,10 +78,6 @@ public sealed class ToolCallCardViewModel : ObservableObject
         }
     }
 
-    // A tool call card is rebuilt (new ToolCallContentViewModel per item) on every tool_call_update,
-    // even when the diff content itself is unchanged. This single-entry cache is scoped to this
-    // card instance (one card per ToolCallId) so repeated updates on the same tool call reuse the
-    // previously computed diff without recomputing it, and without leaking state to other cards.
     private IReadOnlyList<DiffLineViewModel>? ResolveDiffLines(ToolCallContent contentItem)
     {
         if (!contentItem.IsDiff)
