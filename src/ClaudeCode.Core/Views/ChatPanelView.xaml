@@ -143,15 +143,59 @@
         <Setter Property="Foreground" Value="{DynamicResource ChatForegroundBrush}" />
         <Setter Property="BorderThickness" Value="0" />
         <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled" />
-        <!-- Hidden, not Disabled: a ListBox always owns an internal ScrollViewer. Disabled truly
-             blocks scrolling (not just the bar) and swallows the mouse wheel event before it can
-             bubble up to the ScrollViewer these lists are wrapped in - Hidden keeps the inner one
-             bar-less but lets the wheel event pass through. The Model/Effort/Mode wrappers below are
-             bar-less too, on purpose: those popups scroll by wheel and keyboard only, with no
-             scrollbar drawn against their rounded frame. -->
+        <!-- Hidden, not Disabled: a ListBox always owns an internal ScrollViewer, and Disabled truly
+             blocks scrolling, not just the bar. The Mode list keeps this bar-less style and scrolls
+             with that inner ScrollViewer, by wheel and keyboard only. The Model and Effort lists use
+             ConfigScrollingListStyle instead. -->
         <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Hidden" />
         <Setter Property="HorizontalContentAlignment" Value="Stretch" />
         <Setter Property="KeyboardNavigation.DirectionalNavigation" Value="Contained" />
+      </Style>
+
+      <!-- Model and Effort lists. They scroll with their own ScrollViewer, not a wrapping one: an
+           inner ScrollViewer marks every wheel event handled even when it has nothing to scroll,
+           so a wrapper around the list never sees the wheel. The bar appears once the agent
+           advertises more entries than fit, and mirrors the transcript's ::-webkit-scrollbar rules
+           (transcript.css), which follow the VS Code extension: a 10px lane with no track or arrow
+           buttons, and a rounded 4px thumb in the foreground colour at 28% (45% while hovered or dragged). -->
+      <Style x:Key="ConfigScrollingListStyle" TargetType="ListBox" BasedOn="{StaticResource ConfigListStyle}">
+        <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Auto" />
+        <Setter Property="ScrollViewer.CanContentScroll" Value="False" />
+        <Style.Resources>
+          <Style TargetType="ScrollBar">
+            <Setter Property="Width" Value="10" />
+            <Setter Property="MinWidth" Value="10" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Template">
+              <Setter.Value>
+                <ControlTemplate TargetType="ScrollBar">
+                  <Track x:Name="PART_Track" IsDirectionReversed="True">
+                    <Track.Thumb>
+                      <Thumb>
+                        <Thumb.Template>
+                          <ControlTemplate TargetType="Thumb">
+                            <Border Background="Transparent">
+                              <Border x:Name="ThumbFill" Margin="3" CornerRadius="2" Opacity="0.28"
+                                      Background="{DynamicResource ChatForegroundBrush}" />
+                            </Border>
+                            <ControlTemplate.Triggers>
+                              <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ThumbFill" Property="Opacity" Value="0.45" />
+                              </Trigger>
+                              <Trigger Property="IsDragging" Value="True">
+                                <Setter TargetName="ThumbFill" Property="Opacity" Value="0.45" />
+                              </Trigger>
+                            </ControlTemplate.Triggers>
+                          </ControlTemplate>
+                        </Thumb.Template>
+                      </Thumb>
+                    </Track.Thumb>
+                  </Track>
+                </ControlTemplate>
+              </Setter.Value>
+            </Setter>
+          </Style>
+        </Style.Resources>
       </Style>
 
       <Style x:Key="ConfigItemStyle" TargetType="ListBoxItem">
@@ -1105,13 +1149,11 @@
               <TextBlock Grid.Row="0" Text="Model" Margin="11,6,11,5"
                          FontSize="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=11}"
                          Foreground="{DynamicResource ChatSubtleForegroundBrush}" />
-              <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled">
-                <ListBox x:Name="ModelList" ItemsSource="{Binding AvailableModels}" SelectedItem="{Binding SelectedModel, Mode=OneWay}"
-                         IsEnabled="{Binding CanConfigure}" Style="{StaticResource ConfigListStyle}"
-                         ItemContainerStyle="{StaticResource ConfigItemStyle}" ItemTemplate="{StaticResource ConfigValueTemplate}"
-                         AutomationProperties.Name="Model" PreviewMouseLeftButtonUp="ConfigList_PreviewMouseLeftButtonUp"
-                         PreviewKeyDown="ConfigList_PreviewKeyDown" />
-              </ScrollViewer>
+              <ListBox x:Name="ModelList" Grid.Row="1" ItemsSource="{Binding AvailableModels}" SelectedItem="{Binding SelectedModel, Mode=OneWay}"
+                       IsEnabled="{Binding CanConfigure}" Style="{StaticResource ConfigScrollingListStyle}"
+                       ItemContainerStyle="{StaticResource ConfigItemStyle}" ItemTemplate="{StaticResource ConfigValueTemplate}"
+                       AutomationProperties.Name="Model" PreviewMouseLeftButtonUp="ConfigList_PreviewMouseLeftButtonUp"
+                       PreviewKeyDown="ConfigList_PreviewKeyDown" />
               <StackPanel Grid.Row="2" Visibility="{Binding HasEffort, Converter={StaticResource BoolToVisibilityConverter}}">
                 <Border Height="1" Background="{DynamicResource ChatBorderBrush}" Margin="5,8,5,5" />
                 <Button x:Name="EffortButton" Click="EffortButton_Click" IsEnabled="{Binding CanConfigure}"
@@ -1150,13 +1192,11 @@
                              FontSize="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=12}" />
                 </StackPanel>
               </Button>
-              <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled">
-                <ListBox x:Name="EffortList" ItemsSource="{Binding AvailableEfforts}" SelectedItem="{Binding SelectedEffort, Mode=OneWay}"
-                         IsEnabled="{Binding CanConfigure}" Style="{StaticResource ConfigListStyle}"
-                         ItemContainerStyle="{StaticResource ConfigItemStyle}" ItemTemplate="{StaticResource ConfigValueTemplate}"
-                         AutomationProperties.Name="Reasoning effort" PreviewMouseLeftButtonUp="ConfigList_PreviewMouseLeftButtonUp"
-                         PreviewKeyDown="ConfigList_PreviewKeyDown" />
-              </ScrollViewer>
+              <ListBox x:Name="EffortList" Grid.Row="1" ItemsSource="{Binding AvailableEfforts}" SelectedItem="{Binding SelectedEffort, Mode=OneWay}"
+                       IsEnabled="{Binding CanConfigure}" Style="{StaticResource ConfigScrollingListStyle}"
+                       ItemContainerStyle="{StaticResource ConfigItemStyle}" ItemTemplate="{StaticResource ConfigValueTemplate}"
+                       AutomationProperties.Name="Reasoning effort" PreviewMouseLeftButtonUp="ConfigList_PreviewMouseLeftButtonUp"
+                       PreviewKeyDown="ConfigList_PreviewKeyDown" />
             </Grid>
           </Grid>
         </Border>
@@ -1179,13 +1219,13 @@
             <TextBlock Grid.Row="0" Text="Mode" Margin="11,6,11,5"
                        FontSize="{Binding ChatTextFontSize, ElementName=ChatPanel, Converter={StaticResource ChatTextFontSizeConverter}, ConverterParameter=11}"
                        Foreground="{DynamicResource ChatSubtleForegroundBrush}" />
-            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled">
-              <ListBox x:Name="ModeList" ItemsSource="{Binding AvailableModes}" SelectedItem="{Binding SelectedMode, Mode=OneWay}"
-                       IsEnabled="{Binding CanConfigure}" Style="{StaticResource ConfigListStyle}" Margin="0,0,0,6"
-                       ItemContainerStyle="{StaticResource ConfigItemStyle}" ItemTemplate="{StaticResource ModeValueTemplate}"
-                       AutomationProperties.Name="Session mode" PreviewMouseLeftButtonUp="ConfigList_PreviewMouseLeftButtonUp"
-                       PreviewKeyDown="ConfigList_PreviewKeyDown" />
-            </ScrollViewer>
+            <!-- No wrapping ScrollViewer: the list's own one would handle every wheel event and starve it
+                 (see ConfigScrollingListStyle), so the list, bounded by the star row, scrolls itself. -->
+            <ListBox x:Name="ModeList" Grid.Row="1" ItemsSource="{Binding AvailableModes}" SelectedItem="{Binding SelectedMode, Mode=OneWay}"
+                     IsEnabled="{Binding CanConfigure}" Style="{StaticResource ConfigListStyle}" Margin="0,0,0,6"
+                     ItemContainerStyle="{StaticResource ConfigItemStyle}" ItemTemplate="{StaticResource ModeValueTemplate}"
+                     AutomationProperties.Name="Session mode" PreviewMouseLeftButtonUp="ConfigList_PreviewMouseLeftButtonUp"
+                     PreviewKeyDown="ConfigList_PreviewKeyDown" />
           </Grid>
         </Border>
       </Popup>

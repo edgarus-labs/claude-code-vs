@@ -253,8 +253,9 @@ public sealed partial class ChatSessionStateTests
 
         await vm.CancelAsync();
 
-        await WaitUntilAsync(() => vm.PendingPermission is null);
-        Assert.True(plan.IsResolved);
+        // The card is cleared before the plan is marked resolved, in one UI callback that the test's
+        // synchronization context runs on another thread - wait for both, not just the first.
+        await WaitUntilAsync(() => vm.PendingPermission is null && plan.IsResolved);
         Assert.False(plan.ProceedCommand.CanExecute(null));
         Assert.False(plan.ReviewCommand.CanExecute("late comments"));
 
