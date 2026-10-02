@@ -1933,6 +1933,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             if (!_disposed) StatusMessage = $"Cancel failed: {ex.Message}";
             DispatchNextQueuedMessage();
         }
+        // Stop ends the turn its questions belong to, so none may stay on screen asking for an answer.
+        // After CancelAsync, never before: the connection answers a pending permission as "cancelled"
+        // while it handles the cancel, and that answer must win over the fallback below. Also after a
+        // failed cancel - the connection resolves them on that path too.
+        if (!_disposed) DismissPendingPrompts();
     }
 
     public Task NewSessionAsync() => OnUiAsync(NewSessionCoreAsync);
@@ -2152,6 +2157,21 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         _pendingPlan?.MarkResolved("Session ended");
         PendingPlan = null;
         _pendingPlanReviewComments = null;
+        DiscardPendingQuestions(reason);
+    }
+
+    // Stop's counterpart of ClearPendingRequests: the session lives on, so the plan document stays
+    // (resolved, like any answered plan) and review comments already queued for the next prompt are
+    // kept. Slots the connection has already answered are untouched; any other is resolved here so
+    // its awaiter cannot hang.
+    private void DismissPendingPrompts()
+    {
+        if (_pendingPlan is { IsResolved: false }) _pendingPlan.MarkResolved("Stopped");
+        DiscardPendingQuestions("Stopped by the user.");
+    }
+
+    private void DiscardPendingQuestions(string reason)
+    {
         _pendingPermissionResponse?.TrySetException(new OperationCanceledException(reason));
         _pendingPermissionResponse = null;
         PendingPermission = null;

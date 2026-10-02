@@ -174,6 +174,110 @@ public sealed partial class ChatSessionStateTests
         Assert.Null(vm.PendingElicitation);
     }
 
+    // #54: Stop ends the turn a question belongs to, so the card must leave the chat with it - the
+    // user would otherwise be shown a prompt that still seems to need an answer.
+    [Fact]
+    public async Task Stop_WhileAPermissionIsPending_DismissesItsCard_AndKeepsTheAnswerTheAgentGave()
+    {
+        const string cancelledOptionId = "cancelled-by-connection";
+        var turn = new TaskCompletionSource<bool>();
+        var connection = new RecordingAcpAgentConnection { PromptHandler = _ => turn.Task };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "edit it";
+        var sending = vm.SendAsync();
+        var permission = connection.RaisePermissionRequested(
+            new ToolCallUpdate { ToolCallId = "tc-1", Title = "Edit a.cs", Status = ToolCallStatus.Pending },
+            [new PermissionOption { OptionId = "allow", Label = "Allow", Outcome = PermissionOutcome.AllowOnce }]);
+        // The real connection answers a pending permission as cancelled while it handles session/cancel.
+        connection.CancelHandler = () =>
+        {
+            permission.Response.TrySetResult(cancelledOptionId);
+            return Task.CompletedTask;
+        };
+        Assert.NotNull(vm.PendingPermission);
+
+        await vm.CancelAsync();
+
+        Assert.Null(vm.PendingPermission);
+        Assert.Equal(cancelledOptionId, await permission.Response.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+
+        turn.SetResult(true);
+        await sending;
+    }
+
+    [Fact]
+    public async Task Stop_WhileAPermissionIsPending_ResolvesARequestTheConnectionLeftOpen()
+    {
+        var turn = new TaskCompletionSource<bool>();
+        var connection = new RecordingAcpAgentConnection { PromptHandler = _ => turn.Task };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "edit it";
+        var sending = vm.SendAsync();
+        var permission = connection.RaisePermissionRequested(
+            new ToolCallUpdate { ToolCallId = "tc-1", Title = "Edit a.cs", Status = ToolCallStatus.Pending },
+            [new PermissionOption { OptionId = "allow", Label = "Allow", Outcome = PermissionOutcome.AllowOnce }]);
+
+        await vm.CancelAsync();
+
+        Assert.Null(vm.PendingPermission);
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            () => permission.Response.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+
+        turn.SetResult(true);
+        await sending;
+    }
+
+    [Fact]
+    public async Task Stop_WhileAnElicitationIsPending_DismissesItsForm_AndCancelsIt()
+    {
+        var turn = new TaskCompletionSource<bool>();
+        var connection = new RecordingAcpAgentConnection { PromptHandler = _ => turn.Task };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "ask me";
+        var sending = vm.SendAsync();
+        var elicitation = connection.RaiseElicitationRequested("Pick a color",
+            [new ElicitationField("q0", null, null, ElicitationFieldKind.Text, [])]);
+        Assert.NotNull(vm.PendingElicitation);
+
+        await vm.CancelAsync();
+
+        Assert.Null(vm.PendingElicitation);
+        Assert.False(vm.IsElicitationOpen);
+        var answer = await elicitation.Response.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(ElicitationAction.Cancel, answer.Action);
+
+        turn.SetResult(true);
+        await sending;
+    }
+
+    [Fact]
+    public async Task Stop_WhileAPlanAwaitsApproval_DismissesTheCard_AndDisablesThePlanDocument()
+    {
+        var turn = new TaskCompletionSource<bool>();
+        var connection = new RecordingAcpAgentConnection { PromptHandler = _ => turn.Task };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "plan it";
+        var sending = vm.SendAsync();
+        var (call, options) = PlanApprovalRequest();
+        connection.RaisePermissionRequested(call, options);
+        var plan = vm.PendingPlan!;
+        Assert.False(plan.IsResolved);
+
+        await vm.CancelAsync();
+
+        Assert.Null(vm.PendingPermission);
+        Assert.True(plan.IsResolved);
+        Assert.False(plan.ProceedCommand.CanExecute(null));
+        Assert.False(plan.ReviewCommand.CanExecute("late comments"));
+
+        turn.SetResult(true);
+        await sending;
+    }
+
     // poisoned-session-id-after-failed-load: a session/load that fails must not leave the viewmodel
     // believing it owns a session the agent never loaded.
     [Fact]
