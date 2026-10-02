@@ -6,10 +6,9 @@ using Xunit;
 namespace ClaudeCode.Acp.Tests;
 
 /// <summary>
-/// TaskCompletionSourceSlot{T}.SetResult/SetException were misleadingly named after
-/// TaskCompletionSource.SetResult/SetException (which throw on an already-completed task) while
-/// actually behaving like TrySetResult/TrySetException (silently ignoring a second completion). The
-/// rename makes the name match the real, already-safe semantics; behavior is unchanged.
+/// Covers <c>TaskCompletionSourceSlot{T}.TrySetResult</c> and <c>TrySetException</c>: the first call
+/// completes the task and returns true; later calls return false without throwing or changing the
+/// result.
 /// </summary>
 public sealed class TaskCompletionSourceSlotTests
 {

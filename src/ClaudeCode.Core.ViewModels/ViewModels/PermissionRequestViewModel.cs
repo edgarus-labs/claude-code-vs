@@ -26,9 +26,18 @@ public sealed class PermissionRequestViewModel
         });
     }
 
+    /// <summary>
+    /// Gets the title.
+    /// </summary>
     public string Title { get; }
 
+    /// <summary>
+    /// Gets the collection of options.
+    /// </summary>
     public IReadOnlyList<PermissionOption> Options { get; }
 
+    /// <summary>
+    /// Gets the choose command.
+    /// </summary>
     public ICommand ChooseCommand { get; }
 }

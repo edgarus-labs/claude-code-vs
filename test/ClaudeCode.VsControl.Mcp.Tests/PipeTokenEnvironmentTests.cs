@@ -1,3 +1,4 @@
+using ClaudeCode.Contracts;
 using System;
 using System.IO;
 using System.IO.Pipes;
@@ -5,20 +6,17 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using ClaudeCode.Contracts;
 using Xunit;
 
 namespace ClaudeCode.VsControl.Mcp.Tests;
 
-[CollectionDefinition("Pipe token environment", DisableParallelization = true)]
-public sealed class PipeTokenEnvironmentScope
-{
-}
-
 [Collection("Pipe token environment")]
 public sealed class PipeTokenEnvironmentTests
 {
-    private const string TokenVariable = "CLAUDECODE_VSCONTROL_TOKEN";
+    /// <summary>
+    /// The token variable.
+    /// </summary>
+    private const string _tokenVariable = "CLAUDECODE_VSCONTROL_TOKEN";
 
     [Theory]
     [InlineData(null)]
@@ -28,25 +26,25 @@ public sealed class PipeTokenEnvironmentTests
     [InlineData("token\rrequest")]
     public void Constructor_RejectsMissingOrMalformedEnvironmentToken(string? token)
     {
-        string? previous = Environment.GetEnvironmentVariable(TokenVariable);
+        string? previous = Environment.GetEnvironmentVariable(_tokenVariable);
         try
         {
-            Environment.SetEnvironmentVariable(TokenVariable, token);
+            Environment.SetEnvironmentVariable(_tokenVariable, token);
             Assert.Throws<ArgumentException>(() => new VsControlPipeClient("unused"));
         }
         finally
         {
-            Environment.SetEnvironmentVariable(TokenVariable, previous);
+            Environment.SetEnvironmentVariable(_tokenVariable, previous);
         }
     }
 
     [Fact]
     public async Task SendAsync_UsesEnvironmentTokenForHandshake()
     {
-        string? previous = Environment.GetEnvironmentVariable(TokenVariable);
+        string? previous = Environment.GetEnvironmentVariable(_tokenVariable);
         try
         {
-            Environment.SetEnvironmentVariable(TokenVariable, "environment-token");
+            Environment.SetEnvironmentVariable(_tokenVariable, "environment-token");
             string pipeName = $"vscontrol-env-{Guid.NewGuid():N}";
             using var pipe = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
             Task serve = Task.Run(async () =>
@@ -67,7 +65,7 @@ public sealed class PipeTokenEnvironmentTests
         }
         finally
         {
-            Environment.SetEnvironmentVariable(TokenVariable, previous);
+            Environment.SetEnvironmentVariable(_tokenVariable, previous);
         }
     }
 }

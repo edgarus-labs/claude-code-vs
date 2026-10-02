@@ -7,13 +7,15 @@ using Xunit;
 namespace ClaudeCode.Acp.Tests;
 
 /// <summary>
-/// Covers the byte-bounded handshake read used by the VsControl named-pipe server. The pipe name is
-/// enumerable, so any same-user process can connect and stream newline-free bytes; the reader must
-/// refuse past a small cap instead of accumulating them, and must not consume anything the
-/// authenticated request loop still needs.
+/// Covers the byte-bounded handshake line read used by the VsControl named-pipe server: it rejects
+/// a line longer than the cap without consuming the rest and leaves bytes after the terminator
+/// readable.
 /// </summary>
 public sealed class PipeHandshakeLineReaderTests
 {
+    /// <summary>
+    /// The cap.
+    /// </summary>
     private const int _cap = 512;
 
     [Fact]
@@ -73,8 +75,6 @@ public sealed class PipeHandshakeLineReaderTests
         Assert.Equal("token-line", await PipeHandshakeLineReader.ReadBoundedLineAsync(reader, _cap));
     }
 
-    /// <summary>A <see cref="TextReader"/> that records how much of its content was handed out, so a
-    /// reader that ignores the cap is observable rather than merely slow.</summary>
     private sealed class CountingReader : TextReader
     {
         private readonly string _content;
@@ -82,6 +82,9 @@ public sealed class PipeHandshakeLineReaderTests
 
         public CountingReader(string content) => _content = content;
 
+        /// <summary>
+        /// Gets or sets the chars read.
+        /// </summary>
         public int CharsRead { get; private set; }
 
         public override int Peek() => _position >= _content.Length ? -1 : _content[_position];

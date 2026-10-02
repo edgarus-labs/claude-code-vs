@@ -4,19 +4,22 @@ using System.Globalization;
 namespace ClaudeCode.Core.ViewModels;
 
 /// <summary>
-/// Pure geometry and parameter parsing for circular context/usage rings. Kept XAML-free so the
-/// boundary and divide-by-zero safeguards are unit-testable;
-/// <c>ClaudeCode.Core.Views.Converters.PercentToDashArrayConverter</c> delegates to this before
-/// constructing its <see cref="System.Windows.Media.DoubleCollection"/>.
+/// Geometry and parameter parsing for circular context/usage rings.
 /// </summary>
 public static class CircularProgressGeometry
 {
+    /// <summary>
+    /// The default radius.
+    /// </summary>
     public const double DefaultRadius = 6;
+    /// <summary>
+    /// The default thickness.
+    /// </summary>
     public const double DefaultThickness = 2;
 
     /// <summary>
-    /// Parses a "radius,thickness" specification string. If missing, malformed, or containing
-    /// non-positive numbers, falls back safely to positive defaults so division by zero is impossible.
+    /// Parses a "radius,thickness" specification string. Falls back to positive defaults when it is
+    /// missing, malformed, or contains non-positive numbers.
     /// </summary>
     public static (double Radius, double Thickness) ParseSpec(string? spec, double defaultRadius = DefaultRadius, double defaultThickness = DefaultThickness)
     {
@@ -46,8 +49,15 @@ public static class CircularProgressGeometry
     /// </summary>
     public static (double Dash, double Gap) ComputeDash(int percent, double radius, double thickness)
     {
-        if (radius <= 0) radius = DefaultRadius;
-        if (thickness <= 0) thickness = DefaultThickness;
+        if (radius <= 0)
+        {
+            radius = DefaultRadius;
+        }
+
+        if (thickness <= 0)
+        {
+            thickness = DefaultThickness;
+        }
 
         double clamped = Math.Max(0, Math.Min(100, percent));
         double circumference = 2 * Math.PI * radius / thickness;

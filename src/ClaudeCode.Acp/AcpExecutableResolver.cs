@@ -24,7 +24,6 @@ public static class AcpExecutableResolver
             return path![0] == '/';
         }
 
-        // Rooted paths such as C:tools and \tools still depend on the current directory or drive.
         return (path!.Length >= 2 && IsDirectorySeparator(path[0]) && IsDirectorySeparator(path[1]))
             || (path.Length >= 3 && ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z'))
                 && path[1] == ':' && IsDirectorySeparator(path[2]));
@@ -67,7 +66,6 @@ public static class AcpExecutableResolver
         if (_isWindows && (extension.Equals(".cmd", StringComparison.OrdinalIgnoreCase)
             || extension.Equals(".bat", StringComparison.OrdinalIgnoreCase)))
         {
-            // Never execute a command shell or interpolate arguments into an npm shim.
             if (!Path.GetFileNameWithoutExtension(fullPath).Equals("claude-agent-acp", StringComparison.OrdinalIgnoreCase))
             {
                 return null;
@@ -84,8 +82,6 @@ public static class AcpExecutableResolver
                 return null;
             }
 
-            // Only global shim directories may supply an adjacent runtime. Package directories
-            // remain untrusted regardless of which package layout supplied the script.
             preferAdjacentNode = !IsPackageDirectory(directory);
         }
         else if (extension.Equals(".js", StringComparison.OrdinalIgnoreCase))
@@ -95,8 +91,6 @@ public static class AcpExecutableResolver
                 return null;
             }
 
-            // Always PATH-first: the entry point's directory is package content (node_modules), so a
-            // "node.exe" found there is never a trusted adjacent runtime.
             scriptPath = fullPath;
         }
         else
@@ -128,15 +122,18 @@ public static class AcpExecutableResolver
         return nodePath is null ? null : new AcpExecutableSpec(nodePath, new[] { Path.GetFullPath(scriptPath) });
     }
 
-    /// <summary>Finds a Node runtime on <paramref name="searchPath"/> using the same trusted filter
-    /// the adapter launch uses: only fully qualified entries (never the current drive or directory)
-    /// and never a package directory, whose content a workspace can plant. Returns null when no
-    /// trusted entry holds one.</summary>
+    /// <summary>Finds a Node runtime on <paramref name="searchPath"/>, considering only fully qualified
+    /// entries that are not package directories. Returns null when none is found.</summary>
     public static string? FindNodeOnPath(string? searchPath) => FindOnPath(_nodeExecutableName, searchPath);
 
     private static bool IsDirectorySeparator(char value) =>
         value == Path.DirectorySeparatorChar || value == Path.AltDirectorySeparatorChar;
 
+    /// <summary>
+    /// Determines whether the specified directory path contains a segment named “node_modules” or “.bin”, indicating a package directory.
+    /// </summary>
+    /// <param name="directory">The directory.</param>
+    /// <returns>true if the condition is met; otherwise, false.</returns>
     private static bool IsPackageDirectory(string directory)
     {
         int segmentStart = 0;
@@ -160,6 +157,12 @@ public static class AcpExecutableResolver
         return false;
     }
 
+    /// <summary>
+    /// Searches the provided directories for the specified file name, returning the first matching full path or null if the file is not found.
+    /// </summary>
+    /// <param name="fileName">The file name.</param>
+    /// <param name="searchPath">The search path.</param>
+    /// <returns>The string? result.</returns>
     private static string? FindOnPath(string fileName, string? searchPath)
     {
         foreach (string directory in GetSearchDirectories(searchPath))
@@ -191,7 +194,6 @@ public static class AcpExecutableResolver
             string directory = entry.Trim().Trim('"');
             if (!IsFullyQualifiedPath(directory))
             {
-                // Only fully qualified entries are independent of the workspace/current drive.
                 continue;
             }
 

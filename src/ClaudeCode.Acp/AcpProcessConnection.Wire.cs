@@ -11,19 +11,14 @@ namespace ClaudeCode.Acp;
 
 public sealed partial class AcpProcessConnection
 {
-    // ---- outbound: agent -> client requests (fs/read_text_file, fs/write_text_file, session/request_permission) ----
-
-    private Task<JsonNode?> HandleInboundRequestAsync(string method, JsonNode? @params, CancellationToken cancellationToken)
+    private Task<JsonNode?> HandleInboundRequestAsync(string method, JsonNode? @params, CancellationToken cancellationToken) => method switch
     {
-        return method switch
-        {
-            "fs/read_text_file" => HandleReadTextFileAsync(RequireObject(@params, method), cancellationToken),
-            "fs/write_text_file" => HandleWriteTextFileAsync(RequireObject(@params, method), cancellationToken),
-            "session/request_permission" => HandleRequestPermissionAsync(RequireObject(@params, method), cancellationToken),
-            "elicitation/create" => HandleCreateElicitationAsync(RequireObject(@params, method), cancellationToken),
-            _ => throw new AcpRemoteException(-32601, $"Method not found: {method}"),
-        };
-    }
+        "fs/read_text_file" => HandleReadTextFileAsync(RequireObject(@params, method), cancellationToken),
+        "fs/write_text_file" => HandleWriteTextFileAsync(RequireObject(@params, method), cancellationToken),
+        "session/request_permission" => HandleRequestPermissionAsync(RequireObject(@params, method), cancellationToken),
+        "elicitation/create" => HandleCreateElicitationAsync(RequireObject(@params, method), cancellationToken),
+        _ => throw new AcpRemoteException(-32601, $"Method not found: {method}"),
+    };
 
     private async Task<JsonNode?> HandleReadTextFileAsync(JsonObject @params, CancellationToken cancellationToken)
     {
@@ -59,7 +54,7 @@ public sealed partial class AcpProcessConnection
             throw new AcpRemoteException(-32000, $"Failed to write file: {path}");
         }
 
-        return new JsonObject(); // WriteTextFileResponse carries no fields.
+        return new JsonObject();
     }
 
     private async Task<JsonNode?> HandleRequestPermissionAsync(JsonObject @params, CancellationToken cancellationToken)
@@ -96,10 +91,6 @@ public sealed partial class AcpProcessConnection
 
     private async Task<JsonNode?> HandleCreateElicitationAsync(JsonObject @params, CancellationToken cancellationToken)
     {
-        // Only form mode was advertised in `initialize`'s clientCapabilities.elicitation. ACP is
-        // explicit that a request using a mode the client has not advertised produces -32602;
-        // answering `decline` would instead read as "the user refused", destroying the only signal
-        // that stops a conforming agent from retrying a url-mode (secret-bearing) flow as a form.
         if (GetOptionalString(@params, "mode") != "form")
         {
             throw new AcpRemoteException(-32602, "Unsupported elicitation mode; this client advertises 'form' only.");
@@ -111,10 +102,6 @@ public sealed partial class AcpProcessConnection
             throw new AcpRemoteException(-32603, "No client handler registered for elicitation/create.");
         }
 
-        // ACP also allows a request-scoped form (`requestId` in place of `sessionId`) for prompts
-        // raised before any session exists. This client has no surface for one, so refuse it the way
-        // an unadvertised mode is refused: -32602 names the limitation and lets a conforming agent
-        // fall back, where AcpProtocolException would claim the client malfunctioned (-32603).
         string? sessionId = GetOptionalString(@params, "sessionId");
         if (sessionId is null)
         {
@@ -164,10 +151,6 @@ public sealed partial class AcpProcessConnection
         string? description = GetOptionalString(property, "description");
         string? type = GetOptionalString(property, "type");
 
-        // ACP's StringPropertySchema declares both `oneOf` (titled options) and `enum` (bare values)
-        // as single-select, and MultiSelectItems declares both `items.anyOf` and `items.enum`. Letting
-        // the untitled forms fall through to Text would render a closed choice as a free-text box and
-        // send back a value the agent was promised could not occur.
         if (type == "string")
         {
             if (property["oneOf"] is JsonArray oneOf)
@@ -194,13 +177,9 @@ public sealed partial class AcpProcessConnection
             }
         }
 
-        // Any other JSON Schema property type (number/integer/boolean, or a plain string with no
-        // enum/oneOf) - AskUserQuestion, the only realistic source of these requests, never emits them,
-        // so a plain text field is a reasonable fallback rather than a dedicated renderer per type.
         return new ElicitationField(key, title, description, ElicitationFieldKind.Text, Array.Empty<ElicitationOption>());
     }
 
-    // A JSON Schema `enum` carries bare values with no titles, so each value is also its own label.
     private static IReadOnlyList<ElicitationOption> ParsePlainEnumOptions(JsonArray values)
     {
         if (values.Count == 0)
@@ -232,9 +211,6 @@ public sealed partial class AcpProcessConnection
         {
             if (entry is JsonObject option)
             {
-                // `title` is an optional JSON Schema annotation and `const` carries the option's
-                // value; either one alone is enough to render and answer the option, so only an
-                // option with neither is unusable.
                 string? value = GetOptionalString(option, "const");
                 string? title = GetOptionalString(option, "title");
                 if (value is null && title is null)
@@ -268,14 +244,11 @@ public sealed partial class AcpProcessConnection
         {
             if (!answer.Content.TryGetValue(field.Key, out IReadOnlyList<string>? values) || values.Count == 0)
             {
-                continue; // left blank - omit, rather than sending an empty string/array answer.
+                continue;
             }
 
             if (field.Kind != ElicitationFieldKind.MultiSelect && !IsStringTyped(schema, field.Key))
             {
-                // ACP's ElicitationPropertySchema also covers boolean/number/integer, which render as
-                // free text above; answering one with a JSON string would violate the very schema the
-                // agent published, so leave it unanswered rather than sending "true" for a boolean.
                 continue;
             }
 
@@ -295,11 +268,6 @@ public sealed partial class AcpProcessConnection
         return type is null || type == "string";
     }
 
-    // Awaits `task`, but also completes (with an OperationCanceledException) as soon as
-    // `cancellationToken` fires - e.g. because the underlying connection is being torn down - so a
-    // client-side event handler that never resolves its TaskCompletionSourceSlot (an unanswered
-    // permission dialog, a stuck file read/write) can never leave this wait blocked forever. The slot
-    // itself is not forced to a result: whatever eventually resolves it (if anything) still can.
     private static async Task<T> WaitWithCancellationAsync<T>(Task<T> task, CancellationToken cancellationToken)
     {
         if (!cancellationToken.CanBeCanceled || task.IsCompleted)
@@ -331,13 +299,11 @@ public sealed partial class AcpProcessConnection
         _ => PermissionOutcome.Cancelled,
     };
 
-    // ---- inbound: agent -> client notifications (session/update) ----
-
     private void OnNotificationReceived(JsonRpcNotification notification)
     {
         if (notification.Method != "session/update")
         {
-            return; // only session/update carries a SessionUpdate payload in v1; anything else is ignored.
+            return;
         }
 
         if (notification.Params is not JsonObject obj)
@@ -359,19 +325,12 @@ public sealed partial class AcpProcessConnection
         }
         catch (Exception)
         {
-            // Parsing runs inline on the JSON-RPC read pump, and an escaping exception ends the read
-            // loop and faults every in-flight request. A tool_call without `toolCallId`, a malformed
-            // config_option_update/available_commands_update, or an object System.Text.Json refuses
-            // to materialize (a repeated key throws ArgumentException on the first property read)
-            // degrades to a dropped notification instead - the same treatment usage_update and
-            // session/list rows get. Only the parse is covered: a throwing SessionUpdate subscriber
-            // is a client bug and still surfaces through Disconnected.
             return;
         }
 
         if (update is null)
         {
-            return; // sessionUpdate discriminator has no ClaudeCode.Contracts.SessionUpdate subclass (yet).
+            return;
         }
 
         SessionUpdate?.Invoke(this, new SessionUpdateEventArgs(sessionId, update));
@@ -393,11 +352,6 @@ public sealed partial class AcpProcessConnection
 
             case "tool_call":
             case "tool_call_update":
-                // Contracts.ToolCallUpdate has no "unset means unchanged" representation, so a
-                // tool_call_update that omits e.g. `title` maps to the type's default ("") rather than
-                // preserving whatever the client previously recorded for that toolCallId. Callers that
-                // maintain a running dictionary keyed by ToolCallId should merge non-default fields in,
-                // not overwrite wholesale, until/unless the contract grows partial-update semantics.
                 return new SessionUpdate.ToolCall(ParseToolCallUpdate(update));
 
             case "plan":
@@ -413,16 +367,10 @@ public sealed partial class AcpProcessConnection
                 return ParseUsageUpdate(update);
 
             default:
-                // current_mode_update, etc. have no SessionUpdate subclass in ClaudeCode.Contracts
-                // yet; silently ignored rather than throwing.
                 return null;
         }
     }
 
-    // { "used": 8300, "size": 200000, "cost": { "amount": 0.12, "currency": "USD" } } - size/cost optional.
-    // Every number here is agent-supplied and unbounded on the wire, and this runs inline on the
-    // JSON-RPC read pump: an OverflowException out of (decimal), or a wrapped (long) cast, would tear
-    // down the whole connection instead of degrading one notification.
     private static SessionUpdate.UsageUpdate? ParseUsageUpdate(JsonObject update)
     {
         if (ClampToTokenCount(update["used"]) is not long used)
@@ -442,9 +390,6 @@ public sealed partial class AcpProcessConnection
         return new SessionUpdate.UsageUpdate(used, size, amount, currency);
     }
 
-    // `used`/`size` are uint64 in ACP: anything above long.MaxValue arrives as a double whose plain
-    // cast wraps to a negative count, so saturate instead, and floor the (schema-invalid) negatives
-    // at zero. Absent, non-numeric or NaN yields null - unknown, not zero.
     private static long? ClampToTokenCount(JsonNode? node)
     {
         if (node is not JsonValue value)
@@ -470,8 +415,6 @@ public sealed partial class AcpProcessConnection
         return approximate >= long.MaxValue ? long.MaxValue : (long)approximate;
     }
 
-    // decimal's range is far narrower than double's - (decimal)1e29 throws OverflowException, and ACP
-    // bounds cost.amount at nothing. An unrepresentable (or NaN/infinite) cost degrades to "unknown".
     private static decimal? ParseCostAmount(JsonNode? node) =>
         node is JsonValue value
         && value.TryGetValue<double>(out double amount)
@@ -492,9 +435,6 @@ public sealed partial class AcpProcessConnection
         }
         catch (ArgumentException)
         {
-            // A repeated key anywhere in the response body surfaces when the object is first
-            // materialized; report it as the same malformed-response failure the missing-array case
-            // raises, so the caller's broad error handling answers "could not load history".
             throw new AcpProtocolException("Missing or invalid 'sessions' array.");
         }
 
@@ -506,9 +446,6 @@ public sealed partial class AcpProcessConnection
         var result = new List<SessionSummary>(sessions.Count);
         foreach (JsonNode? entry in sessions)
         {
-            // A single malformed row degrades that row only - the rest of the session history must
-            // still reach the user, otherwise one bad entry hides every session behind "Could not
-            // load session history". ACP marks these list items x-deserialize-skip-invalid-items.
             if (entry is not JsonObject session)
             {
                 continue;
@@ -532,8 +469,6 @@ public sealed partial class AcpProcessConnection
             }
             catch (ArgumentException)
             {
-                // A repeated key in this row throws on its first property read; skip the row exactly
-                // like the other malformed-row cases above.
                 continue;
             }
         }
@@ -586,8 +521,6 @@ public sealed partial class AcpProcessConnection
                 {
                     Content = GetOptionalString(obj, "content") ?? "",
                     Status = ParsePlanEntryStatus(GetOptionalString(obj, "status")),
-                    // NOTE: ACP's PlanEntry also carries a `priority` (high/medium/low) with no equivalent
-                    // property on ClaudeCode.Contracts.PlanEntry; intentionally dropped here.
                 });
             }
         }
@@ -611,7 +544,6 @@ public sealed partial class AcpProcessConnection
         Status = ParseToolCallStatus(GetOptionalString(obj, "status")),
         Content = ParseToolCallContentArray(obj["content"] as JsonArray),
         Locations = ParseToolCallLocationPaths(obj["locations"] as JsonArray, obj["_meta"] as JsonObject),
-        // claude-agent-acp: _meta.claudeCode.toolName is the Claude Code tool behind the call.
         IsSubagent = obj["_meta"] is JsonObject meta && meta["claudeCode"] is JsonObject claudeCode
             && GetOptionalString(claudeCode, "toolName") is "Agent" or "Task",
     };
@@ -662,11 +594,6 @@ public sealed partial class AcpProcessConnection
         return list.Count == 0 ? Array.Empty<string>() : list;
     }
 
-    // claude-agent-acp: a Glob's locations name only the folder it searched, and a Grep carries
-    // none; the files they found arrive only in the PostToolUse update's
-    // _meta.claudeCode.toolResponse - `filenames` for Glob and Grep's file
-    // modes, and for Grep's default content mode only "path:line:text" lines (count mode:
-    // "path:count"). Other tools' toolResponse has other shapes and is not read here.
     private static void AddSearchResultPaths(JsonObject? meta, List<string> paths)
     {
         if (meta?["claudeCode"] is not JsonObject claudeCode
@@ -691,7 +618,7 @@ public sealed partial class AcpProcessConnection
         {
             foreach (var line in content.Split('\n'))
             {
-                if (GrepLinePathPrefix.Match(line) is { Success: true } match)
+                if (_grepLinePathPrefix.Match(line) is { Success: true } match)
                 {
                     paths.Add(match.Groups[1].Value);
                 }
@@ -699,10 +626,7 @@ public sealed partial class AcpProcessConnection
         }
     }
 
-    // The shortest prefix followed by ":<digits>" and then ':' or the end: skips a drive colon
-    // ("C:\a.cs:5:x" yields "C:\a.cs"); context lines ("a.cs-4-x") and lines without a number
-    // carry no path to take.
-    private static readonly Regex GrepLinePathPrefix = new Regex(@"^(.+?):\d+(?::|\r?$)", RegexOptions.CultureInvariant);
+    private static readonly Regex _grepLinePathPrefix = new Regex(@"^(.+?):\d+(?::|\r?$)", RegexOptions.CultureInvariant);
 
     private static ToolCallContent ParseToolCallContent(JsonObject obj)
     {
@@ -718,8 +642,6 @@ public sealed partial class AcpProcessConnection
                 };
 
             case "terminal":
-                // ACP's embedded-terminal content (a live terminal reference by id) has no equivalent
-                // field on Contracts.ToolCallContent; surface a readable placeholder instead of dropping it.
                 string terminalId = GetOptionalString(obj, "terminalId") ?? "?";
                 return new ToolCallContent { Text = $"[terminal output: {terminalId}]" };
 
@@ -735,12 +657,15 @@ public sealed partial class AcpProcessConnection
     {
         "text" => GetOptionalString(block, "text"),
         "resource_link" => GetOptionalString(block, "uri"),
-        // Images/audio/embedded resources have no plain-text Contracts representation; dropped.
         _ => null,
     };
 
-    // ---- outbound: client -> agent prompt content ----
-
+    /// <summary>
+    /// Converts the given ContentBlock into a JsonObject for wire transmission, mapping text, image, embedded text resource, and resource‑link blocks to their respective JSON structures and throwing NotSupportedException for unsupported block types.
+    /// </summary>
+    /// <param name="block">The block.</param>
+    /// <returns>The json object result.</returns>
+    /// <exception cref="NotSupportedException">Thrown when an error occurs during execution.</exception>
     private static JsonObject ToWireContentBlock(ContentBlock block) => block switch
     {
         ContentBlock.Text t => new JsonObject { ["type"] = "text", ["text"] = t.Value },
@@ -750,6 +675,11 @@ public sealed partial class AcpProcessConnection
         _ => throw new NotSupportedException($"Unsupported ContentBlock type: {block.GetType()}"),
     };
 
+    /// <summary>
+    /// Converts an EmbeddedTextResource into a JSON object for wire transmission, embedding its URI, text and optional MIME type within a resource wrapper.
+    /// </summary>
+    /// <param name="resource">The resource.</param>
+    /// <returns>The json object result.</returns>
     private static JsonObject ToWireEmbeddedTextResource(ContentBlock.EmbeddedTextResource resource)
     {
         var contents = new JsonObject { ["uri"] = resource.Uri, ["text"] = resource.Text };
@@ -761,6 +691,11 @@ public sealed partial class AcpProcessConnection
         return new JsonObject { ["type"] = "resource", ["resource"] = contents };
     }
 
+    /// <summary>
+    /// Creates a JsonArray that represents the supplied list of McpServerConfig objects, including each server&apos;s name, command, arguments, and environment variable pairs.
+    /// </summary>
+    /// <param name="servers">The collection of servers.</param>
+    /// <returns>The json array result.</returns>
     private static JsonArray BuildMcpServersArray(IReadOnlyList<McpServerConfig>? servers)
     {
         var array = new JsonArray();
@@ -795,6 +730,13 @@ public sealed partial class AcpProcessConnection
         return array;
     }
 
+    /// <summary>
+    /// Parses a JSON response to extract session configuration options, returning a read‑only list of SessionConfigOption objects and throwing AcpProtocolException on malformed data.
+    /// </summary>
+    /// <param name="response">The response.</param>
+    /// <param name="required">The required.</param>
+    /// <returns>A collection of iread only list items.</returns>
+    /// <exception cref="AcpProtocolException">Thrown when an error occurs during execution.</exception>
     private static IReadOnlyList<SessionConfigOption> ParseConfigOptions(JsonObject response, bool required = false)
     {
         JsonArray configOptions;
@@ -810,8 +752,6 @@ public sealed partial class AcpProcessConnection
         }
         catch (ArgumentException)
         {
-            // A repeated key in the response body surfaces on first materialization; report it as the
-            // same malformed-response failure the missing-array case raises.
             throw new AcpProtocolException("Missing or invalid 'configOptions' array.");
         }
 
@@ -825,8 +765,6 @@ public sealed partial class AcpProcessConnection
 
             try
             {
-                // This client advertises no boolean-config extension. Ignore future option types
-                // rather than interpreting their values as select strings.
                 if (GetOptionalString(option, "type") != "select")
                 {
                     continue;
@@ -860,8 +798,6 @@ public sealed partial class AcpProcessConnection
             }
             catch (ArgumentException)
             {
-                // A repeated key in this option throws on its first property read; skip the option so
-                // one malformed entry cannot hide the rest of the picker.
                 continue;
             }
         }
@@ -869,23 +805,53 @@ public sealed partial class AcpProcessConnection
         return result;
     }
 
+    /// <summary>
+    /// Parses a JSON node into a SessionConfigValue, throwing an AcpProtocolException if the node is not a valid JSON object.
+    /// </summary>
+    /// <param name="node">The node.</param>
+    /// <returns>The session config value result.</returns>
+    /// <exception cref="AcpProtocolException">Thrown when an error occurs during execution.</exception>
     private static SessionConfigValue ParseConfigValue(JsonNode? node)
     {
         var value = node as JsonObject ?? throw new AcpProtocolException("Invalid session config value.");
         return new SessionConfigValue(GetRequiredString(value, "value"), GetRequiredString(value, "name"), GetOptionalString(value, "description"));
     }
 
-    // ---- small JSON accessor helpers ----
-
+    /// <summary>
+    /// Validates that the provided JsonNode is a JSON object and returns it, otherwise throws an AcpRemoteException indicating invalid parameters for the specified context.
+    /// </summary>
+    /// <param name="node">The node.</param>
+    /// <param name="context">The context.</param>
+    /// <returns>The json object result.</returns>
+    /// <exception cref="AcpRemoteException">Thrown when an error occurs during execution.</exception>
     private static JsonObject RequireObject(JsonNode? node, string context) =>
         node as JsonObject ?? throw new AcpRemoteException(-32602, $"Invalid params for {context}: expected a JSON object.");
 
+    /// <summary>
+    /// Retrieves the specified property value from the JSON object, throwing an AcpProtocolException if the property is missing or invalid.
+    /// </summary>
+    /// <param name="obj">The obj.</param>
+    /// <param name="property">The property.</param>
+    /// <returns>The string result.</returns>
+    /// <exception cref="AcpProtocolException">Thrown when an error occurs during execution.</exception>
     private static string GetRequiredString(JsonObject obj, string property) =>
         GetOptionalString(obj, property) ?? throw new AcpProtocolException($"Missing or invalid required '{property}' field.");
 
+    /// <summary>
+    /// Retrieves the string value of the specified property from the given JsonObject, returning null if the property is missing or not a string.
+    /// </summary>
+    /// <param name="obj">The obj.</param>
+    /// <param name="property">The property.</param>
+    /// <returns>The string? result.</returns>
     private static string? GetOptionalString(JsonObject obj, string property) =>
         obj.TryGetPropertyValue(property, out var node) && node is JsonValue value && value.TryGetValue<string>(out var s) ? s : null;
 
+    /// <summary>
+    /// Attempts to retrieve an integer value from the specified JSON property, returning null if the property is missing or cannot be parsed as an integer.
+    /// </summary>
+    /// <param name="obj">The obj.</param>
+    /// <param name="property">The property.</param>
+    /// <returns>The int? result.</returns>
     private static int? GetOptionalInt(JsonObject obj, string property)
     {
         if (!obj.TryGetPropertyValue(property, out var node) || node is not JsonValue value)

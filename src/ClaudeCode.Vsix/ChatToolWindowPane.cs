@@ -24,13 +24,6 @@ public sealed class ChatToolWindowPane : ToolWindowPane
     {
         ThreadHelper.ThrowIfNotOnUIThread();
         Caption = "Claude Code";
-        // TODO(imagemanifest-missing, Low/cosmetic): this GUID/ID moniker is only auto-registered with
-        // the VS image service when used from the VSCT-compiled command table (see the OpenChatWindow
-        // <Button><Icon> in ClaudeCode.vsct). Whether it also resolves correctly here, assigned directly
-        // to a ToolWindowPane's tab bitmap outside any VSCT <Button>, needs live-VS visual verification;
-        // if it does not, switch to BitmapResourceID/BitmapIndex (legacy VSCT strip addressing) or add a
-        // full .imagemanifest. Left as-is: no observed rendering defect, and both alternatives are a
-        // larger change than this cosmetic finding warrants without a live repro.
         BitmapImageMoniker = new ImageMoniker { Guid = PackageGuids.ClaudeCodeImages, Id = 1 };
         _view = new ChatPanelView();
         ApplyTheme();
@@ -40,35 +33,39 @@ public sealed class ChatToolWindowPane : ToolWindowPane
         _view.AttentionRequested += OnAttentionRequested;
         Content = _view;
         _editorFormatMap = VsChatTheme.TryGetEditorFormatMap();
-        // Subscribe to the long-lived publishers last: anything that throws after this point
-        // aborts the constructor, so Dispose(bool) never runs and VSColorTheme (process-wide static)
-        // or the editor's format map (MEF singleton) would root this pane - and through it the view,
-        // its view model and its WebView2 - for the life of devenv.
         VSColorTheme.ThemeChanged += OnThemeChanged;
-        // Fonts and Colors edits change the syntax colors without a VS theme change.
         if (_editorFormatMap is not null)
         {
             _editorFormatMap.ClassificationFormatMappingChanged += OnClassificationFormatMappingChanged;
         }
     }
 
-    /// <summary>Brings this tool window to the front; passed to the notifier as its click action.</summary>
     private void ActivateChatWindow()
     {
         ThreadHelper.ThrowIfNotOnUIThread();
-        if (_disposed || Frame is not IVsWindowFrame frame) return;
+        if (_disposed || Frame is not IVsWindowFrame frame)
+        {
+            return;
+        }
+
         ErrorHandler.ThrowOnFailure(frame.Show());
     }
 
     private void OnAttentionRequested(object? sender, ChatAttentionEventArgs e)
     {
-        ThreadHelper.ThrowIfNotOnUIThread(); // the view model raises this on its UI SynchronizationContext
-        if (_disposed) return;
+        ThreadHelper.ThrowIfNotOnUIThread();
+        if (_disposed)
+        {
+            return;
+        }
+
         try
         {
-            // GetOptions() goes through GetDialogPage, which can throw once the package is being
-            // torn down; this handler runs in a dispatcher callback, so an escape kills devenv.
-            if (Package is not ClaudeCodePackage package || !package.GetOptions().NotifyWhenInBackground) return;
+            if (Package is not ClaudeCodePackage package || !package.GetOptions().NotifyWhenInBackground)
+            {
+                return;
+            }
+
             _notifier.Notify(e.Title, e.Message);
         }
         catch (Exception exception)
@@ -79,7 +76,6 @@ public sealed class ChatToolWindowPane : ToolWindowPane
 
     private void LoadBrandImage()
     {
-        // Reuse the packaged extension identity; Core has no VS SDK or asset dependency.
         var path = Path.Combine(Path.GetDirectoryName(typeof(ChatToolWindowPane).Assembly.Location)!, "Resources", "Icon.png");
         if (!File.Exists(path))
         {
@@ -99,8 +95,6 @@ public sealed class ChatToolWindowPane : ToolWindowPane
 
     private void OnClassificationFormatMappingChanged(object sender, EventArgs e) => RefreshTheme();
 
-    /// <summary>Re-applies the theme from an event whose thread is not guaranteed; the hop is
-    /// blocking on purpose so the publisher sees a synchronous handler.</summary>
     private void RefreshTheme()
     {
         if (_disposed)
@@ -133,13 +127,21 @@ public sealed class ChatToolWindowPane : ToolWindowPane
         }
 
         VsChatTheme.Apply(_view);
-        // The transcript's WebView2 page can't see WPF's DynamicResource updates above on its own.
         _view.RefreshTranscriptTheme();
     }
 
+    /// <summary>
+    /// Asynchronously displays the specified plan in the Claude Code package, logging an error if the operation fails.
+    /// </summary>
+    /// <param name="sender">The sender.</param>
+    /// <param name="plan">The plan.</param>
     private void OnPlanReviewRequested(object? sender, PlanReviewViewModel plan)
     {
-        if (_disposed || Package is not ClaudeCodePackage package) return;
+        if (_disposed || Package is not ClaudeCodePackage package)
+        {
+            return;
+        }
+
         package.JoinableTaskFactory.RunAsync(async () =>
         {
             try { await package.ShowPlanAsync(plan); }

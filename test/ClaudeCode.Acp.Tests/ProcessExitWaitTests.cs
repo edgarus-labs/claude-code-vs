@@ -1,4 +1,3 @@
-using ClaudeCode.Acp;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
@@ -8,7 +7,7 @@ namespace ClaudeCode.Acp.Tests;
 
 public sealed class ProcessExitWaitTests
 {
-    private static readonly TimeSpan Guard = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan _guard = TimeSpan.FromSeconds(5);
 
     [Fact]
     public async Task ReturnsOnceTheProcessExits()
@@ -18,20 +17,19 @@ public sealed class ProcessExitWaitTests
 
         exited.SetResult(true);
 
-        await waiting.WaitAsync(Guard);
+        await waiting.WaitAsync(_guard);
     }
 
     [Fact]
     public async Task Cancellation_EndsTheWait_EvenIfTheProcessNeverExits()
     {
-        // Models a kill that failed: the exit signal never arrives.
         var neverExits = new TaskCompletionSource<bool>();
         using var cts = new CancellationTokenSource();
         var waiting = ProcessExitWait.WaitForExitAsync(neverExits.Task, cts.Token);
 
         cts.Cancel();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting.WaitAsync(Guard));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting.WaitAsync(_guard));
     }
 
     [Fact]
@@ -40,14 +38,12 @@ public sealed class ProcessExitWaitTests
         var neverExits = new TaskCompletionSource<bool>();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => ProcessExitWait.WaitForExitAsync(neverExits.Task, new CancellationToken(true)).WaitAsync(Guard));
+            () => ProcessExitWait.WaitForExitAsync(neverExits.Task, new CancellationToken(true)).WaitAsync(_guard));
     }
 
     [Fact]
     public async Task Cancel_NeverRunsTheWaitersContinuationOnTheCancellingThread()
     {
-        // The caller cancels from the UI thread; whatever follows the wait (process-tree cleanup)
-        // must not run inline there.
         var neverExits = new TaskCompletionSource<bool>();
         using var cts = new CancellationTokenSource();
         int continuationThread = -1;
@@ -60,7 +56,7 @@ public sealed class ProcessExitWaitTests
 
         int cancellingThread = Environment.CurrentManagedThreadId;
         cts.Cancel();
-        await waiting.WaitAsync(Guard);
+        await waiting.WaitAsync(_guard);
 
         Assert.NotEqual(cancellingThread, continuationThread);
     }

@@ -5,8 +5,7 @@ using System;
 namespace ClaudeCode.Core.ViewModels;
 
 /// <summary>One selectable option within an <see cref="ElicitationFieldViewModel"/>; bindable from
-/// either a RadioButton (single-select) or a CheckBox (multi-select). Constructed only by its
-/// owning field, which enforces the single-select invariant when this option is selected.</summary>
+/// either a RadioButton (single-select) or a CheckBox (multi-select).</summary>
 public sealed class ElicitationOptionViewModel : ObservableObject
 {
     private readonly ElicitationFieldViewModel _owner;
@@ -19,15 +18,24 @@ public sealed class ElicitationOptionViewModel : ObservableObject
         Description = budget.Truncate(option.Description);
     }
 
-    /// <summary>The identifier sent back to the agent - never truncated for display.</summary>
+    /// <summary>The identifier sent back to the agent; never truncated.</summary>
     public string Value { get; }
 
+    /// <summary>
+    /// Gets the label.
+    /// </summary>
     public string Label { get; }
 
+    /// <summary>
+    /// Gets the description.
+    /// </summary>
     public string? Description { get; }
 
     private bool _isSelected;
 
+    /// <summary>
+    /// Gets or sets a value indicating whether is selected.
+    /// </summary>
     public bool IsSelected
     {
         get => _isSelected;

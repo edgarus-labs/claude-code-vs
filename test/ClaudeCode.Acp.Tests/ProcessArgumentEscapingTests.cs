@@ -1,18 +1,12 @@
 using System;
 using System.Runtime.InteropServices;
-using ClaudeCode.Acp;
 using Xunit;
 
 namespace ClaudeCode.Acp.Tests;
 
 /// <summary>
-/// ProcessArgumentEscaping.ToArgumentsString had zero test coverage despite being the only thing
-/// standing between untrusted argument content (paths, config values) and Windows argv injection
-/// when AcpProcessConnection launches the ACP adapter process. These tests validate the escaped
-/// command line against the real Win32 CommandLineToArgvW parser - the same algorithm a spawned
-/// child's CRT startup code uses to split its command line back into argv - so a bug that let one
-/// argument inject, merge into, or corrupt another would show up as a real parsing mismatch, not
-/// just a hand-rolled reference implementation agreeing with itself.
+/// Covers <c>ProcessArgumentEscaping.ToArgumentsString</c> by parsing its output with the Win32
+/// <c>CommandLineToArgvW</c> parser and comparing the result with the original arguments.
 /// </summary>
 public sealed class ProcessArgumentEscapingTests
 {
@@ -66,16 +60,10 @@ public sealed class ProcessArgumentEscapingTests
     }
 
     [Fact]
-    public void ToArgumentsString_NoWhitespaceOrQuotes_IsNotQuoted()
-    {
-        Assert.Equal("plain-arg", ProcessArgumentEscaping.ToArgumentsString(new[] { "plain-arg" }));
-    }
+    public void ToArgumentsString_NoWhitespaceOrQuotes_IsNotQuoted() => Assert.Equal("plain-arg", ProcessArgumentEscaping.ToArgumentsString(new[] { "plain-arg" }));
 
     [Fact]
-    public void ToArgumentsString_EmptyArgumentList_ProducesEmptyString()
-    {
-        Assert.Equal(string.Empty, ProcessArgumentEscaping.ToArgumentsString(Array.Empty<string>()));
-    }
+    public void ToArgumentsString_EmptyArgumentList_ProducesEmptyString() => Assert.Equal(string.Empty, ProcessArgumentEscaping.ToArgumentsString(Array.Empty<string>()));
 
     private static string[] ParseViaWindowsApi(string commandLine)
     {

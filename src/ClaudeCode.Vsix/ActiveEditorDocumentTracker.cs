@@ -24,9 +24,14 @@ internal sealed class ActiveEditorDocumentTracker : IDisposable
         _windowEvents.ActiveFrameChanged += OnActiveFrameChanged;
     }
 
-    /// <summary>Raised on the UI thread whenever the tracked document view changes.</summary>
+    /// <summary>
+    /// Occurs when active document changed.
+    /// </summary>
     public event EventHandler? ActiveDocumentChanged;
 
+    /// <summary>
+    /// Gets a value indicating whether has active document.
+    /// </summary>
     public bool HasActiveDocument => !_disposed && _lastDocumentView?.TextView is { IsClosed: false } && _lastDocumentView.TextBuffer is not null;
 
     public async Task InitializeAsync(CancellationToken cancellationToken)
@@ -36,7 +41,6 @@ internal sealed class ActiveEditorDocumentTracker : IDisposable
         var view = await VS.Documents.GetActiveDocumentViewAsync();
         cancellationToken.ThrowIfCancellationRequested();
 
-        // An editor activation during initialization is newer than this seed.
         if (!_disposed && version == _activationVersion && IsOpenTextView(view))
         {
             SetLastDocumentView(view);
@@ -53,7 +57,6 @@ internal sealed class ActiveEditorDocumentTracker : IDisposable
             return null;
         }
 
-        // Document.FilePath follows Save As/rename; DocumentView.FilePath is a cached value.
         var path = view!.Document?.FilePath;
         if (string.IsNullOrWhiteSpace(path) || !Path.IsPathRooted(path) ||
             !Uri.TryCreate(path, UriKind.Absolute, out var uri) || !uri.IsFile)
@@ -61,7 +64,6 @@ internal sealed class ActiveEditorDocumentTracker : IDisposable
             return null;
         }
 
-        // Read the live, unsaved buffer only now, never at activation or from disk.
         return new EditorDocumentSnapshot(Path.GetFullPath(path), view.TextBuffer!.CurrentSnapshot.GetText());
     }
 
@@ -74,8 +76,6 @@ internal sealed class ActiveEditorDocumentTracker : IDisposable
         }
 
         ++_activationVersion;
-        // Resolve synchronously on the UI thread: a delayed old activation cannot win.
-        // The outgoing frame covers editor -> chat even when startup missed the editor.
         var view = GetOpenTextView(args.NewFrame) ?? GetOpenTextView(args.OldFrame);
         if (view is not null)
         {
@@ -98,7 +98,6 @@ internal sealed class ActiveEditorDocumentTracker : IDisposable
         }
         catch (Exception ex) when (ex is COMException || ex is NullReferenceException || ex is InvalidOperationException)
         {
-            // A frame can be torn down while VS delivers the activation notification.
             return null;
         }
     }
@@ -109,6 +108,10 @@ internal sealed class ActiveEditorDocumentTracker : IDisposable
         return view?.TextView is { IsClosed: false } && view.TextBuffer is not null;
     }
 
+    /// <summary>
+    /// Updates the stored last document view, detaches the Closed handler from the previous view, attaches it to the new view, and raises the ActiveDocumentChanged event when not disposed.
+    /// </summary>
+    /// <param name="view">The view.</param>
     private void SetLastDocumentView(DocumentView? view)
     {
         ThreadHelper.ThrowIfNotOnUIThread();
@@ -123,8 +126,6 @@ internal sealed class ActiveEditorDocumentTracker : IDisposable
             current.Closed += OnTextViewClosed;
         }
 
-        // Dispose() calls this with null after setting _disposed; a teardown notification has no
-        // subscriber that needs it (HasActiveDocument already reports false) and is a latent trap.
         if (!_disposed)
         {
             ActiveDocumentChanged?.Invoke(this, EventArgs.Empty);

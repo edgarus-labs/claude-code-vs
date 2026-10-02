@@ -4,6 +4,9 @@ namespace ClaudeCode.VsControl.Mcp;
 
 public static class VsControlToolCatalog
 {
+    /// <summary>
+    /// Gets the collection of tools.
+    /// </summary>
     public static IReadOnlyList<VsControlToolDefinition> Tools { get; } = new List<VsControlToolDefinition>
     {
         new(

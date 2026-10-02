@@ -1,4 +1,3 @@
-using ClaudeCode.Acp;
 using System;
 using System.Diagnostics;
 using System.Globalization;
@@ -12,11 +11,9 @@ using Xunit;
 namespace ClaudeCode.Acp.Tests;
 
 /// <summary>
-/// AcpProcessConnection.DisposeAsync used to call the bare Process.Kill(), which only terminates the
-/// direct child - any grandchild the adapter process spawned (a common shape: a launcher script that
-/// execs a real interpreter/runtime as a child of itself) was left running, orphaned, after disposal.
-/// These tests spawn a real two-level process tree (cmd.exe /c ping, where cmd.exe is the direct
-/// child and ping.exe is the grandchild it waits on) to prove the whole tree is terminated.
+/// Covers <c>AcpProcessConnection.DisposeAsync</c> terminating the whole adapter process tree,
+/// including children that outlive their launcher, and the contained launch preserving the working
+/// directory, environment and redirected streams.
 /// </summary>
 public sealed class AcpProcessConnectionProcessTreeKillTests
 {
@@ -28,10 +25,6 @@ public sealed class AcpProcessConnectionProcessTreeKillTests
             return;
         }
 
-        // cmd.exe /c spawns "ping" as its own child (a grandchild relative to this test process)
-        // rather than exec-replacing itself, and blocks waiting on it - exactly the shape a naive
-        // direct-process-only kill fails to clean up. Passed as separate argv tokens (not one
-        // whitespace-containing string) so ProcessArgumentEscaping does not quote the whole command.
         var connection = new AcpProcessConnection("cmd.exe", new[] { "/c", "ping", "-n", "60", "127.0.0.1" });
         try
         {
@@ -101,7 +94,6 @@ public sealed class AcpProcessConnectionProcessTreeKillTests
                 }
                 catch (ArgumentException)
                 {
-                    // A passing test has already terminated the child.
                 }
             }
 
@@ -153,8 +145,6 @@ public sealed class AcpProcessConnectionProcessTreeKillTests
             {
                 if (process is not null)
                 {
-                    // Closing the job requests termination; wait for the cwd handle to close
-                    // even when an assertion or redirected read failed.
                     process.Terminate();
                     await process.Process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
                 }
@@ -214,6 +204,7 @@ public sealed class AcpProcessConnectionProcessTreeKillTests
 
         string output = proc.StandardOutput.ReadToEnd().Trim();
         proc.WaitForExit(5000);
+
         return int.TryParse(output, out int pid) ? pid : (int?)null;
     }
 
@@ -232,7 +223,7 @@ public sealed class AcpProcessConnectionProcessTreeKillTests
             }
             catch (ArgumentException)
             {
-                return true; // no longer exists.
+                return true;
             }
 
             await Task.Delay(100);
@@ -249,6 +240,7 @@ public sealed class AcpProcessConnectionProcessTreeKillTests
             try
             {
                 Directory.Delete(path, recursive: true);
+
                 return;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)

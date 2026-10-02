@@ -1,7 +1,5 @@
 using ClaudeCode.Contracts;
-using ClaudeCode.Core.ViewModels;
 using System;
-using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -13,6 +11,9 @@ internal sealed class SingleConnectionFactory : IAcpAgentConnectionFactory
 
     public SingleConnectionFactory(IAcpAgentConnection connection) => _connection = connection;
 
+    /// <summary>
+    /// Gets or sets the connect handler.
+    /// </summary>
     public Func<CancellationToken, Task<IAcpAgentConnection>>? ConnectHandler { get; set; }
 
     public Task<IAcpAgentConnection> ConnectAsync(CancellationToken cancellationToken) =>

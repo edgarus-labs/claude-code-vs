@@ -12,11 +12,23 @@ public sealed class PermissionRequestEventArgs : EventArgs
         Options = options;
     }
 
+    /// <summary>
+    /// Gets the session id.
+    /// </summary>
     public string SessionId { get; }
 
+    /// <summary>
+    /// Gets the call.
+    /// </summary>
     public ToolCallUpdate Call { get; }
 
+    /// <summary>
+    /// Gets the collection of options.
+    /// </summary>
     public IReadOnlyList<PermissionOption> Options { get; }
 
+    /// <summary>
+    /// Gets the response.
+    /// </summary>
     public TaskCompletionSourceSlot<string> Response { get; } = new TaskCompletionSourceSlot<string>();
 }

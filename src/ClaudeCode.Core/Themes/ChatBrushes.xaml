@@ -1,9 +1,10 @@
-<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
-	<!-- Core stays VS-SDK-free. Surface/text colors below are standalone fallbacks;
-	     the VSIX host overrides those keys directly on ChatPanelView.Resources.
-	     Brand accent/focus keys deliberately retain the existing Claude icon orange. -->
+	<!--
+		Core stays VS-SDK-free. Surface/text colors below are standalone fallbacks;
+		the VSIX host overrides those keys directly on ChatPanelView.Resources.
+		Brand accent/focus keys deliberately retain the existing Claude icon orange.
+	-->
 
 	<Color x:Key="ChatBackgroundColor">#FF1E1E1E</Color>
 	<Color x:Key="ChatForegroundColor">#FFD4D4D4</Color>
@@ -49,9 +50,14 @@
 	<SolidColorBrush x:Key="ChatSelectionBrush" Color="#FF3F3F46" />
 	<SolidColorBrush x:Key="ChatSelectionForegroundBrush" Color="{StaticResource ChatForegroundColor}" />
 	<SolidColorBrush x:Key="ChatFocusBrush" Color="{StaticResource ChatAccentColor}" />
-	<!-- The Claude accent at low alpha: a selection fill that reads as "chosen" on both the dark
-	     fallback surface and the light VS themes, because it tints whatever is behind it instead of
-	     replacing it. A theme-specific opaque colour cannot do that, and ChatSelectionBrush is the
-	     VS list-selection colour, legible only against ChatSelectionForegroundBrush. -->
-	<SolidColorBrush x:Key="ChatAccentSoftBrush" Color="{StaticResource ChatAccentColor}" Opacity="0.22" />
+	<!--
+		The Claude accent at low alpha: a selection fill that reads as "chosen" on both the dark
+		fallback surface and the light VS themes, because it tints whatever is behind it instead of
+		replacing it. A theme-specific opaque colour cannot do that, and ChatSelectionBrush is the
+		VS list-selection colour, legible only against ChatSelectionForegroundBrush.
+	-->
+	<SolidColorBrush
+		x:Key="ChatAccentSoftBrush"
+		Opacity="0.22"
+		Color="{StaticResource ChatAccentColor}" />
 </ResourceDictionary>

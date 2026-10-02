@@ -1,4 +1,3 @@
-using ClaudeCode.Contracts;
 using ClaudeCode.Core.ViewModels;
 using System;
 using System.IO;
@@ -12,6 +11,9 @@ public sealed partial class ChatSessionStateTests
 {
     private sealed class TempWorkspace : IDisposable
     {
+        /// <summary>
+        /// Gets the root.
+        /// </summary>
         public string Root { get; }
 
         public TempWorkspace()
@@ -39,9 +41,6 @@ public sealed partial class ChatSessionStateTests
         return (vm, connection, services);
     }
 
-    // C1 (CRITICAL, arbitrary-file-read-write): the single most important test in this wave. A
-    // write request whose path resolves outside the workspace must be rejected before any disk
-    // I/O and must never create the target file.
     [Fact]
     public async Task FileWriteRequest_PathOutsideWorkspace_IsRejectedWithoutTouchingDisk()
     {
@@ -62,8 +61,6 @@ public sealed partial class ChatSessionStateTests
     public async Task FileWriteRequest_SiblingDirectorySharingPrefix_IsRejected()
     {
         using var workspace = new TempWorkspace();
-        // "<root>-secret" starts with the same characters as "<root>" but is not a child of it: a
-        // naive StartsWith(root) containment check would wrongly let this through.
         var siblingRoot = workspace.Root + "-secret";
         Directory.CreateDirectory(siblingRoot);
         try
@@ -126,7 +123,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("hello workspace", await request.Response.Task);
     }
 
-    // H6 (disk-not-live-buffer): a live, unsaved editor buffer must win over the on-disk contents.
     [Fact]
     public async Task FileReadRequest_LiveBufferOpen_ReturnsBufferTextInsteadOfDisk()
     {
@@ -202,7 +198,10 @@ public sealed partial class ChatSessionStateTests
     [Fact]
     public async Task FileReadRequest_ParentReplacedDuringEditorAwait_DoesNotReadOutside()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
 
         using var workspace = new TempWorkspace();
         using var outside = new TempWorkspace();
@@ -227,7 +226,10 @@ public sealed partial class ChatSessionStateTests
     [Fact]
     public async Task FileWriteRequest_ParentReplacedDuringEditorAwait_DoesNotWriteOutside()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
 
         using var workspace = new TempWorkspace();
         using var outside = new TempWorkspace();
@@ -254,7 +256,10 @@ public sealed partial class ChatSessionStateTests
     [Fact]
     public async Task FileReadRequest_LeafReplacedDuringEditorAwait_ReadsAcquiredFile()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
 
         using var workspace = new TempWorkspace();
         using var outside = new TempWorkspace();
@@ -279,7 +284,10 @@ public sealed partial class ChatSessionStateTests
     [Fact]
     public async Task FileWriteRequest_LeafReplacedDuringEditorAwait_ReplacesLinkNotItsTarget()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
 
         using var workspace = new TempWorkspace();
         using var outside = new TempWorkspace();
@@ -305,8 +313,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new byte[] { 0xEF, 0xBB, 0xBF }, File.ReadAllBytes(target)[..3]);
     }
 
-    // M10 (encoding-not-preserved): a round trip through the file broker must not silently drop a
-    // byte-order mark, and must not leave a temp file behind after an atomic write.
     [Fact]
     public async Task FileWriteRequest_PreservesUtf8BomAndCleansUpTempFile()
     {
@@ -340,9 +346,6 @@ public sealed partial class ChatSessionStateTests
         Assert.False(bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF);
     }
 
-    // M11 (crlf-normalized-on-partial-read): a partial (line/limit) read of a CRLF file must keep
-    // the carriage returns, not silently normalize them to bare LF — and must not hand back a
-    // dangling "\r" that is not followed by the "\n" the document actually has there.
     [Fact]
     public async Task FileReadRequest_PartialRangeOfCrlfFile_PreservesCarriageReturns()
     {
@@ -373,9 +376,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("line2", text);
     }
 
-    // A partial read re-emits each line's own terminator: picking one terminator for the whole
-    // slice from a whole-file scan rewrites the interior separators of a mixed-ending document, and
-    // the agent then uses that text as the old_text of its follow-up Edit.
     [Fact]
     public async Task FileReadRequest_PartialRangeOfMixedEndingFile_KeepsEachLinesOwnTerminator()
     {
@@ -390,8 +390,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("a\nb", text);
     }
 
-    // The requested window is clamped to the file: a limit past EOF returns what is there, a line
-    // past the last line returns nothing, and an empty file has no lines at all.
     [Fact]
     public async Task FileReadRequest_PartialRangeOutsideTheFile_ClampsInsteadOfOverreading()
     {

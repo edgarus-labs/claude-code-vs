@@ -11,14 +11,25 @@ namespace ClaudeCode.Core.Tests;
 
 public sealed partial class ChatSessionStateTests
 {
-    private static readonly string[] AdvertisedEfforts = { "low", "medium", "high", "xhigh", "max" };
+    private static readonly string[] _advertisedEfforts = { "low", "medium", "high", "xhigh", "max" };
 
     private sealed class FakeEffortClassifier : IEffortClassifier
     {
+        /// <summary>
+        /// Gets the collection of prompts.
+        /// </summary>
         public List<string> Prompts { get; } = [];
+        /// <summary>
+        /// Gets the collection of tokens.
+        /// </summary>
         public List<CancellationToken> Tokens { get; } = [];
+        /// <summary>
+        /// Gets or sets the handler.
+        /// </summary>
         public Func<string, Task<EffortLevel>> Handler { get; set; } = _ => Task.FromResult(EffortLevel.Medium);
-        // Set for a judge that, like the real one, ends when its token is cancelled.
+        /// <summary>
+        /// Gets or sets the token handler.
+        /// </summary>
         public Func<string, CancellationToken, Task<EffortLevel>>? TokenHandler { get; set; }
 
         public Task<EffortLevel> ClassifyAsync(string prompt, CancellationToken cancellationToken)
@@ -29,17 +40,16 @@ public sealed partial class ChatSessionStateTests
         }
     }
 
-    // The agent acknowledges every effort change as the new current value, like claude-code-acp.
     private static (RecordingAcpAgentConnection Connection, List<string> Log) AutoConnection(string effort = "medium")
     {
         var log = new List<string>();
         var current = effort;
-        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options("sonnet", effort, AdvertisedEfforts) };
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options("sonnet", effort, _advertisedEfforts) };
         connection.ConfigHandler = (_, value, _) =>
         {
             log.Add("effort=" + value);
             current = value;
-            return Task.FromResult(Options("sonnet", current, AdvertisedEfforts));
+            return Task.FromResult(Options("sonnet", current, _advertisedEfforts));
         };
         connection.PromptHandler = content =>
         {
@@ -124,8 +134,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Same(Auto(vm), vm.SelectedEffort);
     }
 
-    // The picker shows which level Auto is running at, not just "Auto", and the bound labels are
-    // told to refresh when the judgment lands. Re-selecting Auto forgets the previous verdict.
     [Fact]
     public async Task AutoTurn_ShowsTheChosenLevelInThePicker()
     {
@@ -163,8 +171,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { "prompt:refactor this" }, log);
     }
 
-    // Auto's ceiling is High: xhigh/max stay available, but only as an explicit choice. Auto started
-    // from one of them sets the level it judged, not the one it started from.
     [Fact]
     public async Task AutoTurn_StartingAboveHigh_SetsTheJudgedLevel()
     {
@@ -179,7 +185,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { "effort=high", "prompt:design the sync protocol" }, log);
     }
 
-    // Before any verdict there is nothing better than the agent default Auto starts from: High.
     [Fact]
     public async Task AutoTurn_FirstJudgmentFails_FallsBackToHighAndStillSendsTheTurn()
     {
@@ -197,11 +202,9 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { "effort=high", "prompt:hello" }, log);
         Assert.Contains("judge timed out", vm.StatusMessage);
         Assert.Same(Auto(vm), vm.SelectedEffort);
-        // The fallback level is still the level the turn runs at, so it is shown too.
         Assert.Equal("Auto · high", vm.ActiveEffortName);
     }
 
-    // After a verdict, a failed judgment keeps the last level Auto chose.
     [Fact]
     public async Task AutoTurn_LaterJudgmentFails_KeepsTheLastJudgedLevel()
     {
@@ -238,14 +241,10 @@ public sealed partial class ChatSessionStateTests
         Assert.Empty(log);
         Assert.Equal("hard work", vm.InputText);
         Assert.Contains("rejected", vm.StatusMessage);
-        // The turn's failure says Auto effort caused it, not just what the agent answered.
         Assert.Contains("Auto effort could not set the effort to high", vm.StatusMessage);
         Assert.False(vm.IsBusy);
     }
 
-    // F-R2: a message written while an earlier draft is judged is queued behind it. If the earlier
-    // draft then fails before it is sent, the later one must not overtake it: both go back to the
-    // composer, in the order they were written, and nothing reaches the agent.
     [Fact]
     public async Task AutoTurn_DraftFailsBeforeItIsSent_QueuedFollowUpDoesNotOvertakeIt()
     {
@@ -270,9 +269,6 @@ public sealed partial class ChatSessionStateTests
         Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User);
     }
 
-    // When the draft fails before it is sent, the queued follow-up and the text typed after it come
-    // back with it, in the order written: draft, follow-up, then the typed text - and the user is told
-    // why the follow-up is there. A message Claude never received does not name the chat.
     [Fact]
     public async Task AutoTurn_DraftFailsBeforeItIsSent_QueuedFollowUpAndTextTypedSince_ComeBackInWrittenOrder()
     {
@@ -301,8 +297,6 @@ public sealed partial class ChatSessionStateTests
         Assert.EndsWith("Your queued message was not sent because the message before it failed - it is back in the message box, after that one.", vm.StatusMessage, StringComparison.Ordinal);
     }
 
-    // Every follow-up queued behind a draft that fails before it is sent comes back, in order, and
-    // the notice counts them.
     [Fact]
     public async Task AutoTurn_DraftFailsBeforeItIsSent_SeveralQueuedFollowUps_ComeBackInOrder_AndAreCounted()
     {
@@ -328,8 +322,6 @@ public sealed partial class ChatSessionStateTests
         Assert.EndsWith("2 queued messages were not sent because the message before them failed - they are back in the message box, after it.", vm.StatusMessage, StringComparison.Ordinal);
     }
 
-    // A chat with a title of its own keeps it when a message it was sent comes back unsent: only a
-    // title derived from that message goes with it.
     [Fact]
     public async Task AutoTurn_DraftFailsBeforeItIsSent_InAChatWithItsOwnTitle_KeepsTheTitle()
     {
@@ -349,8 +341,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("Older chat", vm.SessionTitle);
     }
 
-    // Everything that comes back is in the message box before any bubble leaves the transcript, so
-    // an observer throwing as the queued follow-up's bubble is removed loses neither message.
     [Fact]
     public async Task AutoTurn_DraftFailsBeforeItIsSent_ObserverThrowsAsTheFollowUpLeaves_BothStayInTheComposer()
     {
@@ -369,7 +359,9 @@ public sealed partial class ChatSessionStateTests
         {
             if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove &&
                 e.OldItems!.Cast<ChatMessageViewModel>().Any(message => message.Text == "second"))
+            {
                 throw new InvalidOperationException("observer failed");
+            }
         };
         verdict.SetResult(EffortLevel.High);
         await WithinAsync(sending);
@@ -382,8 +374,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
     }
 
-    // The draft held aside while review comments go out is not dropped when the review turn gives
-    // the review back: both are in the message box, the review ahead of the draft.
     [Fact]
     public async Task AutoTurn_PlanReviewGivenBack_KeepsTheDraftHeldAsideForIt()
     {
@@ -392,7 +382,7 @@ public sealed partial class ChatSessionStateTests
         connection.PromptHandler = _ => firstTurn.Task;
         connection.ConfigHandler = (_, value, _) => value == "high"
             ? Task.FromException<IReadOnlyList<SessionConfigOption>>(new InvalidOperationException("rejected"))
-            : Task.FromResult(Options("sonnet", value, AdvertisedEfforts));
+            : Task.FromResult(Options("sonnet", value, _advertisedEfforts));
         var classifier = new FakeEffortClassifier
         {
             Handler = prompt => Task.FromResult(prompt.StartsWith("Review comments", StringComparison.Ordinal) ? EffortLevel.High : EffortLevel.Low),
@@ -417,8 +407,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("Review comments on the plan:\nAdd a rollback step." + Environment.NewLine + Environment.NewLine + "half-written idea", vm.InputText);
     }
 
-    // Stop leaves what was queued to be sent; an observer throwing as the stopped message leaves the
-    // transcript is reported, and does not strand the queued follow-up behind it.
     [Fact]
     public async Task AutoTurn_StoppedWhileJudging_ObserverThrowsAsTheMessageLeaves_TheQueuedFollowUpStillGoesOut()
     {
@@ -439,7 +427,9 @@ public sealed partial class ChatSessionStateTests
         {
             if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove &&
                 e.OldItems!.Cast<ChatMessageViewModel>().Any(message => message.Text == "first"))
+            {
                 throw new InvalidOperationException("observer failed");
+            }
         };
         await vm.CancelAsync();
         verdict.SetResult(EffortLevel.High);
@@ -451,8 +441,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
     }
 
-    // Every returned bubble leaves the transcript, also when an observer throws as the first one is
-    // removed: none is left pending with nothing to send it.
     [Fact]
     public async Task AutoTurn_DraftFailsBeforeItIsSent_ObserverThrowsAsTheDraftLeaves_TheFollowUpsBubbleLeavesToo()
     {
@@ -471,7 +459,9 @@ public sealed partial class ChatSessionStateTests
         {
             if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove &&
                 e.OldItems!.Cast<ChatMessageViewModel>().Any(message => message.Text == "first"))
+            {
                 throw new InvalidOperationException("observer failed");
+            }
         };
         verdict.SetResult(EffortLevel.High);
         await WithinAsync(sending);
@@ -481,8 +471,6 @@ public sealed partial class ChatSessionStateTests
         Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User);
     }
 
-    // Review comments held back while a message is judged still go out when Stop gives that message
-    // back and an observer throws as it leaves the transcript.
     [Fact]
     public async Task AutoTurn_StoppedWhileJudging_ObserverThrowsAsTheMessageLeaves_TheHeldBackReviewStillGoesOut()
     {
@@ -498,7 +486,6 @@ public sealed partial class ChatSessionStateTests
 
         var sending = SendTextAsync(vm, "first");
         await WaitUntilAsync(() => classifier.Prompts.Count == 1);
-        // A plan from a remote-driven turn, reviewed while this panel is busy judging: held back.
         var (call, options) = PlanApprovalRequest();
         connection.RaisePermissionRequested(call, options);
         vm.PendingPlan!.ReviewCommand.Execute("Add a rollback step.");
@@ -506,7 +493,9 @@ public sealed partial class ChatSessionStateTests
         {
             if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove &&
                 e.OldItems!.Cast<ChatMessageViewModel>().Any(message => message.Text == "first"))
+            {
                 throw new InvalidOperationException("observer failed");
+            }
         };
         await vm.CancelAsync();
         verdict.SetResult(EffortLevel.High);
@@ -517,8 +506,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
     }
 
-    // Nothing awaits a review send: an observer throwing as the review is given back is reported in
-    // the panel rather than lost with the send's task.
     [Fact]
     public async Task PlanReviewGivenBack_ObserverThrowsAsItLeavesTheTranscript_ReportsIt()
     {
@@ -530,10 +517,12 @@ public sealed partial class ChatSessionStateTests
         await vm.SelectEffortAsync(Auto(vm));
         vm.Messages.CollectionChanged += (_, e) =>
         {
-            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove) throw new InvalidOperationException("observer failed");
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove)
+            {
+                throw new InvalidOperationException("observer failed");
+            }
         };
 
-        // No local turn owns IsBusy (a plan from a remote-driven turn): the review goes out at once.
         var (call, options) = PlanApprovalRequest();
         connection.RaisePermissionRequested(call, options);
         vm.PendingPlan!.ReviewCommand.Execute("Add a rollback step.");
@@ -544,8 +533,6 @@ public sealed partial class ChatSessionStateTests
         Assert.StartsWith("Review comments on the plan:", vm.InputText, StringComparison.Ordinal);
     }
 
-    // Once the stopped message leaves the transcript, a reply that arrived while it was judged is
-    // first, so the chat is untitled again rather than still named after the message that left.
     [Fact]
     public async Task AutoTurn_StoppedWhileJudging_AfterAReplyArrived_LeavesTheChatUntitled()
     {
@@ -587,7 +574,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("xhigh", vm.SelectedEffort!.Value);
     }
 
-    // Picking the level that is already current still leaves Auto, without a round trip.
     [Fact]
     public async Task ExplicitEffort_EqualToCurrent_LeavesAutoWithoutAConfigRequest()
     {
@@ -617,9 +603,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Empty(classifier.Prompts);
     }
 
-    // The agent queues prompts, but effort is session-wide: a follow-up sent ahead would either
-    // retune the running turn or run under the running turn's effort. Under Auto each follow-up
-    // waits for the turn before it, then gets its own effort immediately ahead of its own prompt.
     [Fact]
     public async Task AutoTurns_AreNotSentAhead_EachPromptRunsUnderItsOwnEffort()
     {
@@ -652,9 +635,6 @@ public sealed partial class ChatSessionStateTests
         Assert.False(vm.IsBusy);
     }
 
-    // A sent message belongs to the turn, not the composer. While Auto judges it, it shows in
-    // the transcript as pending (like a queued message) and the composer is already clear for the
-    // next one; once the prompt goes out, the bubble stops reading as pending.
     [Fact]
     public async Task AutoTurn_WhileJudging_MessageLeavesTheComposer_AndShowsPendingInTheTranscript()
     {
@@ -687,9 +667,6 @@ public sealed partial class ChatSessionStateTests
         Assert.False(bubble.IsPending);
     }
 
-    // Stop while judging ends the turn before the prompt went out, so the message is not left
-    // in the transcript as if Claude had seen it: it comes back to the composer with its attachments,
-    // ahead of whatever was typed there since - and since the two now read as one, the user is told so.
     [Fact]
     public async Task AutoTurn_StoppedWhileJudging_ReturnsTheMessageToTheComposer_AheadOfWhatWasTypedSince()
     {
@@ -718,8 +695,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("Your message is back in the message box, together with what was already there.", vm.StatusMessage);
     }
 
-    // A verdict belongs to the session it was made in: a new session starts over from High and
-    // shows plain "Auto" until its own first judgment.
     [Fact]
     public async Task NewSession_ForgetsThePreviousSessionsAutoVerdict()
     {
@@ -744,7 +719,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { "effort=high", "prompt:next" }, log);
     }
 
-    // Leaving Auto is a selection like any other: only an acknowledged change is shown.
     [Fact]
     public async Task ExplicitEffort_RejectedWhileOnAuto_StaysOnAuto()
     {
@@ -760,8 +734,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("Auto", vm.ActiveEffortName);
     }
 
-    // A manual change landing between Auto's classification and its own effort change would be
-    // silently overwritten; settings stay locked from classification until the turn's effort is set.
     [Fact]
     public async Task AutoTurn_WhileClassifying_ManualSettingChangesAreHeldOff()
     {
@@ -785,7 +757,6 @@ public sealed partial class ChatSessionStateTests
         Assert.True(vm.CanConfigure);
     }
 
-    // Explicit effort keeps the existing send-ahead behaviour.
     [Fact]
     public async Task ExplicitEffort_FollowUpIsStillSentAhead()
     {
@@ -816,8 +787,6 @@ public sealed partial class ChatSessionStateTests
         await task;
     }
 
-    // The real judge runs up to 15 s; Stop must not wait for it, must not turn into a failure
-    // notice, and must not let the abandoned verdict retune the agent.
     [Fact]
     public async Task AutoTurn_StopWhileJudging_CancelsTheJudgeAtOnce_WithoutFailureNoticeOrEffortChange()
     {
@@ -849,10 +818,6 @@ public sealed partial class ChatSessionStateTests
         Assert.True(vm.CanConfigure);
     }
 
-    // The agent's effort request number `call` (0-based) is answered only once `Release` completes;
-    // the others go through. Like the real agent, the change is applied when the request arrives and
-    // acknowledged when answered. `Tokens` holds what each request was sent with: cancelling a request
-    // makes the real connection drop the whole session, so Stop must never be what cancels one.
     private static (TaskCompletionSource Release, List<CancellationToken> Tokens) StallEffortRequest(
         RecordingAcpAgentConnection connection, int call = 0)
     {
@@ -864,21 +829,22 @@ public sealed partial class ChatSessionStateTests
         {
             tokens.Add(token);
             var acknowledgement = inner(session, value, token);
-            if (calls++ == call) await release.Task;
+            if (calls++ == call)
+            {
+                await release.Task;
+            }
+
             return await acknowledgement;
         };
         return (release, tokens);
     }
 
-    // Presses Stop once the agent holds `requests` effort requests.
     private static async Task StopOnceRequestedAsync(ChatViewModel vm, RecordingAcpAgentConnection connection, int requests = 1)
     {
         await WaitUntilAsync(() => connection.ConfigChanges.Count == requests);
         await WithinAsync(vm.CancelAsync());
     }
 
-    // Stop during the agent's effort change does not cancel the request: the answer still lands and
-    // is the level shown, the turn ends without sending, and the message comes back to the composer.
     [Fact]
     public async Task AutoTurn_StopWhileSettingEffort_LetsTheRequestFinish_ThenEndsTheTurnWithoutSending()
     {
@@ -905,8 +871,6 @@ public sealed partial class ChatSessionStateTests
         Assert.True(vm.CanConfigure);
     }
 
-    // A status left by the judgment ("runs at High") does not explain a message Stop then gives back:
-    // back ahead of what was typed meanwhile, the user is still told where it went.
     [Fact]
     public async Task AutoTurn_JudgeFailed_ThenStoppedWhileSettingEffort_StillSaysWhereTheMessageWent()
     {
@@ -930,8 +894,6 @@ public sealed partial class ChatSessionStateTests
         Assert.EndsWith("Your message is back in the message box, together with what was already there.", vm.StatusMessage, StringComparison.Ordinal);
     }
 
-    // The request answers just as Stop is pressed: the answer is applied, but the turn Stop ended
-    // must not send its prompt anyway.
     [Fact]
     public async Task AutoTurn_EffortRequestAnswersAsStopIsPressed_EndsTheTurnWithoutSending()
     {
@@ -960,9 +922,6 @@ public sealed partial class ChatSessionStateTests
         Assert.False(vm.IsBusy);
     }
 
-    // Stop on a queued Auto turn's judgment behaves like Stop on a running turn: the stopped message
-    // is queued again ahead of the follow-ups, and all go out in order once it has ended. The
-    // stopped message is judged afresh, and nothing reports the Stop as a failure.
     [Fact]
     public async Task AutoTurn_StopWhileJudgingAQueuedMessage_RequeuesItAheadOfTheFollowUps()
     {
@@ -980,7 +939,11 @@ public sealed partial class ChatSessionStateTests
         {
             TokenHandler = async (prompt, token) =>
             {
-                if (prompt == "second" && judgedSecond++ == 0) await Task.Delay(Timeout.Infinite, token);
+                if (prompt == "second" && judgedSecond++ == 0)
+                {
+                    await Task.Delay(Timeout.Infinite, token);
+                }
+
                 return EffortLevel.Medium;
             },
         };
@@ -1030,7 +993,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Empty(connection.ConfigChanges);
     }
 
-    // The panel says what the wait is for, and goes back to the plain wording afterwards.
     [Fact]
     public async Task AutoTurn_WhileJudging_ActivityNamesTheJudgment()
     {
@@ -1050,7 +1012,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(string.Empty, vm.ActivityText);
     }
 
-    // Nothing to judge in an attachment-only message: no judge call, the last level (else High) holds.
     [Fact]
     public async Task AutoTurn_AttachmentOnly_SkipsTheJudge_AndUsesTheLastLevelElseHigh()
     {
@@ -1079,15 +1040,12 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { "prompt:1" }, log);
         Assert.Equal("Auto · low", vm.ActiveEffortName);
 
-        // Whitespace beside an attachment is no more to judge than nothing.
         vm.Attachments.Add(new ChatAttachmentViewModel("c.png", "image/png", "CCCC"));
         await SendTextAsync(vm, "   ");
         Assert.Equal(2, log.Count);
         Assert.Equal(new[] { "small" }, classifier.Prompts);
     }
 
-    // A queued Auto turn whose effort change is refused fails before it starts: like a live message,
-    // it goes back to the message box and is not sent.
     [Fact]
     public async Task AutoTurn_EffortChangeRejectedOnAQueuedTurn_ReturnsItToTheComposer()
     {
@@ -1119,7 +1077,6 @@ public sealed partial class ChatSessionStateTests
         Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User && message.Text == "second");
     }
 
-    // Auto picked while a turn is running still governs the next turn, which then waits for it.
     [Fact]
     public async Task AutoSelectedDuringARunningTurn_FollowUpWaitsAndGetsItsOwnEffort()
     {
@@ -1149,8 +1106,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { "prompt:first", "effort=low", "prompt:second" }, log);
     }
 
-    // Auto is only offered while the agent advertises low, medium and high; an update that no
-    // longer does falls back to the agent's own level, and turns then run as explicit ones.
     [Fact]
     public async Task ConfigUpdateWithoutTheThreeLevels_DropsAuto_AndNoJudgmentFollows()
     {
@@ -1169,8 +1124,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { "prompt:go" }, log);
     }
 
-    // The judgment locks the settings, not the composer. A message written meanwhile is
-    // queued like one written during any running turn, and goes out after this turn, in order.
     [Fact]
     public async Task AutoTurn_WhileJudging_ComposerStaysUsable_AndTheNextMessageIsQueued()
     {
@@ -1195,13 +1148,10 @@ public sealed partial class ChatSessionStateTests
         await sending;
         await WaitUntilAsync(() => log.Contains("prompt:second"));
 
-        // Each message is judged on its own: the queued one gets its own, different, level.
         Assert.Equal(new[] { "first", "second" }, classifier.Prompts);
         Assert.Equal(new[] { "effort=low", "prompt:first", "effort=high", "prompt:second" }, log);
     }
 
-    // The judged message has already left the composer, so a second Enter finds it empty and
-    // sends nothing: the prompt runs once, and the transcript shows the message once.
     [Fact]
     public async Task AutoTurn_WhileJudging_ASecondEnter_FindsTheComposerEmpty_AndQueuesNoCopy()
     {
@@ -1226,8 +1176,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(string.Empty, vm.InputText);
     }
 
-    // A new message written while the first is judged is queued at once and sent exactly once after
-    // the first.
     [Fact]
     public async Task AutoTurn_WhileJudging_ANewMessage_IsSentOnceAfterTheFirst()
     {
@@ -1253,8 +1201,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Single(vm.Messages, message => message.Role == ChatRole.User && message.Text == "hard work, then add tests");
     }
 
-    // A message written while the first is judged carries its own attachments: the same text sent
-    // again, now with an image, goes out as its own prompt with that image, not merged into the first.
     [Fact]
     public async Task AutoTurn_WhileJudging_SameTextWithANewAttachment_IsANewMessage()
     {
@@ -1278,8 +1224,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { 1, 2 }, connection.Prompts.Select(prompt => prompt.Count));
     }
 
-    // A message stopped while judged comes back to the composer with its attachments, also when
-    // another message was sent meanwhile.
     [Fact]
     public async Task AutoTurn_StoppedWhileJudging_AfterAnotherMessageWasSent_ComesBackWithItsAttachments()
     {
@@ -1288,7 +1232,11 @@ public sealed partial class ChatSessionStateTests
         {
             TokenHandler = async (prompt, token) =>
             {
-                if (prompt == "look at this") await Task.Delay(Timeout.Infinite, token);
+                if (prompt == "look at this")
+                {
+                    await Task.Delay(Timeout.Infinite, token);
+                }
+
                 return EffortLevel.Medium;
             },
         };
@@ -1310,8 +1258,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Contains(attachment, vm.Attachments);
     }
 
-    // A message whose judgment Stop ended is back in the composer: sent again while another message
-    // is judged, it is a message like any other.
     [Fact]
     public async Task AutoTurn_DraftStoppedWhileJudging_IsANewMessage_WhenTheSameTextIsSentAgain()
     {
@@ -1322,8 +1268,16 @@ public sealed partial class ChatSessionStateTests
         {
             TokenHandler = async (prompt, token) =>
             {
-                if (prompt == "second") return await secondVerdict.Task;
-                if (judgedHard++ == 0) await Task.Delay(Timeout.Infinite, token);
+                if (prompt == "second")
+                {
+                    return await secondVerdict.Task;
+                }
+
+                if (judgedHard++ == 0)
+                {
+                    await Task.Delay(Timeout.Infinite, token);
+                }
+
                 return EffortLevel.Medium;
             },
         };
@@ -1345,7 +1299,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { "prompt:second", "prompt:hard work" }, log);
     }
 
-    // The same text sent again while the first runs is a second message.
     [Fact]
     public async Task AutoTurn_SameTextSentAgainWhileTheFirstRuns_IsQueued()
     {
@@ -1371,8 +1324,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { "prompt:again", "prompt:again" }, log);
     }
 
-    // The level the agent acknowledged after a stopped Auto turn is the one it runs at: the next Auto
-    // turn sets its own level only when it differs.
     [Fact]
     public async Task AutoTurn_AfterAStoppedEffortChange_NextTurnsCompareWithTheAcknowledgedLevel()
     {
@@ -1396,10 +1347,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { "prompt:hard again", "effort=medium", "prompt:easy" }, log);
     }
 
-    // The judgment is a multi-second await between connecting and sending. A session lost in
-    // that window (agent died, sign-out, workspace switch) must not send the message to the
-    // connection that was released: it goes back to the composer and leaves the transcript, and the
-    // user is told so next to whatever reported the lost session.
     [Fact]
     public async Task AutoTurn_SessionLostWhileJudging_SendsNothingAndReturnsTheDraft()
     {
@@ -1425,8 +1372,6 @@ public sealed partial class ChatSessionStateTests
         Assert.False(vm.IsBusy);
     }
 
-    // Only the message being judged comes back: a follow-up queued behind it goes with the lost
-    // session like every other queued message, with a notice, and does not come back to the composer.
     [Fact]
     public async Task AutoTurn_SessionLostWhileJudging_ReturnsOnlyTheJudgedMessage_AndDropsTheQueuedFollowUpWithNotice()
     {
@@ -1451,8 +1396,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Contains("A queued message was not sent.", vm.StatusMessage, StringComparison.Ordinal);
     }
 
-    // Lost with its session, a message given back ahead of text typed meanwhile is joined to it: the
-    // user is told both why it was not sent and where it went.
     [Fact]
     public async Task AutoTurn_SessionLostWhileJudging_AfterTextWasTyped_SaysWhyAndWhereTheMessageWent()
     {
@@ -1475,8 +1418,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("Agent disconnected. The session changed while judging effort, so your message was not sent. Your message is back in the message box, together with what was already there.", vm.StatusMessage);
     }
 
-    // A session lost while judging ends that judgment at once: the judge (a CLI process) is not left
-    // running for a session that is gone, and the turn does not hold the panel busy until it returns.
     [Fact]
     public async Task AutoTurn_SessionLostWhileJudging_CancelsTheJudgmentAndEndsTheTurn()
     {
@@ -1503,8 +1444,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("hard work", vm.InputText);
     }
 
-    // Written while the first is still being judged, the second message is queued at once, below
-    // the first one's bubble.
     [Fact]
     public async Task AutoTurn_WhileJudging_TheJudgedDraftKeepsItsPlaceAboveALaterQueuedMessage()
     {
@@ -1527,8 +1466,6 @@ public sealed partial class ChatSessionStateTests
             vm.Messages.Where(message => message.Role == ChatRole.User).Select(message => message.Text).ToArray());
     }
 
-    // When Stop ends the first message's judgment after a later one was queued, the first comes back
-    // to the message box and leaves the transcript, and the queued one is still sent - and names the chat.
     [Fact]
     public async Task AutoTurn_JudgedDraftStoppedAfterALaterMessageWasQueued_ReturnsToTheComposer()
     {
@@ -1537,7 +1474,11 @@ public sealed partial class ChatSessionStateTests
         {
             TokenHandler = async (prompt, token) =>
             {
-                if (prompt == "first") await Task.Delay(Timeout.Infinite, token);
+                if (prompt == "first")
+                {
+                    await Task.Delay(Timeout.Infinite, token);
+                }
+
                 return EffortLevel.Medium;
             },
         };
@@ -1558,9 +1499,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("second", vm.SessionTitle);
     }
 
-    // A queued message being judged is held by nobody else, so a session lost meanwhile
-    // takes it too: it is reported like every other queued message the session drops, and its
-    // bubble does not stay behind as pending.
     [Fact]
     public async Task AutoTurn_SessionLostWhileJudgingAQueuedMessage_DropsItWithNotice()
     {
@@ -1598,9 +1536,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Contains("A queued message was not sent.", vm.StatusMessage);
     }
 
-    // Auto is the user's choice, not a property of one connection. A disconnect, sign-out or
-    // workspace switch tears the session down and empties the pickers, but the reconnected session
-    // is still on Auto.
     [Fact]
     public async Task Auto_SurvivesAReconnect()
     {
@@ -1618,7 +1553,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Same(Auto(vm), vm.SelectedEffort);
     }
 
-    // Picking a level ends the Auto choice for good, also while Auto is not on offer.
     [Fact]
     public async Task ExplicitEffort_EndsTheAutoChoice_AlsoAcrossAReconnect()
     {
@@ -1639,8 +1573,6 @@ public sealed partial class ChatSessionStateTests
         Assert.NotEqual("Auto", vm.ActiveEffortName);
     }
 
-    // The judgment has no prompt in flight, so Stop has nothing to cancel at the agent: it ends the
-    // judgment and the turn, and an agent that would refuse a cancel is never asked.
     [Fact]
     public async Task AutoTurn_StopWhileJudging_NeverAsksTheAgentToCancel_AndEndsTheTurn()
     {
@@ -1681,9 +1613,6 @@ public sealed partial class ChatSessionStateTests
         Assert.False(vm.IsBusy);
     }
 
-    // Only Stop or dispose cancel a judgment on purpose. A judge that ends in a cancellation
-    // or throws on its own is a failed judgment: the turn is not silently dropped, it falls back and
-    // is sent, with the reason shown.
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -1707,9 +1636,6 @@ public sealed partial class ChatSessionStateTests
         Assert.False(vm.IsBusy);
     }
 
-    // A judge that times out on its own token ends in a cancellation nobody pressed Stop for: after a
-    // verdict the turn keeps that level (not the first-judgment High), is still sent, and the failure
-    // is said and logged.
     [Fact]
     public async Task AutoTurn_JudgeCancelsItselfAfterAVerdict_KeepsTheLastLevel_SaysAndLogsIt()
     {
@@ -1718,7 +1644,11 @@ public sealed partial class ChatSessionStateTests
         {
             TokenHandler = async (prompt, _) =>
             {
-                if (prompt == "git push") return EffortLevel.Low;
+                if (prompt == "git push")
+                {
+                    return EffortLevel.Low;
+                }
+
                 using var timeout = new CancellationTokenSource();
                 timeout.Cancel();
                 await Task.Delay(Timeout.Infinite, timeout.Token);
@@ -1744,8 +1674,6 @@ public sealed partial class ChatSessionStateTests
         Assert.False(vm.IsBusy);
     }
 
-    // Resuming a session starts over like a new one: the previous session's verdict says nothing
-    // about it.
     [Fact]
     public async Task ResumedSession_ForgetsThePreviousSessionsAutoVerdict()
     {
@@ -1770,7 +1698,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { "effort=high", "prompt:next" }, log);
     }
 
-    // Auto chooses among all three levels, so an agent that lacks any one of them cannot offer it.
     [Theory]
     [InlineData("low")]
     [InlineData("medium")]
@@ -1786,8 +1713,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(levels, vm.AvailableEfforts.Select(value => value.Value));
     }
 
-    // Sonnet advertises every level and starts on medium; opus advertises `opusLevels` and the agent
-    // moves the effort to `opusDefault` when it is picked, like the real adapter does per model.
     private static (RecordingAcpAgentConnection Connection, List<string> Log) ModelSwitchingConnection(string[] opusLevels, string opusDefault)
     {
         var (connection, log) = AutoConnection("medium");
@@ -1806,21 +1731,18 @@ public sealed partial class ChatSessionStateTests
                 effort = value;
                 log.Add("effort=" + value);
             }
-            return Task.FromResult(Options(model, effort, model == "opus" ? opusLevels : AdvertisedEfforts));
+            return Task.FromResult(Options(model, effort, model == "opus" ? opusLevels : _advertisedEfforts));
         };
         return (connection, log);
     }
 
-    // Auto stays the user's choice across a model switch, but is only on offer while the model has all
-    // three levels: on one without, turns run as explicit ones (the remembered level is never applied
-    // to it), and Auto is back, judging afresh, once a model with all three is picked again.
     [Theory]
     [InlineData("low")]
     [InlineData("medium")]
     [InlineData("high")]
     public async Task ModelSwitch_ToAModelLackingALevel_SuspendsAuto_UntilAModelWithAllThreeReturns(string missing)
     {
-        var opusLevels = AdvertisedEfforts.Where(level => level != missing).ToArray();
+        var opusLevels = _advertisedEfforts.Where(level => level != missing).ToArray();
         var (connection, log) = ModelSwitchingConnection(opusLevels, "xhigh");
         var classifier = new FakeEffortClassifier { Handler = _ => Task.FromResult(EffortLevel.Low) };
         using var vm = CreateWithClassifier(connection, classifier);
@@ -1847,12 +1769,10 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { "effort=high", "prompt:again" }, log);
     }
 
-    // A model that has all three levels keeps Auto: the next turn is judged, and its level is set
-    // whatever the agent moved the effort to on the switch.
     [Fact]
     public async Task ModelSwitch_ToAModelWithAllThreeLevels_KeepsAutoWorking()
     {
-        var (connection, log) = ModelSwitchingConnection(AdvertisedEfforts, "high");
+        var (connection, log) = ModelSwitchingConnection(_advertisedEfforts, "high");
         var classifier = new FakeEffortClassifier { Handler = _ => Task.FromResult(EffortLevel.Low) };
         using var vm = CreateWithClassifier(connection, classifier);
         await vm.Initialization;
@@ -1869,12 +1789,10 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("Auto · low", vm.ActiveEffortName);
     }
 
-    // F-R12: "Auto · x" names a level Auto set. After a model switch the agent's own default is not one,
-    // so the picker shows plain "Auto" until the next judgment.
     [Fact]
     public async Task ModelSwitch_MovesTheAgentsEffort_PickerNamesNoLevelAutoDidNotSet()
     {
-        var (connection, _) = ModelSwitchingConnection(AdvertisedEfforts, "high");
+        var (connection, _) = ModelSwitchingConnection(_advertisedEfforts, "high");
         var classifier = new FakeEffortClassifier { Handler = _ => Task.FromResult(EffortLevel.Low) };
         using var vm = CreateWithClassifier(connection, classifier);
         await vm.Initialization;
@@ -1887,9 +1805,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("Auto", vm.ActiveEffortName);
     }
 
-    // Dispose while the agent is applying the judged effort cancels that request (the one thing that
-    // may) and ends the turn quietly: no prompt goes out on the way down, nothing is reported as a
-    // failure, and nothing throws into the caller.
     [Fact]
     public async Task AutoTurn_DisposedWhileSettingEffort_EndsQuietly_WithoutSendingThePrompt()
     {
@@ -1921,8 +1836,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Empty(services.LoggedErrors);
     }
 
-    // A manual pick made while an Auto follow-up waits governs that follow-up: the queue is released
-    // by the pick's own request finishing, and Auto must not judge and retune over it.
     [Fact]
     public async Task ExplicitEffort_PickedWhileAnAutoFollowUpWaits_IsNotOverriddenByTheJudge()
     {
@@ -1940,7 +1853,11 @@ public sealed partial class ChatSessionStateTests
         var release = new TaskCompletionSource();
         connection.ConfigHandler = async (session, value, token) =>
         {
-            if (holdRequests) await release.Task;
+            if (holdRequests)
+            {
+                await release.Task;
+            }
+
             return await inner(session, value, token);
         };
         var classifier = new FakeEffortClassifier { Handler = _ => Task.FromResult(EffortLevel.Low) };
@@ -1965,8 +1882,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("xhigh", vm.SelectedEffort!.Value);
     }
 
-    // F-50-85: a pick the agent rejects leaves Auto selected, so the follow-up that waited for the pick
-    // is still an Auto turn: judged, and run under its own level.
     [Fact]
     public async Task ExplicitEffort_RejectedWhileAnAutoFollowUpWaits_StillJudgesTheFollowUp()
     {
@@ -1984,8 +1899,16 @@ public sealed partial class ChatSessionStateTests
         var release = new TaskCompletionSource();
         connection.ConfigHandler = async (session, value, token) =>
         {
-            if (holdRequests) await release.Task;
-            if (value == "xhigh") throw new InvalidOperationException("rejected");
+            if (holdRequests)
+            {
+                await release.Task;
+            }
+
+            if (value == "xhigh")
+            {
+                throw new InvalidOperationException("rejected");
+            }
+
             return await inner(session, value, token);
         };
         var classifier = new FakeEffortClassifier
@@ -2013,8 +1936,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Same(Auto(vm), vm.SelectedEffort);
     }
 
-    // The verdict is only applied while the agent still offers its level: if an update took the
-    // levels away meanwhile, Auto is off and the turn goes out under the agent's own level.
     [Fact]
     public async Task AutoTurn_LevelsWithdrawnWhileJudging_SendsTheTurnWithoutSettingEffort()
     {
@@ -2036,8 +1957,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("xhigh", vm.SelectedEffort!.Value);
     }
 
-    // A failed judgment leaves a trace beyond the status line, and the status never ends in an empty
-    // reason.
     [Theory]
     [InlineData("judge blew up", "judge blew up")]
     [InlineData("", "InvalidOperationException")]
@@ -2061,8 +1980,6 @@ public sealed partial class ChatSessionStateTests
         Assert.EndsWith(": " + shown, vm.StatusMessage);
     }
 
-    // A Stop after an earlier turn's level: the picker shows the level the agent acknowledged for the
-    // stopped turn, not the earlier turn's.
     [Fact]
     public async Task AutoTurn_StopWhileSettingALaterEffort_ShowsTheAcknowledgedLevel()
     {
@@ -2079,13 +1996,11 @@ public sealed partial class ChatSessionStateTests
         await StopOnceRequestedAsync(vm, connection, requests: 2);
         release.SetResult();
         await WithinAsync(sending);
-        Assert.Single(connection.Prompts); // "easy" only: the stopped turn sent nothing
+        Assert.Single(connection.Prompts);
 
         Assert.Equal("Auto · high", vm.ActiveEffortName);
     }
 
-    // A message that silently does not go out is explained even when nothing else reported why
-    // (here a workspace switch, which clears the status before it tears the session down).
     [Fact]
     public async Task AutoTurn_WorkspaceSwitchedWhileJudging_SaysTheMessageWasNotSent()
     {
@@ -2117,8 +2032,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Contains("was not sent", vm.StatusMessage);
     }
 
-    // Auto is suspended, not lost, while the agent does not offer it - a config update without the
-    // levels, or a model with no effort setting - and is back when it does.
     [Fact]
     public async Task Auto_ComesBack_WhenTheAgentOffersTheThreeLevelsAgain()
     {
@@ -2127,7 +2040,7 @@ public sealed partial class ChatSessionStateTests
         using var vm = CreateWithClassifier(connection, classifier);
         await vm.Initialization;
         await vm.SelectEffortAsync(Auto(vm));
-        var withLevels = Options("sonnet", "medium", AdvertisedEfforts);
+        var withLevels = Options("sonnet", "medium", _advertisedEfforts);
 
         connection.RaiseSessionUpdate(new SessionUpdate.ConfigOptionsChanged(Options("sonnet", "xhigh", "xhigh", "max")));
         Assert.DoesNotContain(vm.AvailableEfforts, value => value.Name == "Auto");
@@ -2144,8 +2057,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { "effort=low", "prompt:git status" }, log);
     }
 
-    // A session lost after the judgment, while the agent applies the level, is lost like one lost
-    // during the judgment: nothing is sent and the message comes back to the composer.
     [Fact]
     public async Task AutoTurn_SessionLostWhileSettingEffort_SendsNothingAndReturnsTheDraft()
     {
@@ -2171,12 +2082,9 @@ public sealed partial class ChatSessionStateTests
         Assert.Empty(log);
         Assert.Equal("hard work", vm.InputText);
         Assert.False(vm.IsBusy);
-        // The released session's acknowledgement is not applied to the emptied pickers.
         Assert.False(vm.HasEffort);
     }
 
-    // IEffortClassifier is a public contract: a value that is no level is no verdict, the turn falls
-    // back like for any failed judgment instead of failing on the way to the agent.
     [Fact]
     public async Task AutoTurn_ClassifierReturnsAValueThatIsNoLevel_IsAFailedJudgment()
     {

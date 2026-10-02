@@ -13,7 +13,6 @@ public sealed class ChatMessageViewModelTests
     private static ToolCallCardViewModel MakeCard(string id) =>
         new ToolCallCardViewModel(new ToolCallUpdate { ToolCallId = id, Title = id, Status = ToolCallStatus.Completed });
 
-
     [Fact]
     public void AppendText_MultipleChunks_ConcatenatesInOrder()
     {
@@ -127,9 +126,6 @@ public sealed class ChatMessageViewModelTests
     [Fact]
     public void Parts_ToolCallBetweenTwoTextRuns_PreservesChronologicalOrder()
     {
-        // Reproduces a real report: the UI rendered "all text, then all tool calls" regardless of
-        // when the tool call actually happened, making it look like the assistant wrote its whole
-        // answer before running anything - Parts is what fixes that, so this pins the order.
         var message = new ChatMessageViewModel(ChatRole.Assistant);
         var card = MakeCard("tc-1");
 
@@ -168,18 +164,11 @@ public sealed class ChatMessageViewModelTests
     }
 
     [Fact]
-    public void Parts_EmptyConstructorText_SeedsNoPart()
-    {
-        Assert.Empty(new ChatMessageViewModel(ChatRole.Assistant).Parts);
-    }
+    public void Parts_EmptyConstructorText_SeedsNoPart() => Assert.Empty(new ChatMessageViewModel(ChatRole.Assistant).Parts);
 
     [Fact]
     public void AppendText_ManyChunks_AccumulatesWithoutRecopyingTheWholeMessage()
     {
-        // The agent picks both the chunk size and the total length, so a per-chunk full copy of
-        // the accumulated text is quadratic work on the UI thread. 2,000 x 10 chars recopied every
-        // time is ~20M characters (~40MB); an amortized append stays within a small multiple of
-        // the 20,000-character result.
         const int chunkCount = 2000;
         const string chunk = "0123456789";
         var warmup = new ChatMessageViewModel(ChatRole.Assistant);
@@ -203,8 +192,6 @@ public sealed class ChatMessageViewModelTests
     [Fact]
     public void Parts_AppendCrossingLimit_CarriesTheTruncationNoticeIntoTheRenderedPart()
     {
-        // Parts - not Text - is what the transcript serialises, so the notice has to reach the
-        // text part or the user sees a message that silently stops mid-sentence.
         var message = new ChatMessageViewModel(ChatRole.Assistant);
         message.AppendText(new string('x', MarkdownSafetyLimits.MaxMarkdownLength - 1));
 
@@ -215,8 +202,6 @@ public sealed class ChatMessageViewModelTests
         Assert.Contains("truncated", textPart.Text, StringComparison.Ordinal);
     }
 
-    // Thinking is agent-supplied too: bounded in total across every thinking part of the message,
-    // and - like the reply text - the cut is said, not silent.
     [Fact]
     public void AppendThought_CrossingTheLimit_EndsWithTheTruncationNotice_AndStopsGrowing()
     {
@@ -230,19 +215,15 @@ public sealed class ChatMessageViewModelTests
 
         var thoughts = message.Parts.OfType<ChatThinkingPart>().ToList();
         Assert.Equal(2, thoughts.Count);
-        Assert.EndsWith(MarkdownSafetyLimits.TruncationNotice, thoughts[1].Text, StringComparison.Ordinal);
+        Assert.EndsWith(MarkdownSafetyLimits._truncationNotice, thoughts[1].Text, StringComparison.Ordinal);
         Assert.Equal(MarkdownSafetyLimits.MaxMarkdownLength,
-            thoughts.Sum(part => part.Text.Length) - MarkdownSafetyLimits.TruncationNotice.Length);
+            thoughts.Sum(part => part.Text.Length) - MarkdownSafetyLimits._truncationNotice.Length);
         Assert.Equal(version, message.ThinkingVersion);
     }
 
     [Fact]
     public void Images_Assigned_NotifiesWithTheNewValueAlreadyReadable()
     {
-        // The transcript repaint is driven off this notification (TranscriptHostProtocol.
-        // AffectsTranscript lists Images) and the handler re-serialises message.Images itself, so a
-        // silent auto-property would drop thumbnails and a raise-before-assign would ship the stale
-        // list. Reading the property inside the handler pins both halves.
         var message = new ChatMessageViewModel(ChatRole.User, "look");
         var images = new[] { new ChatMessageImage("shot.png", "image/png", "AQID") };
         var observed = new List<IReadOnlyList<ChatMessageImage>>();

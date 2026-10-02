@@ -7,34 +7,17 @@ using Xunit;
 namespace ClaudeCode.Core.Tests;
 
 /// <summary>
-/// Pins the one layout invariant of the composer toolbar that cannot be expressed in the view model.
-/// <para>
-/// <c>ChatViewModel.CanConfigure</c> deliberately stays true while a turn is streaming, because
-/// switching model or session mode mid-turn is exactly when it matters. WPF propagates
-/// <c>IsEnabled="False"</c> to every descendant though, and a child cannot opt back in - so putting
-/// the mode/model/Remote Control pills inside the subtree that <c>DraftControlStyle</c> disables on
-/// <c>IsBusy</c> silently overrides that binding and locks the pickers for the whole turn. The view
-/// model looks correct while the UI is broken, which is why this is asserted against the markup.
-/// </para>
-/// <para>
-/// TDD exception, stated deliberately: this test project targets net10.0 without WPF, so the view
-/// cannot be instantiated and its IsEnabled inheritance observed for real. These facts read the
-/// markup as XML and locate the gated subtree by the literal <c>Style="{StaticResource DraftControlStyle}"</c>
-/// attribute, so they fail on a behaviour-preserving rewrite of that markup (a property-element
-/// style, a BasedOn style) and would pass on the same hazard expressed differently. They are kept as
-/// a ratchet against the exact regression that shipped, which is the only form of coverage this
-/// invariant can have here; retarget them rather than deleting them when the markup shape changes.
-/// </para>
+/// Covers the composer toolbar markup of <c>ChatPanelView.xaml</c>, read as XML: the mode, model and
+/// Remote Control pills sit outside the subtree that <c>DraftControlStyle</c> disables on
+/// <c>IsBusy</c>.
 /// </summary>
 public sealed class ChatPanelViewLayoutTests
 {
-    private static readonly XNamespace X = "http://schemas.microsoft.com/winfx/2006/xaml";
+    private static readonly XNamespace _x = "http://schemas.microsoft.com/winfx/2006/xaml";
 
-    /// <summary>Controls that must stay usable while the agent is working.</summary>
-    private static readonly string[] AlwaysEnabled = ["ModeButton", "ModelButton", "RemoteControlButton"];
+    private static readonly string[] _alwaysEnabled = ["ModeButton", "ModelButton", "RemoteControlButton"];
 
-    /// <summary>Draft-composition controls that must stay disabled while the agent is working.</summary>
-    private static readonly string[] AlwaysGated = ["AttachButton"];
+    private static readonly string[] _alwaysGated = ["AttachButton"];
 
     [Fact]
     public void ConfigurationPillsAreNotInsideTheSubtreeDisabledWhileTheAgentWorks()
@@ -51,8 +34,8 @@ public sealed class ChatPanelViewLayoutTests
         {
             string[] trapped = gated
                 .DescendantsAndSelf()
-                .Select(element => (string?)element.Attribute(X + "Name"))
-                .Where(name => name is not null && AlwaysEnabled.Contains(name))
+                .Select(element => (string?)element.Attribute(_x + "Name"))
+                .Where(name => name is not null && _alwaysEnabled.Contains(name))
                 .Select(name => name!)
                 .ToArray();
 
@@ -66,21 +49,17 @@ public sealed class ChatPanelViewLayoutTests
         }
     }
 
-    // The counterpart ratchet. Without it, lifting AttachButton out of the wrapper - re-enabling
-    // "attach the active document while a turn is in flight", the exact hazard the gate exists for
-    // - passes the test above, the analyzers and the build. Failing this list is also how a rename
-    // or removal of DraftControlStyle shows up here: the gated set goes empty.
     [Fact]
     public void DraftCompositionControlsStayInsideTheSubtreeDisabledWhileTheAgentWorks()
     {
         string[] gated = DraftGatedRoots(XDocument.Load(ViewPath()))
             .SelectMany(root => root.Descendants())
-            .Select(element => (string?)element.Attribute(X + "Name"))
+            .Select(element => (string?)element.Attribute(_x + "Name"))
             .Where(name => name is not null)
             .Select(name => name!)
             .ToArray();
 
-        foreach (string name in AlwaysGated)
+        foreach (string name in _alwaysGated)
         {
             Assert.True(
                 gated.Contains(name),
@@ -90,10 +69,6 @@ public sealed class ChatPanelViewLayoutTests
         }
     }
 
-    // Matches only the literal Style="{StaticResource DraftControlStyle}" attribute form: the style
-    // applied through a <X.Style> property element, or inherited from a parent Setter, would slip
-    // past. Acceptable because every caller asserts the returned set is non-empty, so the day the
-    // markup stops using this form the tests fail rather than silently passing on nothing.
     private static XElement[] DraftGatedRoots(XDocument view) => view
         .Descendants()
         .Where(element => (string?)element.Attribute("Style") == "{StaticResource DraftControlStyle}")

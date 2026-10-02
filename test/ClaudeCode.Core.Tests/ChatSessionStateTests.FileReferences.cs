@@ -14,10 +14,6 @@ public sealed partial class ChatSessionStateTests
         ChatFileReference.LinkPrefix + "path=" + Uri.EscapeDataString(path) +
         (line.HasValue ? "&line=" + line.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) : string.Empty);
 
-    // The agent writes workspace-relative paths. WorkspacePathGuard resolves a relative candidate
-    // against the *process* working directory (devenv's, not the solution's), so the reference has
-    // to be anchored on the workspace root before it is validated - otherwise every relative
-    // reference either fails to open or, worse, opens something outside the workspace.
     [Fact]
     public async Task OpenFileReference_RelativePathInANestedFolder_OpensTheWorkspaceFile()
     {
@@ -63,8 +59,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(Path.GetFullPath(target), Assert.Single(services.OpenedDocumentPaths), ignoreCase: true);
     }
 
-    // The reference text is agent-authored and untrusted: a traversal must never reach the host's
-    // document opener, which has no workspace notion of its own.
     [Fact]
     public async Task OpenFileReference_EscapingTheWorkspace_IsRefusedAndReported()
     {
@@ -78,9 +72,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Contains("secrets.txt", vm.StatusMessage!, StringComparison.Ordinal);
     }
 
-    // The rooted branch of the candidate anchoring hands the reference to the guard untouched, so
-    // it - not the relative branch above - is what stands between agent markdown naming
-    // C:\Users\me\.ssh\id_rsa and the host opening it.
     [Fact]
     public async Task OpenFileReference_AbsolutePathOutsideTheWorkspace_IsRefusedAndReported()
     {
@@ -97,9 +88,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Contains("secrets.txt", vm.StatusMessage!, StringComparison.Ordinal);
     }
 
-    // In the VSIX, WorkspaceRoot is a live callback into solution state that throws while a
-    // solution is closing or reloading. The only caller discards this task on the WebView2
-    // callback thread, so the "never faults" contract has to cover that read too.
     [Fact]
     public async Task OpenFileReference_WhenTheHostCannotReportTheWorkspaceRoot_ReportsWithoutFaulting()
     {
@@ -115,14 +103,14 @@ public sealed partial class ChatSessionStateTests
         Assert.Contains("Program.cs", vm.StatusMessage!, StringComparison.Ordinal);
     }
 
-    // AC: an invalid reference must not break the chat. Nothing may fault out of the call, and the
-    // reason has to reach the user instead of disappearing.
     [Fact]
     public async Task OpenFileReference_FileThatDoesNotExist_ReportsWithoutFaulting()
     {
-        // The existence pin is a Windows document-lease guarantee; elsewhere the lease has nothing
-        // to protect and the host is the only thing that can report a missing file.
-        if (!OperatingSystem.IsWindows()) return;
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
         using var workspace = new TempWorkspace();
         var (vm, _, services) = await ConnectWithWorkspaceAsync(workspace.Root);
         using var _vm = vm;
@@ -157,9 +145,6 @@ public sealed partial class ChatSessionStateTests
             Locations = locations,
         }));
 
-    // Issue #39. The agent names a file it has just read by its bare name - "`Program.cs:12`" - so
-    // resolving that against the workspace root reports an existing file as missing. The absolute
-    // path the Read tool call carried is the precise reference the name stands for.
     [Fact]
     public async Task OpenFileReference_BareNameOfAFileTheAgentRead_OpensThatFile()
     {
@@ -178,7 +163,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(12, Assert.Single(services.OpenedDocumentLines));
     }
 
-    // Directory components the agent did write narrow the match rather than being dropped.
     [Fact]
     public async Task OpenFileReference_PartialPathOfAFileTheAgentRead_OpensThatFile()
     {
@@ -198,7 +182,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(Path.GetFullPath(target), Assert.Single(services.OpenedDocumentPaths), ignoreCase: true);
     }
 
-    // Two files of that name were read: picking either would open an arbitrary one.
     [Fact]
     public async Task OpenFileReference_BareNameMatchingTwoFilesTheAgentRead_ReportsAmbiguityAndOpensNothing()
     {
@@ -222,19 +205,14 @@ public sealed partial class ChatSessionStateTests
         Assert.NotEqual(await NotFoundStatusAsync(vm, "Foo.cs"), status);
     }
 
-    // The status a click on a reference nothing resolves reports: the baseline that tells a more
-    // specific refusal apart from "not found" without pinning either message's wording.
-    // Overwrites vm.StatusMessage, so read the status under test first.
     private static async Task<string?> NotFoundStatusAsync(ChatViewModel vm, string reference)
     {
-        // A missing file in the workspace root itself: a missing folder fails earlier, differently.
         var missing = "missing-" + reference;
         await vm.OpenFileReferenceAsync(Href(missing));
+
         return vm.StatusMessage?.Replace(missing, reference, StringComparison.Ordinal);
     }
 
-    // The same file reported by several calls - read, then edited, under two spellings - is one
-    // file, not two namesakes; otherwise every file Claude edited would read as ambiguous.
     [Fact]
     public async Task OpenFileReference_BareNameOfAFileTheAgentReadThenEdited_OpensThatFile()
     {
@@ -253,7 +231,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(Path.GetFullPath(target), Assert.Single(services.OpenedDocumentPaths), ignoreCase: true);
     }
 
-    // The reference matches whole path segments: "Program.cs" is not the tail of "MyProgram.cs".
     [Theory]
     [InlineData("Program.cs", "MyProgram.cs")]
     [InlineData("Models/Chat.cs", "ViewModels/Chat.cs")]
@@ -276,8 +253,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(Path.GetFullPath(target), Assert.Single(services.OpenedDocumentPaths), ignoreCase: true);
     }
 
-    // A reference whose path already exists under the workspace root is authoritative: a namesake
-    // the agent happened to read elsewhere must not win over the file the path names.
     [Theory]
     [InlineData("Foo.cs")]
     [InlineData("b/Foo.cs")]
@@ -302,12 +277,14 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(Path.GetFullPath(workspace.PathUnder(reference)), Assert.Single(services.OpenedDocumentPaths), ignoreCase: true);
     }
 
-    // The locations are agent-supplied: one outside the workspace must be refused like any other
-    // path - and reported as that, not as a file that does not exist.
     [Fact]
     public async Task OpenFileReference_BareNameOfAFileTheAgentReadOutsideTheWorkspace_IsRefused()
     {
-        if (!OperatingSystem.IsWindows()) return; // see OpenFileReference_FileThatDoesNotExist_ReportsWithoutFaulting
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
         using var workspace = new TempWorkspace();
         using var outside = new TempWorkspace();
         var secret = outside.PathUnder("secrets.cs");
@@ -324,10 +301,6 @@ public sealed partial class ChatSessionStateTests
         Assert.NotEqual(await NotFoundStatusAsync(vm, "secrets.cs"), status);
     }
 
-    // Issue #39 as reproduced in VS: Claude found the files with Grep and never read them. Glob
-    // and Grep report what they found relative to the session cwd - the workspace root - so that
-    // relative path is the precise reference a bare "`OrderService.cs:5`" in the answer stands for,
-    // even with a namesake elsewhere in the workspace.
     [Fact]
     public async Task OpenFileReference_BareNameOfAFileTheAgentFoundBySearch_OpensThatFile()
     {
@@ -349,12 +322,14 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(5, Assert.Single(services.OpenedDocumentLines));
     }
 
-    // A relative search result is anchored on the workspace root, never trusted to stay in it: one
-    // that climbs out is refused like any other agent-supplied path.
     [Fact]
     public async Task OpenFileReference_BareNameOfASearchResultThatClimbsOutOfTheWorkspace_IsRefused()
     {
-        if (!OperatingSystem.IsWindows()) return; // see OpenFileReference_FileThatDoesNotExist_ReportsWithoutFaulting
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
         using var workspace = new TempWorkspace();
         using var outside = new TempWorkspace();
         var secret = outside.PathUnder("secrets.cs");
@@ -371,8 +346,6 @@ public sealed partial class ChatSessionStateTests
         Assert.NotEqual(await NotFoundStatusAsync(vm, "secrets.cs"), status);
     }
 
-    // A namesake outside the workspace could never be opened, so it must not make the one inside
-    // it ambiguous - e.g. a README.md in the git root above a solution in a subfolder.
     [Fact]
     public async Task OpenFileReference_BareNameMatchingOneFileInsideAndOneOutsideTheWorkspace_OpensTheOneInside()
     {
@@ -393,12 +366,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(Path.GetFullPath(target), Assert.Single(services.OpenedDocumentPaths), ignoreCase: true);
     }
 
-    // Locations are agent-supplied strings. One the runtime cannot parse - a null character, or on
-    // .NET Framework (the VS host) any of "<>| - must neither break the session update that carried
-    // it (it runs on the UI thread) nor stop the valid location beside it from resolving. The bad
-    // character sits in a folder so each location really ends in a "Program.cs" segment and reaches the
-    // resolution step. This TFM (net10.0) does not reproduce the .NET Framework throw from
-    // Path.IsPathRooted for "<>|; IsRootedLocation's pre-check for it is not exercised here.
     [Fact]
     public async Task OpenFileReference_ToolCallWithUnparseableLocations_StillShowsTheCallAndResolvesTheValidOne()
     {
@@ -417,9 +384,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(Path.GetFullPath(target), Assert.Single(services.OpenedDocumentPaths), ignoreCase: true);
     }
 
-    // A location the runtime cannot parse names no file at all, so it is no namesake - like a
-    // location with no file behind it - and must not turn the click into a refusal that skips the
-    // workspace search for the file that does exist.
     [Fact]
     public async Task OpenFileReference_OnlyAnUnparseableLocationMatches_OpensTheWorkspaceFileOfThatName()
     {
@@ -437,8 +401,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(Path.GetFullPath(target), Assert.Single(services.OpenedDocumentPaths), ignoreCase: true);
     }
 
-    // What the agent read belongs to the conversation that read it: after a new session the name
-    // no longer picks the file the previous one read out of its namesakes.
     [Fact]
     public async Task OpenFileReference_AfterANewSession_NoLongerResolvesAgainstThePreviousSessionsReads()
     {
@@ -459,8 +421,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Contains("Foo.cs", vm.StatusMessage!, StringComparison.Ordinal);
     }
 
-    // Claude often guesses where a file is before it finds it: the failed Read of the guess still
-    // reported its location. A path with no file behind it is not a namesake of the one that exists.
     [Fact]
     public async Task OpenFileReference_BareNameOfAFileTheAgentFoundAfterAFailedGuess_OpensTheFileThatExists()
     {
@@ -479,9 +439,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(Path.GetFullPath(target), Assert.Single(services.OpenedDocumentPaths), ignoreCase: true);
     }
 
-    // A failed session/load puts the user back in the conversation they were in, so its file
-    // references must keep resolving against what the agent read in it - picking that file out of
-    // its namesakes, as before the load.
     [Fact]
     public async Task OpenFileReference_AfterAFailedSessionLoad_StillResolvesAgainstTheRestoredConversationsReads()
     {
@@ -504,9 +461,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(Path.GetFullPath(target), Assert.Single(services.OpenedDocumentPaths), ignoreCase: true);
     }
 
-    // The case left over once Claude's own paths are exhausted: it names a file it only saw in a
-    // shell command's output ("git show --stat" listing "AcpProcessConnectionTests.cs") - no tool
-    // call reported it. The file exists in the workspace, so the link has to open it.
     [Fact]
     public async Task OpenFileReference_BareNameNoToolReported_OpensTheOneFileOfThatNameInTheWorkspace()
     {
@@ -524,8 +478,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(1214, Assert.Single(services.OpenedDocumentLines));
     }
 
-    // Directories the reference does name narrow the workspace search the same way they narrow the
-    // tool-call locations: whole segments, so "Views/Chat.cs" is not "ViewModels/Chat.cs".
     [Fact]
     public async Task OpenFileReference_PartialPathNoToolReported_OpensTheFileThoseFoldersName()
     {
@@ -545,8 +497,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(Path.GetFullPath(target), Assert.Single(services.OpenedDocumentPaths), ignoreCase: true);
     }
 
-    // Two files of the name in the workspace and nothing to tell them apart: opening either would
-    // be a guess, so the click says so and opens nothing.
     [Fact]
     public async Task OpenFileReference_BareNameNoToolReportedMatchingTwoWorkspaceFiles_ReportsAmbiguityAndOpensNothing()
     {
@@ -566,8 +516,6 @@ public sealed partial class ChatSessionStateTests
         Assert.NotEqual(await NotFoundStatusAsync(vm, "Foo.cs"), status);
     }
 
-    // A build copies content files into bin/obj ("appsettings.json" under bin\Debug\net8.0): that
-    // copy is not a second file the user means, so the source one opens.
     [Theory]
     [InlineData("bin")]
     [InlineData("obj")]
@@ -589,7 +537,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(Path.GetFullPath(target), Assert.Single(services.OpenedDocumentPaths), ignoreCase: true);
     }
 
-    // Every file that exists is openable, a generated one that lives only in obj included.
     [Fact]
     public async Task OpenFileReference_BareNameNoToolReportedOnlyInBuildOutput_OpensIt()
     {
@@ -606,7 +553,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(Path.GetFullPath(target), Assert.Single(services.OpenedDocumentPaths), ignoreCase: true);
     }
 
-    // The workspace search is the last resort: a file Claude did read wins over its namesakes.
     [Fact]
     public async Task OpenFileReference_BareNameOfAFileTheAgentReadWithANamesakeInTheWorkspace_OpensTheOneItRead()
     {
@@ -626,7 +572,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(Path.GetFullPath(read), Assert.Single(services.OpenedDocumentPaths), ignoreCase: true);
     }
 
-    // The href crosses the WebView2 boundary, so it is as untrusted as the markdown it came from.
     [Theory]
     [InlineData(null)]
     [InlineData("")]

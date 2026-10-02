@@ -1,14 +1,11 @@
 using System;
 using System.IO;
-using ClaudeCode.Acp;
 using Xunit;
 
 namespace ClaudeCode.Acp.Tests;
 
 public sealed class AcpLauncherWrapTests : IDisposable
 {
-    // A space in the path is the part that matters here; Wrap performs no shell quoting or
-    // environment expansion, so the name no longer implies coverage of either.
     private readonly string _root = Path.Combine(Path.GetTempPath(), "claude acp launcher " + Guid.NewGuid().ToString("N"));
 
     [Theory]
@@ -18,7 +15,6 @@ public sealed class AcpLauncherWrapTests : IDisposable
     {
         if (forwardSlashes && Path.DirectorySeparatorChar != '\\')
         {
-            // The alternate flavour only differs from the native one on Windows.
             return;
         }
 
@@ -83,8 +79,6 @@ public sealed class AcpLauncherWrapTests : IDisposable
     [Fact]
     public void RunsTheAdapterUnchanged_WhenTheAdapterNoLongerShipsTheInternalEntryTheLauncherImports()
     {
-        // The launcher imports <pkg>/dist/acp-agent.js, which the adapter does not publish as an
-        // entry point; a user-updated adapter that renamed it must still start, without extensions.
         string packageDirectory = Path.Combine(_root, "node_modules", "@agentclientprotocol", "claude-agent-acp");
         string entry = CreateFile(Path.Combine(packageDirectory, "dist", "index.js"));
         string launcher = CreateFile(Path.Combine(_root, "Resources", "Scripts", "claude-acp-vs.mjs"));
@@ -102,6 +96,7 @@ public sealed class AcpLauncherWrapTests : IDisposable
         string path = Path.IsPathRooted(relativeOrAbsolutePath) ? relativeOrAbsolutePath : Path.Combine(_root, relativeOrAbsolutePath);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, string.Empty);
+
         return path;
     }
 

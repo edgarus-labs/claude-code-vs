@@ -17,9 +17,6 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
 
     private static readonly TimeSpan _gracefulShutdownTimeout = TimeSpan.FromSeconds(3);
 
-    // The connection is already known to be broken when SetSessionConfigOptionAsync's error path
-    // disposes it - there is no well-behaved agent left to wait politely for, so use a much shorter
-    // grace period before moving on to killing the process.
     private static readonly TimeSpan _errorPathShutdownTimeout = TimeSpan.FromMilliseconds(200);
 
     public const string CancelledPermissionOptionId = "__acp_cancelled__";
@@ -192,8 +189,6 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         FailAllPendingElicitations(disconnectCause);
         if (Volatile.Read(ref _disposed) != 0)
         {
-            // DisposeAsync() already initiated this shutdown intentionally - the consumer asked for
-            // it and does not need an unsolicited "the connection was lost" notification too.
             return;
         }
 
@@ -204,10 +199,6 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
     {
         if (IsInitialized)
         {
-            // The connection factory already performs the ACP `initialize` handshake before
-            // handing out a connection; a second call (e.g. from a caller that also initializes
-            // defensively) must not re-send `initialize` over the wire, since a conforming agent
-            // may reject or reset session state on a repeated handshake.
             return;
         }
 
@@ -218,15 +209,11 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
             {
                 ["fs"] = new JsonObject { ["readTextFile"] = true, ["writeTextFile"] = true },
                 ["terminal"] = false,
-                // Form support only - url-mode elicitation (directing the user to an external page)
-                // is not implemented.
                 ["elicitation"] = new JsonObject { ["form"] = new JsonObject() },
             },
         };
 
         JsonNode? result = await _rpc.SendRequestAsync("initialize", @params, cancellationToken).ConfigureAwait(false);
-        // A repeated key anywhere in the response body throws ArgumentException when the object is
-        // first materialized; report it as a malformed response.
         try
         {
             _supportsPromptQueueing = ReadsPromptQueueing(result);
@@ -238,9 +225,6 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         Volatile.Write(ref _isInitialized, 1);
     }
 
-    // claude-agent-acp's extension marker (agentCapabilities._meta.claudeCode.promptQueueing): a
-    // session/prompt sent while one is running is queued by the agent and taken up at its next input
-    // boundary. Agent-supplied, so only a literal JSON true counts.
     private static bool ReadsPromptQueueing(JsonNode? result) =>
         result is JsonObject response
         && response["agentCapabilities"] is JsonObject capabilities
@@ -249,11 +233,7 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         && claudeCode["promptQueueing"] is JsonValue flag
         && flag.GetValueKind() == System.Text.Json.JsonValueKind.True;
 
-    // Appended to Claude Code's own system prompt for every session, as the VS Code extension does
-    // (its "Focus view in this editor" section): Claude Code's default assumes a terminal where text
-    // between tool calls may not be seen, so without this Claude keeps its narration - including its
-    // reply to a message the user sends mid-turn - in its thinking.
-    private const string ChatPanelSystemPromptSection =
+    private const string _chatPanelSystemPromptSection =
         "# Claude Code chat panel in Visual Studio\n" +
         "You are running inside the Claude Code chat panel in Visual Studio. Guidance above that text between tool " +
         "calls may not be shown to the user, or that you should close with a recap that stands on its own, does not " +
@@ -265,27 +245,20 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         "enough. Still end each turn with a text message, even a short one, rather than ending on a tool call. If you " +
         "are running as a subagent, ignore this section.";
 
-    // claude-agent-acp: `_meta.systemPrompt` as an object keeps the claude_code preset and forwards
-    // `append`. Built per request - a JsonNode can only have one parent.
     private static JsonObject SessionMeta() => new JsonObject
     {
-        ["systemPrompt"] = new JsonObject { ["append"] = ChatPanelSystemPromptSection },
+        ["systemPrompt"] = new JsonObject { ["append"] = _chatPanelSystemPromptSection },
     };
 
     /// <summary>
     /// Starts a new ACP session rooted at <paramref name="cwd"/>. <paramref name="cwd"/> is sent to
-    /// the remote agent process as-is - this class does not validate, canonicalize, or sandbox it in
-    /// any way. The caller MUST pass only a path it already trusts (e.g. one already checked against
-    /// a workspace boundary); this class has no way to distinguish an intentionally-opened workspace
-    /// from an attacker-controlled path.
+    /// the remote agent process as-is, without validation or canonicalization.
     /// </summary>
     public async Task<NewSessionResult> NewSessionAsync(string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken)
     {
         var @params = new JsonObject
         {
             ["cwd"] = cwd,
-            // ACP marks `mcpServers` required on NewSessionRequest (possibly empty); always send an array
-            // even when the caller passed null/empty, rather than the task-literal "only if non-empty".
             ["mcpServers"] = BuildMcpServersArray(mcpServers),
             ["_meta"] = SessionMeta(),
         };
@@ -293,8 +266,6 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         JsonNode? result = await _rpc.SendRequestAsync("session/new", @params, cancellationToken).ConfigureAwait(false);
         var obj = result as JsonObject ?? throw new AcpProtocolException("session/new response did not contain a result object.");
 
-        // A repeated key anywhere in the response body throws ArgumentException when the object is
-        // first materialized, before any field can be read; report it as a malformed response.
         string sessionId;
         try
         {
@@ -308,18 +279,16 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         return new NewSessionResult(sessionId, ParseConfigOptions(obj));
     }
 
-    // Extension request answered by the Visual Studio launcher script (claude-acp-vs.mjs), not by the
-    // stock adapter; the launcher forwards it to the Agent SDK's enableRemoteControl control request.
     public async Task<RemoteControlState> SetRemoteControlAsync(string sessionId, bool enabled, string? name, CancellationToken cancellationToken)
     {
         var @params = new JsonObject { ["sessionId"] = sessionId, ["enabled"] = enabled };
-        if (!string.IsNullOrWhiteSpace(name)) @params["name"] = name;
+        if (!string.IsNullOrWhiteSpace(name))
+        {
+            @params["name"] = name;
+        }
 
         JsonNode? result = await _rpc.SendRequestAsync("_vs/remoteControl", @params, cancellationToken).ConfigureAwait(false);
         var obj = result as JsonObject ?? throw new AcpProtocolException("_vs/remoteControl response did not contain a result object.");
-        // The agent is authoritative about whether the toggle took effect. Falling back to the
-        // requested value would leave the UI claiming the session is (or is no longer) exposed at
-        // claude.ai/code on the word of an agent that never acknowledged it.
         if (obj["enabled"] is not JsonValue value || !value.TryGetValue<bool>(out bool resultEnabled))
         {
             throw new AcpProtocolException("_vs/remoteControl response did not report the resulting 'enabled' state.");
@@ -342,8 +311,6 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         {
             ["sessionId"] = sessionId,
             ["cwd"] = cwd,
-            // ACP marks `mcpServers` required on LoadSessionRequest (possibly empty); always send an
-            // array, mirroring NewSessionAsync's convention above.
             ["mcpServers"] = BuildMcpServersArray(mcpServers),
             ["_meta"] = SessionMeta(),
         };
@@ -371,8 +338,6 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
         catch (Exception ex) when (ex is not AcpRemoteException)
         {
-            // Without an authoritative acknowledgement, the agent may already have applied the
-            // value. Do not let callers keep sending with an apparently rolled-back setting.
             try
             {
                 ReportDisconnected(ex);
@@ -396,12 +361,6 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
 
         var @params = new JsonObject { ["sessionId"] = sessionId, ["prompt"] = promptArray };
 
-        // Design note: ACP v1's `session/prompt` request *is* the end-of-turn signal - the RPC call only
-        // resolves once the whole turn (streaming chunks, tool calls, permission round-trips) has fully
-        // finished, and its response carries the terminal `stopReason`
-        // (https://agentclientprotocol.com/protocol/v1/schema#session-prompt). There is no separate
-        // "turn ended" `session/update` notification in the v1 schema, so `SessionUpdate.TurnEnded` is
-        // raised here, from the response, immediately before returning - not from a notification handler.
         JsonNode? result = await _rpc.SendRequestAsync("session/prompt", @params, cancellationToken).ConfigureAwait(false);
         string stopReason = result is JsonObject obj ? GetOptionalString(obj, "stopReason") ?? "end_turn" : "end_turn";
         SessionUpdate?.Invoke(this, new SessionUpdateEventArgs(sessionId, new SessionUpdate.TurnEnded(stopReason)));
@@ -410,25 +369,14 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
 
     public async Task CancelAsync(string sessionId, CancellationToken cancellationToken)
     {
-        // session/cancel is a notification (fire-and-forget); the in-flight session/prompt call for this
-        // session resolves later with stopReason "cancelled" once the agent has wound down.
         try
         {
             await _rpc.SendNotificationAsync("session/cancel", new JsonObject { ["sessionId"] = sessionId }, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
-            // Per spec, once session/cancel has been sent the client MUST answer any outstanding
-            // session/request_permission calls for this session with RequestPermissionOutcome::Cancelled, even
-            // if the UI never gets around to answering the prompt itself. Resolve them proactively.
-            // This also has to happen when the notification could not be written at all (already
-            // cancelled token, dead transport) - that is exactly when an unanswered prompt would
-            // otherwise hang in the UI forever.
             CancelPendingPermissions(sessionId);
 
-            // Same reasoning for a still-open elicitation form (e.g. an unanswered AskUserQuestion): the
-            // turn is winding down, so resolve it as cancelled rather than leaving the UI's response task
-            // hanging forever.
             CancelPendingElicitations(sessionId);
         }
     }
@@ -445,7 +393,7 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         bool stderrTimedOut = false;
         try
         {
-            _rpc.CloseOutput(); // close stdin: signals EOF so a well-behaved agent exits on its own.
+            _rpc.CloseOutput();
 
             if (_process is not null)
             {
@@ -458,7 +406,6 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
         finally
         {
-            // Closing the job also terminates descendants whose direct launcher already exited.
             _windowsProcess?.Terminate();
             try
             {
@@ -467,9 +414,7 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
                 {
                     if (await Task.WhenAny(_stderrPump, Task.Delay(gracefulShutdownTimeout)).ConfigureAwait(false) != _stderrPump)
                     {
-                        // A subscriber can block indefinitely. Cleanup must still finish; observe
-                        // any later failure after reporting that the callback could not be drained.
-                        _ = _stderrPump.ContinueWith(task => { _ = task.Exception; },
+                        _ = _stderrPump.ContinueWith(task => _ = task.Exception,
                             CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
                         stderrTimedOut = true;
                     }
@@ -539,11 +484,9 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
         catch (InvalidOperationException)
         {
-            // There is no associated live process (including a failed start).
         }
         catch (Win32Exception) when (process.HasExited)
         {
-            // The process exited between the check and the kill.
         }
     }
 
@@ -567,6 +510,11 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
     }
 
+    /// <summary>
+    /// Removes the specified pending permission request from the session’s tracking collection and deletes the session entry if no other pending permissions remain.
+    /// </summary>
+    /// <param name="sessionId">The unique identifier of the session.</param>
+    /// <param name="args">The args.</param>
     private void UntrackPendingPermission(string sessionId, PermissionRequestEventArgs args)
     {
         lock (_permissionGate)
@@ -582,6 +530,10 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
     }
 
+    /// <summary>
+    /// Cancels all pending permission requests for the specified session by completing each pending response with the cancelled permission option identifier.
+    /// </summary>
+    /// <param name="sessionId">The unique identifier of the session.</param>
     private void CancelPendingPermissions(string sessionId)
     {
         lock (_permissionGate)
@@ -596,6 +548,10 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
     }
 
+    /// <summary>
+    /// Fails all pending permission requests by recording the specified exception and setting it on each pending response.
+    /// </summary>
+    /// <param name="cause">The cause.</param>
     private void FailAllPendingPermissions(Exception cause)
     {
         lock (_permissionGate)
@@ -611,6 +567,11 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
     }
 
+    /// <summary>
+    /// Tracks a pending elicitation request for the given session by adding it to the session’s pending collection and, if a prior elicitation failure is recorded, propagates that exception to the request’s response.
+    /// </summary>
+    /// <param name="sessionId">The unique identifier of the session.</param>
+    /// <param name="args">The args.</param>
     private void TrackPendingElicitation(string sessionId, ElicitationRequestEventArgs args)
     {
         lock (_elicitationGate)
@@ -631,6 +592,11 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
     }
 
+    /// <summary>
+    /// Removes a pending elicitation request from the session&apos;s tracking collection and cleans up.
+    /// </summary>
+    /// <param name="sessionId">The unique identifier of the session.</param>
+    /// <param name="args">The args.</param>
     private void UntrackPendingElicitation(string sessionId, ElicitationRequestEventArgs args)
     {
         lock (_elicitationGate)
@@ -646,6 +612,10 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
     }
 
+    /// <summary>
+    /// Cancels all pending elicitation requests for the specified session by completing their responses with a cancel action and empty content.
+    /// </summary>
+    /// <param name="sessionId">The unique identifier of the session.</param>
     private void CancelPendingElicitations(string sessionId)
     {
         lock (_elicitationGate)
@@ -660,6 +630,10 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
     }
 
+    /// <summary>
+    /// Fails all pending elicitation requests by setting the specified exception on each response task.
+    /// </summary>
+    /// <param name="cause">The cause.</param>
     private void FailAllPendingElicitations(Exception cause)
     {
         lock (_elicitationGate)

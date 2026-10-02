@@ -28,7 +28,6 @@ public sealed class CircularProgressGeometryTests
     [Fact]
     public void ParseSpec_ZeroOrNegativeThickness_RetainsDefaultPositiveThickness()
     {
-        // Parameter "6,0" or "6,-2" must never set thickness to <= 0.
         var (radiusZero, thicknessZero) = CircularProgressGeometry.ParseSpec("6,0");
         Assert.Equal(6.0, radiusZero);
         Assert.Equal(CircularProgressGeometry.DefaultThickness, thicknessZero);
@@ -74,7 +73,6 @@ public sealed class CircularProgressGeometryTests
     [Fact]
     public void ComputeDash_ZeroOrNegativeThickness_NeverDividesByZeroOrProducesInfinity()
     {
-        // Even if non-positive thickness reaches ComputeDash, it must fallback and avoid division by zero.
         var (dash, gap) = CircularProgressGeometry.ComputeDash(50, 6, 0);
         Assert.False(double.IsNaN(dash));
         Assert.False(double.IsInfinity(dash));

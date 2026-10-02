@@ -5,10 +5,6 @@ using System.Threading.Tasks;
 
 namespace ClaudeCode.Core.Tests;
 
-/// <summary>Configurable <see cref="IAcpAuthService"/> double for exercising /login and /logout:
-/// unlike <see cref="AlwaysSignedInAuthService"/>, this one actually tracks state and raises
-/// <see cref="StateChanged"/>, mirroring how the real service's status probe and command results
-/// drive <c>ChatViewModel</c>'s reconnect/disconnect plumbing.</summary>
 internal sealed class RecordingAuthService : IAcpAuthService
 {
     public RecordingAuthService(AuthState initialState = AuthState.SignedOut)
@@ -16,8 +12,14 @@ internal sealed class RecordingAuthService : IAcpAuthService
         CurrentState = initialState;
     }
 
+    /// <summary>
+    /// Gets or sets the current state.
+    /// </summary>
     public AuthState CurrentState { get; private set; }
 
+    /// <summary>
+    /// Occurs when state changed.
+    /// </summary>
     public event EventHandler<AuthStateChangedEventArgs>? StateChanged;
 
     public void SetState(AuthState state, string? detail = null)
@@ -26,6 +28,9 @@ internal sealed class RecordingAuthService : IAcpAuthService
         StateChanged?.Invoke(this, new AuthStateChangedEventArgs(state, detail));
     }
 
+    /// <summary>
+    /// Gets or sets the is signed in handler.
+    /// </summary>
     public Func<CancellationToken, Task<bool>>? IsSignedInHandler { get; set; }
 
     public Task<bool> IsSignedInAsync(CancellationToken cancellationToken) =>
@@ -35,8 +40,14 @@ internal sealed class RecordingAuthService : IAcpAuthService
 
     public Task SignOutAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
+    /// <summary>
+    /// Gets or sets the login handler.
+    /// </summary>
     public Func<CancellationToken, IProgress<string>?, Task<AuthCommandOutcome>>? LoginHandler { get; set; }
 
+    /// <summary>
+    /// Gets or sets the login call count.
+    /// </summary>
     public int LoginCallCount { get; private set; }
 
     public Task<AuthCommandOutcome> LaunchInteractiveLoginAsync(CancellationToken cancellationToken, IProgress<string>? progress = null)
@@ -45,8 +56,14 @@ internal sealed class RecordingAuthService : IAcpAuthService
         return LoginHandler?.Invoke(cancellationToken, progress) ?? Task.FromResult(new AuthCommandOutcome(true, "Signed in."));
     }
 
+    /// <summary>
+    /// Gets or sets the logout handler.
+    /// </summary>
     public Func<CancellationToken, Task<AuthCommandOutcome>>? LogoutHandler { get; set; }
 
+    /// <summary>
+    /// Gets or sets the logout call count.
+    /// </summary>
     public int LogoutCallCount { get; private set; }
 
     public Task<AuthCommandOutcome> LaunchInteractiveLogoutAsync(CancellationToken cancellationToken)

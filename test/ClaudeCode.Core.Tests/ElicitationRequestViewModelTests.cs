@@ -31,9 +31,8 @@ public sealed class ElicitationRequestViewModelTests
         var vm = new ElicitationRequestViewModel("Pick one", [SingleSelectField("q0"), MultiSelectField("q1"), TextField("q1_custom")],
             answer => captured = answer);
 
-        vm.Fields[0].Options[1].IsSelected = true; // blue
-        vm.Fields[1].Options[0].IsSelected = true; // left
-        // q1_custom left blank.
+        vm.Fields[0].Options[1].IsSelected = true;
+        vm.Fields[1].Options[0].IsSelected = true;
 
         vm.SubmitCommand.Execute(null);
 
@@ -74,8 +73,6 @@ public sealed class ElicitationRequestViewModelTests
     [Fact]
     public void Submit_TextValueSetToNull_DoesNotThrowAndOmitsField()
     {
-        // WPF two-way binding on an empty TextBox can push null into the bound property; Submit runs
-        // on the UI thread inside a command handler, where an unhandled exception kills devenv.
         ElicitationAnswer? captured = null;
         var vm = new ElicitationRequestViewModel("Anything else?", [TextField("q0")], answer => captured = answer);
 
@@ -114,14 +111,11 @@ public sealed class ElicitationRequestViewModelTests
     [Fact]
     public void Submit_SingleSelectWithTwoOptionsSelected_AnswersWithTheLatestSelection()
     {
-        // A SingleSelect field must hold a mutual-exclusion invariant: WPF RadioButtons inside an
-        // ItemsControl each sit in their own ContentPresenter and so group independently, which
-        // leaves the view free to hand the view-model two checked options for one question.
         ElicitationAnswer? captured = null;
         var vm = new ElicitationRequestViewModel("Pick one", [SingleSelectField("q0")], answer => captured = answer);
 
-        vm.Fields[0].Options[0].IsSelected = true; // red
-        vm.Fields[0].Options[1].IsSelected = true; // blue - what the user actually clicked last
+        vm.Fields[0].Options[0].IsSelected = true;
+        vm.Fields[0].Options[1].IsSelected = true;
 
         Assert.False(vm.Fields[0].Options[0].IsSelected);
 
@@ -141,10 +135,7 @@ public sealed class ElicitationRequestViewModelTests
     }
 
     [Fact]
-    public void Constructor_NullFields_ThrowsArgumentNullException()
-    {
-        Assert.Throws<ArgumentNullException>(() => new ElicitationRequestViewModel("Pick one", null!, _ => { }));
-    }
+    public void Constructor_NullFields_ThrowsArgumentNullException() => Assert.Throws<ArgumentNullException>(() => new ElicitationRequestViewModel("Pick one", null!, _ => { }));
 
     [Fact]
     public void Submit_DuplicateFieldKeys_AnswersWithTheLastFilledInField()
@@ -249,9 +240,6 @@ public sealed class ElicitationRequestViewModelTests
     [Fact]
     public void Constructor_MoreFieldsThanTheCap_SaysHowManyQuestionsWereWithheld()
     {
-        // Dropping the excess is the right denial-of-service defence, but Submit still answers
-        // Accept, which in the protocol means "the user answered the form". The user has to be able
-        // to see that they are accepting on a form they were not shown in full.
         var fields = new List<ElicitationField>();
         for (var i = 0; i < ElicitationRequestViewModel.MaxFields + 3; i++)
         {
@@ -266,25 +254,17 @@ public sealed class ElicitationRequestViewModelTests
     [Fact]
     public void Constructor_FormWithinTheCaps_HasNoTruncationNotice()
     {
-        // Null rather than empty: the card collapses the notice line through NullToVisibilityConverter.
         var vm = new ElicitationRequestViewModel("Pick one", [TextField("q0")], _ => { });
 
         Assert.Null(vm.TruncationNotice);
     }
 
     [Fact]
-    public void Constructor_NullFieldInsideTheForm_ThrowsArgumentNullException()
-    {
-        // Construction runs inside ChatViewModel's UI-thread post, where an unhandled
-        // NullReferenceException tears down devenv.
-        Assert.Throws<ArgumentNullException>(() => new ElicitationRequestViewModel("Pick one", [null!], _ => { }));
-    }
+    public void Constructor_NullFieldInsideTheForm_ThrowsArgumentNullException() => Assert.Throws<ArgumentNullException>(() => new ElicitationRequestViewModel("Pick one", [null!], _ => { }));
 
     [Fact]
     public void Constructor_AbsentTitleDescriptionAndOptionDescription_StayNull()
     {
-        // The card collapses these lines only on null; an empty string would give every field a blank
-        // bold line and every option a blank subtitle, both with margins.
         var field = new ElicitationField("q0", null, null, ElicitationFieldKind.SingleSelect,
         [
             new ElicitationOption("red", "Red"),
@@ -300,10 +280,6 @@ public sealed class ElicitationRequestViewModelTests
     [Fact]
     public void Constructor_FullFormOfOverlongStrings_BoundsTheWholeFormsDisplayText()
     {
-        // MaxDisplayTextLength alone is a per-string cap: MaxFields x MaxOptionsPerField options, each
-        // with a label and a description, still add up to millions of characters, and the card renders
-        // every one of them in a wrapping TextBlock inside a non-virtualizing ItemsControl - realized
-        // and line-broken synchronously on the UI thread, again on every tool-window resize.
         var huge = new string('x', ElicitationRequestViewModel.MaxDisplayTextLength);
         var fields = new List<ElicitationField>();
         for (var i = 0; i < ElicitationRequestViewModel.MaxFields; i++)
@@ -319,15 +295,12 @@ public sealed class ElicitationRequestViewModelTests
 
         var vm = new ElicitationRequestViewModel(huge, fields, _ => { });
 
-        // The message is spent from the budget first: it is the prompt the user has to read, so a
-        // form padded with overlong option text must not be what squeezes it down to "…".
         Assert.Equal(huge, vm.Message);
 
         int rendered = vm.Message.Length + vm.Fields.Sum(field =>
             (field.Title?.Length ?? 0) + (field.Description?.Length ?? 0)
             + field.Options.Sum(option => option.Label.Length + (option.Description?.Length ?? 0)));
 
-        // One ellipsis marker per display string is allowed on top of the budget itself.
         int markers = 1 + (vm.Fields.Count * 2) + vm.Fields.Sum(field => field.Options.Count * 2);
 
         Assert.True(
@@ -336,8 +309,6 @@ public sealed class ElicitationRequestViewModelTests
                 + $"{ElicitationRequestViewModel.MaxFormTextLength}.");
     }
 
-    // The cut lands at index MaxDisplayTextLength; a pair straddling it would be halved and the
-    // card would render a replacement box before the ellipsis - reachable from an ordinary emoji.
     [Fact]
     public void Constructor_CuttingOverlongText_NeverLeavesHalfOfASurrogatePair()
     {
@@ -369,17 +340,12 @@ public sealed class ElicitationRequestViewModelTests
         vm.Fields[0].Options[0].IsSelected = true;
         vm.SubmitCommand.Execute(null);
 
-        // The wire value is the agent's identifier, not display text - truncating it would answer
-        // with an option the agent never offered.
         Assert.Equal(new[] { "red" }, captured!.Content["q0"]);
     }
 
     [Fact]
     public void Constructor_ChoiceFieldsEachFollowedByAnOtherBox_GroupEachOtherBoxWithItsOwnQuestion()
     {
-        // Claude sends one AskUserQuestion question as two schema properties: the choice field and
-        // an optional free-text "Other" companion. The companion is part of its question, not a
-        // question of its own, so a two-question form must page as "Question 1 of 2".
         var vm = new ElicitationRequestViewModel("Pick one",
             [SingleSelectField("approach"), TextField("approach_other"), MultiSelectField("checks"), TextField("checks_other")],
             _ => { });
@@ -402,8 +368,6 @@ public sealed class ElicitationRequestViewModelTests
     [Fact]
     public void Constructor_ChoiceFieldWithNoTrailingTextField_IsAQuestionOfExactlyOneField()
     {
-        // "Other" is optional in the schema; a question sent without one must not borrow the next
-        // question's fields.
         var vm = new ElicitationRequestViewModel("Pick one",
             [SingleSelectField("q0"), MultiSelectField("q1")], _ => { });
 
@@ -418,8 +382,6 @@ public sealed class ElicitationRequestViewModelTests
     [Fact]
     public void Constructor_SeveralTextFieldsAfterOneChoiceField_AllBelongToThatQuestion()
     {
-        // The grouping rule is "a choice field opens a question, text fields join the open one" -
-        // not "a choice field plus exactly one companion".
         var vm = new ElicitationRequestViewModel("Pick one",
             [SingleSelectField("q0"), TextField("q0_other"), TextField("q0_note"), TextField("q0_more")], _ => { });
 
@@ -446,8 +408,6 @@ public sealed class ElicitationRequestViewModelTests
     [Fact]
     public void Constructor_AnyForm_PutsEveryFieldInExactlyOneStepInWireOrder()
     {
-        // The real protection against a grouping bug: a question that falls between two steps is
-        // never shown, and the user accepts a form they were not asked.
         var vm = new ElicitationRequestViewModel("Pick one",
             [
                 TextField("intro"),
@@ -484,8 +444,6 @@ public sealed class ElicitationRequestViewModelTests
     [Fact]
     public void Constructor_FormWithNoFields_HasNoQuestionAndNavigatesNowhere()
     {
-        // A message-only form, or one whose fields the bounds dropped entirely: the card still has
-        // to render its message and its Send button, and its ItemsControl must not bind to null.
         var vm = new ElicitationRequestViewModel("Just so you know", [], _ => { });
 
         Assert.NotNull(vm.CurrentStepFields);
@@ -506,7 +464,6 @@ public sealed class ElicitationRequestViewModelTests
     [Fact]
     public void Constructor_MultiStepForm_StartsOnTheFirstQuestion()
     {
-        // The card shows one question at a time, so the view-model owns the position within the form.
         var vm = new ElicitationRequestViewModel("Pick one",
             [SingleSelectField("q0"), MultiSelectField("q1"), TextField("q1_other")], _ => { });
 
@@ -549,10 +506,6 @@ public sealed class ElicitationRequestViewModelTests
     [Fact]
     public void NextOnTheLastStep_AndBackOnTheFirst_AreClampedRatherThanRunningOffTheForm()
     {
-        // CanExecute keeps the buttons disabled, but a command reached any other way (a bound key
-        // gesture, a view written later) must not walk the position out of range: CurrentStepFields
-        // indexes the step list directly, and an IndexOutOfRangeException inside a binding getter
-        // runs on the UI thread, where it tears down devenv.
         var vm = new ElicitationRequestViewModel("Pick one",
             [SingleSelectField("q0"), TextField("q0_other"), MultiSelectField("q1")], _ => { });
 
@@ -589,8 +542,6 @@ public sealed class ElicitationRequestViewModelTests
     [Fact]
     public void Next_RefreshesTheNavigationCommandsCanExecute()
     {
-        // The card binds Back/Next to these commands; without a CanExecuteChanged the buttons stay
-        // in their startup enablement and the user can click a no-op.
         var vm = new ElicitationRequestViewModel("Pick one",
             [SingleSelectField("q0"), TextField("q0_other"), MultiSelectField("q1")], _ => { });
         var backRefreshed = 0;
@@ -621,14 +572,12 @@ public sealed class ElicitationRequestViewModelTests
     [Fact]
     public void Submit_WithoutPaging_StillAnswersEveryFieldOfTheForm()
     {
-        // Grouping and paging are presentation only: the answer carries every field the user filled
-        // in, including fields on a step they never navigated to.
         ElicitationAnswer? captured = null;
         var vm = new ElicitationRequestViewModel("Pick one",
             [SingleSelectField("approach"), TextField("approach_other"), MultiSelectField("checks"), TextField("checks_other")],
             answer => captured = answer);
 
-        vm.Fields[0].Options[1].IsSelected = true; // blue, on the step the user is shown
+        vm.Fields[0].Options[1].IsSelected = true;
         vm.Fields[3].TextValue = "typed on a step never visited";
 
         vm.SubmitCommand.Execute(null);

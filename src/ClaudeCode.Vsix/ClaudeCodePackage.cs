@@ -50,11 +50,8 @@ public sealed class ClaudeCodePackage : AsyncPackage
             "Resources", "Scripts", "fetch-usage.cjs");
         var usageService = new ClaudeUsageService(usageScriptPath);
         _vsControlSessionRegistry = new VsControlSessionRegistry();
-        // Auto effort's judge: a short Haiku call through the adapter's bundled CLI, made only on Auto turns.
         var effortClassifier = new ClaudeCliEffortJudge(ResolveAdapterAsync);
 
-        // Seed the workspace-root cache once on the UI thread, then keep it current via solution
-        // events instead of blocking every GetWorkspaceRoot() call on JoinableTaskFactory.Run.
         _solutionEvents = VS.Events.SolutionEvents;
         _solutionEvents.OnAfterOpenSolution += OnSolutionOpened;
         _solutionEvents.OnAfterCloseSolution += OnSolutionClosed;
@@ -75,8 +72,6 @@ public sealed class ClaudeCodePackage : AsyncPackage
         await this.RegisterCommandsAsync();
     }
 
-    // Same adapter the chat runs on (ClaudeCodeConnectionFactory): the option is UI-thread affine,
-    // the filesystem probing is not allowed there.
     private async Task<AcpExecutableSpec> ResolveAdapterAsync(CancellationToken cancellationToken)
     {
         await JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
@@ -87,7 +82,6 @@ public sealed class ClaudeCodePackage : AsyncPackage
         }
         catch (COMException exception)
         {
-            // After IVsPackage.Close the option page can no longer be read (see ReadRemoteControlAtStartup).
             throw new InvalidOperationException("Visual Studio is shutting down, so Auto effort cannot ask its judge.", exception);
         }
         var resolved = await Task.Run(() => string.IsNullOrWhiteSpace(overridePath)
@@ -98,7 +92,6 @@ public sealed class ClaudeCodePackage : AsyncPackage
             + "'npm install -g @agentclientprotocol/claude-agent-acp' or set Tools > Options > Claude Code > ACP executable path.");
     }
 
-    /// <summary>Opens (or activates) the "Implementation Plan" document tab showing <paramref name="plan"/>.</summary>
     internal async Task ShowPlanAsync(ClaudeCode.Core.ViewModels.PlanReviewViewModel plan)
     {
         var window = await FindToolWindowAsync(typeof(PlanToolWindowPane), 0, create: true, DisposalToken);
@@ -113,8 +106,6 @@ public sealed class ClaudeCodePackage : AsyncPackage
         }
         else
         {
-            // FindToolWindowAsync returns null rather than throwing when creation fails, so without
-            // this the plan silently never appears and the caller's try/catch logs nothing.
             ActivityLog.TryLogError("Claude Code", "The implementation plan window could not be created.");
         }
     }
@@ -138,8 +129,6 @@ public sealed class ClaudeCodePackage : AsyncPackage
             }
             finally
             {
-                // Must run even if the UI-thread cleanup above throws, or the registry and the
-                // extension-scoped globals below would leak/outlive this package instance.
                 _vsControlSessionRegistry?.Dispose();
 
                 ClaudeCodeServices.ConnectionFactory = null;
@@ -160,10 +149,6 @@ public sealed class ClaudeCodePackage : AsyncPackage
         return (ClaudeCodeOptionsPage)GetDialogPage(typeof(ClaudeCodeOptionsPage));
     }
 
-    /// <summary>Reads the option on the UI thread. Once IVsPackage.Close has run, GetDialogPage
-    /// throws COMException (E_UNEXPECTED) instead of answering; a session that finishes connecting
-    /// during shutdown must not be torn down over a setting it can no longer read, so that reads as
-    /// "off".</summary>
     private bool ReadRemoteControlAtStartup()
     {
         try
@@ -182,17 +167,13 @@ public sealed class ClaudeCodePackage : AsyncPackage
 
     private string? GetWorkspaceRoot() => _workspaceRootTracker.Root;
 
-    private void OnSolutionOpened(Solution? solution)
-    {
-        _workspaceRootTracker.Update(ComputeWorkspaceRoot(solution?.FullPath));
-    }
+    private void OnSolutionOpened(Solution? solution) => _workspaceRootTracker.Update(ComputeWorkspaceRoot(solution?.FullPath));
 
-    private void OnSolutionClosed()
-    {
-        _workspaceRootTracker.Update(null);
-    }
+    /// <summary>
+    /// Resets the workspace root tracker upon solution closure.
+    /// </summary>
+    private void OnSolutionClosed() => _workspaceRootTracker.Update(null);
 
-    /// Pure so it can be exercised without a live VS host; not itself VS-SDK dependent.
     internal static string? ComputeWorkspaceRoot(string? solutionFullPath) =>
         solutionFullPath is string path ? System.IO.Path.GetDirectoryName(path) : null;
 }

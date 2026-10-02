@@ -13,19 +13,12 @@ using System.Threading.Tasks;
 
 namespace ClaudeCode.Vsix.Usage;
 
-/// <summary>
-/// Reports account usage/rate-limit status via a bundled Node helper script rather than reading
-/// credentials in this process. This is a deliberate, narrow exception to AcpAuthService's "never
-/// read credentials in the extension host" rule: the `claude` CLI has no subcommand that exposes
-/// usage as JSON, so there is no way to delegate this to the trusted claude-agent-acp executable
-/// the way auth status is delegated. Instead, Resources\Scripts\fetch-usage.cjs — a small, reviewed,
-/// bundled script — is spawned as its own subprocess; it alone reads the OAuth token from
-/// ~/.claude/.credentials.json and calls the (undocumented) usage endpoint. The extension host
-/// process only ever sees the trimmed JSON that subprocess prints to stdout, never the token itself.
-/// </summary>
 internal sealed class ClaudeUsageService : IUsageService
 {
     private static readonly TimeSpan _processTimeout = TimeSpan.FromSeconds(10);
+    /// <summary>
+    /// The max output characters.
+    /// </summary>
     private const int _maxOutputCharacters = 64 * 1024;
 
     private readonly string _scriptPath;
@@ -33,6 +26,11 @@ internal sealed class ClaudeUsageService : IUsageService
     private UsageSnapshot? _cachedSnapshot;
     private JoinableTask<UsageSnapshot?>? _inFlight;
 
+    /// <summary>
+    /// Initializes a new instance of the ClaudeUsageService class with the specified script path, throwing an ArgumentNullException if scriptPath is null.
+    /// </summary>
+    /// <param name="scriptPath">The script path.</param>
+    /// <exception cref="ArgumentNullException">Thrown when an error occurs during execution.</exception>
     public ClaudeUsageService(string scriptPath)
     {
         _scriptPath = scriptPath ?? throw new ArgumentNullException(nameof(scriptPath));
@@ -40,10 +38,6 @@ internal sealed class ClaudeUsageService : IUsageService
 
     public async Task<UsageSnapshot?> GetUsageAsync(CancellationToken cancellationToken)
     {
-        // The snapshot is not a cache: every explicit trigger (turn end, opening the usage panel)
-        // must show post-turn numbers, so a completed fetch only answers requests that arrive within
-        // the burst window. Requests that arrive while a fetch is running join it instead of each
-        // spawning their own helper - and their own token-bearing request to the usage endpoint.
         JoinableTask<UsageSnapshot?> fetch;
         lock (_cacheLock)
         {
@@ -52,13 +46,8 @@ internal sealed class ClaudeUsageService : IUsageService
                 return _cachedSnapshot;
             }
 
-            // A completed fetch is simply replaced here rather than cleared from a finally: clearing
-            // from inside the fetch races its own assignment when the fetch completes synchronously
-            // and would pin a stale completed task forever.
             if (_inFlight is null || _inFlight.IsCompleted)
             {
-                // VSSDK007 does not see across methods: the fetch is captured here and joined below by
-                // every caller. It is a tracked, shared fetch, not fire-and-forget.
 #pragma warning disable VSSDK007
                 _inFlight = ThreadHelper.JoinableTaskFactory.RunAsync(FetchAndCacheAsync);
 #pragma warning restore VSSDK007
@@ -67,22 +56,11 @@ internal sealed class ClaudeUsageService : IUsageService
             fetch = _inFlight;
         }
 
-        // The fetch is owned by the service (bounded by _processTimeout), so one caller's
-        // cancellation only abandons that caller's wait - it must not kill the helper the other
-        // waiters share. JoinAsync does exactly that: it returns early on the token without
-        // cancelling the joined task.
         return await fetch.JoinAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<UsageSnapshot?> FetchAndCacheAsync()
     {
-        // Everything below touches the filesystem and spawns a process: File.Exists on the script,
-        // one File.Exists per fully-qualified PATH entry inside FindNodeOnPath (a single unreachable
-        // UNC or mapped-drive entry blocks on an SMB timeout), then CreateProcess. Both callers reach
-        // this from the UI thread - ChatViewModel's constructor fire-and-forgets the usage polling
-        // loop while ChatPanelView is still being constructed, and the IsUsagePanelOpen setter does
-        // the same - so none of it may run there. Same rule as ClaudeCodeConnectionFactory: hop to
-        // the thread pool first.
         string? output = await Task.Run(async () =>
         {
             if (!File.Exists(_scriptPath))
@@ -128,9 +106,6 @@ internal sealed class ClaudeUsageService : IUsageService
             },
             EnableRaisingEvents = true,
         };
-        // Node's built-in https client ignores HTTPS_PROXY/HTTP_PROXY unless asked (Node 24+; older
-        // runtimes ignore the variable), and the helper inherits devenv's environment, so behind a
-        // proxy the usage request would otherwise fail where the CLI and adapter work.
         process.StartInfo.Environment["NODE_USE_ENV_PROXY"] = "1";
 
         bool started = false;
@@ -147,7 +122,7 @@ internal sealed class ClaudeUsageService : IUsageService
             Task stderrDrain = process.StandardError.BaseStream.CopyToAsync(Stream.Null);
             Task<string> stdout = BoundedProcessOutput.ReadBoundedAsync(process.StandardOutput, _maxOutputCharacters);
             Task complete = Task.WhenAll(stderrDrain, stdout, exited.Task);
-            _ = complete.ContinueWith(task => { _ = task.Exception; },
+            _ = complete.ContinueWith(task => _ = task.Exception,
                 CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
             Task finished = await Task.WhenAny(complete, Task.Delay(_processTimeout)).ConfigureAwait(false);
             if (finished != complete)
@@ -184,7 +159,6 @@ internal sealed class ClaudeUsageService : IUsageService
         }
         catch (Exception ex) when (ex is Win32Exception || ex is InvalidOperationException)
         {
-            // Already exited or no longer accessible.
         }
     }
 
@@ -195,11 +169,6 @@ internal sealed class ClaudeUsageService : IUsageService
             return null;
         }
 
-        // IUsageService promises null rather than an exception for unavailable data, so the
-        // projection has to be inside the try too: the values are whatever the endpoint returned, and
-        // Value<int?>/Value<bool?> raise OverflowException for a number outside int range (1e308
-        // passes the helper's `typeof === "number"` filter untouched), FormatException or
-        // InvalidCastException for a token that will not convert.
         try
         {
             JObject parsed = JObject.Parse(output);
@@ -237,9 +206,11 @@ internal sealed class ClaudeUsageService : IUsageService
         }
     }
 
-    /// <summary>Reads a limit's reset timestamp. <see cref="JObject.Parse(string)"/> materializes a
-    /// well-formed ISO-8601 timestamp as <see cref="JTokenType.Date"/>, so the reader's own value -
-    /// not the token's string form - is what has to be normalized.</summary>
+    /// <summary>
+    /// Parses a JSON token to extract a reset timestamp as a nullable DateTimeOffset.
+    /// </summary>
+    /// <param name="token">The token.</param>
+    /// <returns>The date time offset? result.</returns>
     private static DateTimeOffset? ReadResetsAt(JToken? token) =>
         UsageResetTimestamp.FromJsonValue((token as JValue)?.Value);
 }

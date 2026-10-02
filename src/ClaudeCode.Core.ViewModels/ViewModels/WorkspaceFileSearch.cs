@@ -7,34 +7,31 @@ using System.Threading;
 namespace ClaudeCode.Core.ViewModels;
 
 /// <summary>
-/// Finds the files under a workspace whose path ends in a given run of whole path segments - the
-/// last resort for a transcript file reference no tool call reported (a name Claude only saw in a
-/// shell command's output). Callers still confine every result with WorkspacePathGuard.
+/// Provides functionality to search for files within a workspace, supporting suffix filtering, optional folder copying, and limiting the number of returned entries.
 /// </summary>
 internal static class WorkspaceFileSearch
 {
-    /// <summary>Entries visited before the walk gives up, so a huge tree cannot stall a click.</summary>
-    private const int MaxEntries = 500_000;
+    /// <summary>
+    /// The max entries.
+    /// </summary>
+    private const int _maxEntries = 500_000;
 
-    /// <summary>A build or tool copy of a source file there is not a second file the user means.</summary>
-    private static readonly HashSet<string> CopyFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    private static readonly HashSet<string> _copyFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
         "bin", "obj", ".vs", "node_modules",
     };
 
-    /// <summary>
-    /// Returns the files whose full path ends in <paramref name="suffix"/> (a separator followed by
-    /// the reference, separators normalized to <see cref="Path.DirectorySeparatorChar"/>): those
-    /// outside build/tool folders when there are any, otherwise those inside them. The build/tool
-    /// folders are walked only after the rest, so their size cannot keep a source file from being
-    /// found. Git's object store and reparse points (junctions, symlinks) are not walked - the
-    /// latter could lead out of the workspace or into a cycle. A walk that reaches the entry cap
-    /// with fewer than two matches cannot tell a unique file from the first of several, so it
-    /// throws <see cref="IOException"/> rather than return them.
-    /// </summary>
     public static IReadOnlyList<string> FindBySuffix(string workspaceRoot, string suffix, CancellationToken cancellationToken) =>
-        FindBySuffix(workspaceRoot, suffix, MaxEntries, cancellationToken);
+        FindBySuffix(workspaceRoot, suffix, _maxEntries, cancellationToken);
 
+    /// <summary>
+    /// Searches the specified workspace root for paths ending with the given suffix, returning up to the requested maximum number of entries and, if needed, continues the search in any discovered copy folders.
+    /// </summary>
+    /// <param name="workspaceRoot">The workspace root.</param>
+    /// <param name="suffix">The suffix.</param>
+    /// <param name="maxEntries">The max entries.</param>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>A collection of iread only list items.</returns>
     internal static IReadOnlyList<string> FindBySuffix(string workspaceRoot, string suffix, int maxEntries, CancellationToken cancellationToken)
     {
         var budget = maxEntries;
@@ -43,8 +40,6 @@ internal static class WorkspaceFileSearch
         return sources.Count > 0 ? sources : Walk(copyFolders, suffix, deferredCopyFolders: null, ref budget, cancellationToken);
     }
 
-    // Walks the roots; a build/tool folder goes into deferredCopyFolders instead of being walked,
-    // unless that is null (the roots already are such folders).
     private static List<string> Walk(IEnumerable<string> roots, string suffix, List<string>? deferredCopyFolders, ref int budget, CancellationToken cancellationToken)
     {
         var found = new List<string>();
@@ -87,7 +82,7 @@ internal static class WorkspaceFileSearch
                             continue;
                         }
 
-                        if (deferredCopyFolders is not null && CopyFolders.Contains(entry.Name))
+                        if (deferredCopyFolders is not null && _copyFolders.Contains(entry.Name))
                         {
                             deferredCopyFolders.Add(entry.FullName);
                         }
@@ -104,12 +99,10 @@ internal static class WorkspaceFileSearch
             }
             catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is SecurityException)
             {
-                // A directory that vanished or locked mid-walk: keep what it yielded, go on.
             }
 
             if (exhausted)
             {
-                // Two matches already make the reference ambiguous, however many more there are.
                 return found.Count > 1
                     ? found
                     : throw new IOException("the workspace holds too many files to search for it; ask Claude for the full path.");

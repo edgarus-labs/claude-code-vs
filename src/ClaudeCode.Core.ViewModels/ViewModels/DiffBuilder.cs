@@ -5,15 +5,15 @@ namespace ClaudeCode.Core.ViewModels;
 
 internal static class DiffBuilder
 {
+    /// <summary>
+    /// The max alignment cells.
+    /// </summary>
     private const long _maxAlignmentCells = 2_000_000;
 
     public static IReadOnlyList<DiffLineViewModel> Build(string oldText, string newText) => BuildCore(oldText, newText);
 
     private static List<DiffLineViewModel> BuildCore(string oldText, string newText)
     {
-        // A terminating "\n" ends the last line rather than starting an empty one - but only when
-        // both sides agree on it (or one side is empty): "one" vs "one\n" must still show the added
-        // newline as a real difference (see Build_TrailingNewlineDifference_IsVisible).
         var stripTerminator = (oldText.Length == 0 || EndsWithNewline(oldText)) && (newText.Length == 0 || EndsWithNewline(newText));
         var oldLines = SplitLines(oldText, stripTerminator, out int n);
         var newLines = SplitLines(newText, stripTerminator, out int m);
@@ -35,7 +35,6 @@ internal static class DiffBuilder
             return result;
         }
 
-        // Longest-common-subsequence table, built backwards so we can greedily walk forward below.
         var lcs = new int[n + 1, m + 1];
         for (int i = n - 1; i >= 0; i--)
         {
@@ -85,11 +84,6 @@ internal static class DiffBuilder
 
     private static bool EndsWithNewline(string text) => text.Length > 0 && text[text.Length - 1] == '\n';
 
-    // Hands back the raw split array plus the number of leading entries that are real lines. The
-    // count exists because shrinking the array to drop the terminator's empty trailing segment is
-    // not an in-place operation: it allocates a second full-size array and copies every element,
-    // which every diff of a normally terminated file would pay. Entries at or past "count" are
-    // not lines and must not be read.
     private static string[] SplitLines(string text, bool stripTerminator, out int count)
     {
         if (string.IsNullOrEmpty(text))
@@ -98,12 +92,13 @@ internal static class DiffBuilder
             return Array.Empty<string>();
         }
 
-        // The terminator's empty trailing segment is discounted after the split rather than trimmed
-        // off the text first: that avoids a second whole-file string copy. The length guard keeps
-        // "\n" as one empty line.
         var lines = text.Replace("\r\n", "\n").Split('\n');
         count = lines.Length;
-        if (stripTerminator && count > 1 && lines[count - 1].Length == 0) count--;
+        if (stripTerminator && count > 1 && lines[count - 1].Length == 0)
+        {
+            count--;
+        }
+
         return lines;
     }
 }

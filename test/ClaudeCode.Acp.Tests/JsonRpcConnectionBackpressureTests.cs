@@ -9,12 +9,9 @@ using Xunit;
 namespace ClaudeCode.Acp.Tests;
 
 /// <summary>
-/// A write blocked on pipe backpressure (the peer stopped draining its stdin) used to only ever be
-/// cancelled by whatever CancellationToken the caller happened to pass in - internal response writes
-/// always used CancellationToken.None, so DisposeAsync's _cts.Cancel() could not unblock them unless
-/// closing the underlying stream happened to do so on its own. NonDisposingStream below simulates a
-/// Stream (e.g. a real OS pipe's FileStream) where closing our end does NOT unblock an in-flight
-/// write, isolating cancellation as the only possible unblocking mechanism.
+/// Covers <c>DisposeAsync</c> unblocking a write blocked on pipe backpressure through cancellation,
+/// even when closing the stream does not unblock it, and a write finishing after disposal reporting
+/// cancellation rather than a disposal fault.
 /// </summary>
 public sealed class JsonRpcConnectionBackpressureTests
 {
@@ -26,7 +23,6 @@ public sealed class JsonRpcConnectionBackpressureTests
         var connection = new JsonRpcConnection(fromTest.Reader.AsStream(), new NonDisposingStream(toTest.Writer.AsStream()));
         connection.Start();
 
-        // Nobody ever reads toTest.Reader, so this write blocks on backpressure almost immediately.
         Task<JsonNode?> pendingSend = connection.SendRequestAsync("first", new JsonObject(), CancellationToken.None);
         await Task.Delay(TimeSpan.FromMilliseconds(300));
         Assert.False(pendingSend.IsCompleted, "the write should be blocked on backpressure before DisposeAsync runs.");
@@ -36,8 +32,6 @@ public sealed class JsonRpcConnectionBackpressureTests
         Task settledOrTimedOut = await Task.WhenAny(pendingSend, Task.Delay(TimeSpan.FromSeconds(3)));
         Assert.True(ReferenceEquals(settledOrTimedOut, pendingSend),
             "the blocked write must be unblocked by disposal (via cancellation) instead of hanging forever.");
-        // Either the write's own cancellation or the pump's concurrent FailAllPending(disconnect) may
-        // win the race to fault this request first; both are valid proof the write no longer hangs.
         await Assert.ThrowsAnyAsync<Exception>(() => pendingSend);
     }
 
@@ -66,8 +60,14 @@ public sealed class JsonRpcConnectionBackpressureTests
 
     private sealed class DelayedWriteStream : MemoryStream
     {
+        /// <summary>
+        /// Gets the entered.
+        /// </summary>
         internal TaskCompletionSource<bool> Entered { get; } = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        /// <summary>
+        /// Gets the release.
+        /// </summary>
         internal TaskCompletionSource<bool> Release { get; } = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public override async Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
@@ -84,14 +84,29 @@ public sealed class JsonRpcConnectionBackpressureTests
 
         public NonDisposingStream(Stream inner) => _inner = inner;
 
+        /// <summary>
+        /// Gets a value indicating whether can read.
+        /// </summary>
         public override bool CanRead => _inner.CanRead;
 
+        /// <summary>
+        /// Gets a value indicating whether can seek.
+        /// </summary>
         public override bool CanSeek => _inner.CanSeek;
 
+        /// <summary>
+        /// Gets a value indicating whether can write.
+        /// </summary>
         public override bool CanWrite => _inner.CanWrite;
 
+        /// <summary>
+        /// Gets the length.
+        /// </summary>
         public override long Length => _inner.Length;
 
+        /// <summary>
+        /// Gets or sets the position.
+        /// </summary>
         public override long Position
         {
             get => _inner.Position;
@@ -107,6 +122,12 @@ public sealed class JsonRpcConnectionBackpressureTests
         public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
             _inner.ReadAsync(buffer, offset, count, cancellationToken);
 
+        /// <summary>
+        /// Asynchronously reads bytes into the provided buffer and returns the count of bytes read.
+        /// </summary>
+        /// <param name="buffer">The buffer.</param>
+        /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+        /// <returns>A value task representing the asynchronous operation. The task result contains the int.</returns>
         public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
             _inner.ReadAsync(buffer, cancellationToken);
 
@@ -122,13 +143,6 @@ public sealed class JsonRpcConnectionBackpressureTests
         public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default) =>
             _inner.WriteAsync(buffer, cancellationToken);
 
-        protected override void Dispose(bool disposing)
-        {
-            // Deliberately does NOT dispose/complete the inner stream - simulating a Stream type
-            // where closing our end does not reliably unblock an in-flight write. base.Dispose(bool)
-            // is still called: it only marks this wrapper instance disposed (so later calls on it
-            // throw ObjectDisposedException as expected) and never touches _inner.
-            base.Dispose(disposing);
-        }
+        protected override void Dispose(bool disposing) => base.Dispose(disposing);
     }
 }

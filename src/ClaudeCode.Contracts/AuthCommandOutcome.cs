@@ -9,13 +9,27 @@ public sealed class AuthCommandOutcome
 {
     public AuthCommandOutcome(bool succeeded, string message)
     {
-        if (message is null) throw new ArgumentNullException(nameof(message));
-        if (string.IsNullOrWhiteSpace(message)) throw new ArgumentException("An outcome message is required.", nameof(message));
+        if (message is null)
+        {
+            throw new ArgumentNullException(nameof(message));
+        }
+
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            throw new ArgumentException("An outcome message is required.", nameof(message));
+        }
+
         Succeeded = succeeded;
         Message = message;
     }
 
+    /// <summary>
+    /// Gets a value indicating whether succeeded.
+    /// </summary>
     public bool Succeeded { get; }
 
+    /// <summary>
+    /// Gets the message.
+    /// </summary>
     public string Message { get; }
 }

@@ -7,8 +7,14 @@ namespace ClaudeCode.Core.ViewModels.Demo;
 
 public sealed class FakeAcpAuthService : IAcpAuthService
 {
+    /// <summary>
+    /// Gets or sets the current state.
+    /// </summary>
     public AuthState CurrentState { get; private set; } = AuthState.SignedIn;
 
+    /// <summary>
+    /// Occurs when state changed.
+    /// </summary>
     public event EventHandler<AuthStateChangedEventArgs>? StateChanged;
 
     public Task<bool> IsSignedInAsync(CancellationToken cancellationToken) => Task.FromResult(CurrentState == AuthState.SignedIn);

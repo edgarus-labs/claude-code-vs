@@ -22,6 +22,9 @@ internal sealed class VsControlSessionRegistry : IVsControlSessionHost, IDisposa
         _vsControlMcpExecutablePath = candidate is not null && File.Exists(candidate) ? candidate : null;
     }
 
+    /// <summary>
+    /// Gets a value indicating whether is available.
+    /// </summary>
     public bool IsAvailable => _vsControlMcpExecutablePath is not null;
 
     public McpServerConfig StartSession(string? workspaceRoot, out string correlationId)
@@ -48,13 +51,14 @@ internal sealed class VsControlSessionRegistry : IVsControlSessionHost, IDisposa
         return new McpServerConfig("visual-studio", _vsControlMcpExecutablePath, new[] { "--pipe", pipeName }, env);
     }
 
+    /// <summary>
+    /// Ends the session identified by the specified correlation ID by removing the associated server from the collection and initiating its asynchronous disposal.
+    /// </summary>
+    /// <param name="correlationId">The unique identifier of the correlation.</param>
     public void EndSession(string correlationId)
     {
         if (_servers.TryRemove(correlationId, out var server))
         {
-            // AsTask() consumes the ValueTask exactly once immediately (satisfying CA2012's "must be
-            // used" contract) while keeping teardown fire-and-forget: EndSession is called from
-            // synchronous cleanup paths that must not block on the pipe server's shutdown grace period.
             _ = server.DisposeAsync().AsTask();
         }
     }

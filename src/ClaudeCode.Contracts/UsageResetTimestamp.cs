@@ -7,18 +7,18 @@ namespace ClaudeCode.Contracts;
 /// reader.</summary>
 public static class UsageResetTimestamp
 {
-    /// <summary>Converts the value a JSON reader produced for a reset timestamp into a
-    /// <see cref="DateTimeOffset"/>. A JSON reader materializes a well-formed ISO-8601 timestamp as a
-    /// <see cref="DateTime"/> (or <see cref="DateTimeOffset"/>) rather than a string, so handling only
-    /// the string form silently yields no reset time at all. Returns null for a missing value, a
-    /// non-temporal value, an unparseable string, and for a local time whose UTC equivalent falls
-    /// outside <see cref="DateTimeOffset"/>'s range.</summary>
+    /// <summary>Converts the value a JSON reader produced for a reset timestamp (a
+    /// <see cref="DateTimeOffset"/>, a <see cref="DateTime"/>, or a string) into a
+    /// <see cref="DateTimeOffset"/>. Returns null for a missing value, a non-temporal value, an
+    /// unparseable string, and for a local time whose UTC equivalent falls outside
+    /// <see cref="DateTimeOffset"/>'s range.</summary>
     public static DateTimeOffset? FromJsonValue(object? value)
     {
         switch (value)
         {
             case DateTimeOffset offset:
                 return offset;
+
             case DateTime dateTime:
                 try
                 {

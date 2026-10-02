@@ -9,9 +9,6 @@ using System.Text;
 
 namespace ClaudeCode.Acp;
 
-// Owns the Windows process tree, not just the launcher. No adapter code executes before job
-// assignment succeeds. Nested jobs preserve restrictions imposed by Visual Studio's own host;
-// incompatible parent-job restrictions fail launch rather than allowing an uncontained fallback.
 internal sealed class WindowsJobProcess : IDisposable
 {
     private readonly SafeFileHandle _job;
@@ -25,12 +22,24 @@ internal sealed class WindowsJobProcess : IDisposable
         StandardError = error;
     }
 
+    /// <summary>
+    /// Gets the process.
+    /// </summary>
     internal Process Process { get; }
 
+    /// <summary>
+    /// Gets the standard input.
+    /// </summary>
     internal Stream StandardInput { get; }
 
+    /// <summary>
+    /// Gets the standard output.
+    /// </summary>
     internal Stream StandardOutput { get; }
 
+    /// <summary>
+    /// Gets the standard error.
+    /// </summary>
     internal StreamReader StandardError { get; }
 
     internal static WindowsJobProcess Start(ProcessStartInfo startInfo, Action? beforeProcessCreate = null)
@@ -60,28 +69,24 @@ internal sealed class WindowsJobProcess : IDisposable
             }
 
             var limits = new JobExtendedLimitInformation();
-            limits.BasicLimitInformation.LimitFlags = 0x2000; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            limits._basicLimitInformation._limitFlags = 0x2000;
             if (!SetInformationJobObject(job, 9, ref limits, Marshal.SizeOf<JobExtendedLimitInformation>()))
             {
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "Unable to configure ACP process containment.");
             }
 
-            // Inheritable handles never exist in the VS host: an unrelated Process.Start there
-            // could otherwise inherit our pipes despite the adapter's explicit handle list.
             string brokerPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe");
             var brokerStartup = new StartupInformationEx
             {
-                StartupInfo = new StartupInformation { Size = Marshal.SizeOf<StartupInformation>() },
+                _startupInfo = new StartupInformation { _size = Marshal.SizeOf<StartupInformation>() },
             };
             if (!CreateProcessW(brokerPath, new char[1], IntPtr.Zero, IntPtr.Zero, false,
-                0x08000004, null, null, ref brokerStartup, out broker)) // NO_WINDOW | SUSPENDED
+                0x08000004, null, null, ref brokerStartup, out broker))
             {
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "Unable to create the suspended ACP launch broker.");
             }
 
-            // Preserve any inherited host-job restrictions. Incompatible nesting fails closed
-            // while the broker is suspended; neither it nor the adapter has executed any code.
-            if (!AssignProcessToJobObject(job, broker.Process))
+            if (!AssignProcessToJobObject(job, broker._process))
             {
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "Unable to contain the ACP launch broker.");
             }
@@ -89,9 +94,9 @@ internal sealed class WindowsJobProcess : IDisposable
             CreateRedirectedPipe(out childInput, out parentInput);
             CreateRedirectedPipe(out parentOutput, out childOutput);
             CreateRedirectedPipe(out parentError, out childError);
-            IntPtr inheritedInput = DuplicateIntoBroker(childInput, broker.Process);
-            IntPtr inheritedOutput = DuplicateIntoBroker(childOutput, broker.Process);
-            IntPtr inheritedError = DuplicateIntoBroker(childError, broker.Process);
+            IntPtr inheritedInput = DuplicateIntoBroker(childInput, broker._process);
+            IntPtr inheritedOutput = DuplicateIntoBroker(childOutput, broker._process);
+            IntPtr inheritedError = DuplicateIntoBroker(childError, broker._process);
 
             IntPtr attributeSize = IntPtr.Zero;
             InitializeProcThreadAttributeList(IntPtr.Zero, 2, 0, ref attributeSize);
@@ -107,30 +112,30 @@ internal sealed class WindowsJobProcess : IDisposable
             Marshal.WriteIntPtr(handleList, IntPtr.Size, inheritedOutput);
             Marshal.WriteIntPtr(handleList, IntPtr.Size * 2, inheritedError);
             IntPtr parentAttribute = IntPtr.Add(handleList, IntPtr.Size * 3);
-            Marshal.WriteIntPtr(parentAttribute, broker.Process);
+            Marshal.WriteIntPtr(parentAttribute, broker._process);
             if (!UpdateProcThreadAttribute(attributeList, 0, new IntPtr(0x20002), handleList,
-                new IntPtr(IntPtr.Size * 3), IntPtr.Zero, IntPtr.Zero)) // PROC_THREAD_ATTRIBUTE_HANDLE_LIST
+                new IntPtr(IntPtr.Size * 3), IntPtr.Zero, IntPtr.Zero))
             {
                 throw new Win32Exception(Marshal.GetLastWin32Error());
             }
 
             if (!UpdateProcThreadAttribute(attributeList, 0, new IntPtr(0x20000), parentAttribute,
-                new IntPtr(IntPtr.Size), IntPtr.Zero, IntPtr.Zero)) // PROC_THREAD_ATTRIBUTE_PARENT_PROCESS
+                new IntPtr(IntPtr.Size), IntPtr.Zero, IntPtr.Zero))
             {
                 throw new Win32Exception(Marshal.GetLastWin32Error());
             }
 
             var startup = new StartupInformationEx
             {
-                StartupInfo = new StartupInformation
+                _startupInfo = new StartupInformation
                 {
-                    Size = Marshal.SizeOf<StartupInformationEx>(),
-                    Flags = 0x100, // STARTF_USESTDHANDLES
-                    StandardInput = inheritedInput,
-                    StandardOutput = inheritedOutput,
-                    StandardError = inheritedError,
+                    _size = Marshal.SizeOf<StartupInformationEx>(),
+                    _flags = 0x100,
+                    _standardInput = inheritedInput,
+                    _standardOutput = inheritedOutput,
+                    _standardError = inheritedError,
                 },
-                AttributeList = attributeList,
+                _attributeList = attributeList,
             };
             string command = ProcessArgumentEscaping.ToArgumentsString(new[] { startInfo.FileName });
             if (!string.IsNullOrEmpty(startInfo.Arguments))
@@ -149,7 +154,6 @@ internal sealed class WindowsJobProcess : IDisposable
             var commandLine = new char[command.Length + 1];
             command.CopyTo(0, commandLine, 0, command.Length);
             beforeProcessCreate?.Invoke();
-            // SUSPENDED | NO_WINDOW | UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT.
             if (!CreateProcessW(null, commandLine, IntPtr.Zero, IntPtr.Zero, true,
                 0x08080404, environment.ToString(), string.IsNullOrEmpty(startInfo.WorkingDirectory) ? null : startInfo.WorkingDirectory,
                 ref startup, out nativeProcess))
@@ -157,7 +161,7 @@ internal sealed class WindowsJobProcess : IDisposable
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "Unable to start the ACP adapter.");
             }
 
-            if (!IsProcessInJob(nativeProcess.Process, job, out bool contained))
+            if (!IsProcessInJob(nativeProcess._process, job, out bool contained))
             {
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "Unable to verify the ACP adapter's process job.");
             }
@@ -167,24 +171,22 @@ internal sealed class WindowsJobProcess : IDisposable
                 throw new InvalidOperationException("The ACP adapter did not inherit its required process job.");
             }
 
-            // The broker never runs. Its private pipe handles are no longer needed after the
-            // adapter inherits them; terminate and drain it before allowing adapter execution.
-            if (!TerminateProcess(broker.Process, 0))
+            if (!TerminateProcess(broker._process, 0))
             {
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "Unable to terminate the suspended ACP launch broker.");
             }
 
-            if (WaitForSingleObject(broker.Process, 2000) != 0)
+            if (WaitForSingleObject(broker._process, 2000) != 0)
             {
                 throw new TimeoutException("The suspended ACP launch broker did not terminate.");
             }
 
-            process = Process.GetProcessById(nativeProcess.ProcessId);
+            process = Process.GetProcessById(nativeProcess._processId);
             process.EnableRaisingEvents = true;
             input = new FileStream(parentInput, FileAccess.Write, bufferSize: 1);
             output = new FileStream(parentOutput, FileAccess.Read);
             error = new StreamReader(new FileStream(parentError, FileAccess.Read), Console.OutputEncoding, detectEncodingFromByteOrderMarks: true);
-            if (ResumeThread(nativeProcess.Thread) == uint.MaxValue)
+            if (ResumeThread(nativeProcess._thread) == uint.MaxValue)
             {
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "Unable to resume the contained ACP adapter.");
             }
@@ -199,10 +201,9 @@ internal sealed class WindowsJobProcess : IDisposable
             {
                 if (!started)
                 {
-                    // The original handle remains valid even if job assignment or Process setup fails.
-                    if (nativeProcess.Process != IntPtr.Zero)
+                    if (nativeProcess._process != IntPtr.Zero)
                     {
-                        TerminateProcess(nativeProcess.Process, 1);
+                        TerminateProcess(nativeProcess._process, 1);
                     }
 
                     using var errorToDispose = error;
@@ -224,26 +225,25 @@ internal sealed class WindowsJobProcess : IDisposable
                 childInput?.Dispose();
                 childOutput?.Dispose();
                 childError?.Dispose();
-                if (nativeProcess.Thread != IntPtr.Zero)
+                if (nativeProcess._thread != IntPtr.Zero)
                 {
-                    CloseHandle(nativeProcess.Thread);
+                    CloseHandle(nativeProcess._thread);
                 }
 
-                if (nativeProcess.Process != IntPtr.Zero)
+                if (nativeProcess._process != IntPtr.Zero)
                 {
-                    CloseHandle(nativeProcess.Process);
+                    CloseHandle(nativeProcess._process);
                 }
 
-                if (broker.Thread != IntPtr.Zero)
+                if (broker._thread != IntPtr.Zero)
                 {
-                    CloseHandle(broker.Thread);
+                    CloseHandle(broker._thread);
                 }
 
-                if (broker.Process != IntPtr.Zero)
+                if (broker._process != IntPtr.Zero)
                 {
-                    // Also covers failure before job assignment; no broker thread is ever resumed.
-                    TerminateProcess(broker.Process, 1);
-                    CloseHandle(broker.Process);
+                    TerminateProcess(broker._process, 1);
+                    CloseHandle(broker._process);
                 }
 
                 if (attributesInitialized)
@@ -270,7 +270,7 @@ internal sealed class WindowsJobProcess : IDisposable
 
     private static void CreateRedirectedPipe(out SafeFileHandle read, out SafeFileHandle write)
     {
-        var security = new SecurityAttributes { Length = Marshal.SizeOf<SecurityAttributes>() };
+        var security = new SecurityAttributes { _length = Marshal.SizeOf<SecurityAttributes>() };
         if (!CreatePipe(out read, out write, ref security, 0))
         {
             throw new Win32Exception(Marshal.GetLastWin32Error());
@@ -279,7 +279,7 @@ internal sealed class WindowsJobProcess : IDisposable
 
     private static IntPtr DuplicateIntoBroker(SafeFileHandle handle, IntPtr broker)
     {
-        if (!DuplicateHandle(GetCurrentProcess(), handle, broker, out IntPtr inherited, 0, true, 2)) // DUPLICATE_SAME_ACCESS
+        if (!DuplicateHandle(GetCurrentProcess(), handle, broker, out IntPtr inherited, 0, true, 2))
         {
             throw new Win32Exception(Marshal.GetLastWin32Error(), "Unable to transfer ACP pipe ownership to its launch broker.");
         }
@@ -290,84 +290,228 @@ internal sealed class WindowsJobProcess : IDisposable
     [StructLayout(LayoutKind.Sequential)]
     private struct SecurityAttributes
     {
-        internal int Length;
-        internal IntPtr SecurityDescriptor;
-        [MarshalAs(UnmanagedType.Bool)] internal bool InheritHandle;
+        /// <summary>
+        /// The length.
+        /// </summary>
+        internal int _length;
+        /// <summary>
+        /// The security descriptor.
+        /// </summary>
+        internal IntPtr _securityDescriptor;
+        /// <summary>
+        /// The inherit handle.
+        /// </summary>
+        [MarshalAs(UnmanagedType.Bool)] internal bool _inheritHandle;
     }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct StartupInformation
     {
-        internal int Size;
-        internal IntPtr Reserved;
-        internal IntPtr Desktop;
-        internal IntPtr Title;
-        internal int X;
-        internal int Y;
-        internal int XSize;
-        internal int YSize;
-        internal int XCountChars;
-        internal int YCountChars;
-        internal int FillAttribute;
-        internal int Flags;
-        internal short ShowWindow;
-        internal short ReservedSize;
-        internal IntPtr ReservedBytes;
-        internal IntPtr StandardInput;
-        internal IntPtr StandardOutput;
-        internal IntPtr StandardError;
+        /// <summary>
+        /// The size.
+        /// </summary>
+        internal int _size;
+        /// <summary>
+        /// The reserved.
+        /// </summary>
+        internal IntPtr _reserved;
+        /// <summary>
+        /// The desktop.
+        /// </summary>
+        internal IntPtr _desktop;
+        /// <summary>
+        /// The title.
+        /// </summary>
+        internal IntPtr _title;
+        /// <summary>
+        /// The x.
+        /// </summary>
+        internal int _x;
+        /// <summary>
+        /// The y.
+        /// </summary>
+        internal int _y;
+        /// <summary>
+        /// The xsize.
+        /// </summary>
+        internal int _xSize;
+        /// <summary>
+        /// The ysize.
+        /// </summary>
+        internal int _ySize;
+        /// <summary>
+        /// The xcount chars.
+        /// </summary>
+        internal int _xCountChars;
+        /// <summary>
+        /// The ycount chars.
+        /// </summary>
+        internal int _yCountChars;
+        /// <summary>
+        /// The fill attribute.
+        /// </summary>
+        internal int _fillAttribute;
+        /// <summary>
+        /// The flags.
+        /// </summary>
+        internal int _flags;
+        /// <summary>
+        /// The show window.
+        /// </summary>
+        internal short _showWindow;
+        /// <summary>
+        /// The reserved size.
+        /// </summary>
+        internal short _reservedSize;
+        /// <summary>
+        /// The reserved bytes.
+        /// </summary>
+        internal IntPtr _reservedBytes;
+        /// <summary>
+        /// The standard input.
+        /// </summary>
+        internal IntPtr _standardInput;
+        /// <summary>
+        /// The standard output.
+        /// </summary>
+        internal IntPtr _standardOutput;
+        /// <summary>
+        /// The standard error.
+        /// </summary>
+        internal IntPtr _standardError;
     }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct StartupInformationEx
     {
-        internal StartupInformation StartupInfo;
-        internal IntPtr AttributeList;
+        /// <summary>
+        /// The startup info.
+        /// </summary>
+        internal StartupInformation _startupInfo;
+        /// <summary>
+        /// The attribute list.
+        /// </summary>
+        internal IntPtr _attributeList;
     }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct ProcessInformation
     {
-        internal IntPtr Process;
-        internal IntPtr Thread;
-        internal int ProcessId;
-        internal int ThreadId;
+        /// <summary>
+        /// The process.
+        /// </summary>
+        internal IntPtr _process;
+        /// <summary>
+        /// The thread.
+        /// </summary>
+        internal IntPtr _thread;
+        /// <summary>
+        /// The process id.
+        /// </summary>
+        internal int _processId;
+        /// <summary>
+        /// The thread id.
+        /// </summary>
+        internal int _threadId;
     }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct JobBasicLimitInformation
     {
-        internal long PerProcessUserTimeLimit;
-        internal long PerJobUserTimeLimit;
-        internal uint LimitFlags;
-        internal UIntPtr MinimumWorkingSetSize;
-        internal UIntPtr MaximumWorkingSetSize;
-        internal uint ActiveProcessLimit;
-        internal UIntPtr Affinity;
-        internal uint PriorityClass;
-        internal uint SchedulingClass;
+        /// <summary>
+        /// The per process user time limit.
+        /// </summary>
+        internal long _perProcessUserTimeLimit;
+        /// <summary>
+        /// The per job user time limit.
+        /// </summary>
+        internal long _perJobUserTimeLimit;
+        /// <summary>
+        /// The limit flags.
+        /// </summary>
+        internal uint _limitFlags;
+        /// <summary>
+        /// The minimum working set size.
+        /// </summary>
+        internal UIntPtr _minimumWorkingSetSize;
+        /// <summary>
+        /// The maximum working set size.
+        /// </summary>
+        internal UIntPtr _maximumWorkingSetSize;
+        /// <summary>
+        /// The active process limit.
+        /// </summary>
+        internal uint _activeProcessLimit;
+        /// <summary>
+        /// The affinity.
+        /// </summary>
+        internal UIntPtr _affinity;
+        /// <summary>
+        /// The priority class.
+        /// </summary>
+        internal uint _priorityClass;
+        /// <summary>
+        /// The scheduling class.
+        /// </summary>
+        internal uint _schedulingClass;
     }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct IoCounters
     {
-        internal ulong ReadOperationCount;
-        internal ulong WriteOperationCount;
-        internal ulong OtherOperationCount;
-        internal ulong ReadTransferCount;
-        internal ulong WriteTransferCount;
-        internal ulong OtherTransferCount;
+        /// <summary>
+        /// The read operation count.
+        /// </summary>
+        internal ulong _readOperationCount;
+        /// <summary>
+        /// The write operation count.
+        /// </summary>
+        internal ulong _writeOperationCount;
+        /// <summary>
+        /// The other operation count.
+        /// </summary>
+        internal ulong _otherOperationCount;
+        /// <summary>
+        /// The read transfer count.
+        /// </summary>
+        internal ulong _readTransferCount;
+        /// <summary>
+        /// The write transfer count.
+        /// </summary>
+        internal ulong _writeTransferCount;
+        /// <summary>
+        /// The other transfer count.
+        /// </summary>
+        internal ulong _otherTransferCount;
     }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct JobExtendedLimitInformation
     {
-        internal JobBasicLimitInformation BasicLimitInformation;
-        internal IoCounters IoInfo;
-        internal UIntPtr ProcessMemoryLimit;
-        internal UIntPtr JobMemoryLimit;
-        internal UIntPtr PeakProcessMemoryUsed;
-        internal UIntPtr PeakJobMemoryUsed;
+        /// <summary>
+        /// The basic limit information.
+        /// </summary>
+        internal JobBasicLimitInformation _basicLimitInformation;
+        /// <summary>
+        /// The io info.
+        /// </summary>
+        internal IoCounters _ioInfo;
+        /// <summary>
+        /// The process memory limit.
+        /// </summary>
+        internal UIntPtr _processMemoryLimit;
+        /// <summary>
+        /// The job memory limit.
+        /// </summary>
+        internal UIntPtr _jobMemoryLimit;
+        /// <summary>
+        /// The peak process memory used.
+        /// </summary>
+        internal UIntPtr _peakProcessMemoryUsed;
+        /// <summary>
+        /// The peak job memory used.
+        /// </summary>
+        internal UIntPtr _peakJobMemoryUsed;
     }
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, ExactSpelling = true)]

@@ -4,18 +4,14 @@ using System.Threading.Tasks;
 
 namespace ClaudeCode.Acp;
 
-/// <summary>Reads the stdout of a helper subprocess under a hard character bound. Lives here rather
-/// than beside its caller so it can be exercised without spawning a process or hosting VS.</summary>
+/// <summary>Reads the stdout of a helper subprocess under a hard character bound.</summary>
 public static class BoundedProcessOutput
 {
     /// <summary>
     /// Reads <paramref name="reader"/> to end and returns its text, or an empty string if the output
     /// would exceed <paramref name="maxCharacters"/>.
     /// <para>
-    /// An oversize payload is discarded but the reader is still drained to EOF. Stopping the read at
-    /// the bound instead would leave the child blocked writing into a full stdout pipe, so it would
-    /// never exit and the caller would wait out its whole process timeout before killing it. The
-    /// retained text therefore never exceeds <paramref name="maxCharacters"/>.
+    /// An oversize payload is discarded, but the reader is still drained to end of stream.
     /// </para>
     /// </summary>
     public static async Task<string> ReadBoundedAsync(TextReader reader, int maxCharacters)

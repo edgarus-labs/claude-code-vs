@@ -16,9 +16,8 @@ public sealed class AcpRemoteException : Exception
     public int Code { get; }
 
     /// <summary>
-    /// The raw, UNREDACTED <c>error.data</c> payload the remote agent sent. Unlike <see cref="Exception.Message"/>
-    /// (already redacted via <see cref="FormatMessage"/>), this can contain stderr, prompts, request
-    /// bodies, or credentials. Never log or display it directly - inspect specific known-safe fields only.
+    /// The raw, unredacted <c>error.data</c> payload the remote agent sent. Unlike <see cref="Exception.Message"/>,
+    /// it is not redacted and can contain stderr, prompts, request bodies, or credentials.
     /// </summary>
     public JsonNode? RemoteData { get; }
 
@@ -30,7 +29,6 @@ public sealed class AcpRemoteException : Exception
             summary = "The ACP agent reported an error.";
         }
 
-        // Never stringify error.data: it can contain stderr, prompts, request bodies, or credentials.
         if (data is not JsonObject details)
         {
             return summary;
@@ -55,9 +53,20 @@ public sealed class AcpRemoteException : Exception
         return summary;
     }
 
+    /// <summary>
+    /// Retrieves a string value from the specified JsonObject by key, returning null if the key is absent or the value is not a string.
+    /// </summary>
+    /// <param name="data">The data.</param>
+    /// <param name="key">The key.</param>
+    /// <returns>The string? result.</returns>
     private static string? ReadString(JsonObject data, string key) =>
         data[key] is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
 
+    /// <summary>
+    /// Determines whether the specified error kind string corresponds to a recognized error category.
+    /// </summary>
+    /// <param name="kind">The kind.</param>
+    /// <returns>true if the condition is met; otherwise, false.</returns>
     private static bool IsKnownErrorKind(string? kind) => kind switch
     {
         "authentication_failed" or "oauth_org_not_allowed" or "account_on_hold" or
@@ -73,7 +82,6 @@ public sealed class AcpRemoteException : Exception
 
     private static string Redact(string text, int limit)
     {
-        // Bound work before applying expressions, and hide all later lines (often SDK stderr/stack).
         int end = text.IndexOfAny(_lineBreakChars);
         string safe = text.Substring(0, Math.Min(end < 0 ? text.Length : end, 4096));
         safe = Regex.Replace(safe, @"\p{C}", "");

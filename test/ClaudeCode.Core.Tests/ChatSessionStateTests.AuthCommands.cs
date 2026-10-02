@@ -8,14 +8,12 @@ using Xunit;
 
 namespace ClaudeCode.Core.Tests;
 
-// Covers issue #34 (client-side /login and /logout in the chat sidebar): local command listing,
-// interception so nothing reaches session/prompt, login success/failure/cancellation, logout with
-// confirmation and state reset, and the unresolved-adapter path.
 public sealed partial class ChatSessionStateTests
 {
     private static ChatViewModel CreateWithAuth(RecordingAcpAgentConnection connection, RecordingAuthService auth, out StubChatSessionServices services)
     {
         services = new StubChatSessionServices(new SingleConnectionFactory(connection), auth);
+
         return new ChatViewModel(services);
     }
 
@@ -29,14 +27,12 @@ public sealed partial class ChatSessionStateTests
 
         vm.InputText = "/";
         Assert.True(vm.NeedsAuthentication);
-        Assert.Equal(ClientSlashCommandNames, vm.SlashSuggestions.Select(c => c.Name));
+        Assert.Equal(_clientSlashCommandNames, vm.SlashSuggestions.Select(c => c.Name));
         Assert.True(vm.AreSlashSuggestionsVisible);
 
-        // An ordinary message is still refused while signed out...
         vm.InputText = "hello";
         Assert.False(vm.SendCommand.CanExecute(null));
 
-        // ...but /login is reachable, which is the entire point of the feature.
         vm.InputText = "/login";
         Assert.True(vm.SendCommand.CanExecute(null));
     }
@@ -95,6 +91,7 @@ public sealed partial class ChatSessionStateTests
         {
             progress?.Report("Opening a console…");
             auth.SetState(AuthState.SignedIn);
+
             return Task.FromResult(new AuthCommandOutcome(true, "Signed in to Claude."));
         };
 
@@ -184,12 +181,13 @@ public sealed partial class ChatSessionStateTests
         var auth = new RecordingAuthService(AuthState.SignedIn);
         using var vm = CreateWithAuth(connection, auth, out var services);
         await vm.Initialization;
-        Assert.Single(connection.NewSessionCwds); // the active session that must be closed below
+        Assert.Single(connection.NewSessionCwds);
         services.ConfirmSignOutResponse = true;
         auth.LogoutHandler = _ =>
         {
             const string detail = "Signed out of Claude Code. This affects the CLI, VS Code and other clients on this machine, not only Visual Studio.";
             auth.SetState(AuthState.SignedOut, detail);
+
             return Task.FromResult(new AuthCommandOutcome(true, detail));
         };
 
@@ -359,6 +357,7 @@ public sealed partial class ChatSessionStateTests
         auth.LoginHandler = (_, _) =>
         {
             auth.IsSignedInHandler = _ => Task.FromResult(true);
+
             return Task.FromResult(new AuthCommandOutcome(true, "Signed in to Claude."));
         };
 
@@ -399,6 +398,7 @@ public sealed partial class ChatSessionStateTests
         {
             started.SetResult(true);
             await Task.Delay(Timeout.Infinite, token);
+
             return new AuthCommandOutcome(true, "unreachable");
         };
 
@@ -425,6 +425,7 @@ public sealed partial class ChatSessionStateTests
         {
             observed = token;
             await Task.Delay(Timeout.Infinite, token);
+
             return new AuthCommandOutcome(true, "unreachable");
         };
 

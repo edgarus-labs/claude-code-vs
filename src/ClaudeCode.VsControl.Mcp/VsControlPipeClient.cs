@@ -11,29 +11,39 @@ using System.Threading.Tasks;
 
 namespace ClaudeCode.VsControl.Mcp;
 
+/// <summary>
+/// Provides a client that communicates with Visual Studio through a named pipe, managing connection establishment, handshake token exchange, asynchronous request/response messaging, and graceful disposal.
+/// </summary>
 public sealed class VsControlPipeClient : IAsyncDisposable
 {
+    /// <summary>
+    /// The handshake token environment variable.
+    /// </summary>
     private const string _handshakeTokenEnvironmentVariable = "CLAUDECODE_VSCONTROL_TOKEN";
+    /// <summary>
+    /// The build solution method.
+    /// </summary>
     private const string _buildSolutionMethod = "buildSolution";
+    /// <summary>
+    /// The build project method.
+    /// </summary>
     private const string _buildProjectMethod = "buildProject";
+    /// <summary>
+    /// The start debugging method.
+    /// </summary>
     private const string _startDebuggingMethod = "startDebugging";
+    /// <summary>
+    /// The open solution method.
+    /// </summary>
     private const string _openSolutionMethod = "openSolution";
+    /// <summary>
+    /// The add project to solution method.
+    /// </summary>
     private const string _addProjectToSolutionMethod = "addProjectToSolution";
 
     /// <summary>
-    /// Default budget for the methods that compile or load a solution. Nothing cancels the Visual
-    /// Studio side when a budget expires, so it must exceed the worst case the host can reach under it
-    /// and let the agent receive the host's own actionable error rather than a transport timeout
-    /// invented while MSBuild or a solution load is still running. The longest bounded case is
-    /// <c>startDebugging</c>: a build bounded at 10 minutes by the host's own <c>RunBuildAsync</c>
-    /// backstop, then up to 60 s for the launch to leave design mode
-    /// (<c>VsControlPipeServer.Debugger.cs</c> <c>_startDebuggingTimeoutMs</c>), then up to 45 s for a
-    /// breakpoint (<c>_maxWaitMs</c>, mirrored as the <c>waitForBreakMs</c> schema maximum):
-    /// 600 + 60 + 45 = 705 s. Raising any of those host bounds requires raising this budget to stay
-    /// above the sum; the Vsix has no test project, so nothing on this side can detect that drift.
-    /// <c>openSolution</c>/<c>addProjectToSolution</c> share the budget without being bounded at all -
-    /// their COM calls offer no completion signal to cancel against - so for those it is a ceiling
-    /// rather than a proof.
+    /// Default timeout for the methods that compile or load a solution: <c>buildSolution</c>,
+    /// <c>buildProject</c>, <c>startDebugging</c>, <c>openSolution</c>, and <c>addProjectToSolution</c>.
     /// </summary>
     public static readonly TimeSpan DefaultLongOperationTimeout = TimeSpan.FromMinutes(12);
 
@@ -112,8 +122,6 @@ public sealed class VsControlPipeClient : IAsyncDisposable
                 }
                 catch
                 {
-                    // A failed write may have sent an incomplete JSON line. Retire exactly this
-                    // writer's transport so a retry cannot append a request to that partial frame.
                     DisposeQuietly(transport);
                     throw;
                 }
@@ -140,9 +148,6 @@ public sealed class VsControlPipeClient : IAsyncDisposable
         }
         catch (OperationCanceledException) when (!operationToken.IsCancellationRequested)
         {
-            // Neither caller nor disposal cancellation: the per-request timeout fired instead.
-            // Surface this as a normal VsControlResponse error, never an unhandled exception - a slow
-            // or wedged VS host must not hang the MCP tool call indefinitely.
             return new VsControlResponse
             {
                 Id = request.Id,
@@ -155,14 +160,6 @@ public sealed class VsControlPipeClient : IAsyncDisposable
         }
     }
 
-    // The methods whose server-side cost cannot fit the 60 s per-request budget.
-    // buildSolution/buildProject run MSBuild; startDebugging builds the solution before it launches;
-    // openSolution and addProjectToSolution drive DTE.Solution.Close/Open/AddFromFile, synchronous
-    // uncancellable COM calls that the host cannot bound at all - there is no completion signal to
-    // race a CancellationToken against, so abandoning the wait would only let a retry close and
-    // reopen the solution a second time. Every method that does have a server-side bound is bounded
-    // below _requestTimeout: 45 s mode waits, 60 s debug launch wait, 15 s stop, 5 s evaluations,
-    // 5 s UI-automation actions.
     private static bool UsesLongOperationBudget(string method)
         => method is _buildSolutionMethod
             or _buildProjectMethod
@@ -170,6 +167,12 @@ public sealed class VsControlPipeClient : IAsyncDisposable
             or _openSolutionMethod
             or _addProjectToSolutionMethod;
 
+    /// <summary>
+    /// Asynchronously ensures that a named pipe connection to the Visual Studio control pipe is established, reconnecting if necessary and throwing a TimeoutException if the connection cannot be made within the configured timeout.
+    /// </summary>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>A task representing the asynchronous operation.</returns>
+    /// <exception cref="TimeoutException">Thrown when an error occurs during execution.</exception>
     private async Task EnsureConnectedAsync(CancellationToken cancellationToken)
     {
         await _connectLock.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -181,7 +184,6 @@ public sealed class VsControlPipeClient : IAsyncDisposable
                 return;
             }
 
-            // Finish the old reader before a new connection can own pending requests.
             if (_readLoopTask is not null)
             {
                 await _readLoopTask.ConfigureAwait(false);
@@ -200,8 +202,6 @@ public sealed class VsControlPipeClient : IAsyncDisposable
                 reader = new StreamReader(pipe, _utf8NoBom, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
                 writer = new StreamWriter(pipe, _utf8NoBom, bufferSize: 1024, leaveOpen: true) { AutoFlush = false, NewLine = "\n" };
 
-                // Keep this connection private until the entire token has been sent. Neither a
-                // concurrent caller nor a retry may send requests through a failed handshake.
                 await writer.WriteLineAsync(_handshakeToken.AsMemory(), timeoutCts.Token).ConfigureAwait(false);
                 await writer.FlushAsync(timeoutCts.Token).ConfigureAwait(false);
                 cancellationToken.ThrowIfCancellationRequested();
@@ -222,8 +222,6 @@ public sealed class VsControlPipeClient : IAsyncDisposable
             }
             catch
             {
-                // Close the transport before disposing a buffered writer: teardown must not flush
-                // a partial token into an unresponsive peer or leave a connected field behind.
                 DisposeQuietly(pipe);
                 DisposeQuietly(writer);
                 DisposeQuietly(reader);
@@ -256,7 +254,6 @@ public sealed class VsControlPipeClient : IAsyncDisposable
                 }
                 catch (JsonException)
                 {
-                    // Malformed line from the VS host: skip it rather than tearing down the connection.
                     continue;
                 }
 
@@ -285,13 +282,6 @@ public sealed class VsControlPipeClient : IAsyncDisposable
             return;
         }
 
-        // Tear down under the write gate. Disposing _writer while SendAsync is still inside
-        // WriteLineAsync/FlushAsync makes StreamWriter.Dispose throw InvalidOperationException
-        // ("the stream is currently in use by a previous operation"), which escapes DisposeQuietly's
-        // filter, faults this task and resurfaces from DisposeAsync's await. DisposeAsync cancels
-        // the lifetime before it takes the same gate and keeps it through disposal, so a canceled
-        // lifetime means disposal already owns teardown: stand down instead of waiting on a gate
-        // that is never released.
         try
         {
             await _writeLock.WaitAsync(_lifetimeToken).ConfigureAwait(false);
@@ -322,12 +312,6 @@ public sealed class VsControlPipeClient : IAsyncDisposable
         }
         catch (Exception ex) when (ex is IOException || ex is ObjectDisposedException)
         {
-            // The remote end may have already closed the pipe (e.g. after sending its final
-            // response); StreamWriter/StreamReader/PipeStream.Dispose can try to flush against
-            // that closed pipe and throw IOException or, once the underlying PipeStream has
-            // already torn itself down, ObjectDisposedException. This is a normal teardown race
-            // between the read loop noticing disconnection and an explicit DisposeAsync call, not
-            // a real failure.
         }
     }
 
@@ -349,8 +333,6 @@ public sealed class VsControlPipeClient : IAsyncDisposable
         }
 
         _lifetimeSource.Cancel();
-        // Acquiring both gates joins any current handshake and write. Keep ownership through
-        // disposal, so canceled waiters cannot acquire a gate and later release it after disposal.
         await _connectLock.WaitAsync().ConfigureAwait(false);
         await _writeLock.WaitAsync().ConfigureAwait(false);
         var readLoop = _readLoopTask;

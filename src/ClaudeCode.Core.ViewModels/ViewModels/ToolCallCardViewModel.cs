@@ -14,10 +14,16 @@ public sealed class ToolCallCardViewModel : ObservableObject
         Apply(call);
     }
 
+    /// <summary>
+    /// Gets the tool call id.
+    /// </summary>
     public string ToolCallId { get; }
 
     private string _title = string.Empty;
 
+    /// <summary>
+    /// Gets or sets the title.
+    /// </summary>
     public string Title
     {
         get => _title;
@@ -26,6 +32,9 @@ public sealed class ToolCallCardViewModel : ObservableObject
 
     private ToolCallStatus _status;
 
+    /// <summary>
+    /// Gets or sets the status.
+    /// </summary>
     public ToolCallStatus Status
     {
         get => _status;
@@ -34,12 +43,18 @@ public sealed class ToolCallCardViewModel : ObservableObject
 
     private bool _isExpanded;
 
+    /// <summary>
+    /// Gets or sets a value indicating whether is expanded.
+    /// </summary>
     public bool IsExpanded
     {
         get => _isExpanded;
         set => SetProperty(ref _isExpanded, value);
     }
 
+    /// <summary>
+    /// Gets the content.
+    /// </summary>
     public ObservableCollection<ToolCallContentViewModel> Content { get; } = new ObservableCollection<ToolCallContentViewModel>();
 
     private string? _cachedDiffOldText;
@@ -49,13 +64,19 @@ public sealed class ToolCallCardViewModel : ObservableObject
     /// <summary>True once any update has named this call a subagent; see <see cref="ToolCallUpdate.IsSubagent"/>.</summary>
     public bool IsSubagent { get; private set; }
 
+    /// <summary>
+    /// Updates the tool call view model&apos;s state based on the provided ToolCallUpdate, setting the subagent flag, title, status, content, and expanding the view when the call is in progress.
+    /// </summary>
+    /// <param name="call">The call.</param>
     public void Apply(ToolCallUpdate call)
     {
-        if (call.IsSubagent) IsSubagent = true;
+        if (call.IsSubagent)
+        {
+            IsSubagent = true;
+        }
 
         if (!string.IsNullOrEmpty(call.Title))
         {
-            // MCP tools arrive as a routing identifier (mcp__visual-studio__listAppWindows).
             Title = ToolDisplayName.Describe(call.Title);
         }
 
@@ -79,10 +100,6 @@ public sealed class ToolCallCardViewModel : ObservableObject
         }
     }
 
-    // A tool call card is rebuilt (new ToolCallContentViewModel per item) on every tool_call_update,
-    // even when the diff content itself is unchanged. This single-entry cache is scoped to this
-    // card instance (one card per ToolCallId) so repeated updates on the same tool call reuse the
-    // previously computed diff without recomputing it, and without leaking state to other cards.
     private IReadOnlyList<DiffLineViewModel>? ResolveDiffLines(ToolCallContent contentItem)
     {
         if (!contentItem.IsDiff)
