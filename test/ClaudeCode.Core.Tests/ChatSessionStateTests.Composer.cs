@@ -1750,6 +1750,51 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("second", users[2]);
     }
 
+    // The review goes out by itself as the rejected plan's turn ends; it is not the user's own send,
+    // so it does not wipe that turn's error before it can be read.
+    [Fact]
+    public async Task PlanReview_SentAsTheTurnFails_KeepsThatTurnsErrorReadable()
+    {
+        var turns = new PromptGate();
+        var connection = new RecordingAcpAgentConnection { PromptHandler = turns.Handle };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "plan the feature";
+        var sending = vm.SendAsync();
+        var (call, options) = PlanApprovalRequest();
+        connection.RaisePermissionRequested(call, options);
+        vm.PendingPlan!.ReviewCommand.Execute("Add a rollback step.");
+
+        turns.Fail("plan the feature", new InvalidOperationException("agent crashed"));
+        await sending;
+        await WaitUntilAsync(() => connection.Prompts.Count == 2);
+
+        Assert.Contains("Add a rollback step", Text(connection.Prompts[1]), StringComparison.Ordinal);
+        Assert.Contains("agent crashed", vm.StatusMessage, StringComparison.Ordinal);
+    }
+
+    // The review is its own prompt: the images attached to the user's draft are not sent with it,
+    // and stay with the draft in the composer.
+    [Fact]
+    public async Task PlanReview_LeavesTheDraftsAttachmentsWithTheDraft()
+    {
+        var connection = new RecordingAcpAgentConnection();
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "meanwhile, look at this";
+        vm.AddImageAttachment("draft.png", "image/png", "AQID");
+        // No local turn owns IsBusy (a plan from a remote-driven turn): the review goes out at once.
+        var (call, options) = PlanApprovalRequest();
+        connection.RaisePermissionRequested(call, options);
+
+        vm.PendingPlan!.ReviewCommand.Execute("Add a rollback step.");
+        await WaitUntilAsync(() => connection.Prompts.Count == 1);
+
+        Assert.IsType<ContentBlock.Text>(Assert.Single(connection.Prompts[0]));
+        Assert.Equal("meanwhile, look at this", vm.InputText);
+        Assert.Equal("AQID", Assert.Single(vm.Attachments).Base64Data);
+    }
+
     // Disposal while the agent holds a follow-up: whatever the prompts return, nothing is sent again
     // and nothing faults.
     [Fact]

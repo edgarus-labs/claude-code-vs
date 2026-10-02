@@ -1208,7 +1208,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         return false;
     }
 
-    public Task SendAsync() => OnUiAsync(SendCoreAsync);
+    public Task SendAsync() => OnUiAsync(() => SendCoreAsync(userSent: true));
 
     // A message typed and sent while a turn is already in flight: shown in the transcript right
     // away (dimmed, see ChatMessageViewModel.IsPending) so the user can see it was captured, held
@@ -1269,7 +1269,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // change) can give it back to the composer (ReturnToComposer).
     private QueuedMessage? _draftInFlight;
 
-    private Task SendCoreAsync()
+    private Task SendCoreAsync(bool userSent)
     {
         if (!CanSend()) return Task.CompletedTask;
 
@@ -1285,9 +1285,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
         var attachments = Attachments.ToArray();
         // Sending is the user's own action, so it is what clears a stale error - not the start of
-        // every turn, which would wipe the failure of the turn that just ended before it could be
-        // read (an auto-dispatched queue would erase its own predecessor's error).
-        StatusMessage = null;
+        // every turn, nor a review sent by itself as a turn ends, which would wipe the failure of the
+        // turn that just ended before it could be read.
+        if (userSent) StatusMessage = null;
 
         if (IsBusy)
         {
@@ -1303,7 +1303,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         var bubble = BuildUserBubble(text, attachments, isPending: true);
         var draft = new QueuedMessage(bubble, text, attachments);
         _draftInFlight = draft;
-        return RunTurnAsync(null, text,
+        return RunTurnReportingFailuresAsync(null, text,
             accept: () =>
             {
                 ConsumeDraft(text, attachments);
@@ -1417,13 +1417,19 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     // Runs a message that was queued earlier through RunTurnAsync, as SendCoreAsync does for a live
     // send: its pending bubble stops reading as pending once the agent is actually running it.
-    // Nobody awaits a queued dispatch, so an exception escaping RunTurnAsync (an observer throwing
-    // in its bookkeeping) is reported here instead of vanishing with the task.
-    private async Task DispatchQueuedMessageAsync(QueuedMessage queued)
+    private Task DispatchQueuedMessageAsync(QueuedMessage queued) =>
+        RunTurnReportingFailuresAsync(queued, queued.Text, () => (queued.Text, queued.Attachments));
+
+    // Every turn goes through here. An exception escaping RunTurnAsync (an observer throwing in its
+    // bookkeeping) is reported instead of propagating: nobody awaits a queued dispatch or a review
+    // send, so it would vanish with the task, and a live send's command would rethrow it on the UI
+    // thread, where it takes the IDE down.
+    private async Task RunTurnReportingFailuresAsync(QueuedMessage? queued, string promptText,
+        Func<(string Text, IReadOnlyList<ChatAttachmentViewModel> Attachments)> prepare, Action? accept = null)
     {
         try
         {
-            await RunTurnAsync(queued, queued.Text, () => (queued.Text, queued.Attachments)).ConfigureAwait(true);
+            await RunTurnAsync(queued, promptText, prepare, accept).ConfigureAwait(true);
         }
         catch (Exception ex)
         {
@@ -1514,7 +1520,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 if (queued is null)
                 {
                     var returning = new List<QueuedMessage>();
-                    if (_draftInFlight is { } left) returning.Add(left);
+                    var left = _draftInFlight;
+                    if (left is not null) returning.Add(left);
                     _draftInFlight = null;
                     // A draft that failed before it was sent: what was written after it must not overtake
                     // it. The queued follow-ups go back behind it and ahead of anything typed since - the
@@ -1528,7 +1535,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                     }
                     if (!_disposed)
                     {
+                        bool typedSince = InputText.Trim().Length > 0;
                         ReturnToComposer(returning);
+                        // Back in a composer that already held a new message, it reads as one with it
+                        // and the next Enter would send both together: unless an error or a lost
+                        // session already said the message was not sent (Stop says nothing), say so.
+                        if (left is not null && typedSince && string.IsNullOrEmpty(StatusMessage))
+                            StatusMessage = "Your message was not sent - it is back in the message box, ahead of what you typed since.";
                         AppendRestoreNotice(behind,
                             "Your queued message was not sent because the message before it failed - it is back in the message box, after that one.",
                             "{0} queued messages were not sent because the message before them failed - they are back in the message box, after it.");
@@ -1649,8 +1662,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         AppendRestoreNotice(restored.Count, one, many);
     }
 
-    // The bubbles leave the transcript and the texts go back into the composer in the order they
-    // were written, ahead of whatever was typed there since, with their attachments. The composer is
+    // The bubbles leave the transcript and the texts and attachments go back into the composer in the
+    // order they were written, ahead of whatever was typed or attached there since. The composer is
     // filled before any bubble is removed: an observer throwing on a removal must not lose a message.
     private void ReturnToComposer(IReadOnlyList<QueuedMessage> messages)
     {
@@ -1658,8 +1671,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         var texts = messages.Select(message => message.Text).Where(text => text.Length > 0).ToList();
         if (InputText.Trim().Length > 0) texts.Add(InputText);
         InputText = string.Join(Environment.NewLine + Environment.NewLine, texts);
+        int position = 0;
         foreach (var attachment in messages.SelectMany(message => message.Attachments))
-            if (!Attachments.Contains(attachment)) Attachments.Add(attachment);
+            if (!Attachments.Contains(attachment)) Attachments.Insert(position++, attachment);
         foreach (var message in messages) Messages.Remove(message.Bubble);
         RefreshSessionTitleAfterRemoval();
     }
@@ -1751,17 +1765,26 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         if (comments is null || _disposed || !CanEditDraft || _isCapturingDocument) return;
         _pendingPlanReviewComments = null;
         // The composer stays live while the rejected plan's turn finishes, so the user can be mid-
-        // sentence when the review goes out. The review is its own prompt, not a use of their draft.
+        // sentence when the review goes out. The review is its own prompt, not a use of their draft:
+        // its text and attachments are set aside for it.
         var draft = InputText;
+        var draftAttachments = Attachments.ToArray();
+        Attachments.Clear();
         InputText = "Review comments on the plan:\n" + comments;
-        // On the UI thread the send runs inline up to its first await, by which point the review has
-        // left the composer (#53) - or is already back in it, from a turn that failed at once. The
-        // draft goes back behind whatever is there, and a review the turn gives back later goes ahead
-        // of it (ReturnToComposer): neither is dropped. Nothing awaits the send - SendCoreAsync
-        // reports its own failures.
-        var sending = SendCoreAsync();
-        if (!_disposed && draft.Trim().Length > 0)
-            InputText = InputText.Trim().Length == 0 ? draft : InputText + Environment.NewLine + Environment.NewLine + draft;
+        // SendCoreAsync runs synchronously up to its first incomplete await (every caller is on the
+        // UI thread, so it is called directly rather than through OnUiAsync), by which point the
+        // review has left the composer - or is already back in it, from a turn that failed at once.
+        // The draft goes back behind whatever is there, and a review the turn gives back later goes
+        // ahead of it (ReturnToComposer): neither is dropped. Nothing awaits the send - every turn
+        // reports its own failures (RunTurnReportingFailuresAsync).
+        var sending = SendCoreAsync(userSent: false);
+        if (!_disposed)
+        {
+            if (draft.Trim().Length > 0)
+                InputText = InputText.Trim().Length == 0 ? draft : InputText + Environment.NewLine + Environment.NewLine + draft;
+            foreach (var attachment in draftAttachments)
+                if (!Attachments.Contains(attachment)) Attachments.Add(attachment);
+        }
         _ = sending;
     }
 

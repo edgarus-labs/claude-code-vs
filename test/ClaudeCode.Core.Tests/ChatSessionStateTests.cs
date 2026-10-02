@@ -255,9 +255,10 @@ public sealed partial class ChatSessionStateTests
     }
 
     // A transcript observer that throws while an unsent message is taken back out of the transcript
-    // must not leave the panel busy for good: nothing could be sent again.
+    // must not leave the panel busy for good (nothing could be sent again), and the send reports it
+    // rather than throwing it at the command that ran it.
     [Fact]
-    public async Task ReconnectFailure_ObserverThrowsWhileTheMessageIsRestored_PanelDoesNotStayBusy()
+    public async Task ReconnectFailure_ObserverThrowsWhileTheMessageIsRestored_PanelDoesNotStayBusy_AndReportsIt()
     {
         var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
         var factory = new SingleConnectionFactory(connection);
@@ -271,10 +272,12 @@ public sealed partial class ChatSessionStateTests
         };
         vm.InputText = "keep me";
 
-        await Record.ExceptionAsync(() => vm.SendAsync());
+        await vm.SendAsync();
 
         Assert.False(vm.IsBusy);
         Assert.Equal("keep me", vm.InputText);
+        Assert.Empty(vm.Messages);
+        Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
     }
 
     // The send itself runs inside the turn's error handling: a transcript observer that throws as the

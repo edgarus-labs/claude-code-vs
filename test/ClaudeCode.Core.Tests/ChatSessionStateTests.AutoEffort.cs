@@ -322,11 +322,13 @@ public sealed partial class ChatSessionStateTests
                 throw new InvalidOperationException("observer failed");
         };
         verdict.SetResult(EffortLevel.High);
-        await Record.ExceptionAsync(() => WithinAsync(sending));
+        await WithinAsync(sending);
         await WaitUntilAsync(() => !vm.IsBusy);
 
         Assert.Empty(connection.Prompts);
         Assert.Equal("first" + Environment.NewLine + Environment.NewLine + "second", vm.InputText);
+        Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User);
+        Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
     }
 
     // The draft held aside while review comments go out is not dropped when the review turn gives
@@ -362,6 +364,33 @@ public sealed partial class ChatSessionStateTests
 
         Assert.Single(connection.Prompts);
         Assert.Equal("Review comments on the plan:\nAdd a rollback step." + Environment.NewLine + Environment.NewLine + "half-written idea", vm.InputText);
+    }
+
+    // Nothing awaits a review send: an observer throwing as the review is given back is reported in
+    // the panel rather than lost with the send's task.
+    [Fact]
+    public async Task PlanReviewGivenBack_ObserverThrowsAsItLeavesTheTranscript_ReportsIt()
+    {
+        var (connection, _) = AutoConnection("medium");
+        connection.ConfigHandler = (_, _, _) => Task.FromException<IReadOnlyList<SessionConfigOption>>(new InvalidOperationException("rejected"));
+        var classifier = new FakeEffortClassifier { Handler = _ => Task.FromResult(EffortLevel.High) };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+        vm.Messages.CollectionChanged += (_, e) =>
+        {
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove) throw new InvalidOperationException("observer failed");
+        };
+
+        // No local turn owns IsBusy (a plan from a remote-driven turn): the review goes out at once.
+        var (call, options) = PlanApprovalRequest();
+        connection.RaisePermissionRequested(call, options);
+        vm.PendingPlan!.ReviewCommand.Execute("Add a rollback step.");
+        await WaitUntilAsync(() => !vm.IsBusy && vm.InputText.Length > 0);
+
+        Assert.Empty(connection.Prompts);
+        Assert.StartsWith("Review comments on the plan:", vm.InputText, StringComparison.Ordinal);
+        Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
     }
 
     // A reply that arrived while the message was judged is not named after the message that left:
@@ -508,8 +537,9 @@ public sealed partial class ChatSessionStateTests
     }
 
     // #53: Stop while judging ends the turn before the prompt went out, so the message is not left
-    // in the transcript as if Claude had seen it: it comes back to the composer, ahead of whatever
-    // was typed there since, with its attachments.
+    // in the transcript as if Claude had seen it: it comes back to the composer with its attachments,
+    // ahead of whatever was typed or attached there since - and since the two now read as one, the
+    // user is told so.
     [Fact]
     public async Task AutoTurn_StoppedWhileJudging_ReturnsTheMessageToTheComposer_AheadOfWhatWasTypedSince()
     {
@@ -525,6 +555,8 @@ public sealed partial class ChatSessionStateTests
         var sending = SendTextAsync(vm, "hard work");
         await WaitUntilAsync(() => classifier.Prompts.Count == 1);
         vm.InputText = "typed since";
+        var attachedSince = new ChatAttachmentViewModel("b.png", "image/png", "BBBB");
+        vm.Attachments.Add(attachedSince);
         await vm.CancelAsync();
         verdict.SetResult(EffortLevel.High);
         await WithinAsync(sending);
@@ -532,9 +564,10 @@ public sealed partial class ChatSessionStateTests
 
         Assert.Empty(log);
         Assert.Equal("hard work" + Environment.NewLine + Environment.NewLine + "typed since", vm.InputText);
-        Assert.Same(attachment, Assert.Single(vm.Attachments));
+        Assert.Equal(new[] { attachment, attachedSince }, vm.Attachments);
         Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User);
         Assert.Equal("Untitled", vm.SessionTitle);
+        Assert.Equal("Your message was not sent - it is back in the message box, ahead of what you typed since.", vm.StatusMessage);
     }
 
     // A verdict belongs to the session it was made in: a new session starts over from High and
