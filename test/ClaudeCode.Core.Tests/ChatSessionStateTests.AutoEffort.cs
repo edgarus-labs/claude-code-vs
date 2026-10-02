@@ -378,6 +378,7 @@ public sealed partial class ChatSessionStateTests
         Assert.Empty(connection.Prompts);
         Assert.Equal("first" + Environment.NewLine + Environment.NewLine + "second", vm.InputText);
         Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User);
+        Assert.Contains("rejected", vm.StatusMessage, StringComparison.Ordinal);
         Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
     }
 
@@ -416,6 +417,106 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("Review comments on the plan:\nAdd a rollback step." + Environment.NewLine + Environment.NewLine + "half-written idea", vm.InputText);
     }
 
+    // Stop leaves what was queued to be sent; an observer throwing as the stopped message leaves the
+    // transcript is reported, and does not strand the queued follow-up behind it.
+    [Fact]
+    public async Task AutoTurn_StoppedWhileJudging_ObserverThrowsAsTheMessageLeaves_TheQueuedFollowUpStillGoesOut()
+    {
+        var (connection, log) = AutoConnection("medium");
+        var verdict = new TaskCompletionSource<EffortLevel>();
+        var classifier = new FakeEffortClassifier
+        {
+            Handler = prompt => prompt == "first" ? verdict.Task : Task.FromResult(EffortLevel.Medium),
+        };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+
+        var sending = SendTextAsync(vm, "first");
+        await WaitUntilAsync(() => classifier.Prompts.Count == 1);
+        await SendTextAsync(vm, "second");
+        vm.Messages.CollectionChanged += (_, e) =>
+        {
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove &&
+                e.OldItems!.Cast<ChatMessageViewModel>().Any(message => message.Text == "first"))
+                throw new InvalidOperationException("observer failed");
+        };
+        await vm.CancelAsync();
+        verdict.SetResult(EffortLevel.High);
+        await WithinAsync(sending);
+        await WaitUntilAsync(() => log.Contains("prompt:second"));
+
+        Assert.DoesNotContain("prompt:first", log);
+        Assert.Equal("first", vm.InputText);
+        Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
+    }
+
+    // Every returned bubble leaves the transcript, also when an observer throws as the first one is
+    // removed: none is left pending with nothing to send it.
+    [Fact]
+    public async Task AutoTurn_DraftFailsBeforeItIsSent_ObserverThrowsAsTheDraftLeaves_TheFollowUpsBubbleLeavesToo()
+    {
+        var (connection, _) = AutoConnection("medium");
+        connection.ConfigHandler = (_, _, _) => Task.FromException<IReadOnlyList<SessionConfigOption>>(new InvalidOperationException("rejected"));
+        var verdict = new TaskCompletionSource<EffortLevel>();
+        var classifier = new FakeEffortClassifier { Handler = _ => verdict.Task };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+
+        var sending = SendTextAsync(vm, "first");
+        await WaitUntilAsync(() => classifier.Prompts.Count == 1);
+        await SendTextAsync(vm, "second");
+        vm.Messages.CollectionChanged += (_, e) =>
+        {
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove &&
+                e.OldItems!.Cast<ChatMessageViewModel>().Any(message => message.Text == "first"))
+                throw new InvalidOperationException("observer failed");
+        };
+        verdict.SetResult(EffortLevel.High);
+        await WithinAsync(sending);
+        await WaitUntilAsync(() => !vm.IsBusy);
+
+        Assert.Equal("first" + Environment.NewLine + Environment.NewLine + "second", vm.InputText);
+        Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User);
+    }
+
+    // Review comments held back while a message is judged still go out when Stop gives that message
+    // back and an observer throws as it leaves the transcript.
+    [Fact]
+    public async Task AutoTurn_StoppedWhileJudging_ObserverThrowsAsTheMessageLeaves_TheHeldBackReviewStillGoesOut()
+    {
+        var (connection, log) = AutoConnection("medium");
+        var verdict = new TaskCompletionSource<EffortLevel>();
+        var classifier = new FakeEffortClassifier
+        {
+            Handler = prompt => prompt == "first" ? verdict.Task : Task.FromResult(EffortLevel.Medium),
+        };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+
+        var sending = SendTextAsync(vm, "first");
+        await WaitUntilAsync(() => classifier.Prompts.Count == 1);
+        // A plan from a remote-driven turn, reviewed while this panel is busy judging: held back.
+        var (call, options) = PlanApprovalRequest();
+        connection.RaisePermissionRequested(call, options);
+        vm.PendingPlan!.ReviewCommand.Execute("Add a rollback step.");
+        vm.Messages.CollectionChanged += (_, e) =>
+        {
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove &&
+                e.OldItems!.Cast<ChatMessageViewModel>().Any(message => message.Text == "first"))
+                throw new InvalidOperationException("observer failed");
+        };
+        await vm.CancelAsync();
+        verdict.SetResult(EffortLevel.High);
+        await WithinAsync(sending);
+        await WaitUntilAsync(() => log.Any(entry => entry.StartsWith("prompt:Review comments", StringComparison.Ordinal)));
+
+        Assert.DoesNotContain("prompt:first", log);
+        Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
+    }
+
     // Nothing awaits a review send: an observer throwing as the review is given back is reported in
     // the panel rather than lost with the send's task.
     [Fact]
@@ -436,11 +537,11 @@ public sealed partial class ChatSessionStateTests
         var (call, options) = PlanApprovalRequest();
         connection.RaisePermissionRequested(call, options);
         vm.PendingPlan!.ReviewCommand.Execute("Add a rollback step.");
-        await WaitUntilAsync(() => !vm.IsBusy && vm.InputText.Length > 0);
+        await WaitUntilAsync(() => vm.StatusMessage?.Contains("observer failed", StringComparison.Ordinal) == true);
 
+        Assert.False(vm.IsBusy);
         Assert.Empty(connection.Prompts);
         Assert.StartsWith("Review comments on the plan:", vm.InputText, StringComparison.Ordinal);
-        Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
     }
 
     // Once the stopped message leaves the transcript, a reply that arrived while it was judged is
@@ -551,7 +652,7 @@ public sealed partial class ChatSessionStateTests
         Assert.False(vm.IsBusy);
     }
 
-    // #53: a sent message belongs to the turn, not the composer. While Auto judges it, it shows in
+    // A sent message belongs to the turn, not the composer. While Auto judges it, it shows in
     // the transcript as pending (like a queued message) and the composer is already clear for the
     // next one; once the prompt goes out, the bubble stops reading as pending.
     [Fact]
@@ -586,10 +687,9 @@ public sealed partial class ChatSessionStateTests
         Assert.False(bubble.IsPending);
     }
 
-    // #53: Stop while judging ends the turn before the prompt went out, so the message is not left
+    // Stop while judging ends the turn before the prompt went out, so the message is not left
     // in the transcript as if Claude had seen it: it comes back to the composer with its attachments,
-    // ahead of whatever was typed or attached there since - and since the two now read as one, the
-    // user is told so.
+    // ahead of whatever was typed there since - and since the two now read as one, the user is told so.
     [Fact]
     public async Task AutoTurn_StoppedWhileJudging_ReturnsTheMessageToTheComposer_AheadOfWhatWasTypedSince()
     {
@@ -605,8 +705,6 @@ public sealed partial class ChatSessionStateTests
         var sending = SendTextAsync(vm, "hard work");
         await WaitUntilAsync(() => classifier.Prompts.Count == 1);
         vm.InputText = "typed since";
-        var attachedSince = new ChatAttachmentViewModel("b.png", "image/png", "BBBB");
-        vm.Attachments.Add(attachedSince);
         await vm.CancelAsync();
         verdict.SetResult(EffortLevel.High);
         await WithinAsync(sending);
@@ -614,10 +712,10 @@ public sealed partial class ChatSessionStateTests
 
         Assert.Empty(log);
         Assert.Equal("hard work" + Environment.NewLine + Environment.NewLine + "typed since", vm.InputText);
-        Assert.Equal(new[] { attachment, attachedSince }, vm.Attachments);
+        Assert.Same(attachment, Assert.Single(vm.Attachments));
         Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User);
         Assert.Equal("Untitled", vm.SessionTitle);
-        Assert.Equal("Your message was not sent - it is back in the message box, ahead of what you typed since.", vm.StatusMessage);
+        Assert.Equal("Your message is back in the message box, together with what was already there.", vm.StatusMessage);
     }
 
     // A verdict belongs to the session it was made in: a new session starts over from High and
@@ -805,6 +903,31 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("Auto · high", vm.ActiveEffortName);
         Assert.False(vm.IsBusy);
         Assert.True(vm.CanConfigure);
+    }
+
+    // A status left by the judgment ("runs at High") does not explain a message Stop then gives back:
+    // back ahead of what was typed meanwhile, the user is still told where it went.
+    [Fact]
+    public async Task AutoTurn_JudgeFailed_ThenStoppedWhileSettingEffort_StillSaysWhereTheMessageWent()
+    {
+        var (connection, _) = AutoConnection("medium");
+        var (release, _) = StallEffortRequest(connection);
+        var classifier = new FakeEffortClassifier { Handler = _ => Task.FromException<EffortLevel>(new InvalidOperationException("judge down")) };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+
+        var sending = SendTextAsync(vm, "hard work");
+        await WaitUntilAsync(() => connection.ConfigChanges.Count > 0);
+        Assert.Contains("judge down", vm.StatusMessage, StringComparison.Ordinal);
+        vm.InputText = "typed since";
+        await StopOnceRequestedAsync(vm, connection);
+        release.SetResult();
+        await WithinAsync(sending);
+
+        Assert.Empty(connection.Prompts);
+        Assert.Equal("hard work" + Environment.NewLine + Environment.NewLine + "typed since", vm.InputText);
+        Assert.EndsWith("Your message is back in the message box, together with what was already there.", vm.StatusMessage, StringComparison.Ordinal);
     }
 
     // The request answers just as Stop is pressed: the answer is applied, but the turn Stop ended
@@ -1077,7 +1200,7 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { "effort=low", "prompt:first", "effort=high", "prompt:second" }, log);
     }
 
-    // The judged message has already left the composer (#53), so a second Enter finds it empty and
+    // The judged message has already left the composer, so a second Enter finds it empty and
     // sends nothing: the prompt runs once, and the transcript shows the message once.
     [Fact]
     public async Task AutoTurn_WhileJudging_ASecondEnter_FindsTheComposerEmpty_AndQueuesNoCopy()
@@ -1275,7 +1398,8 @@ public sealed partial class ChatSessionStateTests
 
     // The judgment is a multi-second await between connecting and sending. A session lost in
     // that window (agent died, sign-out, workspace switch) must not send the message to the
-    // connection that was released: it goes back to the composer and leaves the transcript.
+    // connection that was released: it goes back to the composer and leaves the transcript, and the
+    // user is told so next to whatever reported the lost session.
     [Fact]
     public async Task AutoTurn_SessionLostWhileJudging_SendsNothingAndReturnsTheDraft()
     {
@@ -1296,6 +1420,7 @@ public sealed partial class ChatSessionStateTests
         Assert.Empty(connection.ConfigChanges);
         Assert.Empty(log);
         Assert.Equal("hard work", vm.InputText);
+        Assert.Equal("Agent disconnected. The session changed while judging effort, so your message was not sent.", vm.StatusMessage);
         Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User);
         Assert.False(vm.IsBusy);
     }
@@ -1324,6 +1449,30 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("hard work", vm.InputText);
         Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User);
         Assert.Contains("A queued message was not sent.", vm.StatusMessage, StringComparison.Ordinal);
+    }
+
+    // Lost with its session, a message given back ahead of text typed meanwhile is joined to it: the
+    // user is told both why it was not sent and where it went.
+    [Fact]
+    public async Task AutoTurn_SessionLostWhileJudging_AfterTextWasTyped_SaysWhyAndWhereTheMessageWent()
+    {
+        var (connection, log) = AutoConnection("medium");
+        var verdict = new TaskCompletionSource<EffortLevel>();
+        var classifier = new FakeEffortClassifier { Handler = _ => verdict.Task };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+
+        var sending = SendTextAsync(vm, "hard work");
+        await WaitUntilAsync(() => classifier.Prompts.Count == 1);
+        vm.InputText = "typed since";
+        connection.RaiseDisconnected();
+        verdict.SetResult(EffortLevel.High);
+        await WithinAsync(sending);
+
+        Assert.Empty(log);
+        Assert.Equal("hard work" + Environment.NewLine + Environment.NewLine + "typed since", vm.InputText);
+        Assert.Equal("Agent disconnected. The session changed while judging effort, so your message was not sent. Your message is back in the message box, together with what was already there.", vm.StatusMessage);
     }
 
     // A session lost while judging ends that judgment at once: the judge (a CLI process) is not left

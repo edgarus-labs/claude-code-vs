@@ -1795,6 +1795,314 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("AQID", Assert.Single(vm.Attachments).Base64Data);
     }
 
+    // The user's own send is what clears the error a failed turn left behind.
+    [Fact]
+    public async Task Send_ByTheUser_ClearsTheErrorThePreviousTurnLeft()
+    {
+        var turns = new PromptGate();
+        var connection = new RecordingAcpAgentConnection { PromptHandler = turns.Handle };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "first";
+        var first = vm.SendAsync();
+        turns.Fail("first", new InvalidOperationException("agent crashed"));
+        await first;
+        Assert.Contains("agent crashed", vm.StatusMessage, StringComparison.Ordinal);
+
+        vm.InputText = "second";
+        var second = vm.SendAsync();
+        turns.Complete("second");
+        await second;
+
+        Assert.True(string.IsNullOrEmpty(vm.StatusMessage), vm.StatusMessage);
+    }
+
+    // Typing while Claude works is not a message coming back: a turn that ends normally says nothing
+    // about it, and leaves what was typed alone.
+    [Fact]
+    public async Task Send_TextTypedWhileTheTurnRuns_GetsNoNoticeWhenTheTurnEndsNormally()
+    {
+        var turns = new PromptGate();
+        var connection = new RecordingAcpAgentConnection { PromptHandler = turns.Handle };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "first";
+        var sending = vm.SendAsync();
+        vm.InputText = "typed meanwhile";
+
+        turns.Complete("first");
+        await sending;
+
+        Assert.True(string.IsNullOrEmpty(vm.StatusMessage), vm.StatusMessage);
+        Assert.Equal("typed meanwhile", vm.InputText);
+    }
+
+    // A message sent while a turn runs is queued before the composer is cleared of it: an observer
+    // throwing as the composer empties is reported rather than thrown at the send command, and the
+    // message still goes out after the running turn.
+    [Fact]
+    public async Task SendWhileBusy_ObserverThrowsAsTheComposerEmpties_ReportsIt_AndStillSendsTheMessage()
+    {
+        var turns = new PromptGate();
+        var connection = new RecordingAcpAgentConnection { PromptHandler = turns.Handle };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "first";
+        var sending = vm.SendAsync();
+        vm.InputText = "second";
+        bool thrown = false;
+        vm.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(ChatViewModel.InputText) && vm.InputText.Length == 0 && !thrown)
+            {
+                thrown = true;
+                throw new InvalidOperationException("observer failed");
+            }
+        };
+
+        var failure = await Record.ExceptionAsync(() => vm.SendAsync());
+
+        Assert.Null(failure);
+        Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
+        Assert.Contains(vm.Messages, message => message.Role == ChatRole.User && message.Text == "second" && message.IsPending);
+        turns.Complete("first");
+        await sending;
+        await WaitUntilAsync(() => connection.Prompts.Count == 2);
+        Assert.Equal("second", Text(connection.Prompts[1]));
+    }
+
+    // After disposal a turn's bookkeeping can still fail as its prompt returns. A cancellation then is
+    // expected and dropped; anything else is still logged, but the disposed panel's status is left alone.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Disposed_ObserverThrowsAsTheTurnEnds_DropsACancellation_LogsAnythingElse(bool cancellation)
+    {
+        var turns = new PromptGate();
+        var connection = new RecordingAcpAgentConnection { PromptHandler = turns.Handle };
+        var services = new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService());
+        var vm = new ChatViewModel(services);
+        await vm.Initialization;
+        vm.InputText = "first";
+        var sending = vm.SendAsync();
+        vm.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(ChatViewModel.IsBusy) && !vm.IsBusy)
+                throw cancellation ? new OperationCanceledException("observer cancelled") : new InvalidOperationException("observer failed");
+        };
+
+        vm.Dispose();
+        turns.Complete("first");
+        await sending;
+
+        if (cancellation) Assert.Empty(services.LoggedErrors);
+        else Assert.Equal("observer failed", Assert.Single(services.LoggedErrors).Exception.Message);
+        Assert.True(string.IsNullOrEmpty(vm.StatusMessage), vm.StatusMessage);
+    }
+
+    // An observer throwing as the review's text enters the composer (the draft having been set aside):
+    // the review stays in the composer, unsent, ahead of the draft and with the draft's image, and the
+    // failure is reported.
+    [Fact]
+    public async Task PlanReview_ObserverThrowsAsTheReviewEntersTheComposer_KeepsTheReviewAndTheDraft()
+    {
+        var connection = new RecordingAcpAgentConnection();
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "meanwhile, look at this";
+        vm.AddImageAttachment("draft.png", "image/png", "AQID");
+        bool thrown = false;
+        vm.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(ChatViewModel.InputText) && vm.InputText.StartsWith("Review comments", StringComparison.Ordinal) && !thrown)
+            {
+                thrown = true;
+                throw new InvalidOperationException("observer failed");
+            }
+        };
+        var (call, options) = PlanApprovalRequest();
+        connection.RaisePermissionRequested(call, options);
+
+        vm.PendingPlan!.ReviewCommand.Execute("Add a rollback step.");
+
+        Assert.Empty(connection.Prompts);
+        Assert.Equal("Review comments on the plan:\nAdd a rollback step." + Environment.NewLine + Environment.NewLine + "meanwhile, look at this", vm.InputText);
+        Assert.Equal("AQID", Assert.Single(vm.Attachments).Base64Data);
+        Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
+    }
+
+    // Once queued, a message has left the composer even when a transcript observer throws as its
+    // bubble is added: it is not left there to be sent a second time.
+    [Fact]
+    public async Task SendWhileBusy_ObserverThrowsAsTheBubbleIsAdded_TheMessageLeavesTheComposer_AndGoesOutOnce()
+    {
+        var turns = new PromptGate();
+        var connection = new RecordingAcpAgentConnection { PromptHandler = turns.Handle };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "first";
+        var sending = vm.SendAsync();
+        vm.InputText = "second";
+        vm.Messages.CollectionChanged += (_, e) =>
+        {
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Add &&
+                e.NewItems!.Cast<ChatMessageViewModel>().Any(message => message.Text == "second"))
+                throw new InvalidOperationException("observer failed");
+        };
+
+        await vm.SendAsync();
+
+        Assert.Equal(string.Empty, vm.InputText);
+        Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
+        turns.Complete("first");
+        await sending;
+        await WaitUntilAsync(() => connection.Prompts.Count == 2);
+        Assert.Equal(new[] { "first", "second" }, connection.Prompts.Select(Text));
+    }
+
+    // Setting the draft aside for the review must not lose it, nor the review: an observer throwing as
+    // the draft's attachments are cleared away is reported, and the draft, its image and the review
+    // comments all end up in the composer.
+    [Fact]
+    public async Task PlanReview_ObserverThrowsAsTheDraftIsSetAside_LosesNeitherTheDraftNorTheReview()
+    {
+        var connection = new RecordingAcpAgentConnection();
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "meanwhile, look at this";
+        vm.AddImageAttachment("draft.png", "image/png", "AQID");
+        vm.Attachments.CollectionChanged += (_, e) =>
+        {
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Reset) throw new InvalidOperationException("observer failed");
+        };
+        // No local turn owns IsBusy (a plan from a remote-driven turn), so the Review command itself
+        // sets the draft aside to send the review.
+        var (call, options) = PlanApprovalRequest();
+        connection.RaisePermissionRequested(call, options);
+
+        var thrown = Record.Exception(() => vm.PendingPlan!.ReviewCommand.Execute("Add a rollback step."));
+
+        Assert.Null(thrown);
+        Assert.Empty(connection.Prompts);
+        Assert.Equal("Review comments on the plan:\nAdd a rollback step." + Environment.NewLine + Environment.NewLine + "meanwhile, look at this", vm.InputText);
+        Assert.Equal("AQID", Assert.Single(vm.Attachments).Base64Data);
+        Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
+    }
+
+    // The review goes out as the rejected plan's turn ends. An observer throwing as the draft set aside
+    // for it is put back is reported - not thrown at the send that started the turn - and the message
+    // queued during the turn still goes out after the review.
+    [Fact]
+    public async Task PlanReview_SentAsTheTurnEnds_ObserverThrowsAsTheDraftComesBack_IsReported_AndTheQueueStillGoesOut()
+    {
+        var turns = new PromptGate();
+        var connection = new RecordingAcpAgentConnection { PromptHandler = turns.Handle };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "plan the feature";
+        var sending = vm.SendAsync();
+        vm.InputText = "second";
+        await vm.SendAsync();
+        var (call, options) = PlanApprovalRequest();
+        connection.RaisePermissionRequested(call, options);
+        vm.PendingPlan!.ReviewCommand.Execute("Add a rollback step.");
+        vm.InputText = "half-written idea";
+        vm.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(ChatViewModel.InputText) && vm.InputText.Contains("half-written", StringComparison.Ordinal))
+                throw new InvalidOperationException("observer failed");
+        };
+
+        turns.Complete("plan the feature");
+        var failure = await Record.ExceptionAsync(() => sending);
+        await WaitUntilAsync(() => connection.Prompts.Count == 2);
+        turns.Complete(Text(connection.Prompts[1]));
+        await WaitUntilAsync(() => connection.Prompts.Count == 3);
+
+        Assert.Null(failure);
+        Assert.Contains("Add a rollback step", Text(connection.Prompts[1]), StringComparison.Ordinal);
+        Assert.Equal("second", Text(connection.Prompts[2]));
+        Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
+    }
+
+    // The Review command itself sends the review when no turn is running. An observer throwing on
+    // every attachment added, as the draft's image is put back, is reported, not thrown at the command.
+    [Fact]
+    public async Task PlanReview_ObserverThrowsAsTheDraftsImageComesBack_IsReported_NotThrownAtTheCommand()
+    {
+        var connection = new RecordingAcpAgentConnection();
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "meanwhile, look at this";
+        vm.AddImageAttachment("draft.png", "image/png", "AQID");
+        vm.Attachments.CollectionChanged += (_, e) =>
+        {
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Add) throw new InvalidOperationException("observer failed");
+        };
+        var (call, options) = PlanApprovalRequest();
+        connection.RaisePermissionRequested(call, options);
+
+        var thrown = Record.Exception(() => vm.PendingPlan!.ReviewCommand.Execute("Add a rollback step."));
+        await WaitUntilAsync(() => connection.Prompts.Count == 1);
+
+        Assert.Null(thrown);
+        Assert.IsType<ContentBlock.Text>(Assert.Single(connection.Prompts[0]));
+        Assert.Equal("meanwhile, look at this", vm.InputText);
+        Assert.Equal("AQID", Assert.Single(vm.Attachments).Base64Data);
+        Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
+    }
+
+    // An observer throwing as the draft's text is put back after the review went out does not cost the
+    // draft its image: every step of putting it back still runs.
+    [Fact]
+    public async Task PlanReview_ObserverThrowsAsTheDraftsTextComesBack_TheDraftsImageComesBackToo()
+    {
+        var connection = new RecordingAcpAgentConnection();
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "meanwhile, look at this";
+        vm.AddImageAttachment("draft.png", "image/png", "AQID");
+        vm.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(ChatViewModel.InputText) && vm.InputText == "meanwhile, look at this")
+                throw new InvalidOperationException("observer failed");
+        };
+        var (call, options) = PlanApprovalRequest();
+        connection.RaisePermissionRequested(call, options);
+
+        vm.PendingPlan!.ReviewCommand.Execute("Add a rollback step.");
+        await WaitUntilAsync(() => connection.Prompts.Count == 1);
+
+        Assert.Equal("meanwhile, look at this", vm.InputText);
+        Assert.Equal("AQID", Assert.Single(vm.Attachments).Base64Data);
+        Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
+    }
+
+    // The agent's connection goes away mid-turn: the queued follow-up goes with it, which the status
+    // line says. The running prompt then fails on that closed connection - expected teardown, which
+    // must neither replace that notice nor be logged as a turn failure.
+    [Fact]
+    public async Task AgentDisconnects_WhileATurnRuns_TheDroppedQueueNoticeStays_AndTheTeardownIsNotLogged()
+    {
+        var turns = new PromptGate();
+        var connection = new RecordingAcpAgentConnection { PromptHandler = turns.Handle };
+        var services = new StubChatSessionServices(new SingleConnectionFactory(connection), new AlwaysSignedInAuthService());
+        using var vm = new ChatViewModel(services);
+        await vm.Initialization;
+        vm.InputText = "first";
+        var sending = vm.SendAsync();
+        vm.InputText = "second";
+        await vm.SendAsync();
+
+        connection.RaiseDisconnected();
+        Assert.Contains("A queued message was not sent.", vm.StatusMessage, StringComparison.Ordinal);
+        turns.Fail("first", new System.IO.IOException("The JSON-RPC connection was closed."));
+        await sending;
+
+        Assert.Contains("A queued message was not sent.", vm.StatusMessage, StringComparison.Ordinal);
+        Assert.Empty(services.LoggedErrors);
+    }
+
     // A review turn that fails at once has already given the review back when the draft set aside for
     // it is put back: both are in the message box, the review ahead of the draft.
     [Fact]
@@ -1841,7 +2149,6 @@ public sealed partial class ChatSessionStateTests
         SynchronizationContext.SetSynchronizationContext(ui);
         try { vm.PendingPlan!.ReviewCommand.Execute("Add a rollback step."); }
         finally { SynchronizationContext.SetSynchronizationContext(previous); }
-        ui.Drain();
         ui.Drain();
 
         Assert.Equal("Review comments on the plan:\nAdd a rollback step.", Text(Assert.Single(connection.Prompts)));
