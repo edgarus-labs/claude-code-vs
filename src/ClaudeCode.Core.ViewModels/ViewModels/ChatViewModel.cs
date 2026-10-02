@@ -1256,13 +1256,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // session (DiscardQueuedMessages), which tells the user.
     private readonly List<QueuedMessage> _returnedUnstarted = new List<QueuedMessage>();
 
-    // The live draft SendCoreAsync handed to RunTurnAsync, until prepare() takes it out of the
-    // composer. Auto's judgment makes that a window of seconds in which the composer still holds the
-    // message, and sending it again (a second Enter) would queue a copy that runs the prompt twice.
-    private (string Text, ChatAttachmentViewModel[] Attachments)? _draftInFlight;
-    // Whether sending another message emptied the composer of the draft in flight (as opposed to the
-    // user clearing it): only then does a draft that never went out come back.
-    private bool _draftDisplaced;
+    // The live message SendCoreAsync handed to RunTurnAsync, until prepare() submits it. A sent
+    // message belongs to the turn, not the composer (#53): it leaves the composer at once and shows
+    // in the transcript as pending, like a queued message, so Auto's judgment (seconds) never looks
+    // like a draft still waiting to be sent. Until it is submitted it is held here so a turn that ends
+    // before the prompt goes out (a failed connect, Stop, a lost session, a rejected effort change)
+    // can give it back to the composer (RestoreDraftToComposer).
+    private QueuedMessage? _draftInFlight;
 
     private Task SendCoreAsync()
     {
@@ -1280,11 +1280,6 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
 
         var attachments = Attachments.ToArray();
-        // The draft being judged is still in the composer: sending it again changes nothing. Anything
-        // else there is a new message and queues like any other.
-        if (IsBusy && _draftInFlight is { } inFlight && text == inFlight.Text && attachments.SequenceEqual(inFlight.Attachments))
-            return Task.CompletedTask;
-
         // Sending is the user's own action, so it is what clears a stale error - not the start of
         // every turn, which would wipe the failure of the turn that just ended before it could be
         // read (an auto-dispatched queue would erase its own predecessor's error).
@@ -1296,22 +1291,22 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             return Task.CompletedTask;
         }
 
-        _draftInFlight = (text, attachments);
-        _draftDisplaced = false;
+        // Out of the composer and into the transcript right away, exactly like a queued message
+        // (EnqueueDraft): the composer only ever shows unsent input. Pending until the prompt is
+        // actually submitted, which under Auto comes after the judgment.
+        var bubble = BuildUserBubble(text, attachments, isPending: true);
+        Messages.Add(bubble);
+        UpdateSessionTitleFromFirstUserMessage();
+        ConsumeDraft(text, attachments);
+        var draft = new QueuedMessage(bubble, text, attachments);
+        _draftInFlight = draft;
         return RunTurnAsync(null, text, () =>
         {
-            // Acquire before consuming the draft: failed startup must not lose text or attachments.
-            // RunTurnAsync's own EnsureConnectedAsync has already succeeded by the time this runs.
-            // Under Auto the judgment took seconds, in which messages sent meanwhile were queued with
-            // their bubbles already: this earlier message goes above them.
-            var bubble = BuildUserBubble(text, attachments, isPending: false);
-            var firstQueued = Messages.FirstOrDefault(message => message.Role == ChatRole.User && message.IsPending);
-            if (firstQueued is null) Messages.Add(bubble);
-            else Messages.Insert(Messages.IndexOf(firstQueued), bubble);
-            UpdateSessionTitleFromFirstUserMessage();
-            ConsumeDraft(text, attachments);
+            // Submitted: from here on the message is the turn's, not the composer's (RunTurnAsync's
+            // finally gives back only a draft still held here).
+            bubble.MarkSent();
             _draftInFlight = null;
-            return (text, (IReadOnlyList<ChatAttachmentViewModel>)attachments);
+            return (text, draft.Attachments);
         });
     }
 
@@ -1380,8 +1375,6 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         var bubble = BuildUserBubble(text, attachments, isPending: true);
         Messages.Add(bubble);
         UpdateSessionTitleFromFirstUserMessage();
-        // A draft still in flight loses the composer to this message: that is what it is restored for.
-        if (_draftInFlight is not null) _draftDisplaced = true;
         ConsumeDraft(text, attachments);
         _queuedMessages.Enqueue(new QueuedMessage(bubble, text, attachments));
         DispatchNextQueuedMessage();
@@ -1429,7 +1422,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // submitting one turn's content and reacting to how it ended is identical between a live send
     // and a queued dispatch - only how (text, attachments) is obtained differs, which is why that
     // step is the one thing left to the caller. `prepare` runs only after EnsureConnectedAsync has
-    // already succeeded, preserving the live-send path's "acquire before consuming the draft" rule.
+    // already succeeded and, under Auto, the effort is set: it marks the message submitted.
     // A call made while another turn is running (only ever a queued message sent ahead to an agent
     // that queues prompts) joins that turn's busy state instead of starting a new one. Under Auto
     // effort, `promptText` is classified and the turn's effort set before `prepare` runs.
@@ -1496,15 +1489,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
         finally
         {
-            // A live turn that ended before prepare() took its draft (Stop, a lost session, a rejected
-            // effort change) leaves the draft in the composer, no longer in flight.
+            // A live turn that ended before prepare() submitted its message (a failed connect, Stop, a
+            // lost session, a rejected effort change): Claude never saw it, so it leaves the transcript
+            // and goes back to the composer.
             if (queued is null)
             {
-                // Sending another message meanwhile took the composer over from this draft: it must not
-                // vanish. A draft the user cleared on purpose stays gone.
-                if (_draftInFlight is { } left && _draftDisplaced && !_disposed) RestoreDraftToEmptyComposer(left.Text, left.Attachments);
+                if (_draftInFlight is { } left && !_disposed) RestoreDraftToComposer(left);
                 _draftInFlight = null;
-                _draftDisplaced = false;
                 // A draft that failed before it was sent: what was written after it must not overtake it.
                 if (failed && !submitted && !_disposed && _queuedMessages.Count > 0)
                 {
@@ -1645,10 +1636,16 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         StatusMessage = string.IsNullOrEmpty(StatusMessage) ? notice : StatusMessage + " " + notice;
     }
 
-    private void RestoreDraftToEmptyComposer(string text, ChatAttachmentViewModel[] attachments)
+    // The bubble leaves the transcript and the message goes back into the composer ahead of whatever
+    // was typed there since it was sent, with its attachments - the same order RestoreToComposer keeps.
+    private void RestoreDraftToComposer(QueuedMessage draft)
     {
-        if (InputText.Trim().Length == 0) InputText = text;
-        foreach (var attachment in attachments)
+        Messages.Remove(draft.Bubble);
+        var typedSince = InputText.Trim().Length == 0 ? string.Empty : InputText;
+        InputText = draft.Text.Length == 0 ? typedSince
+            : typedSince.Length == 0 ? draft.Text
+            : draft.Text + Environment.NewLine + Environment.NewLine + typedSince;
+        foreach (var attachment in draft.Attachments)
             if (!Attachments.Contains(attachment)) Attachments.Add(attachment);
     }
 

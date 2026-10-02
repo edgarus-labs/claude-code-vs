@@ -352,8 +352,72 @@ public sealed partial class ChatSessionStateTests
         Assert.False(vm.IsBusy);
     }
 
+    // #53: a sent message belongs to the turn, not the composer. While Auto judges it, it shows in
+    // the transcript as pending (like a queued message) and the composer is already clear for the
+    // next one; once the prompt goes out, the bubble stops reading as pending.
+    [Fact]
+    public async Task AutoTurn_WhileJudging_MessageLeavesTheComposer_AndShowsPendingInTheTranscript()
+    {
+        var (connection, log) = AutoConnection("medium");
+        var verdict = new TaskCompletionSource<EffortLevel>();
+        var classifier = new FakeEffortClassifier { Handler = _ => verdict.Task };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+        var attachment = new ChatAttachmentViewModel("a.png", "image/png", "AAAA");
+        vm.Attachments.Add(attachment);
+
+        var sending = SendTextAsync(vm, "hard work");
+        await WaitUntilAsync(() => classifier.Prompts.Count == 1);
+
+        Assert.Equal(string.Empty, vm.InputText);
+        Assert.Empty(vm.Attachments);
+        var bubble = Assert.Single(vm.Messages, message => message.Role == ChatRole.User);
+        Assert.Equal("hard work", bubble.Text);
+        Assert.True(bubble.IsPending);
+        Assert.Single(bubble.Images);
+        Assert.True(vm.IsBusy);
+
+        verdict.SetResult(EffortLevel.High);
+        await WithinAsync(sending);
+        await WaitUntilAsync(() => !vm.IsBusy);
+
+        Assert.Equal(new[] { "effort=high", "prompt:hard work" }, log);
+        Assert.Same(bubble, Assert.Single(vm.Messages, message => message.Role == ChatRole.User));
+        Assert.False(bubble.IsPending);
+    }
+
+    // #53: Stop while judging ends the turn before the prompt went out, so the message is not left
+    // in the transcript as if Claude had seen it: it comes back to the composer, ahead of whatever
+    // was typed there since, with its attachments.
+    [Fact]
+    public async Task AutoTurn_StoppedWhileJudging_ReturnsTheMessageToTheComposer_AheadOfWhatWasTypedSince()
+    {
+        var (connection, log) = AutoConnection("medium");
+        var verdict = new TaskCompletionSource<EffortLevel>();
+        var classifier = new FakeEffortClassifier { Handler = _ => verdict.Task };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+        var attachment = new ChatAttachmentViewModel("a.png", "image/png", "AAAA");
+        vm.Attachments.Add(attachment);
+
+        var sending = SendTextAsync(vm, "hard work");
+        await WaitUntilAsync(() => classifier.Prompts.Count == 1);
+        vm.InputText = "typed since";
+        await vm.CancelAsync();
+        verdict.SetResult(EffortLevel.High);
+        await WithinAsync(sending);
+        await WaitUntilAsync(() => !vm.IsBusy);
+
+        Assert.Empty(log);
+        Assert.Equal("hard work" + Environment.NewLine + Environment.NewLine + "typed since", vm.InputText);
+        Assert.Same(attachment, Assert.Single(vm.Attachments));
+        Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User);
+    }
+
     // Stop during the judgment has no prompt to cancel yet; the turn must not start afterwards,
-    // and the message the user wrote stays theirs.
+    // and the message the user wrote comes back to the composer.
     [Fact]
     public async Task AutoTurn_StoppedWhileJudging_SendsNothingAndKeepsTheDraft()
     {
@@ -374,30 +438,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Empty(connection.ConfigChanges);
         Assert.Empty(connection.Prompts);
         Assert.Equal("hard work", vm.InputText);
-        Assert.False(vm.IsBusy);
-    }
-
-    // F-R6: only a draft displaced by sending another message comes back after Stop. One the user
-    // cleared on purpose stays gone.
-    [Fact]
-    public async Task AutoTurn_DraftClearedOnPurposeWhileJudging_IsNotBroughtBackByStop()
-    {
-        var (connection, log) = AutoConnection("medium");
-        var verdict = new TaskCompletionSource<EffortLevel>();
-        var classifier = new FakeEffortClassifier { Handler = _ => verdict.Task };
-        using var vm = CreateWithClassifier(connection, classifier);
-        await vm.Initialization;
-        await vm.SelectEffortAsync(Auto(vm));
-
-        var sending = SendTextAsync(vm, "a draft I will delete");
-        await WaitUntilAsync(() => classifier.Prompts.Count == 1);
-        vm.InputText = string.Empty;
-        await vm.CancelAsync();
-        verdict.SetResult(EffortLevel.High);
-        await sending;
-
-        Assert.Empty(log);
-        Assert.Equal(string.Empty, vm.InputText);
         Assert.False(vm.IsBusy);
     }
 
@@ -858,10 +898,10 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { "effort=low", "prompt:first", "effort=high", "prompt:second" }, log);
     }
 
-    // The draft being judged has not left the composer yet, so a second Enter sends the very same
-    // draft: it must neither queue a copy (the prompt would run twice) nor clear the composer.
+    // The judged message has already left the composer (#53), so a second Enter finds it empty and
+    // sends nothing: the prompt runs once, and the transcript shows the message once.
     [Fact]
-    public async Task AutoTurn_WhileJudging_SendingTheUnchangedDraftAgain_DoesNotQueueACopy()
+    public async Task AutoTurn_WhileJudging_ASecondEnter_FindsTheComposerEmpty_AndQueuesNoCopy()
     {
         var (connection, log) = AutoConnection("medium");
         var verdict = new TaskCompletionSource<EffortLevel>();
@@ -872,8 +912,8 @@ public sealed partial class ChatSessionStateTests
 
         var sending = SendTextAsync(vm, "hard work");
         await WaitUntilAsync(() => classifier.Prompts.Count == 1);
+        Assert.Equal(string.Empty, vm.InputText);
         await vm.SendAsync();
-        Assert.Equal("hard work", vm.InputText);
         verdict.SetResult(EffortLevel.High);
         await WithinAsync(sending);
         await WaitUntilAsync(() => !vm.IsBusy);
@@ -911,7 +951,7 @@ public sealed partial class ChatSessionStateTests
         Assert.Single(vm.Messages, message => message.Role == ChatRole.User && message.Text == "hard work, then add tests");
     }
 
-    // The same text with an attachment added since is not the judged draft either.
+    // The same text typed again with an attachment is a new message like any other.
     [Fact]
     public async Task AutoTurn_WhileJudging_SameTextWithANewAttachment_IsANewMessage()
     {
@@ -925,7 +965,7 @@ public sealed partial class ChatSessionStateTests
         var sending = SendTextAsync(vm, "look at this");
         await WaitUntilAsync(() => classifier.Prompts.Count == 1);
         vm.Attachments.Add(new ChatAttachmentViewModel("a.png", "image/png", "AAAA"));
-        await vm.SendAsync();
+        await SendTextAsync(vm, "look at this");
 
         classifier.Handler = _ => Task.FromResult(EffortLevel.Medium);
         verdict.SetResult(EffortLevel.Medium);
@@ -935,10 +975,10 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { 1, 2 }, connection.Prompts.Select(prompt => prompt.Count));
     }
 
-    // A draft displaced from the composer by another message comes back with its attachments when Stop
-    // ends its judgment.
+    // A message stopped while judged comes back to the composer with its attachments, also when
+    // another message was sent meanwhile.
     [Fact]
-    public async Task AutoTurn_DisplacedDraftStoppedWhileJudging_ComesBackWithItsAttachments()
+    public async Task AutoTurn_StoppedWhileJudging_AfterAnotherMessageWasSent_ComesBackWithItsAttachments()
     {
         var (connection, _) = AutoConnection("medium");
         var classifier = new FakeEffortClassifier
@@ -967,8 +1007,8 @@ public sealed partial class ChatSessionStateTests
         Assert.Contains(attachment, vm.Attachments);
     }
 
-    // A draft whose judgment Stop ended is no longer being judged: the same text sent again while
-    // another message is judged is a message like any other.
+    // A message whose judgment Stop ended is back in the composer: sent again while another message
+    // is judged, it is a message like any other.
     [Fact]
     public async Task AutoTurn_DraftStoppedWhileJudging_IsNoLongerInFlight_WhenTheSameTextIsSentAgain()
     {
@@ -1002,8 +1042,7 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(new[] { "prompt:second", "prompt:hard work" }, log);
     }
 
-    // Once the judged draft has been taken into the turn, the same text sent again is a second
-    // message: the guard only covers the draft still waiting in the composer.
+    // The same text sent again while the first runs is a second message.
     [Fact]
     public async Task AutoTurn_SameTextSentAgainAfterTheDraftWasTaken_IsQueued()
     {
@@ -1109,8 +1148,8 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("hard work", vm.InputText);
     }
 
-    // Written while the first is still being judged, the second message is queued at once; the
-    // first one's bubble, added only when its turn starts, still belongs above it.
+    // Written while the first is still being judged, the second message is queued at once, below
+    // the first one's bubble.
     [Fact]
     public async Task AutoTurn_WhileJudging_TheJudgedDraftKeepsItsPlaceAboveALaterQueuedMessage()
     {
