@@ -270,9 +270,9 @@ public sealed partial class ChatSessionStateTests
         Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User);
     }
 
-    // Text typed after the queued follow-up was written after it too: when the draft fails before it
-    // is sent, the message box holds all three in the order they were written. Nothing Claude never
-    // received names the chat.
+    // When the draft fails before it is sent, the queued follow-up and the text typed after it come
+    // back with it, in the order written: draft, follow-up, then the typed text - and the user is told
+    // why the follow-up is there. A message Claude never received does not name the chat.
     [Fact]
     public async Task AutoTurn_DraftFailsBeforeItIsSent_QueuedFollowUpAndTextTypedSince_ComeBackInWrittenOrder()
     {
@@ -297,6 +297,56 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(string.Join(Environment.NewLine + Environment.NewLine, "first", "second", "third"), vm.InputText);
         Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User);
         Assert.Equal("Untitled", vm.SessionTitle);
+        Assert.Contains("rejected", vm.StatusMessage, StringComparison.Ordinal);
+        Assert.EndsWith("Your queued message was not sent because the message before it failed - it is back in the message box, after that one.", vm.StatusMessage, StringComparison.Ordinal);
+    }
+
+    // Every follow-up queued behind a draft that fails before it is sent comes back, in order, and
+    // the notice counts them.
+    [Fact]
+    public async Task AutoTurn_DraftFailsBeforeItIsSent_SeveralQueuedFollowUps_ComeBackInOrder_AndAreCounted()
+    {
+        var (connection, log) = AutoConnection("medium");
+        connection.ConfigHandler = (_, _, _) => Task.FromException<IReadOnlyList<SessionConfigOption>>(new InvalidOperationException("rejected"));
+        var verdict = new TaskCompletionSource<EffortLevel>();
+        var classifier = new FakeEffortClassifier { Handler = _ => verdict.Task };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+
+        var sending = SendTextAsync(vm, "first");
+        await WaitUntilAsync(() => classifier.Prompts.Count == 1);
+        await SendTextAsync(vm, "second");
+        await SendTextAsync(vm, "third");
+        verdict.SetResult(EffortLevel.High);
+        await WithinAsync(sending);
+        await WaitUntilAsync(() => !vm.IsBusy);
+
+        Assert.Empty(log);
+        Assert.Equal(string.Join(Environment.NewLine + Environment.NewLine, "first", "second", "third"), vm.InputText);
+        Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User);
+        Assert.EndsWith("2 queued messages were not sent because the message before them failed - they are back in the message box, after it.", vm.StatusMessage, StringComparison.Ordinal);
+    }
+
+    // A chat with a title of its own keeps it when a message it was sent comes back unsent: only a
+    // title derived from that message goes with it.
+    [Fact]
+    public async Task AutoTurn_DraftFailsBeforeItIsSent_InAChatWithItsOwnTitle_KeepsTheTitle()
+    {
+        var (connection, _) = AutoConnection("medium");
+        var classifier = new FakeEffortClassifier { Handler = _ => Task.FromResult(EffortLevel.High) };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+        await vm.OpenSessionAsync(new SessionSummary("session-2", "/workspace", "Older chat", null));
+        Assert.Equal("Older chat", vm.SessionTitle);
+        connection.ConfigHandler = (_, _, _) => Task.FromException<IReadOnlyList<SessionConfigOption>>(new InvalidOperationException("rejected"));
+
+        await SendTextAsync(vm, "hard work");
+        await WaitUntilAsync(() => !vm.IsBusy);
+
+        Assert.Equal("hard work", vm.InputText);
+        Assert.Equal("Older chat", vm.SessionTitle);
     }
 
     // Everything that comes back is in the message box before any bubble leaves the transcript, so
@@ -1247,6 +1297,32 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("hard work", vm.InputText);
         Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User);
         Assert.False(vm.IsBusy);
+    }
+
+    // Only the message being judged comes back: a follow-up queued behind it goes with the lost
+    // session like every other queued message, with a notice, and does not come back to the composer.
+    [Fact]
+    public async Task AutoTurn_SessionLostWhileJudging_ReturnsOnlyTheJudgedMessage_AndDropsTheQueuedFollowUpWithNotice()
+    {
+        var (connection, log) = AutoConnection("medium");
+        var verdict = new TaskCompletionSource<EffortLevel>();
+        var classifier = new FakeEffortClassifier { Handler = _ => verdict.Task };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+
+        var sending = SendTextAsync(vm, "hard work");
+        await WaitUntilAsync(() => classifier.Prompts.Count == 1);
+        await SendTextAsync(vm, "follow-up");
+        connection.RaiseDisconnected();
+        verdict.SetResult(EffortLevel.High);
+        await WithinAsync(sending);
+        await WaitUntilAsync(() => !vm.IsBusy);
+
+        Assert.Empty(log);
+        Assert.Equal("hard work", vm.InputText);
+        Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User);
+        Assert.Contains("A queued message was not sent.", vm.StatusMessage, StringComparison.Ordinal);
     }
 
     // A session lost while judging ends that judgment at once: the judge (a CLI process) is not left

@@ -1795,6 +1795,60 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("AQID", Assert.Single(vm.Attachments).Base64Data);
     }
 
+    // A review turn that fails at once has already given the review back when the draft set aside for
+    // it is put back: both are in the message box, the review ahead of the draft.
+    [Fact]
+    public async Task PlanReview_FailingAtOnce_KeepsBothTheReviewAndTheDraft()
+    {
+        var connection = new RecordingAcpAgentConnection();
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "meanwhile, what about the CI job?";
+        vm.Messages.CollectionChanged += (_, e) =>
+        {
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Add &&
+                e.NewItems!.Cast<ChatMessageViewModel>().Any(message => message.Text.StartsWith("Review comments", StringComparison.Ordinal)))
+                throw new InvalidOperationException("observer failed");
+        };
+        // No local turn owns IsBusy (a plan from a remote-driven turn): the review goes out at once.
+        var (call, options) = PlanApprovalRequest();
+        connection.RaisePermissionRequested(call, options);
+
+        vm.PendingPlan!.ReviewCommand.Execute("Add a rollback step.");
+
+        Assert.False(vm.IsBusy);
+        Assert.Empty(connection.Prompts);
+        Assert.Equal("Review comments on the plan:\nAdd a rollback step." + Environment.NewLine + Environment.NewLine + "meanwhile, what about the CI job?", vm.InputText);
+        Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
+    }
+
+    // On a real UI thread, where continuations are posted rather than run inline, the review still
+    // leaves the composer before the draft set aside for it is put back.
+    [Fact]
+    public async Task PlanReview_OnTheUiThread_SendsTheReview_AndPutsTheDraftBack()
+    {
+        var ui = new QueuedSynchronizationContext();
+        var connection = new RecordingAcpAgentConnection();
+        using var vm = CreateOnUiContext(connection, ui);
+        await vm.Initialization;
+        ui.Drain();
+        vm.InputText = "meanwhile, what about the CI job?";
+        var (call, options) = PlanApprovalRequest();
+        connection.RaisePermissionRequested(call, options);
+        ui.Drain();
+
+        var previous = SynchronizationContext.Current;
+        SynchronizationContext.SetSynchronizationContext(ui);
+        try { vm.PendingPlan!.ReviewCommand.Execute("Add a rollback step."); }
+        finally { SynchronizationContext.SetSynchronizationContext(previous); }
+        ui.Drain();
+        ui.Drain();
+
+        Assert.Equal("Review comments on the plan:\nAdd a rollback step.", Text(Assert.Single(connection.Prompts)));
+        Assert.Equal("meanwhile, what about the CI job?", vm.InputText);
+        Assert.False(vm.IsBusy);
+    }
+
     // Disposal while the agent holds a follow-up: whatever the prompts return, nothing is sent again
     // and nothing faults.
     [Fact]

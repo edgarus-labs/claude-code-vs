@@ -254,6 +254,59 @@ public sealed partial class ChatSessionStateTests
         Assert.False(vm.CanConfigure);
     }
 
+    // Every send leaves the composer at once, not only one Auto judges: while the connection is still
+    // being made the message shows pending in the transcript, and when the connect fails it comes
+    // back ahead of what was typed meanwhile.
+    [Fact]
+    public async Task Reconnecting_MessageLeavesTheComposerAtOnce_AndComesBackAheadOfWhatWasTypedIfTheConnectFails()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var factory = new SingleConnectionFactory(connection);
+        using var vm = new ChatViewModel(new StubChatSessionServices(factory, new AlwaysSignedInAuthService()));
+        await vm.Initialization;
+        connection.RaiseDisconnected();
+        var acquired = new TaskCompletionSource<IAcpAgentConnection>();
+        factory.ConnectHandler = _ => acquired.Task;
+        vm.InputText = "first";
+
+        var sending = vm.SendAsync();
+
+        Assert.Equal(string.Empty, vm.InputText);
+        Assert.True(Assert.Single(vm.Messages, message => message.Role == ChatRole.User).IsPending);
+        vm.InputText = "typed since";
+        acquired.SetException(new InvalidOperationException("Unavailable"));
+        await sending;
+
+        Assert.Equal("first" + Environment.NewLine + Environment.NewLine + "typed since", vm.InputText);
+        Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User);
+        Assert.Contains("Unavailable", vm.StatusMessage, StringComparison.Ordinal);
+        Assert.False(vm.IsBusy);
+    }
+
+    // A message that was only an image comes back as just the image: no empty paragraph is put
+    // ahead of what was typed since.
+    [Fact]
+    public async Task Reconnecting_AnImageOnlyMessage_ComesBackWithoutAnEmptyParagraphIfTheConnectFails()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var factory = new SingleConnectionFactory(connection);
+        using var vm = new ChatViewModel(new StubChatSessionServices(factory, new AlwaysSignedInAuthService()));
+        await vm.Initialization;
+        connection.RaiseDisconnected();
+        var acquired = new TaskCompletionSource<IAcpAgentConnection>();
+        factory.ConnectHandler = _ => acquired.Task;
+        vm.AddImageAttachment("draft.png", "image/png", "AQID");
+
+        var sending = vm.SendAsync();
+        vm.InputText = "typed since";
+        acquired.SetException(new InvalidOperationException("Unavailable"));
+        await sending;
+
+        Assert.Equal("typed since", vm.InputText);
+        Assert.Equal("AQID", Assert.Single(vm.Attachments).Base64Data);
+        Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User);
+    }
+
     // A transcript observer that throws while an unsent message is taken back out of the transcript
     // must not leave the panel busy for good (nothing could be sent again), and the send reports it
     // rather than throwing it at the command that ran it.
