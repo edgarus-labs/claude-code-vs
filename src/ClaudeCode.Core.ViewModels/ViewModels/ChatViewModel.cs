@@ -1012,8 +1012,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // (CanConfigure) from classification to acknowledgement, so a manual model/effort change cannot
     // interleave with it; the composer is not, so messages written meanwhile queue and wait. A failed
     // judgment costs only the choice (the last judged level, else High, and the user is told); a
-    // rejected effort change fails the turn before its prompt is sent (a live message goes back to
-    // the composer, a queued one to the message box).
+    // rejected effort change fails the turn before its prompt is sent, and the message goes back to
+    // the message box (a live one in RunTurnAsync's finally, a queued one once nothing is running).
     // Returns whether the turn goes on: false once Stop ended the judgment or the session it was
     // judged for is gone.
     private async Task<bool> ApplyAutoEffortAsync(IAcpAgentConnection connection, string sessionId, string prompt)
@@ -1262,7 +1262,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private readonly List<QueuedMessage> _returnedUnstarted = new List<QueuedMessage>();
 
     // The live message SendCoreAsync handed to RunTurnAsync, until prepare() hands it to the agent.
-    // A sent message belongs to the turn, not the composer (#53): it leaves the composer at once and
+    // A sent message belongs to the turn, not the composer: it leaves the composer at once and
     // shows in the transcript as pending, like a queued message, so Auto's judgment (seconds) never
     // looks like a draft still waiting to be sent. Until it is handed over it is held here so a turn
     // that ends before the prompt goes out (a failed connect, Stop, a lost session, a rejected effort
@@ -1295,11 +1295,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             return Task.CompletedTask;
         }
 
-        // Out of the composer and into the transcript right away, exactly like a queued message
-        // (EnqueueDraft): the composer only ever shows unsent input. Pending until the prompt is
-        // handed to the agent, which under Auto comes after the judgment. Held in _draftInFlight
-        // from the start, so whatever ends the turn before then - including an observer throwing
-        // as the message moves - gives it back.
+        // Out of the composer and into the transcript right away, as a pending bubble like a queued
+        // message's: the composer only ever shows unsent input. The move itself happens in `accept`,
+        // inside the turn's error handling. Pending until the prompt is handed to the agent, which
+        // under Auto comes after the judgment. Held in _draftInFlight from the start, so whatever
+        // ends the turn before then - including an observer throwing as the message moves - gives
+        // it back.
         var bubble = BuildUserBubble(text, attachments, isPending: true);
         var draft = new QueuedMessage(bubble, text, attachments);
         _draftInFlight = draft;
@@ -1437,13 +1438,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
     }
 
-    // Shared by SendCoreAsync and DispatchQueuedMessageAsync: everything from connecting through
-    // submitting one turn's content and reacting to how it ended is identical between a live send
-    // and a queued dispatch - only what happens as the turn starts and as its content is handed
-    // over differs, which is why those steps are left to the caller. `prepare` runs only after
-    // EnsureConnectedAsync has succeeded and, under Auto, the effort has been set; it is the moment
-    // the content is handed over. `accept`, when given, runs first, inside the turn's error
-    // handling: the live send uses it to move its message from the composer into the transcript.
+    // Shared by SendCoreAsync and DispatchQueuedMessageAsync (through RunTurnReportingFailuresAsync):
+    // everything from connecting through submitting one turn's content and reacting to how it ended
+    // is identical between a live send and a queued dispatch - only what happens as the turn starts
+    // and as its content is handed over differs, which is why those steps are left to the caller.
+    // `prepare` runs only after EnsureConnectedAsync has succeeded and, under Auto, the effort has
+    // been set from what Auto judged `promptText` to need; it is the moment the content is handed
+    // over. `accept`, when given, runs first, inside the turn's error handling: the live send uses
+    // it to move its message from the composer into the transcript.
     // A call made while another turn is running (only ever a queued message sent ahead to an agent
     // that queues prompts) joins that turn's busy state instead of starting a new one.
     private async Task RunTurnAsync(QueuedMessage? queued, string promptText,
@@ -1686,8 +1688,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         StatusMessage = string.IsNullOrEmpty(StatusMessage) ? notice : StatusMessage + " " + notice;
     }
 
-    // A title derived from a message that has since left the transcript must not outlive it: the
-    // chat is named after what is first in it now, or is untitled again.
+    // A title derived from a message given back to the composer must not outlive it: the chat is
+    // named after what is first in the transcript now, or is untitled again.
     private void RefreshSessionTitleAfterRemoval()
     {
         if (_explicitSessionTitle is null) SessionTitle = FirstUserMessageTitle() ?? UntitledSessionTitle;
@@ -1993,7 +1995,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private void ResetTranscriptState()
     {
         // Queue first: it is transcript-lifetime state like Messages, and going through the same
-        // discard keeps "a pending bubble always has a live queue entry" true on every path.
+        // discard keeps "a pending bubble is held by the queue, or is the live message in
+        // _draftInFlight that its turn's finally gives back" true on every path.
         DiscardQueuedMessages();
         Messages.Clear();
         lock (_changedFilesByPath) _changedFilesByPath.Clear();

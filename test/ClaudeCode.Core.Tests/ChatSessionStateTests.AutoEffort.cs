@@ -443,8 +443,8 @@ public sealed partial class ChatSessionStateTests
         Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
     }
 
-    // A reply that arrived while the message was judged is not named after the message that left:
-    // with no user message first in the transcript, the chat is untitled again.
+    // Once the stopped message leaves the transcript, a reply that arrived while it was judged is
+    // first, so the chat is untitled again rather than still named after the message that left.
     [Fact]
     public async Task AutoTurn_StoppedWhileJudging_AfterAReplyArrived_LeavesTheChatUntitled()
     {
@@ -1130,7 +1130,8 @@ public sealed partial class ChatSessionStateTests
         Assert.Single(vm.Messages, message => message.Role == ChatRole.User && message.Text == "hard work, then add tests");
     }
 
-    // The same text typed again with an attachment is a new message like any other.
+    // A message written while the first is judged carries its own attachments: the same text sent
+    // again, now with an image, goes out as its own prompt with that image, not merged into the first.
     [Fact]
     public async Task AutoTurn_WhileJudging_SameTextWithANewAttachment_IsANewMessage()
     {
