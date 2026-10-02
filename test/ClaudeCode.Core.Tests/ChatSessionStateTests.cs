@@ -233,7 +233,7 @@ public sealed partial class ChatSessionStateTests
     }
 
     [Fact]
-    public async Task ReconnectFailure_PreservesDraftAndImages_WithoutAddingUnsentTranscript()
+    public async Task ReconnectFailure_PreservesDraftAndImages_AndLeavesNoUnsentMessageInTheTranscript()
     {
         var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
         var factory = new SingleConnectionFactory(connection);
@@ -249,8 +249,325 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("keep me", vm.InputText);
         Assert.Equal("AQID", Assert.Single(vm.Attachments).Base64Data);
         Assert.Empty(vm.Messages);
+        Assert.Equal("Untitled", vm.SessionTitle);
         Assert.Empty(vm.AvailableModels);
         Assert.False(vm.CanConfigure);
+    }
+
+    // Every send leaves the composer at once, not only one Auto judges: while the connection is still
+    // being made the message shows pending in the transcript, and when the connect fails it comes
+    // back ahead of what was typed meanwhile.
+    [Fact]
+    public async Task Reconnecting_MessageLeavesTheComposerAtOnce_AndComesBackAheadOfWhatWasTypedIfTheConnectFails()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var factory = new SingleConnectionFactory(connection);
+        using var vm = new ChatViewModel(new StubChatSessionServices(factory, new AlwaysSignedInAuthService()));
+        await vm.Initialization;
+        connection.RaiseDisconnected();
+        var acquired = new TaskCompletionSource<IAcpAgentConnection>();
+        factory.ConnectHandler = _ => acquired.Task;
+        vm.InputText = "first";
+
+        var sending = vm.SendAsync();
+
+        Assert.Equal(string.Empty, vm.InputText);
+        Assert.True(Assert.Single(vm.Messages, message => message.Role == ChatRole.User).IsPending);
+        vm.InputText = "typed since";
+        acquired.SetException(new InvalidOperationException("Unavailable"));
+        await sending;
+
+        Assert.Equal("first" + Environment.NewLine + Environment.NewLine + "typed since", vm.InputText);
+        Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User);
+        // The error says why; the notice says where the message went, now joined to the typed text.
+        Assert.Equal("Error: Unavailable Your message is back in the message box, together with what was already there.", vm.StatusMessage);
+        Assert.False(vm.IsBusy);
+    }
+
+    // A message's images come back in the order they were attached.
+    [Fact]
+    public async Task ReconnectFailure_ReturnsTheMessagesImagesInTheOrderTheyWereAttached()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var factory = new SingleConnectionFactory(connection);
+        using var vm = new ChatViewModel(new StubChatSessionServices(factory, new AlwaysSignedInAuthService()));
+        await vm.Initialization;
+        connection.RaiseDisconnected();
+        factory.ConnectHandler = _ => Task.FromException<IAcpAgentConnection>(new InvalidOperationException("Unavailable"));
+        vm.InputText = "two images";
+        vm.AddImageAttachment("first.png", "image/png", "AQID");
+        vm.AddImageAttachment("second.png", "image/png", "BAUG");
+
+        await vm.SendAsync();
+
+        Assert.Equal(new[] { "first.png", "second.png" }, vm.Attachments.Select(attachment => attachment.Name));
+    }
+
+    // A message that was only an image comes back as just the image: no empty paragraph is put
+    // ahead of what was typed since.
+    [Fact]
+    public async Task Reconnecting_AnImageOnlyMessage_ComesBackWithoutAnEmptyParagraphIfTheConnectFails()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var factory = new SingleConnectionFactory(connection);
+        using var vm = new ChatViewModel(new StubChatSessionServices(factory, new AlwaysSignedInAuthService()));
+        await vm.Initialization;
+        connection.RaiseDisconnected();
+        var acquired = new TaskCompletionSource<IAcpAgentConnection>();
+        factory.ConnectHandler = _ => acquired.Task;
+        vm.AddImageAttachment("draft.png", "image/png", "AQID");
+
+        var sending = vm.SendAsync();
+        vm.InputText = "typed since";
+        acquired.SetException(new InvalidOperationException("Unavailable"));
+        await sending;
+
+        Assert.Equal("typed since", vm.InputText);
+        Assert.Equal("AQID", Assert.Single(vm.Attachments).Base64Data);
+        Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User);
+        Assert.Equal("Error: Unavailable " + "Your message is back in the message box, together with what was already there.", vm.StatusMessage);
+    }
+
+    // A transcript observer that throws while an unsent message is taken back out of the transcript
+    // must not leave the panel busy for good (nothing could be sent again), and the send reports it
+    // rather than throwing it at the command that ran it.
+    [Fact]
+    public async Task ReconnectFailure_ObserverThrowsWhileTheMessageIsRestored_PanelDoesNotStayBusy_AndReportsIt()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var factory = new SingleConnectionFactory(connection);
+        var services = new StubChatSessionServices(factory, new AlwaysSignedInAuthService());
+        using var vm = new ChatViewModel(services);
+        await vm.Initialization;
+        connection.RaiseDisconnected();
+        factory.ConnectHandler = _ => Task.FromException<IAcpAgentConnection>(new InvalidOperationException("Unavailable"));
+        vm.Messages.CollectionChanged += (_, e) =>
+        {
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove) throw new InvalidOperationException("observer failed");
+        };
+        vm.InputText = "keep me";
+
+        await vm.SendAsync();
+
+        Assert.False(vm.IsBusy);
+        Assert.Equal("keep me", vm.InputText);
+        Assert.Empty(vm.Messages);
+        Assert.Contains("Unavailable", vm.StatusMessage, StringComparison.Ordinal);
+        Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
+        // The status line has room for the messages only: the exceptions themselves are logged, the
+        // turn's own failure as well as the observer's.
+        Assert.Equal(new[] { "Unavailable", "observer failed" }, services.LoggedErrors.Select(logged => logged.Exception.Message));
+    }
+
+    // Keeping a log does not depend on offering Auto effort: a host with a log but no Auto still gets
+    // the failure with its type and stack.
+    [Fact]
+    public async Task ReconnectFailure_ObserverThrowsWhileTheMessageIsRestored_IsLogged_ByAHostWithoutAuto()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var factory = new SingleConnectionFactory(connection);
+        var services = new ErrorLogOnlyServices(new StubChatSessionServices(factory, new AlwaysSignedInAuthService()));
+        using var vm = new ChatViewModel(services);
+        await vm.Initialization;
+        connection.RaiseDisconnected();
+        factory.ConnectHandler = _ => Task.FromException<IAcpAgentConnection>(new InvalidOperationException("Unavailable"));
+        vm.Messages.CollectionChanged += (_, e) =>
+        {
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove) throw new InvalidOperationException("observer failed");
+        };
+        vm.InputText = "keep me";
+
+        await vm.SendAsync();
+
+        Assert.Equal(new[] { "Unavailable", "observer failed" }, services.LoggedErrors.Select(logged => logged.Exception.Message));
+    }
+
+    // A host without a log still has every failure shown, and nothing thrown at the send command.
+    [Fact]
+    public async Task ReconnectFailure_ObserverThrowsWhileTheMessageIsRestored_ByAHostWithoutALog_IsShown()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var factory = new SingleConnectionFactory(connection);
+        using var vm = new ChatViewModel(new PlainChatSessionServices(new StubChatSessionServices(factory, new AlwaysSignedInAuthService())));
+        await vm.Initialization;
+        connection.RaiseDisconnected();
+        factory.ConnectHandler = _ => Task.FromException<IAcpAgentConnection>(new InvalidOperationException("Unavailable"));
+        vm.Messages.CollectionChanged += (_, e) =>
+        {
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove) throw new InvalidOperationException("observer failed");
+        };
+        vm.InputText = "keep me";
+
+        var failure = await Record.ExceptionAsync(() => vm.SendAsync());
+
+        Assert.Null(failure);
+        Assert.Contains("Unavailable", vm.StatusMessage, StringComparison.Ordinal);
+        Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
+    }
+
+    // A log that breaks its "must not throw" contract does not turn a reported failure into one thrown
+    // at the send command: the failure is still shown.
+    [Fact]
+    public async Task ReconnectFailure_ALogThatThrows_DoesNotThrowAtTheSend_AndTheFailureIsStillShown()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var factory = new SingleConnectionFactory(connection);
+        var services = new ErrorLogOnlyServices(new StubChatSessionServices(factory, new AlwaysSignedInAuthService())) { ThrowOnLog = true };
+        using var vm = new ChatViewModel(services);
+        await vm.Initialization;
+        connection.RaiseDisconnected();
+        factory.ConnectHandler = _ => Task.FromException<IAcpAgentConnection>(new InvalidOperationException("Unavailable"));
+        vm.InputText = "keep me";
+
+        var failure = await Record.ExceptionAsync(() => vm.SendAsync());
+
+        Assert.Null(failure);
+        Assert.False(vm.IsBusy);
+        Assert.Equal("keep me", vm.InputText);
+        Assert.Contains("Unavailable", vm.StatusMessage, StringComparison.Ordinal);
+    }
+
+    // An observer can throw a cancellation of its own while the panel is live: it is a failure like
+    // any other - shown and logged, not dropped as if disposal had caused it.
+    [Fact]
+    public async Task ReconnectFailure_ObserverThrowsACancellationWhileThePanelIsLive_IsShownAndLogged()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var factory = new SingleConnectionFactory(connection);
+        var services = new StubChatSessionServices(factory, new AlwaysSignedInAuthService());
+        using var vm = new ChatViewModel(services);
+        await vm.Initialization;
+        connection.RaiseDisconnected();
+        factory.ConnectHandler = _ => Task.FromException<IAcpAgentConnection>(new InvalidOperationException("Unavailable"));
+        vm.Messages.CollectionChanged += (_, e) =>
+        {
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove) throw new OperationCanceledException("observer cancelled");
+        };
+        vm.InputText = "keep me";
+
+        await vm.SendAsync();
+
+        Assert.Contains("observer cancelled", vm.StatusMessage, StringComparison.Ordinal);
+        Assert.Contains(services.LoggedErrors, logged => logged.Exception.Message == "observer cancelled");
+    }
+
+    // An observer throwing as a returned message's text goes back into the composer does not cost its
+    // image, nor leave its bubble behind: every step of the return still runs.
+    [Fact]
+    public async Task ReconnectFailure_ObserverThrowsAsTheTextComesBack_TheImageComesBackAndTheBubbleGoes()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var factory = new SingleConnectionFactory(connection);
+        using var vm = new ChatViewModel(new StubChatSessionServices(factory, new AlwaysSignedInAuthService()));
+        await vm.Initialization;
+        connection.RaiseDisconnected();
+        factory.ConnectHandler = _ => Task.FromException<IAcpAgentConnection>(new InvalidOperationException("Unavailable"));
+        vm.InputText = "keep me";
+        vm.AddImageAttachment("draft.png", "image/png", "AQID");
+        bool thrown = false;
+        vm.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(ChatViewModel.InputText) && vm.InputText == "keep me" && !thrown)
+            {
+                thrown = true;
+                throw new InvalidOperationException("observer failed");
+            }
+        };
+
+        await vm.SendAsync();
+
+        Assert.Equal("keep me", vm.InputText);
+        Assert.Equal("AQID", Assert.Single(vm.Attachments).Base64Data);
+        Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User);
+        Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
+    }
+
+    // The user's send clears the old status first; a status-line observer throwing as it does is
+    // reported, not thrown at the send command, and the message still goes out.
+    [Fact]
+    public async Task Send_StatusObserverThrowsAsTheOldErrorIsCleared_DoesNotThrow_AndSends()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var factory = new SingleConnectionFactory(connection);
+        using var vm = new ChatViewModel(new StubChatSessionServices(factory, new AlwaysSignedInAuthService()));
+        await vm.Initialization;
+        connection.RaiseDisconnected();
+        factory.ConnectHandler = _ => Task.FromException<IAcpAgentConnection>(new InvalidOperationException("Unavailable"));
+        vm.InputText = "first";
+        await vm.SendAsync();
+        Assert.Contains("Unavailable", vm.StatusMessage, StringComparison.Ordinal);
+        factory.ConnectHandler = null;
+        bool thrown = false;
+        vm.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(ChatViewModel.StatusMessage) && vm.StatusMessage is null && !thrown)
+            {
+                thrown = true;
+                throw new InvalidOperationException("status observer failed");
+            }
+        };
+
+        var failure = await Record.ExceptionAsync(() => vm.SendAsync());
+
+        Assert.Null(failure);
+        Assert.Equal("first", Text(Assert.Single(connection.Prompts)));
+    }
+
+    // Reporting a failure can fail too, when a status-line observer throws: the send still does not
+    // throw at its command, and both failures are logged.
+    [Fact]
+    public async Task ReconnectFailure_ObserverThrowsAsTheFailureIsReported_DoesNotThrow_AndLogsBoth()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var factory = new SingleConnectionFactory(connection);
+        var services = new StubChatSessionServices(factory, new AlwaysSignedInAuthService());
+        using var vm = new ChatViewModel(services);
+        await vm.Initialization;
+        connection.RaiseDisconnected();
+        factory.ConnectHandler = _ => Task.FromException<IAcpAgentConnection>(new InvalidOperationException("Unavailable"));
+        vm.Messages.CollectionChanged += (_, e) =>
+        {
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove) throw new InvalidOperationException("observer failed");
+        };
+        vm.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(ChatViewModel.StatusMessage) && vm.StatusMessage?.Contains("observer failed", StringComparison.Ordinal) == true)
+                throw new InvalidOperationException("status observer failed");
+        };
+        vm.InputText = "keep me";
+
+        var failure = await Record.ExceptionAsync(() => vm.SendAsync());
+
+        Assert.Null(failure);
+        Assert.False(vm.IsBusy);
+        Assert.Equal("keep me", vm.InputText);
+        Assert.Contains(services.LoggedErrors, logged => logged.Exception.Message == "observer failed");
+        Assert.Contains(services.LoggedErrors, logged => logged.Exception.Message == "status observer failed");
+    }
+
+    // The send itself runs inside the turn's error handling: a transcript observer that throws as the
+    // message enters the transcript fails the send visibly, and the message goes back to the composer.
+    [Fact]
+    public async Task Send_ObserverThrowsAsTheMessageEntersTheTranscript_ReportsIt_AndKeepsTheMessage()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.Messages.CollectionChanged += (_, e) =>
+        {
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Add) throw new InvalidOperationException("observer failed");
+        };
+        vm.InputText = "keep me";
+        vm.AddImageAttachment("draft.png", "image/png", "AQID");
+
+        await vm.SendAsync();
+
+        Assert.Empty(connection.Prompts);
+        Assert.Equal("keep me", vm.InputText);
+        Assert.Equal("AQID", Assert.Single(vm.Attachments).Base64Data);
+        Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User);
+        Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
+        Assert.False(vm.IsBusy);
     }
 
     [Fact]
