@@ -505,10 +505,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private void UpdateSessionTitleFromFirstUserMessage()
     {
-        if (_explicitSessionTitle is not null || Messages.Count == 0 || Messages[0].Role != ChatRole.User) return;
-        var title = SessionTitleFormat.Describe(Messages[0].Text, sessionId: null);
-        if (title.Length > 0) SessionTitle = title;
+        if (_explicitSessionTitle is null && FirstUserMessageTitle() is { } title) SessionTitle = title;
     }
+
+    // What a chat without a title of its own is named after: its first message, when that is the user's.
+    private string? FirstUserMessageTitle() =>
+        Messages.Count > 0 && Messages[0].Role == ChatRole.User &&
+        SessionTitleFormat.Describe(Messages[0].Text, sessionId: null) is { Length: > 0 } title ? title : null;
 
     /// <summary>Normalizes an agent-reported session title through the same rule as a locally
     /// derived one. It is bound straight into the single-row panel header and its tooltip, where an
@@ -1263,7 +1266,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     // shows in the transcript as pending, like a queued message, so Auto's judgment (seconds) never
     // looks like a draft still waiting to be sent. Until it is handed over it is held here so a turn
     // that ends before the prompt goes out (a failed connect, Stop, a lost session, a rejected effort
-    // change) can give it back to the composer (RestoreDraftToComposer).
+    // change) can give it back to the composer (ReturnToComposer).
     private QueuedMessage? _draftInFlight;
 
     private Task SendCoreAsync()
@@ -1304,7 +1307,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             accept: () =>
             {
                 ConsumeDraft(text, attachments);
-                Messages.Add(bubble);
+                // Above any message still waiting in the queue: those reach Claude after this one
+                // (review comments sent as a turn ends go ahead of what was queued during it).
+                var firstQueued = Messages.FirstOrDefault(message => message.Role == ChatRole.User && message.IsPending);
+                if (firstQueued is null) Messages.Add(bubble);
+                else Messages.Insert(Messages.IndexOf(firstQueued), bubble);
                 UpdateSessionTitleFromFirstUserMessage();
             },
             prepare: () =>
@@ -1506,20 +1513,26 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 // the end of the busy state below.
                 if (queued is null)
                 {
-                    var left = _draftInFlight;
+                    var returning = new List<QueuedMessage>();
+                    if (_draftInFlight is { } left) returning.Add(left);
                     _draftInFlight = null;
                     // A draft that failed before it was sent: what was written after it must not overtake
-                    // it. The queued follow-ups go back ahead of anything typed since, then the draft
-                    // ahead of them - the order all of it was written in.
-                    if (failed && !submitted && !_disposed && _queuedMessages.Count > 0)
+                    // it. The queued follow-ups go back behind it and ahead of anything typed since - the
+                    // order all of it was written in.
+                    int behind = 0;
+                    if (failed && !submitted && !_disposed)
                     {
-                        var behind = _queuedMessages.ToList();
+                        behind = _queuedMessages.Count;
+                        returning.AddRange(_queuedMessages);
                         _queuedMessages.Clear();
-                        RestoreToComposer(behind,
+                    }
+                    if (!_disposed)
+                    {
+                        ReturnToComposer(returning);
+                        AppendRestoreNotice(behind,
                             "Your queued message was not sent because the message before it failed - it is back in the message box, after that one.",
                             "{0} queued messages were not sent because the message before them failed - they are back in the message box, after it.");
                     }
-                    if (left is not null && !_disposed) RestoreDraftToComposer(left);
                 }
                 if (failed) _runningFailed |= !submitted || queued is null || !queued.Bubble.IsPending;
                 if (submitted) OnPromptReturned(queued, stopReason);
@@ -1626,49 +1639,44 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     }
 
     // Called once nothing is running, for messages that must not be re-sent automatically (see
-    // RunTurnAsync for a failed turn). The bubbles leave the transcript and
-    // the texts go into the composer in the order they were sent, ahead of whatever is typed there.
+    // RunTurnAsync for a failed turn), telling the user they are back in the message box.
     private void RestoreToComposer(List<QueuedMessage> pending, string one, string many)
     {
         if (pending.Count == 0) return;
         var restored = pending.ToList();
         pending.Clear();
-        var texts = restored.Select(message => message.Text).Where(text => text.Length > 0).ToList();
-        if (InputText.Trim().Length > 0) texts.Add(InputText);
-        InputText = string.Join(Environment.NewLine + Environment.NewLine, texts);
-        foreach (var message in restored)
-        {
-            Messages.Remove(message.Bubble);
-            foreach (var attachment in message.Attachments)
-                if (!Attachments.Contains(attachment)) Attachments.Add(attachment);
-        }
-        RefreshSessionTitleAfterRemoval();
-        var notice = restored.Count == 1 ? one : string.Format(System.Globalization.CultureInfo.InvariantCulture, many, restored.Count);
-        // Appended, not replacing: after a failed turn the error that caused this must stay readable.
-        StatusMessage = string.IsNullOrEmpty(StatusMessage) ? notice : StatusMessage + " " + notice;
+        ReturnToComposer(restored);
+        AppendRestoreNotice(restored.Count, one, many);
     }
 
-    // The bubble leaves the transcript and the message goes back into the composer ahead of whatever
-    // was typed there since it was sent, with its attachments - the same order RestoreToComposer keeps.
-    private void RestoreDraftToComposer(QueuedMessage draft)
+    // The bubbles leave the transcript and the texts go back into the composer in the order they
+    // were written, ahead of whatever was typed there since, with their attachments. The composer is
+    // filled before any bubble is removed: an observer throwing on a removal must not lose a message.
+    private void ReturnToComposer(IReadOnlyList<QueuedMessage> messages)
     {
-        Messages.Remove(draft.Bubble);
-        var typedSince = InputText.Trim().Length == 0 ? string.Empty : InputText;
-        InputText = draft.Text.Length == 0 ? typedSince
-            : typedSince.Length == 0 ? draft.Text
-            : draft.Text + Environment.NewLine + Environment.NewLine + typedSince;
-        foreach (var attachment in draft.Attachments)
+        if (messages.Count == 0) return;
+        var texts = messages.Select(message => message.Text).Where(text => text.Length > 0).ToList();
+        if (InputText.Trim().Length > 0) texts.Add(InputText);
+        InputText = string.Join(Environment.NewLine + Environment.NewLine, texts);
+        foreach (var attachment in messages.SelectMany(message => message.Attachments))
             if (!Attachments.Contains(attachment)) Attachments.Add(attachment);
+        foreach (var message in messages) Messages.Remove(message.Bubble);
         RefreshSessionTitleAfterRemoval();
+    }
+
+    private void AppendRestoreNotice(int count, string one, string many)
+    {
+        if (count == 0) return;
+        var notice = count == 1 ? one : string.Format(System.Globalization.CultureInfo.InvariantCulture, many, count);
+        // Appended, not replacing: after a failed turn the error that caused this must stay readable.
+        StatusMessage = string.IsNullOrEmpty(StatusMessage) ? notice : StatusMessage + " " + notice;
     }
 
     // A title derived from a message that has since left the transcript must not outlive it: the
     // chat is named after what is first in it now, or is untitled again.
     private void RefreshSessionTitleAfterRemoval()
     {
-        if (_explicitSessionTitle is not null) return;
-        if (Messages.Count == 0) SessionTitle = UntitledSessionTitle;
-        else UpdateSessionTitleFromFirstUserMessage();
+        if (_explicitSessionTitle is null) SessionTitle = FirstUserMessageTitle() ?? UntitledSessionTitle;
     }
 
     // Called once nothing is running: messages the agent returned unstarted go back to the front of
@@ -1742,23 +1750,19 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         var comments = _pendingPlanReviewComments;
         if (comments is null || _disposed || !CanEditDraft || _isCapturingDocument) return;
         _pendingPlanReviewComments = null;
+        // The composer stays live while the rejected plan's turn finishes, so the user can be mid-
+        // sentence when the review goes out. The review is its own prompt, not a use of their draft.
         var draft = InputText;
         InputText = "Review comments on the plan:\n" + comments;
-        _ = SendReviewThenRestoreDraftAsync(draft);
-    }
-
-    // The composer stays live while the rejected plan's turn finishes, so the user can be mid-
-    // sentence when the review goes out. The review is its own prompt, not a use of their draft:
-    // put the draft back once the send has consumed the composer. Nothing here can throw -
-    // SendCoreAsync swallows its own failures - so the fire-and-forget call site is safe.
-    private async Task SendReviewThenRestoreDraftAsync(string draft)
-    {
-        await SendAsync().ConfigureAwait(true);
-        // Still occupied means the review never went out - refused at send, or given back by a turn
-        // that ended before it was sent; it is the more valuable of the two - or the user has typed
-        // again since.
-        if (_disposed || draft.Length == 0 || InputText.Length > 0) return;
-        InputText = draft;
+        // On the UI thread the send runs inline up to its first await, by which point the review has
+        // left the composer (#53) - or is already back in it, from a turn that failed at once. The
+        // draft goes back behind whatever is there, and a review the turn gives back later goes ahead
+        // of it (ReturnToComposer): neither is dropped. Nothing awaits the send - SendCoreAsync
+        // reports its own failures.
+        var sending = SendCoreAsync();
+        if (!_disposed && draft.Trim().Length > 0)
+            InputText = InputText.Trim().Length == 0 ? draft : InputText + Environment.NewLine + Environment.NewLine + draft;
+        _ = sending;
     }
 
     public Task CancelAsync() => OnUiAsync(CancelCoreAsync);

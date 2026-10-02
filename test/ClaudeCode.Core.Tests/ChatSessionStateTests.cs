@@ -274,6 +274,7 @@ public sealed partial class ChatSessionStateTests
         await Record.ExceptionAsync(() => vm.SendAsync());
 
         Assert.False(vm.IsBusy);
+        Assert.Equal("keep me", vm.InputText);
     }
 
     // The send itself runs inside the turn's error handling: a transcript observer that throws as the

@@ -299,6 +299,97 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("Untitled", vm.SessionTitle);
     }
 
+    // Everything that comes back is in the message box before any bubble leaves the transcript, so
+    // an observer throwing as the queued follow-up's bubble is removed loses neither message.
+    [Fact]
+    public async Task AutoTurn_DraftFailsBeforeItIsSent_ObserverThrowsAsTheFollowUpLeaves_BothStayInTheComposer()
+    {
+        var (connection, _) = AutoConnection("medium");
+        connection.ConfigHandler = (_, _, _) => Task.FromException<IReadOnlyList<SessionConfigOption>>(new InvalidOperationException("rejected"));
+        var verdict = new TaskCompletionSource<EffortLevel>();
+        var classifier = new FakeEffortClassifier { Handler = _ => verdict.Task };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+
+        var sending = SendTextAsync(vm, "first");
+        await WaitUntilAsync(() => classifier.Prompts.Count == 1);
+        await SendTextAsync(vm, "second");
+        vm.Messages.CollectionChanged += (_, e) =>
+        {
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove &&
+                e.OldItems!.Cast<ChatMessageViewModel>().Any(message => message.Text == "second"))
+                throw new InvalidOperationException("observer failed");
+        };
+        verdict.SetResult(EffortLevel.High);
+        await Record.ExceptionAsync(() => WithinAsync(sending));
+        await WaitUntilAsync(() => !vm.IsBusy);
+
+        Assert.Empty(connection.Prompts);
+        Assert.Equal("first" + Environment.NewLine + Environment.NewLine + "second", vm.InputText);
+    }
+
+    // The draft held aside while review comments go out is not dropped when the review turn gives
+    // the review back: both are in the message box, the review ahead of the draft.
+    [Fact]
+    public async Task AutoTurn_PlanReviewGivenBack_KeepsTheDraftHeldAsideForIt()
+    {
+        var (connection, _) = AutoConnection("medium");
+        var firstTurn = new TaskCompletionSource();
+        connection.PromptHandler = _ => firstTurn.Task;
+        connection.ConfigHandler = (_, value, _) => value == "high"
+            ? Task.FromException<IReadOnlyList<SessionConfigOption>>(new InvalidOperationException("rejected"))
+            : Task.FromResult(Options("sonnet", value, AdvertisedEfforts));
+        var classifier = new FakeEffortClassifier
+        {
+            Handler = prompt => Task.FromResult(prompt.StartsWith("Review comments", StringComparison.Ordinal) ? EffortLevel.High : EffortLevel.Low),
+        };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+
+        vm.InputText = "plan the feature";
+        var sending = vm.SendAsync();
+        await WaitUntilAsync(() => connection.Prompts.Count == 1);
+        var (call, options) = PlanApprovalRequest();
+        connection.RaisePermissionRequested(call, options);
+        vm.InputText = "half-written idea";
+        vm.PendingPlan!.ReviewCommand.Execute("Add a rollback step.");
+        firstTurn.SetResult();
+        await WithinAsync(sending);
+        await WaitUntilAsync(() => classifier.Prompts.Count == 2);
+        await WaitUntilAsync(() => !vm.IsBusy);
+
+        Assert.Single(connection.Prompts);
+        Assert.Equal("Review comments on the plan:\nAdd a rollback step." + Environment.NewLine + Environment.NewLine + "half-written idea", vm.InputText);
+    }
+
+    // A reply that arrived while the message was judged is not named after the message that left:
+    // with no user message first in the transcript, the chat is untitled again.
+    [Fact]
+    public async Task AutoTurn_StoppedWhileJudging_AfterAReplyArrived_LeavesTheChatUntitled()
+    {
+        var (connection, log) = AutoConnection("medium");
+        var verdict = new TaskCompletionSource<EffortLevel>();
+        var classifier = new FakeEffortClassifier { Handler = _ => verdict.Task };
+        using var vm = CreateWithClassifier(connection, classifier);
+        await vm.Initialization;
+        await vm.SelectEffortAsync(Auto(vm));
+
+        var sending = SendTextAsync(vm, "hard work");
+        await WaitUntilAsync(() => classifier.Prompts.Count == 1);
+        connection.RaiseSessionUpdate(new SessionUpdate.AgentMessageChunk("late reply"));
+        Assert.Equal("hard work", vm.SessionTitle);
+        await vm.CancelAsync();
+        verdict.SetResult(EffortLevel.High);
+        await WithinAsync(sending);
+        await WaitUntilAsync(() => !vm.IsBusy);
+
+        Assert.Empty(log);
+        Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User);
+        Assert.Equal("Untitled", vm.SessionTitle);
+    }
+
     [Fact]
     public async Task ExplicitEffort_AfterAuto_LeavesAuto_AndTurnsNeverConsultTheClassifier()
     {
@@ -444,31 +535,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Same(attachment, Assert.Single(vm.Attachments));
         Assert.DoesNotContain(vm.Messages, message => message.Role == ChatRole.User);
         Assert.Equal("Untitled", vm.SessionTitle);
-    }
-
-    // Stop during the judgment has no prompt to cancel yet; the turn must not start afterwards,
-    // and the message the user wrote comes back to the composer.
-    [Fact]
-    public async Task AutoTurn_StoppedWhileJudging_SendsNothingAndReturnsTheDraft()
-    {
-        var (connection, log) = AutoConnection("medium");
-        var verdict = new TaskCompletionSource<EffortLevel>();
-        var classifier = new FakeEffortClassifier { Handler = _ => verdict.Task };
-        using var vm = CreateWithClassifier(connection, classifier);
-        await vm.Initialization;
-        await vm.SelectEffortAsync(Auto(vm));
-
-        var sending = SendTextAsync(vm, "hard work");
-        await WaitUntilAsync(() => classifier.Prompts.Count == 1);
-        await vm.CancelAsync();
-        verdict.SetResult(EffortLevel.High);
-        await sending;
-
-        Assert.Empty(log);
-        Assert.Empty(connection.ConfigChanges);
-        Assert.Empty(connection.Prompts);
-        Assert.Equal("hard work", vm.InputText);
-        Assert.False(vm.IsBusy);
     }
 
     // A verdict belongs to the session it was made in: a new session starts over from High and

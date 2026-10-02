@@ -1721,6 +1721,35 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal(3, connection.Prompts.Count);
     }
 
+    // Review comments go out before a message queued during the rejected plan's turn, so their
+    // bubble goes above it: the transcript shows messages in the order Claude receives them.
+    [Fact]
+    public async Task PlanReview_SentAsTheTurnEnds_ShowsAboveAMessageQueuedDuringIt()
+    {
+        var turns = new PromptGate();
+        var connection = new RecordingAcpAgentConnection { PromptHandler = turns.Handle };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "plan the feature";
+        var sending = vm.SendAsync();
+        vm.InputText = "second";
+        await vm.SendAsync();
+        var (call, options) = PlanApprovalRequest();
+        connection.RaisePermissionRequested(call, options);
+        vm.PendingPlan!.ReviewCommand.Execute("Add a rollback step.");
+
+        turns.Complete("plan the feature");
+        await sending;
+        await WaitUntilAsync(() => connection.Prompts.Count == 2);
+
+        Assert.Contains("Add a rollback step", Text(connection.Prompts[1]), StringComparison.Ordinal);
+        var users = vm.Messages.Where(message => message.Role == ChatRole.User).Select(message => message.Text).ToArray();
+        Assert.Equal(3, users.Length);
+        Assert.Equal("plan the feature", users[0]);
+        Assert.Contains("Add a rollback step", users[1], StringComparison.Ordinal);
+        Assert.Equal("second", users[2]);
+    }
+
     // Disposal while the agent holds a follow-up: whatever the prompts return, nothing is sent again
     // and nothing faults.
     [Fact]
