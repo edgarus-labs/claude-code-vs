@@ -174,6 +174,112 @@ public sealed partial class ChatSessionStateTests
         Assert.Null(vm.PendingElicitation);
     }
 
+    // #54: a question lives exactly as long as the request it answers. Stop makes the connection end
+    // the turn's pending requests (a permission as "cancelled", an elicitation as Cancel), and the
+    // card or form that asked them must leave the chat with them - not stay up looking answerable.
+    [Fact]
+    public async Task Stop_WhenTheConnectionCancelsAPendingPermission_ItsCardLeavesTheChat()
+    {
+        var turn = new TaskCompletionSource<bool>();
+        var connection = new RecordingAcpAgentConnection { PromptHandler = _ => turn.Task };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "edit it";
+        var sending = vm.SendAsync();
+        var permission = connection.RaisePermissionRequested(
+            new ToolCallUpdate { ToolCallId = "tc-1", Title = "Edit a.cs", Status = ToolCallStatus.Pending },
+            [new PermissionOption { OptionId = "allow", Label = "Allow", Outcome = PermissionOutcome.AllowOnce }]);
+        connection.CancelHandler = () =>
+        {
+            permission.Response.TrySetResult("cancelled-by-connection");
+            return Task.CompletedTask;
+        };
+        Assert.NotNull(vm.PendingPermission);
+
+        await vm.CancelAsync();
+
+        await WaitUntilAsync(() => vm.PendingPermission is null);
+        Assert.Equal("cancelled-by-connection", await permission.Response.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+
+        turn.SetResult(true);
+        await sending;
+    }
+
+    [Fact]
+    public async Task Stop_WhenTheConnectionCancelsAPendingElicitation_ItsFormLeavesTheChat()
+    {
+        var turn = new TaskCompletionSource<bool>();
+        var connection = new RecordingAcpAgentConnection { PromptHandler = _ => turn.Task };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "ask me";
+        var sending = vm.SendAsync();
+        var elicitation = connection.RaiseElicitationRequested("Pick a color",
+            [new ElicitationField("q0", null, null, ElicitationFieldKind.Text, [])]);
+        connection.CancelHandler = () =>
+        {
+            elicitation.Response.TrySetResult(new ElicitationAnswer(ElicitationAction.Cancel, new Dictionary<string, IReadOnlyList<string>>()));
+            return Task.CompletedTask;
+        };
+        Assert.NotNull(vm.PendingElicitation);
+
+        await vm.CancelAsync();
+
+        await WaitUntilAsync(() => vm.PendingElicitation is null);
+        Assert.False(vm.IsElicitationOpen);
+
+        turn.SetResult(true);
+        await sending;
+    }
+
+    [Fact]
+    public async Task Stop_WhenTheConnectionCancelsAPlanApproval_TheCardLeavesAndThePlanDocumentGoesDead()
+    {
+        var turn = new TaskCompletionSource<bool>();
+        var connection = new RecordingAcpAgentConnection { PromptHandler = _ => turn.Task };
+        using var vm = Create(connection);
+        await vm.Initialization;
+        vm.InputText = "plan it";
+        var sending = vm.SendAsync();
+        var (call, options) = PlanApprovalRequest();
+        var permission = connection.RaisePermissionRequested(call, options);
+        connection.CancelHandler = () =>
+        {
+            permission.Response.TrySetResult("cancelled-by-connection");
+            return Task.CompletedTask;
+        };
+        var plan = vm.PendingPlan!;
+        Assert.False(plan.IsResolved);
+
+        await vm.CancelAsync();
+
+        await WaitUntilAsync(() => vm.PendingPermission is null);
+        Assert.True(plan.IsResolved);
+        Assert.False(plan.ProceedCommand.CanExecute(null));
+        Assert.False(plan.ReviewCommand.CanExecute("late comments"));
+
+        turn.SetResult(true);
+        await sending;
+    }
+
+    // The same holds for any other way the request ends (here the connection failing it): the card
+    // never outlives the request it answers.
+    [Fact]
+    public async Task PermissionRequest_EndingWithoutAnAnswerFromTheCard_RemovesItsCard()
+    {
+        var connection = new RecordingAcpAgentConnection();
+        using var vm = Create(connection);
+        await vm.Initialization;
+        var permission = connection.RaisePermissionRequested(
+            new ToolCallUpdate { ToolCallId = "tc-1", Title = "Edit a.cs", Status = ToolCallStatus.Pending },
+            [new PermissionOption { OptionId = "allow", Label = "Allow", Outcome = PermissionOutcome.AllowOnce }]);
+        Assert.NotNull(vm.PendingPermission);
+
+        permission.Response.TrySetException(new IOException("transport closed"));
+
+        await WaitUntilAsync(() => vm.PendingPermission is null);
+    }
+
     // poisoned-session-id-after-failed-load: a session/load that fails must not leave the viewmodel
     // believing it owns a session the agent never loaded.
     [Fact]

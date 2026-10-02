@@ -2455,6 +2455,15 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         return _currentUserMessage;
     }
 
+    // Runs `onEnd` on the UI thread once `request` has completed in any way. Faults are observed here
+    // only so they are not left unobserved; whoever awaits the request still sees them.
+    private void ObserveEnd(Task request, Action onEnd) =>
+        _ = request.ContinueWith(finished =>
+        {
+            _ = finished.Exception;
+            RunOnUi(() => { if (!_disposed) onEnd(); });
+        }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+
     private void OnPermissionRequested(object? sender, PermissionRequestEventArgs e)
     {
         RunOnUi(() =>
@@ -2488,6 +2497,15 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
             PendingPermission = new PermissionRequestViewModel(ToolDisplayName.Describe(e.Call.Title), e.Options, Choose);
             UpdateActivity("Waiting for permission…");
+            // The card lives as long as its request: when the connection ends it without the card's own
+            // answer (Stop cancels it, the transport fails) the card and its plan document go with it.
+            ObserveEnd(e.Response.Task, () =>
+            {
+                if (!ReferenceEquals(_pendingPermissionResponse, e.Response)) return;
+                _pendingPermissionResponse = null;
+                PendingPermission = null;
+                if (plan is { IsResolved: false }) plan.MarkResolved("Request ended");
+            });
 
             // ExitPlanMode arrives as a switch_mode tool call whose content is the plan markdown.
             var planText = e.Call.Kind == "switch_mode"
@@ -2541,6 +2559,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 e.Response.TrySetResult(answer);
                 // A superseded form can still be on screen in a host surface; answering it must not
                 // wipe the form the user is now looking at, whose slot nothing else would resolve.
+                if (!ReferenceEquals(_pendingElicitationResponse, e.Response)) return;
+                _pendingElicitationResponse = null;
+                PendingElicitation = null;
+            });
+            ObserveEnd(e.Response.Task, () =>
+            {
                 if (!ReferenceEquals(_pendingElicitationResponse, e.Response)) return;
                 _pendingElicitationResponse = null;
                 PendingElicitation = null;
