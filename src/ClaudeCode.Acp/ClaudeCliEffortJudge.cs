@@ -137,8 +137,6 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
             UseShellExecute = false,
             CreateNoWindow = true,
         };
-        // Reasoning off, as oh-my-pi's judge (disableReasoning): with Haiku's default thinking a
-        // judgment took 22-42 s in the measurements for PR #50, against about 4 s without it.
         startInfo.Environment["MAX_THINKING_TOKENS"] = "0";
 
         WindowsJobProcess? job = null;

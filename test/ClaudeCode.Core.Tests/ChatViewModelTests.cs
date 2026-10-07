@@ -11,12 +11,6 @@ namespace ClaudeCode.Core.Tests;
 
 public sealed class ChatViewModelTests
 {
-    // F-7-15: NullChatSessionServices + FakeAcpAgentConnection/FakeAcpAgentConnectionFactory (in
-    // ViewModels/Demo/) are a live production fallback (ChatPanelView.xaml.cs falls back to
-    // NullChatSessionServices when no host-provided IChatSessionServices is available) that had no
-    // test coverage. This asserts the combination is wired correctly end to end: sending a prompt
-    // produces a visible assistant reply. It intentionally does not assert the exact echo wording,
-    // which is an implementation detail of the demo double, not an observable contract.
     [Fact]
     public async Task SendAsync_WithNullChatSessionServices_ProducesAssistantMessage()
     {
@@ -147,8 +141,6 @@ public sealed class ChatViewModelTests
         Assert.Null(vm.CurrentPlan);
     }
 
-    // Issue #25: the tool window outlives any solution, so without this the transcript of project A
-    // stays on screen - and keeps talking to an agent still rooted in A - after the user opens B.
     [Fact]
     public async Task WorkspaceRootChanged_ToADifferentSolution_ClearsTranscriptAndStartsTheNextSessionInTheNewRoot()
     {
@@ -180,9 +172,6 @@ public sealed class ChatViewModelTests
         Assert.Single(second.Prompts);
     }
 
-    // Closing a solution and reopening the same one (a reload, or File > Close Solution followed by
-    // reopening it) is not a project switch: wiping a live conversation there is data loss, not the
-    // fix for #25. Exactly one teardown proves only the genuine A -> B switch reset anything.
     [Fact]
     public async Task WorkspaceRootChanged_ForTheSameSolutionReopened_KeepsTheConversation()
     {

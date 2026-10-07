@@ -51,8 +51,6 @@ public sealed class EffortJudgePromptTests
         Assert.EndsWith(" TAIL", result);
     }
 
-    // The message is state to judge, never instructions (#49): it appears once, in the user turn, and
-    // in neither system prompt.
     [Fact]
     public void TheRequestIsStateToJudge_NeverPartOfTheInstructions()
     {

@@ -39,8 +39,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("allow-b", await second.Response.Task);
     }
 
-    // stop-button-stays-enabled: the cancel button must not remain enabled once the connection that
-    // owned the in-flight turn is gone.
     [Fact]
     public async Task CancelCommand_DisconnectedDuringStream_BecomesDisabled()
     {
@@ -81,8 +79,6 @@ public sealed partial class ChatSessionStateTests
         await prompt;
     }
 
-    // sync-context-silent-inline: constructing a ChatViewModel off a UI-affine thread must fail fast
-    // instead of silently degrading RunOnUi/OnUiAsync to always-inline execution.
     [Fact]
     public async Task Constructor_WithoutAmbientSynchronizationContext_ThrowsInvalidOperationException()
     {
@@ -98,8 +94,6 @@ public sealed partial class ChatSessionStateTests
         Assert.IsType<InvalidOperationException>(thrown);
     }
 
-    // attachment-size-unbounded: oversized attachments are rejected with a visible error instead of
-    // being queued for an unbounded prompt payload.
     [Fact]
     public async Task AddImageAttachment_ExceedsFiveMegabyteLimit_SetsErrorAndDoesNotAttach()
     {
@@ -131,8 +125,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("Document exceeds the 1 MB attachment limit.", vm.AttachmentError);
     }
 
-    // dispose-cts-not-released: disposing twice must stay idempotent even though the second call now
-    // also has to tolerate the CancellationTokenSource/SemaphoreSlim already being disposed.
     [Fact]
     public async Task Dispose_CalledTwice_DoesNotThrow()
     {
@@ -146,9 +138,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Null(ex);
     }
 
-    // pending-state-leaks-on-release: losing the connection must resolve every request the user was
-    // still being asked about — an abandoned TaskCompletionSourceSlot never completes its awaiter,
-    // and a form left on screen would answer a connection that no longer exists.
     [Fact]
     public async Task Disconnected_ResolvesPendingPermissionAndElicitation_AndClearsTheirUi()
     {
@@ -174,9 +163,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Null(vm.PendingElicitation);
     }
 
-    // #54: a question lives exactly as long as the request it answers. Stop makes the connection end
-    // the turn's pending requests (a permission as "cancelled", an elicitation as Cancel), and the
-    // card or form that asked them must leave the chat with them - not stay up looking answerable.
     [Fact]
     public async Task Stop_WhenTheConnectionCancelsAPendingPermission_ItsCardLeavesTheChat()
     {
@@ -281,8 +267,6 @@ public sealed partial class ChatSessionStateTests
         await WaitUntilAsync(() => vm.PendingPermission is null);
     }
 
-    // poisoned-session-id-after-failed-load: a session/load that fails must not leave the viewmodel
-    // believing it owns a session the agent never loaded.
     [Fact]
     public async Task OpenSession_LoadFails_DoesNotAdoptTheSessionTheAgentNeverLoaded()
     {
@@ -427,9 +411,6 @@ public sealed partial class ChatSessionStateTests
         Assert.True(vm.ToggleRemoteControlCommand.CanExecute(null));
     }
 
-    // #40: session/new and session/load each make the agent start a fresh Claude Code process and
-    // wait for it to load the user's settings and plugins, so they take seconds. The click must be
-    // acknowledged at once instead of looking like it did nothing.
     [Fact]
     public async Task NewChat_ReportsProgressUntilTheAgentHasStartedTheSession()
     {

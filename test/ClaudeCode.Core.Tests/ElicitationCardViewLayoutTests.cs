@@ -102,12 +102,6 @@ public sealed class ElicitationCardViewLayoutTests
             attribute => attribute.Value.StartsWith("{StaticResource Chat", System.StringComparison.Ordinal));
     }
 
-    // The options were drawn with the stock WPF RadioButton/CheckBox chrome: a system-sized circle
-    // or box next to chat-styled text, inside a card whose every other surface is a rounded,
-    // theme-brushed row (issue #23). What matters for the user is not the shape of the markup but
-    // that the default chrome is gone, that the content still has somewhere to render, and that the
-    // chosen option is told apart from a merely hovered or focused one - a retemplate whose
-    // selection visual is also its hover visual answers nothing.
     [Fact]
     public void OptionRowsTellSelectionApartFromHoverAndFocus()
     {
@@ -213,8 +207,6 @@ public sealed class ElicitationCardViewLayoutTests
     private static string SetterKey(params XAttribute?[] parts) =>
         string.Join("=", parts.Select(part => (string?)part ?? string.Empty));
 
-    // Ctrl+wheel scaling drives ChatPanelView.ChatTextFontSize; a row that hard-codes a size stays
-    // put while the text around it grows, which is the scaling half of issue #23.
     [Fact]
     public void OptionRowTextScalesWithTheChatFontSize()
     {

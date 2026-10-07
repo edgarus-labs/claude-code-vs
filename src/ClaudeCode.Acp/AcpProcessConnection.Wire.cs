@@ -393,11 +393,6 @@ public sealed partial class AcpProcessConnection
 
             case "tool_call":
             case "tool_call_update":
-                // Contracts.ToolCallUpdate has no "unset means unchanged" representation, so a
-                // tool_call_update that omits e.g. `title` maps to the type's default ("") rather than
-                // preserving whatever the client previously recorded for that toolCallId. Callers that
-                // maintain a running dictionary keyed by ToolCallId should merge non-default fields in,
-                // not overwrite wholesale, until/unless the contract grows partial-update semantics.
                 return new SessionUpdate.ToolCall(ParseToolCallUpdate(update));
 
             case "plan":

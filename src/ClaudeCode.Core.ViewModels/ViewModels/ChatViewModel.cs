@@ -103,9 +103,6 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     private bool _isAuthCommandRunning;
     private CancellationTokenSource? _authCommandCts;
 
-    // Never advertised by the adapter (it deliberately excludes login/logout from the commands it
-    // sends, see issue #34): these are added locally so the popup can offer them even
-    // when there is no session at all, which is exactly the state /login exists to get out of.
     private static readonly AvailableCommand LoginCommand =
         new AvailableCommand("login", "Sign in to Claude Code (opens a console and your browser)");
     private static readonly AvailableCommand LogoutCommand =
@@ -252,16 +249,16 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         private set => SetProperty(ref _remoteControlUrl, value);
     }
 
-    public Task ToggleRemoteControlAsync() => OnUiAsync(() => SetRemoteControlAsync(!IsRemoteControlEnabled));
+    public Task ToggleRemoteControlAsync() => OnUiAsync(() => RunReportingFailuresAsync(() => SetRemoteControlAsync(!IsRemoteControlEnabled)));
 
     private async Task SetRemoteControlAsync(bool enabled)
     {
         var connection = _connection;
         var sessionId = _sessionId;
         if (connection is null || sessionId is null || _isRemoteControlBusy || _disposed) return;
-        IsRemoteControlBusy = true;
         try
         {
+            IsRemoteControlBusy = true;
             var state = await connection.SetRemoteControlAsync(sessionId, enabled, RemoteControlSessionName, _lifetime.Token).ConfigureAwait(true);
             if (_disposed || !ReferenceEquals(connection, _connection)) return;
             if (sessionId != _sessionId)
@@ -278,11 +275,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex)
         {
+            LogFailure("Changing Remote Control failed.", ex);
             if (!_disposed && ReferenceEquals(connection, _connection) && sessionId == _sessionId) StatusMessage = $"Remote Control: {ex.Message}";
         }
         finally
         {
-            IsRemoteControlBusy = false;
+            RunEachStepReportingFailures(() => IsRemoteControlBusy = false);
             // The session changed while this call was in flight, so its OnSessionStarted found the
             // toggle busy and skipped the startup enable. Issue it now for whichever session is current.
             if (!_disposed && _services.RemoteControlAtStartup && _sessionId is not null
@@ -805,7 +803,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         // also the first half of reloading the same one. Only a different root switches projects.
         if (root is null || string.Equals(root, _workspaceRoot, StringComparison.OrdinalIgnoreCase)) return;
         _workspaceRoot = root;
-        _ = SwitchWorkspaceAsync();
+        _ = RunReportingFailuresAsync(SwitchWorkspaceAsync);
     });
 
     /// <summary>Drops the previous project's session, transcript and agent process, then reconnects
@@ -821,14 +819,16 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         _isSwitchingSession = true;
         // Cleared before the teardown, not after it: the outgoing workspace's status is stale from
         // here on, and ReleaseConnectionAsync is about to report anything the switch costs the user.
-        StatusMessage = null;
-        NotifyStateChanged();
+        RunEachStepReportingFailures(() => StatusMessage = null, NotifyStateChanged);
         try
         {
             await ReleaseConnectionAsync().ConfigureAwait(true);
             if (_disposed) return;
             ResetTranscriptState();
+            var teardownStatus = StatusMessage;
             await InitializeCoreAsync(_lifetime.Token).ConfigureAwait(true);
+            if (!_disposed && !string.IsNullOrEmpty(teardownStatus) && StatusMessage != teardownStatus)
+                StatusMessage = string.IsNullOrEmpty(StatusMessage) ? teardownStatus : teardownStatus + " " + StatusMessage;
         }
         catch (OperationCanceledException) when (_disposed || _lifetime.IsCancellationRequested) { }
         catch (Exception ex)
@@ -837,12 +837,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             // thread. The cached root was advanced before the work started; drop it so the next
             // event for the same root retries instead of being suppressed as a duplicate.
             _workspaceRoot = null;
+            LogFailure("Switching to the new workspace failed.", ex);
             if (!_disposed) StatusMessage = $"Could not switch to the new workspace: {ex.Message}";
         }
         finally
         {
             _isSwitchingSession = false;
-            NotifyStateChanged();
+            RunEachStepReportingFailures(NotifyStateChanged);
         }
     }
 
@@ -860,19 +861,32 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     public void DismissAttachmentError() => RunOnUi(() => AttachmentError = null);
 
     private Task AttachActiveDocumentAsync(CancellationToken cancellationToken) =>
-        OnUiAsync(() => AttachActiveDocumentCoreAsync(cancellationToken));
+        OnUiAsync(() => RunReportingFailuresAsync(() => AttachActiveDocumentCoreAsync(cancellationToken)));
 
     private async Task AttachActiveDocumentCoreAsync(CancellationToken cancellationToken)
     {
         if (!CanEditDraft || _isCapturingDocument) return;
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
         _isCapturingDocument = true;
-        NotifyStateChanged();
-        AttachmentError = null;
         try
         {
-            var document = await _services.CaptureActiveDocumentAsync(linked.Token).ConfigureAwait(true);
-            linked.Token.ThrowIfCancellationRequested();
+            NotifyStateChanged();
+            AttachmentError = null;
+            await AttachCapturedDocumentAsync(linked.Token).ConfigureAwait(true);
+        }
+        finally
+        {
+            _isCapturingDocument = false;
+            RunEachStepReportingFailures(NotifyStateChanged, SendPendingPlanReview);
+        }
+    }
+
+    private async Task AttachCapturedDocumentAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var document = await _services.CaptureActiveDocumentAsync(cancellationToken).ConfigureAwait(true);
+            cancellationToken.ThrowIfCancellationRequested();
             if (!CanEditDraft) return;
             if (document is null)
             {
@@ -896,16 +910,11 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             }
             Attachments.Add(attachment);
         }
-        catch (OperationCanceledException) when (linked.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
         catch (Exception ex)
         {
+            LogFailure("Attaching the active document failed.", ex);
             if (!_disposed) AttachmentError = $"Could not attach the active document: {ex.Message}";
-        }
-        finally
-        {
-            _isCapturingDocument = false;
-            NotifyStateChanged();
-            SendPendingPlanReview();
         }
     }
 
@@ -964,9 +973,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         if (IsBusy) ActivityText = PendingPermission is null ? activity : "Waiting for permission…";
     }
 
-    public Task SelectModelAsync(SessionConfigValue? value) => OnUiAsync(() => ChangeConfigAsync(_modelOption, value));
-    public Task SelectEffortAsync(SessionConfigValue? value) => OnUiAsync(() => SelectEffortCoreAsync(value));
-    public Task SelectModeAsync(SessionConfigValue? value) => OnUiAsync(() => ChangeConfigAsync(_modeOption, value));
+    public Task SelectModelAsync(SessionConfigValue? value) => OnUiAsync(() => RunReportingFailuresAsync(() => ChangeConfigAsync(_modelOption, value)));
+    public Task SelectEffortAsync(SessionConfigValue? value) => OnUiAsync(() => RunReportingFailuresAsync(() => SelectEffortCoreAsync(value)));
+    public Task SelectModeAsync(SessionConfigValue? value) => OnUiAsync(() => RunReportingFailuresAsync(() => ChangeConfigAsync(_modeOption, value)));
 
     private async Task SelectEffortCoreAsync(SessionConfigValue? value)
     {
@@ -993,13 +1002,16 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
         // Auto is left only once the agent runs the picked level - acknowledged now, or already
         // current (no round trip). A rejected change keeps Auto, like any unacknowledged selection.
-        if (_autoEffortSelected && _effortOption?.CurrentValue == value.Value)
-        {
-            _autoEffortSelected = _isAutoEffort = false;
-            NotifySelectionsChanged();
-        }
-        // Only now is it known whether follow-ups are judged (Auto kept) or run under the picked level.
-        DispatchNextQueuedMessage();
+        RunEachStepReportingFailures(
+            () =>
+            {
+                if (_autoEffortSelected && _effortOption?.CurrentValue == value.Value)
+                {
+                    _autoEffortSelected = _isAutoEffort = false;
+                    NotifySelectionsChanged();
+                }
+            },
+            DispatchNextQueuedMessage);
     }
 
     // A verdict belongs to one Auto selection in one session.
@@ -1115,10 +1127,10 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
         var connection = _connection!;
         var sessionId = _sessionId!;
-        IsConfigBusy = true;
-        StatusMessage = null;
         try
         {
+            IsConfigBusy = true;
+            StatusMessage = null;
             var options = await connection.SetSessionConfigOptionAsync(sessionId, option.Id, value.Value, _lifetime.Token).ConfigureAwait(true);
             if (IsCurrentSession(connection, sessionId))
                 ApplyConfigOptions(options);
@@ -1126,18 +1138,17 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex)
         {
+            LogFailure("Changing a session setting failed.", ex);
             if (!_disposed) StatusMessage = $"Could not change session settings: {ex.Message}";
         }
         finally
         {
             // Never publish an optimistic selection: failures retain the last acknowledged state.
-            IsConfigBusy = false;
-            NotifySelectionsChanged();
-            SendPendingPlanReview();
-            // A turn can end while this RPC is still in flight, and the queue refuses to dispatch
-            // into a config change; this is the blocker lifting, so whatever it held back goes now -
-            // except during an effort pick, which releases it itself once it has settled Auto.
-            if (!_isPickingEffort) DispatchNextQueuedMessage();
+            RunEachStepReportingFailures(
+                () => IsConfigBusy = false,
+                NotifySelectionsChanged,
+                SendPendingPlanReview,
+                () => { if (!_isPickingEffort) DispatchNextQueuedMessage(); });
         }
     }
 
@@ -1147,9 +1158,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
     {
         if (_disposed) return;
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
-        IsConnecting = true;
         try
         {
+            IsConnecting = true;
             var signedIn = await _services.AuthService.IsSignedInAsync(linked.Token).ConfigureAwait(true);
             if (_disposed) return;
             IsSignedIn = signedIn || (_sessionId is not null && _services.AuthService.CurrentState != AuthState.SignedOut);
@@ -1160,15 +1171,16 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         catch (OperationCanceledException) when (linked.IsCancellationRequested) { }
         catch (Exception ex)
         {
+            LogFailure("Preparing Claude failed.", ex);
             if (!_disposed) StatusMessage = $"Could not prepare Claude: {ex.Message}";
         }
         finally
         {
-            IsConnecting = false;
+            RunEachStepReportingFailures(() => IsConnecting = false);
         }
     }
 
-    public Task SignInAsync() => OnUiAsync(SignInCoreAsync);
+    public Task SignInAsync() => OnUiAsync(() => RunReportingFailuresAsync(SignInCoreAsync));
 
     private async Task SignInCoreAsync()
     {
@@ -1184,6 +1196,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex)
         {
+            LogFailure("Signing in failed.", ex);
             if (!_disposed) StatusMessage = $"Sign-in failed: {ex.Message}";
         }
     }
@@ -1282,7 +1295,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         {
             // Never a prompt: intercepted here, before the queue exists, so it can never be
             // buffered and later replayed into session/prompt by DispatchQueuedMessageAsync.
-            return RunClientCommandAsync(clientCommand);
+            return RunReportingFailuresAsync(() => RunClientCommandAsync(clientCommand));
         }
 
         var attachments = Attachments.ToArray();
@@ -1344,12 +1357,12 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         InputText = string.Empty;
         StatusMessage = null;
 
-        IsAuthCommandRunning = true;
         _authCommandCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
         var token = _authCommandCts.Token;
         bool signedIn = false;
         try
         {
+            IsAuthCommandRunning = true;
             AuthCommandOutcome outcome;
             if (login)
             {
@@ -1376,13 +1389,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
+            LogFailure(login ? "Signing in failed." : "Signing out failed.", ex);
             if (!_disposed) StatusMessage = $"{(login ? "Sign-in" : "Sign-out")} failed: {ex.Message}";
         }
         finally
         {
             _authCommandCts?.Dispose();
             _authCommandCts = null;
-            IsAuthCommandRunning = false;
+            RunEachStepReportingFailures(() => IsAuthCommandRunning = false);
         }
 
         // After the sign-in itself has been reported, so a connect failure (which InitializeCoreAsync
@@ -1535,7 +1549,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 if (!joining) _currentAssistantMessage = null;
                 _submittedPrompts.Add(queued);
                 submitted = true;
-                if (_submittedPrompts.Count == 1) queued?.Bubble.MarkSent();
+                if (_submittedPrompts.Count == 1 && queued is not null) RunEachStepReportingFailures(queued.Bubble.MarkSent);
                 // Once the running prompt is submitted, acceptance is ambiguous on transport failure: it is
                 // not restored or resent. (A sent-ahead prompt is judged in OnPromptReturned.)
                 stopReason = await connection.SendPromptAsync(sessionId, content, _lifetime.Token).ConfigureAwait(true);
@@ -1736,17 +1750,29 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     // A failure nothing else reports - an observer throwing in the panel's own bookkeeping. Logged with
     // its type and stack when the host keeps a log (IChatErrorLog), since the status line has room for
-    // the message only, and appended to the status so whatever the turn already reported stays
+    // the message only, and appended to the status so whatever the operation already reported stays
     // readable. Once the panel is disposed, any cancellation is taken to be disposal's and dropped.
     private void ReportUnexpectedFailure(Exception ex)
     {
         if (_disposed && ex is OperationCanceledException) return;
-        LogFailure("Sending a message failed in the panel's own bookkeeping.", ex);
+        LogFailure("The chat panel failed in its own bookkeeping.", ex);
         if (_disposed) return;
         // Never throws - every caller is a catch block: the log is guarded (LogFailure), and a
         // status-line observer failing too is logged.
         try { AppendStatus($"Error: {ex.Message}"); }
         catch (Exception statusFailure) { LogFailure("Showing a failure in the status line failed.", statusFailure); }
+    }
+
+    private async Task RunReportingFailuresAsync(Func<Task> operation)
+    {
+        try { await operation().ConfigureAwait(true); }
+        catch (Exception ex) { ReportUnexpectedFailure(ex); }
+    }
+
+    private void RunEachStepReportingFailures(params Action[] steps)
+    {
+        try { RunEachStep(steps); }
+        catch (Exception ex) { ReportUnexpectedFailure(ex); }
     }
 
     // Every log entry goes through here. IChatErrorLog must not throw, but this panel calls it from
@@ -1930,25 +1956,22 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             // The turn goes on, so sending ahead into it is safe again - including what was typed
             // while the stop was in flight.
             _isStopping = false;
+            LogFailure("Cancelling the turn failed.", ex);
             if (!_disposed) StatusMessage = $"Cancel failed: {ex.Message}";
             DispatchNextQueuedMessage();
         }
     }
 
-    public Task NewSessionAsync() => OnUiAsync(NewSessionCoreAsync);
+    public Task NewSessionAsync() => OnUiAsync(() => RunReportingFailuresAsync(NewSessionCoreAsync));
 
     private async Task NewSessionCoreAsync()
     {
         if (!CanEditDraft) return;
         _isSwitchingSession = true;
-        // session/new makes the agent start a fresh Claude Code process and wait for it to load the
-        // user's settings and plugins (SessionStart hooks included) - seconds, not a UI-thread cost -
-        // so say so at once (#40). Every exit replaces this: success clears it, failure and
-        // disconnect report instead.
-        StatusMessage = "Starting a new chat…";
-        NotifyStateChanged();
         try
         {
+            StatusMessage = "Starting a new chat…";
+            NotifyStateChanged();
             var sessionBeforeConnect = _sessionId;
             var (connection, sessionId) = await EnsureConnectedAsync(_lifetime.Token).ConfigureAwait(true);
             if (_disposed || !ReferenceEquals(connection, _connection)) return;
@@ -1978,28 +2001,29 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex)
         {
+            LogFailure("Starting a new session failed.", ex);
             if (!_disposed) StatusMessage = $"Could not start a new session: {ex.Message}";
         }
         finally
         {
             _pendingCommandCatalogs = null;
             _isSwitchingSession = false;
-            NotifyStateChanged();
+            RunEachStepReportingFailures(NotifyStateChanged);
         }
     }
 
-    public Task ShowHistoryAsync() => OnUiAsync(ShowHistoryCoreAsync);
+    public Task ShowHistoryAsync() => OnUiAsync(() => RunReportingFailuresAsync(ShowHistoryCoreAsync));
 
     private async Task ShowHistoryCoreAsync()
     {
         if (!CanEditDraft) return;
-        IsHistoryOpen = true;
-        IsHistoryLoading = true;
-        HistoryError = null;
-        _historyFilter = string.Empty;
-        OnPropertyChanged(nameof(HistoryFilter));
         try
         {
+            IsHistoryOpen = true;
+            IsHistoryLoading = true;
+            HistoryError = null;
+            _historyFilter = string.Empty;
+            OnPropertyChanged(nameof(HistoryFilter));
             var (connection, _) = await EnsureConnectedAsync(_lifetime.Token).ConfigureAwait(true);
             if (_disposed || !ReferenceEquals(connection, _connection)) return;
             var sessions = await connection.ListSessionsAsync(WorkspaceCwd, _lifetime.Token).ConfigureAwait(true);
@@ -2010,15 +2034,16 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex)
         {
+            LogFailure("Loading the session history failed.", ex);
             if (!_disposed) HistoryError = $"Could not load session history: {ex.Message}";
         }
         finally
         {
-            IsHistoryLoading = false;
+            RunEachStepReportingFailures(() => IsHistoryLoading = false);
         }
     }
 
-    public Task OpenSessionAsync(SessionSummary? session) => OnUiAsync(() => OpenSessionCoreAsync(session));
+    public Task OpenSessionAsync(SessionSummary? session) => OnUiAsync(() => RunReportingFailuresAsync(() => OpenSessionCoreAsync(session)));
 
     private async Task OpenSessionCoreAsync(SessionSummary? session)
     {
@@ -2045,9 +2070,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         var turnTokensBeforeLoad = TurnTokens;
         var toolCallLocationsBeforeLoad = _toolCallLocations.ToArray();
         _isSwitchingSession = true;
-        NotifyStateChanged();
         try
         {
+            NotifyStateChanged();
             var (connection, sessionId) = await EnsureConnectedAsync(_lifetime.Token).ConfigureAwait(true);
             if (_disposed || !ReferenceEquals(connection, _connection)) return;
             await LeaveRemoteControlAsync(connection, sessionId).ConfigureAwait(true);
@@ -2070,6 +2095,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex)
         {
+            LogFailure("Opening a session failed.", ex);
             if (_sessionId == session.SessionId)
             {
                 _sessionId = sessionIdBeforeLoad;
@@ -2103,7 +2129,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         finally
         {
             _isSwitchingSession = false;
-            NotifyStateChanged();
+            RunEachStepReportingFailures(NotifyStateChanged);
         }
     }
 
@@ -2475,7 +2501,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             }
             _pendingPermissionResponse?.TrySetException(new OperationCanceledException("Superseded by a newer permission request."));
             // The plan awaiting that request can no longer be answered: its document goes dead with it.
-            if (_pendingPlan is { IsResolved: false }) _pendingPlan.MarkResolved("Superseded by a newer request");
+            if (_pendingPlan is { IsResolved: false } superseded) RunEachStepReportingFailures(() => superseded.MarkResolved("Superseded by a newer request"));
             _pendingPermissionResponse = e.Response;
             PlanReviewViewModel? plan = null;
             void Choose(PermissionOption option)
@@ -2484,15 +2510,17 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 // open past a newer request - must not clear the state of whatever is pending now.
                 if (!e.Response.TrySetResult(option.OptionId)) return;
                 _pendingPermissionResponse = null;
-                PendingPermission = null;
-                // Answered from the card, the plan document has to go dead with it. The plan's own
-                // callbacks mark it first, with their more specific status.
-                if (plan is { IsResolved: false })
-                {
-                    plan.MarkResolved(option.Outcome is PermissionOutcome.AllowOnce or PermissionOutcome.AllowAlways
-                        ? "Plan accepted — implementing…" : "Plan rejected");
-                }
-                UpdateActivity("Working…");
+                RunEachStepReportingFailures(
+                    () => PendingPermission = null,
+                    () =>
+                    {
+                        if (plan is { IsResolved: false })
+                        {
+                            plan.MarkResolved(option.Outcome is PermissionOutcome.AllowOnce or PermissionOutcome.AllowAlways
+                                ? "Plan accepted — implementing…" : "Plan rejected");
+                        }
+                    },
+                    () => UpdateActivity("Working…"));
             }
 
             PendingPermission = new PermissionRequestViewModel(ToolDisplayName.Describe(e.Call.Title), e.Options, Choose);
@@ -2503,8 +2531,9 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             {
                 if (!ReferenceEquals(_pendingPermissionResponse, e.Response)) return;
                 _pendingPermissionResponse = null;
-                PendingPermission = null;
-                if (plan is { IsResolved: false }) plan.MarkResolved("Request ended");
+                RunEachStepReportingFailures(
+                    () => PendingPermission = null,
+                    () => { if (plan is { IsResolved: false }) plan.MarkResolved("Request ended"); });
             });
 
             // ExitPlanMode arrives as a switch_mode tool call whose content is the plan markdown.
@@ -2522,7 +2551,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                         // Execute that bypasses CanExecute - can get here with nothing to answer.
                         if (plan!.RejectOption is not PermissionOption reject) return;
                         _pendingPlanReviewComments = comments;
-                        plan.MarkResolved("Sent back for revision");
+                        RunEachStepReportingFailures(() => plan.MarkResolved("Sent back for revision"));
                         Choose(reject);
                         // A locally driven turn owns IsBusy, so RunTurnReportingFailuresAsync delivers
                         // the review once the last in-flight prompt returns. A turn driven from claude.ai/code
@@ -2561,13 +2590,13 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
                 // wipe the form the user is now looking at, whose slot nothing else would resolve.
                 if (!ReferenceEquals(_pendingElicitationResponse, e.Response)) return;
                 _pendingElicitationResponse = null;
-                PendingElicitation = null;
+                RunEachStepReportingFailures(() => PendingElicitation = null);
             });
             ObserveEnd(e.Response.Task, () =>
             {
                 if (!ReferenceEquals(_pendingElicitationResponse, e.Response)) return;
                 _pendingElicitationResponse = null;
-                PendingElicitation = null;
+                RunEachStepReportingFailures(() => PendingElicitation = null);
             });
             RaiseAttention(ChatAttentionKind.PermissionNeeded, "Claude needs your input", e.Message);
         });
@@ -3129,7 +3158,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             // Set first, release second: ReleaseConnectionAsync appends what the dropped queue costs
             // to this message instead of either of them overwriting the other.
             StatusMessage = ex is not null ? $"Agent disconnected: {ex.Message}" : "Agent disconnected.";
-            _ = ReleaseConnectionAsync();
+            _ = RunReportingFailuresAsync(ReleaseConnectionAsync);
         });
     }
 
@@ -3141,34 +3170,39 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         var connection = _connection;
         _connection = null;
         _sessionId = null;
-        // A queued message belongs to the session it was typed into. Releasing that session is the
-        // one chokepoint every way of losing it goes through - disconnect, sign-out, workspace
-        // switch, a failed connect - so the queue dies here rather than surviving to be delivered
-        // into whatever session comes next. Callers set their own status first; this appends to it.
-        StatusMessage = WithQueueNotice(StatusMessage, DiscardQueuedMessages());
-        _pendingCommandCatalogs = null;
-        _availableCommands = Array.Empty<AvailableCommand>();
-        _hasCommandCatalog = false;
-        RefreshSlashSuggestions();
-        ActivityText = string.Empty;
-        IsSignedIn = _services.AuthService.CurrentState == AuthState.SignedIn;
-        ClearPendingRequests("The agent connection was closed.");
-        ClearRunningSubagents();
-        CurrentPlan = null;
-        IsRemoteControlEnabled = false;
-        RemoteControlUrl = null;
-        ApplyConfigOptions(Array.Empty<SessionConfigOption>());
-        if (connection is null) return;
-        connection.SessionUpdate -= OnSessionUpdate;
-        connection.PermissionRequested -= OnPermissionRequested;
-        connection.ElicitationRequested -= OnElicitationRequested;
-        connection.FileReadRequested -= OnFileReadRequested;
-        connection.FileWriteRequested -= OnFileWriteRequested;
-        connection.Disconnected -= OnDisconnected;
-        try { await connection.DisposeAsync().ConfigureAwait(true); }
-        catch (Exception ex)
+        try
         {
-            if (!_disposed) StatusMessage = $"Could not close the agent: {ex.Message}";
+            StatusMessage = WithQueueNotice(StatusMessage, DiscardQueuedMessages());
+            _pendingCommandCatalogs = null;
+            _availableCommands = Array.Empty<AvailableCommand>();
+            _hasCommandCatalog = false;
+            RefreshSlashSuggestions();
+            ActivityText = string.Empty;
+            IsSignedIn = _services.AuthService.CurrentState == AuthState.SignedIn;
+            ClearPendingRequests("The agent connection was closed.");
+            ClearRunningSubagents();
+            CurrentPlan = null;
+            IsRemoteControlEnabled = false;
+            RemoteControlUrl = null;
+            ApplyConfigOptions(Array.Empty<SessionConfigOption>());
+        }
+        finally
+        {
+            if (connection is not null)
+            {
+                connection.SessionUpdate -= OnSessionUpdate;
+                connection.PermissionRequested -= OnPermissionRequested;
+                connection.ElicitationRequested -= OnElicitationRequested;
+                connection.FileReadRequested -= OnFileReadRequested;
+                connection.FileWriteRequested -= OnFileWriteRequested;
+                connection.Disconnected -= OnDisconnected;
+                try { await connection.DisposeAsync().ConfigureAwait(true); }
+                catch (Exception ex)
+                {
+                    LogFailure("Closing the agent failed.", ex);
+                    if (!_disposed) StatusMessage = $"Could not close the agent: {ex.Message}";
+                }
+            }
         }
     }
 
@@ -3178,8 +3212,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         {
             if (_disposed) return;
             ApplyAuthState(e.State, e.Detail);
-            if (!NeedsAuthentication && _sessionId is null && !IsConnecting) _ = InitializeAsync();
-            else if (NeedsAuthentication) _ = ReleaseConnectionAsync();
+            if (!NeedsAuthentication && _sessionId is null && !IsConnecting) _ = RunReportingFailuresAsync(() => InitializeAsync());
+            else if (NeedsAuthentication) _ = RunReportingFailuresAsync(ReleaseConnectionAsync);
         });
     }
 
@@ -3207,8 +3241,14 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
     private void RunOnUi(Action action)
     {
-        if (_uiContext is not null && _uiContext != SynchronizationContext.Current) _uiContext.Post(_ => action(), null);
-        else action();
+        if (_uiContext is not null && _uiContext != SynchronizationContext.Current) _uiContext.Post(_ => RunReportingFailures(action), null);
+        else RunReportingFailures(action);
+    }
+
+    private void RunReportingFailures(Action action)
+    {
+        try { action(); }
+        catch (Exception ex) { ReportUnexpectedFailure(ex); }
     }
 
     private Task OnUiAsync(Func<Task> action)
@@ -3231,7 +3271,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         _services.ActiveDocumentChanged -= OnActiveDocumentChanged;
         _services.WorkspaceRootChanged -= OnWorkspaceRootChanged;
         _lifetime.Cancel();
-        RunOnUi(() => _ = DisposeCoreAsync());
+        RunOnUi(() => _ = RunReportingFailuresAsync(DisposeCoreAsync));
     }
 
     private async Task DisposeCoreAsync()

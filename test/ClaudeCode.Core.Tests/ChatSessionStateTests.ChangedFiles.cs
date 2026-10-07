@@ -628,12 +628,6 @@ public sealed partial class ChatSessionStateTests
         await sending;
     }
 
-    // claude-agent-acp reports an Edit/Write in three notifications (dist/acp-agent.js, dist/tools.js):
-    // the tool_call with the model's optimistic diff, a PostToolUse-hook tool_call_update carrying the
-    // real structuredPatch diff but no status (parsed as Pending), and a final status=completed
-    // tool_call_update whose content is EMPTY (toolUpdateFromToolResult returns {} for Edit/Write).
-    // Counting only ran inside the loop over the completed update's content, so it never ran at
-    // all: every row stayed at "+0 -0" (issue #22 item 6, reproduced live in the VS Exp instance).
     [Fact]
     public async Task ToolCallDiff_CompletedUpdateWithoutContent_StillCountsTheDiffReportedEarlier()
     {

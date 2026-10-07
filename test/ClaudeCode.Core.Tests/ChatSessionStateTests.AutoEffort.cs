@@ -1965,8 +1965,6 @@ public sealed partial class ChatSessionStateTests
         Assert.Equal("xhigh", vm.SelectedEffort!.Value);
     }
 
-    // F-50-85: a pick the agent rejects leaves Auto selected, so the follow-up that waited for the pick
-    // is still an Auto turn: judged, and run under its own level.
     [Fact]
     public async Task ExplicitEffort_RejectedWhileAnAutoFollowUpWaits_StillJudgesTheFollowUp()
     {

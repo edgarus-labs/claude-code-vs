@@ -31,7 +31,10 @@ internal sealed class RecordingAuthService : IAcpAuthService
     public Task<bool> IsSignedInAsync(CancellationToken cancellationToken) =>
         IsSignedInHandler?.Invoke(cancellationToken) ?? Task.FromResult(CurrentState == AuthState.SignedIn);
 
-    public Task SignInAsync(CancellationToken cancellationToken, IProgress<string>? progress = null) => Task.CompletedTask;
+    public Func<CancellationToken, IProgress<string>?, Task>? SignInHandler { get; set; }
+
+    public Task SignInAsync(CancellationToken cancellationToken, IProgress<string>? progress = null) =>
+        SignInHandler?.Invoke(cancellationToken, progress) ?? Task.CompletedTask;
 
     public Task SignOutAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
