@@ -373,10 +373,6 @@ public sealed partial class ChatSessionStateTests
         // so at this point the switch is "in flight" exactly like the real, slow agent-process teardown.
         services.SetWorkspaceRoot(@"C:\ProjectB");
 
-        // The turn ends *while the switch is still suspended in DisposeAsync* - the scenario the
-        // finding describes, reproduced deterministically instead of relying on real timing. The
-        // dispatch must hold off entirely while the switch is in flight, not just avoid using the
-        // new workspace: no second session/new call yet, and the bubble still reads pending.
         firstTurn.SetResult(true);
         await firstSend;
         Assert.True(queued.IsPending);

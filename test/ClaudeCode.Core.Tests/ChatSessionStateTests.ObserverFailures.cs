@@ -8,11 +8,6 @@ using Xunit;
 
 namespace ClaudeCode.Core.Tests;
 
-// Issue #57: the guarantee the send path got in #55, for the rest of the panel. An observer (a WPF
-// binding, a view) throwing while the panel updates its state is logged and shown in the status line,
-// never thrown at a command nor lost with a task nobody awaits; a busy flag an operation set is always
-// cleared, and what waited for the operation (review comments, the queue) still goes out. Failures the
-// panel shows in its status line are logged too, with their type and stack.
 public sealed partial class ChatSessionStateTests
 {
     private static StubChatSessionServices ServicesFor(RecordingAcpAgentConnection connection) =>
@@ -61,7 +56,7 @@ public sealed partial class ChatSessionStateTests
         var (call, options) = PlanApprovalRequest();
         connection.RaisePermissionRequested(call, options);
         vm.PendingPlan!.ReviewCommand.Execute("Add a rollback step.");
-        Assert.Empty(connection.Prompts); // held back by the capture
+        Assert.Empty(connection.Prompts);
         bool armed = true;
         vm.PropertyChanged += (_, e) =>
         {
@@ -122,7 +117,7 @@ public sealed partial class ChatSessionStateTests
         var configChange = vm.SelectModelAsync(vm.AvailableModels[1]);
         firstTurn.SetResult(true);
         await firstSend;
-        Assert.Single(connection.Prompts); // the config change still owns the session
+        Assert.Single(connection.Prompts);
         bool armed = true;
         vm.PropertyChanged += (_, e) =>
         {
@@ -140,8 +135,6 @@ public sealed partial class ChatSessionStateTests
         Assert.True(WasLogged(services, "observer failed"));
     }
 
-    // The setters (SelectedModel, SelectedEffort, SelectedMode) discard the task: a failure in it would
-    // never be seen.
     [Fact]
     public async Task ConfigChange_ObserverThrowsAsAnUnchangedSelectionIsRepublished_IsReported()
     {
@@ -181,8 +174,6 @@ public sealed partial class ChatSessionStateTests
         Assert.True(WasLogged(services, "observer failed"));
     }
 
-    // A pick releases the queue itself once it has settled whether Auto is left (SelectEffortCoreAsync):
-    // an observer throwing as Auto is left must not strand the follow-up that waited for the pick.
     [Fact]
     public async Task ExplicitEffort_ObserverThrowsAsAutoIsLeft_StillSendsTheFollowUpThatWaited()
     {
@@ -284,8 +275,6 @@ public sealed partial class ChatSessionStateTests
         Assert.True(WasLogged(services, "observer failed"));
     }
 
-    // The request is answered before anything else; an observer throwing as the answered card leaves
-    // the panel must not skip sending the review nor throw at the command.
     [Fact]
     public async Task PlanReview_ObserverThrowsAsThePermissionCardCloses_StillSendsTheReview()
     {
@@ -312,8 +301,6 @@ public sealed partial class ChatSessionStateTests
         Assert.True(WasLogged(services, "observer failed"));
     }
 
-    // Marking the queued message sent runs once it is tracked as submitted: an observer throwing there
-    // must not stop it going out, which would leave it shown as delivered and never sent.
     [Fact]
     public async Task QueuedMessage_ObserverThrowsAsItIsMarkedSent_StillGoesOut()
     {
@@ -430,5 +417,405 @@ public sealed partial class ChatSessionStateTests
 
         Assert.Contains("console unavailable", vm.StatusMessage, StringComparison.Ordinal);
         Assert.True(WasLogged(services, "console unavailable"));
+    }
+
+    private static void ThrowOnceWhen(ChatViewModel vm, string property, Func<bool> condition)
+    {
+        bool armed = true;
+        vm.PropertyChanged += (_, e) =>
+        {
+            if (!armed || e.PropertyName != property || !condition()) return;
+            armed = false;
+            throw new InvalidOperationException("observer failed");
+        };
+    }
+
+    [Fact]
+    public async Task NewSession_ObserverThrowsAsTheSwitchStarts_IsReported_AndDoesNotLockTheComposer()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var services = ServicesFor(connection);
+        using var vm = new ChatViewModel(services);
+        await vm.Initialization;
+        vm.InputText = "draft";
+        ThrowOnceWhen(vm, nameof(ChatViewModel.CanConfigure), () => !vm.CanConfigure);
+
+        var failure = await Record.ExceptionAsync(() => vm.NewSessionCommand.ExecuteAsync(null));
+
+        Assert.Null(failure);
+        Assert.True(vm.SendCommand.CanExecute(null));
+        Assert.True(vm.CanConfigure);
+        Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
+        Assert.True(WasLogged(services, "observer failed"));
+    }
+
+    [Fact]
+    public async Task OpenSession_ObserverThrowsAsTheSwitchStarts_IsReported_AndDoesNotLockTheComposer()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var services = ServicesFor(connection);
+        using var vm = new ChatViewModel(services);
+        await vm.Initialization;
+        vm.InputText = "draft";
+        ThrowOnceWhen(vm, nameof(ChatViewModel.CanConfigure), () => !vm.CanConfigure);
+
+        var failure = await Record.ExceptionAsync(() =>
+            vm.OpenSessionCommand.ExecuteAsync(new SessionSummary("session-2", "/workspace", "Older chat", null)));
+
+        Assert.Null(failure);
+        Assert.True(vm.SendCommand.CanExecute(null));
+        Assert.True(vm.CanConfigure);
+        Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
+        Assert.True(WasLogged(services, "observer failed"));
+    }
+
+    [Fact]
+    public async Task WorkspaceSwitch_ObserverThrowsAsTheSwitchStarts_IsReported_AndStillSwitches()
+    {
+        var first = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var second = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var factory = new SingleConnectionFactory(first);
+        var services = new StubChatSessionServices(factory, new AlwaysSignedInAuthService(), "/solution-a");
+        using var vm = new ChatViewModel(services);
+        await vm.Initialization;
+        factory.ConnectHandler = _ => Task.FromResult<IAcpAgentConnection>(second);
+        vm.InputText = "draft";
+        ThrowOnceWhen(vm, nameof(ChatViewModel.CanConfigure), () => !vm.CanConfigure);
+
+        services.SetWorkspaceRoot("/solution-b");
+
+        await WaitUntilAsync(() => second.NewSessionCwds.Count == 1);
+        Assert.Equal(1, first.DisposeCount);
+        Assert.Equal("/solution-b", second.NewSessionCwds[0]);
+        Assert.True(vm.SendCommand.CanExecute(null));
+        Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
+        Assert.True(WasLogged(services, "observer failed"));
+    }
+
+    [Fact]
+    public async Task ShowHistory_ObserverThrowsAsTheHistoryOpens_IsReported_AndDoesNotStayLoading()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var services = ServicesFor(connection);
+        using var vm = new ChatViewModel(services);
+        await vm.Initialization;
+        ThrowOnceWhen(vm, nameof(ChatViewModel.IsHistoryLoading), () => vm.IsHistoryLoading);
+
+        var failure = await Record.ExceptionAsync(() => vm.ShowHistoryCommand.ExecuteAsync(null));
+
+        Assert.Null(failure);
+        Assert.False(vm.IsHistoryLoading);
+        Assert.Contains("observer failed", vm.HistoryError, StringComparison.Ordinal);
+        Assert.True(WasLogged(services, "observer failed"));
+    }
+
+    [Fact]
+    public async Task Login_ObserverThrowsAsTheReconnectStarts_IsReported_AndDoesNotStayConnecting()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var auth = new RecordingAuthService(AuthState.SignedOut);
+        using var vm = CreateWithAuth(connection, auth, out var services);
+        await vm.Initialization;
+        ThrowOnceWhen(vm, nameof(ChatViewModel.IsConnecting), () => vm.IsConnecting);
+        vm.InputText = "/login";
+
+        var failure = await Record.ExceptionAsync(() => vm.SendAsync());
+
+        Assert.Null(failure);
+        Assert.False(vm.IsConnecting);
+        Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
+        Assert.True(WasLogged(services, "observer failed"));
+    }
+
+    [Fact]
+    public async Task AuthStateChange_ObserverThrowsAsTheReconnectStarts_IsReported_AndDoesNotStayConnecting()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var auth = new RecordingAuthService(AuthState.SignedOut);
+        using var vm = CreateWithAuth(connection, auth, out var services);
+        await vm.Initialization;
+        ThrowOnceWhen(vm, nameof(ChatViewModel.IsConnecting), () => vm.IsConnecting);
+
+        auth.SetState(AuthState.SignedIn);
+
+        await WaitUntilAsync(() => WasLogged(services, "observer failed"));
+        Assert.False(vm.IsConnecting);
+        Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RemoteControl_ObserverThrowsAsTheToggleStarts_IsReported_AndDoesNotStayBusy()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var services = ServicesFor(connection);
+        using var vm = new ChatViewModel(services);
+        await vm.Initialization;
+        ThrowOnceWhen(vm, nameof(ChatViewModel.IsRemoteControlBusy), () => vm.IsRemoteControlBusy);
+
+        var failure = await Record.ExceptionAsync(() => vm.ToggleRemoteControlCommand.ExecuteAsync(null));
+
+        Assert.Null(failure);
+        Assert.False(vm.IsRemoteControlBusy);
+        Assert.True(vm.ToggleRemoteControlCommand.CanExecute(null));
+        Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
+        Assert.True(WasLogged(services, "observer failed"));
+    }
+
+    [Fact]
+    public async Task NewSessionFailure_IsShownAndLogged()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var services = ServicesFor(connection);
+        using var vm = new ChatViewModel(services);
+        await vm.Initialization;
+        connection.NewSessionHandler = _ => Task.FromException<NewSessionResult>(new InvalidOperationException("session/new rejected"));
+
+        await vm.NewSessionCommand.ExecuteAsync(null);
+
+        Assert.Contains("session/new rejected", vm.StatusMessage, StringComparison.Ordinal);
+        Assert.True(WasLogged(services, "session/new rejected"));
+    }
+
+    [Fact]
+    public async Task OpenSessionFailure_IsShownAndLogged()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var services = ServicesFor(connection);
+        using var vm = new ChatViewModel(services);
+        await vm.Initialization;
+        connection.LoadSessionHandler = (_, _, _, _) => Task.FromException<NewSessionResult>(new InvalidOperationException("session/load rejected"));
+
+        await vm.OpenSessionAsync(new SessionSummary("session-2", "/workspace", "Older chat", null));
+
+        Assert.Contains("session/load rejected", vm.StatusMessage, StringComparison.Ordinal);
+        Assert.True(WasLogged(services, "session/load rejected"));
+    }
+
+    [Fact]
+    public async Task HistoryFailure_IsShownAndLogged()
+    {
+        var connection = new RecordingAcpAgentConnection
+        {
+            ConfigOptions = Options(),
+            ListSessionsHandler = (_, _) => Task.FromException<IReadOnlyList<SessionSummary>>(new InvalidOperationException("session/list rejected")),
+        };
+        var services = ServicesFor(connection);
+        using var vm = new ChatViewModel(services);
+        await vm.Initialization;
+
+        await vm.ShowHistoryCommand.ExecuteAsync(null);
+
+        Assert.Contains("session/list rejected", vm.HistoryError, StringComparison.Ordinal);
+        Assert.True(WasLogged(services, "session/list rejected"));
+    }
+
+    [Fact]
+    public async Task RemoteControlFailure_IsShownAndLogged()
+    {
+        var connection = new RecordingAcpAgentConnection
+        {
+            ConfigOptions = Options(),
+            RemoteControlHandler = _ => Task.FromException<RemoteControlState>(new InvalidOperationException("the launcher refused")),
+        };
+        var services = ServicesFor(connection);
+        using var vm = new ChatViewModel(services);
+        await vm.Initialization;
+
+        await vm.ToggleRemoteControlCommand.ExecuteAsync(null);
+
+        Assert.Contains("the launcher refused", vm.StatusMessage, StringComparison.Ordinal);
+        Assert.True(WasLogged(services, "the launcher refused"));
+    }
+
+    [Fact]
+    public async Task SignInFailure_IsShownAndLogged()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var auth = new RecordingAuthService(AuthState.SignedOut)
+        {
+            SignInHandler = (_, _) => Task.FromException(new InvalidOperationException("browser unavailable")),
+        };
+        using var vm = CreateWithAuth(connection, auth, out var services);
+        await vm.Initialization;
+
+        await vm.SignInCommand.ExecuteAsync(null);
+
+        Assert.Contains("browser unavailable", vm.StatusMessage, StringComparison.Ordinal);
+        Assert.True(WasLogged(services, "browser unavailable"));
+    }
+
+    [Fact]
+    public async Task WorkspaceSwitchFailure_IsShownAndLogged()
+    {
+        var first = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var second = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var factory = new SingleConnectionFactory(first);
+        var services = new StubChatSessionServices(factory, new AlwaysSignedInAuthService(), "/solution-a");
+        using var vm = new ChatViewModel(services);
+        await vm.Initialization;
+        factory.ConnectHandler = _ => Task.FromResult<IAcpAgentConnection>(second);
+        vm.Messages.CollectionChanged += (_, e) =>
+        {
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Reset) throw new InvalidOperationException("transcript observer failed");
+        };
+
+        services.SetWorkspaceRoot("/solution-b");
+
+        await WaitUntilAsync(() => WasLogged(services, "transcript observer failed"));
+        Assert.Contains("transcript observer failed", vm.StatusMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AgentCloseFailure_IsLogged()
+    {
+        var first = new RecordingAcpAgentConnection { ConfigOptions = Options(), DisposeHandler = () => Task.FromException(new InvalidOperationException("agent would not exit")) };
+        var second = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var factory = new SingleConnectionFactory(first);
+        var services = new StubChatSessionServices(factory, new AlwaysSignedInAuthService(), "/solution-a");
+        using var vm = new ChatViewModel(services);
+        await vm.Initialization;
+        factory.ConnectHandler = _ => Task.FromResult<IAcpAgentConnection>(second);
+
+        services.SetWorkspaceRoot("/solution-b");
+
+        await WaitUntilAsync(() => WasLogged(services, "agent would not exit"));
+    }
+
+    [Fact]
+    public async Task PlanReview_ObserverThrowsAsTheEndedRequestClosesTheCard_StillResolvesThePlan_AndIsLogged()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var services = ServicesFor(connection);
+        using var vm = new ChatViewModel(services);
+        await vm.Initialization;
+        var (call, options) = PlanApprovalRequest();
+        var request = connection.RaisePermissionRequested(call, options);
+        var plan = vm.PendingPlan!;
+        ThrowOnceWhen(vm, nameof(ChatViewModel.PendingPermission), () => vm.PendingPermission is null);
+
+        request.Response.TrySetException(new OperationCanceledException("The turn was cancelled."));
+
+        await WaitUntilAsync(() => WasLogged(services, "observer failed"));
+        Assert.True(plan.IsResolved);
+    }
+
+    [Fact]
+    public async Task PlanReview_ObserverThrowsAsANewerRequestSupersedesThePlan_ShowsTheNewerRequest_AndIsLogged()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var services = ServicesFor(connection);
+        using var vm = new ChatViewModel(services);
+        await vm.Initialization;
+        var (call, options) = PlanApprovalRequest();
+        connection.RaisePermissionRequested(call, options);
+        var plan = vm.PendingPlan!;
+        plan.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(PlanReviewViewModel.IsResolved) && plan.IsResolved)
+                throw new InvalidOperationException("observer failed");
+        };
+        var edit = new ToolCallUpdate { ToolCallId = "tc-1", Title = "Edit a.cs", Status = ToolCallStatus.Pending };
+
+        var failure = Record.Exception(() => connection.RaisePermissionRequested(edit,
+            [new PermissionOption { OptionId = "allow", Label = "Allow", Outcome = PermissionOutcome.AllowOnce }]));
+
+        Assert.Null(failure);
+        Assert.NotNull(vm.PendingPermission);
+        Assert.Equal("allow", Assert.Single(vm.PendingPermission!.Options).OptionId);
+        Assert.True(WasLogged(services, "observer failed"));
+    }
+
+    [Fact]
+    public async Task Elicitation_ObserverThrowsAsTheEndedRequestClosesTheForm_IsLogged()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var services = ServicesFor(connection);
+        using var vm = new ChatViewModel(services);
+        await vm.Initialization;
+        var request = connection.RaiseElicitationRequested("Pick a color", [new ElicitationField("q0", null, null, ElicitationFieldKind.Text, [])]);
+        ThrowOnceWhen(vm, nameof(ChatViewModel.PendingElicitation), () => vm.PendingElicitation is null);
+
+        request.Response.TrySetException(new OperationCanceledException("The turn was cancelled."));
+
+        await WaitUntilAsync(() => WasLogged(services, "observer failed"));
+    }
+
+    [Fact]
+    public async Task Elicitation_ObserverThrowsAsTheDeclinedFormCloses_StillAnswers_AndIsLogged()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var services = ServicesFor(connection);
+        using var vm = new ChatViewModel(services);
+        await vm.Initialization;
+        var request = connection.RaiseElicitationRequested("Pick a color", [new ElicitationField("q0", null, null, ElicitationFieldKind.Text, [])]);
+        ThrowOnceWhen(vm, nameof(ChatViewModel.PendingElicitation), () => vm.PendingElicitation is null);
+
+        var failure = Record.Exception(() => vm.PendingElicitation!.DeclineCommand.Execute(null));
+
+        Assert.Null(failure);
+        await WithinAsync(request.Response.Task);
+        Assert.Equal(ElicitationAction.Decline, (await request.Response.Task).Action);
+        Assert.True(WasLogged(services, "observer failed"));
+    }
+
+    [Fact]
+    public async Task Disconnect_ObserverThrowsAsTheConnectionIsReleased_StillClosesTheAgent_AndIsLogged()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var services = ServicesFor(connection);
+        using var vm = new ChatViewModel(services);
+        await vm.Initialization;
+        ThrowOnceWhen(vm, nameof(ChatViewModel.SelectedModel), () => vm.SelectedModel is null);
+
+        connection.RaiseDisconnected();
+
+        await WaitUntilAsync(() => WasLogged(services, "observer failed"));
+        Assert.Equal(1, connection.DisposeCount);
+    }
+
+    [Fact]
+    public async Task SignOut_ObserverThrowsAsTheConnectionIsReleased_StillClosesTheAgent_AndIsLogged()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var auth = new RecordingAuthService(AuthState.SignedIn);
+        using var vm = CreateWithAuth(connection, auth, out var services);
+        await vm.Initialization;
+        ThrowOnceWhen(vm, nameof(ChatViewModel.SelectedModel), () => vm.SelectedModel is null);
+
+        auth.SetState(AuthState.SignedOut);
+
+        await WaitUntilAsync(() => WasLogged(services, "observer failed"));
+        Assert.Equal(1, connection.DisposeCount);
+    }
+
+    [Fact]
+    public async Task Dispose_ObserverThrowsAsTheConnectionIsReleased_StillClosesTheAgent_AndIsLogged()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var services = ServicesFor(connection);
+        var vm = new ChatViewModel(services);
+        await vm.Initialization;
+        ThrowOnceWhen(vm, nameof(ChatViewModel.SelectedModel), () => vm.SelectedModel is null);
+
+        vm.Dispose();
+
+        await WaitUntilAsync(() => WasLogged(services, "observer failed"));
+        Assert.Equal(1, connection.DisposeCount);
+    }
+
+    [Fact]
+    public async Task ActiveDocumentChange_ObserverThrows_IsReported_NotThrownAtTheHost()
+    {
+        var connection = new RecordingAcpAgentConnection { ConfigOptions = Options() };
+        var services = ServicesFor(connection);
+        using var vm = new ChatViewModel(services);
+        await vm.Initialization;
+        ThrowOnceWhen(vm, nameof(ChatViewModel.HasActiveDocument), () => true);
+
+        var failure = Record.Exception(() => services.SetHasActiveDocument(false));
+
+        Assert.Null(failure);
+        Assert.Contains("observer failed", vm.StatusMessage, StringComparison.Ordinal);
+        Assert.True(WasLogged(services, "observer failed"));
     }
 }

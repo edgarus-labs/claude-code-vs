@@ -54,9 +54,6 @@ public sealed class DiffBuilderTests
     [Fact]
     public void Build_CreatedFileEndingInNewline_CountsOnlyItsRealLines()
     {
-        // A file's terminating "\n" ends its last line; it is not a fifth, empty line. The card
-        // badge for "Wrote Created.txt" read "+5" for a four-line file (#22, DoD: statistics for
-        // newly created files).
         var lines = DiffBuilder.Build(string.Empty, "alpha\nbeta\ngamma\ndelta\n");
 
         Assert.All(lines, line => Assert.Equal(DiffLineKind.Added, line.Kind));
@@ -66,11 +63,6 @@ public sealed class DiffBuilderTests
     [Fact]
     public void Build_CreatedFileEndingInCrlf_CountsOnlyItsRealLines()
     {
-        // CRLF is the norm in a Visual Studio workspace, so this is the #22 badge case on Windows.
-        // The terminator is recognised on the raw text while the split normalises "\r\n" to "\n"
-        // beforehand; the two agree only because a CRLF-terminated text also ends in '\n'. Nothing
-        // else pins that agreement, so changing either helper alone would quietly bring back "+3"
-        // for a two-line file - or leave a stray "\r" glued to the end of every line.
         var lines = DiffBuilder.Build(string.Empty, "alpha\r\nbeta\r\n");
 
         Assert.All(lines, line => Assert.Equal(DiffLineKind.Added, line.Kind));
@@ -80,9 +72,6 @@ public sealed class DiffBuilderTests
     [Fact]
     public void Build_CreatedEmptyFile_ProducesNoLines()
     {
-        // An empty file is zero lines, not one empty one: without the split's empty-text guard,
-        // "".Split('\n') yields a single empty segment and an empty file would render one phantom
-        // line - the same off-by-one that made the #22 badge overcount.
         Assert.Empty(DiffBuilder.Build(string.Empty, string.Empty));
     }
 

@@ -8,9 +8,6 @@ using Xunit;
 
 namespace ClaudeCode.Core.Tests;
 
-// Covers issue #34 (client-side /login and /logout in the chat sidebar): local command listing,
-// interception so nothing reaches session/prompt, login success/failure/cancellation, logout with
-// confirmation and state reset, and the unresolved-adapter path.
 public sealed partial class ChatSessionStateTests
 {
     private static ChatViewModel CreateWithAuth(RecordingAcpAgentConnection connection, RecordingAuthService auth, out StubChatSessionServices services)

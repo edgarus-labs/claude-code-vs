@@ -61,11 +61,6 @@ public sealed class ToolCallCardViewModelTests
         Assert.Single(card.Content);
     }
 
-    // F-7-8: DiffBuilder used to cache the single most recent (oldText,newText) result in a
-    // *static* field shared by every ToolCallCardViewModel in the process. Building a diff for one
-    // tool call in between two updates of another tool call evicted the other card's cached entry,
-    // forcing an unnecessary recompute on the next identical build. The cache must be scoped to the
-    // owning card so one card's diff build never evicts another's.
     [Fact]
     public void Apply_RepeatedDiffAfterAnotherCardBuildsDifferentDiff_ReusesOwnCachedDiffLines()
     {

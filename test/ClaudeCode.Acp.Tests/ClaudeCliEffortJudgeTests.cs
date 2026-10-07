@@ -343,8 +343,6 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
         await Assert.ThrowsAsync<InvalidOperationException>(() => judge.ClassifyAsync("ok", CancellationToken.None));
     }
 
-    // An empty reply has no level: it is retried like any other unparseable reply (#49), and the
-    // judgment fails only once the attempts are used up.
     [Fact]
     public async Task Classify_EmptyReply_IsRetriedLikeAnyUnparseableReply()
     {

@@ -157,9 +157,6 @@ public sealed partial class ChatSessionStateTests
             Locations = locations,
         }));
 
-    // Issue #39. The agent names a file it has just read by its bare name - "`Program.cs:12`" - so
-    // resolving that against the workspace root reports an existing file as missing. The absolute
-    // path the Read tool call carried is the precise reference the name stands for.
     [Fact]
     public async Task OpenFileReference_BareNameOfAFileTheAgentRead_OpensThatFile()
     {
@@ -324,10 +321,6 @@ public sealed partial class ChatSessionStateTests
         Assert.NotEqual(await NotFoundStatusAsync(vm, "secrets.cs"), status);
     }
 
-    // Issue #39 as reproduced in VS: Claude found the files with Grep and never read them. Glob
-    // and Grep report what they found relative to the session cwd - the workspace root - so that
-    // relative path is the precise reference a bare "`OrderService.cs:5`" in the answer stands for,
-    // even with a namesake elsewhere in the workspace.
     [Fact]
     public async Task OpenFileReference_BareNameOfAFileTheAgentFoundBySearch_OpensThatFile()
     {
