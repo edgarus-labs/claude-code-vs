@@ -26,6 +26,9 @@ namespace ClaudeCode.Vsix.Usage;
 internal sealed class ClaudeUsageService : IUsageService
 {
     private static readonly TimeSpan _processTimeout = TimeSpan.FromSeconds(10);
+    /// <summary>
+    /// The max output characters.
+    /// </summary>
     private const int _maxOutputCharacters = 64 * 1024;
 
     private readonly string _scriptPath;
@@ -33,11 +36,21 @@ internal sealed class ClaudeUsageService : IUsageService
     private UsageSnapshot? _cachedSnapshot;
     private JoinableTask<UsageSnapshot?>? _inFlight;
 
+    /// <summary>
+    /// Initializes a new instance of the ClaudeUsageService class with the specified script path, validating that the path is not null.
+    /// </summary>
+    /// <param name="scriptPath">The script path.</param>
+    /// <exception cref="ArgumentNullException">Thrown when an error occurs during execution.</exception>
     public ClaudeUsageService(string scriptPath)
     {
         _scriptPath = scriptPath ?? throw new ArgumentNullException(nameof(scriptPath));
     }
 
+    /// <summary>
+    /// Asynchronously retrieves the current usage snapshot, ensuring concurrent requests are coalesced into a single fetch operation while respecting burst window constraints.
+    /// </summary>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the usage snapshot?.</returns>
     public async Task<UsageSnapshot?> GetUsageAsync(CancellationToken cancellationToken)
     {
         // The snapshot is not a cache: every explicit trigger (turn end, opening the usage panel)
@@ -74,6 +87,10 @@ internal sealed class ClaudeUsageService : IUsageService
         return await fetch.JoinAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Asynchronously fetches and caches usage snapshot data by executing a Node.js script and parsing its output.
+    /// </summary>
+    /// <returns>A task representing the asynchronous operation. The task result contains the usage snapshot?.</returns>
     private async Task<UsageSnapshot?> FetchAndCacheAsync()
     {
         // Everything below touches the filesystem and spawns a process: File.Exists on the script,
@@ -113,6 +130,12 @@ internal sealed class ClaudeUsageService : IUsageService
         return snapshot;
     }
 
+    /// <summary>
+    /// Asynchronously executes a Node.js script with the specified path and returns its output or null if the execution fails.
+    /// </summary>
+    /// <param name="nodePath">The node path.</param>
+    /// <param name="scriptPath">The script path.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the string?.</returns>
     private static async Task<string?> RunNodeScriptAsync(string nodePath, string scriptPath)
     {
         using var process = new Process
@@ -173,6 +196,10 @@ internal sealed class ClaudeUsageService : IUsageService
         }
     }
 
+    /// <summary>
+    /// Attempts to terminate the specified process if it is still running, swallowing Win32 and InvalidOperation exceptions that indicate the process has already exited or is no longer accessible.
+    /// </summary>
+    /// <param name="process">The process.</param>
     private static void TryKill(Process process)
     {
         try
@@ -188,6 +215,11 @@ internal sealed class ClaudeUsageService : IUsageService
         }
     }
 
+    /// <summary>
+    /// Parses a JSON string to create a UsageSnapshot object containing usage limit details, or returns null if the input is invalid or parsing fails.
+    /// </summary>
+    /// <param name="output">The output.</param>
+    /// <returns>The usage snapshot? result.</returns>
     private static UsageSnapshot? ParseSnapshot(string output)
     {
         if (string.IsNullOrWhiteSpace(output))

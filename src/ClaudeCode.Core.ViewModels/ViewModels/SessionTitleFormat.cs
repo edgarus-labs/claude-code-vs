@@ -11,8 +11,14 @@ namespace ClaudeCode.Core.ViewModels;
 /// the row.</summary>
 public static class SessionTitleFormat
 {
+    /// <summary>
+    /// The max title length.
+    /// </summary>
     public const int MaxTitleLength = 80;
 
+    /// <summary>
+    /// The session id prefix length.
+    /// </summary>
     private const int SessionIdPrefixLength = 8;
 
     /// <summary>The first usable line of <paramref name="title"/>, ellipsised at
@@ -44,6 +50,11 @@ public static class SessionTitleFormat
         return line.Substring(0, cut).TrimEnd() + "…";
     }
 
+    /// <summary>
+    /// Extracts and returns the first non-empty line from the input text after removing control characters and bidirectional text markers.
+    /// </summary>
+    /// <param name="text">The text.</param>
+    /// <returns>The string result.</returns>
     private static string FirstUsableLine(string? text)
     {
         if (string.IsNullOrWhiteSpace(text)) return string.Empty;
@@ -64,6 +75,11 @@ public static class SessionTitleFormat
     // header, its tooltip and the notification text, where U+202E silently reverses the rest of
     // the line; nothing downstream makes a decision on the title, so removing them is enough.
     // Shared with ToolDisplayName so the tool-title consent surface strips the same set.
+    /// <summary>
+    /// Removes all control and bidirectional characters from the beginning of the input string.
+    /// </summary>
+    /// <param name="line">The line.</param>
+    /// <returns>The string result.</returns>
     internal static string StripControlAndBidi(string line)
     {
         int first = -1;
@@ -88,6 +104,11 @@ public static class SessionTitleFormat
     // Format (Cf) covers every bidi control (U+061C, U+200E/F, U+202A-E, U+2066-9) and the
     // zero-width characters (U+200B-D, U+2060, U+FEFF); none of them is whitespace, so a title
     // made only of them would otherwise pass as content and blank the row with no fallback.
+    /// <summary>
+    /// Determines whether the specified character is a control or format character.
+    /// </summary>
+    /// <param name="value">The value.</param>
+    /// <returns>true if the condition is met; otherwise, false.</returns>
     private static bool IsControlOrBidi(char value) =>
         CharUnicodeInfo.GetUnicodeCategory(value) is UnicodeCategory.Control or UnicodeCategory.Format;
 }

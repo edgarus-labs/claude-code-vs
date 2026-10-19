@@ -35,6 +35,14 @@ internal static class WorkspaceFileSearch
     public static IReadOnlyList<string> FindBySuffix(string workspaceRoot, string suffix, CancellationToken cancellationToken) =>
         FindBySuffix(workspaceRoot, suffix, MaxEntries, cancellationToken);
 
+    /// <summary>
+    /// Finds files with the specified suffix within the workspace root and its subdirectories, returning up to the specified maximum number of entries.
+    /// </summary>
+    /// <param name="workspaceRoot">The workspace root.</param>
+    /// <param name="suffix">The suffix.</param>
+    /// <param name="maxEntries">The max entries.</param>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>A collection of iread only list items.</returns>
     internal static IReadOnlyList<string> FindBySuffix(string workspaceRoot, string suffix, int maxEntries, CancellationToken cancellationToken)
     {
         var budget = maxEntries;
@@ -45,6 +53,16 @@ internal static class WorkspaceFileSearch
 
     // Walks the roots; a build/tool folder goes into deferredCopyFolders instead of being walked,
     // unless that is null (the roots already are such folders).
+    /// <summary>
+    /// Recursively traverses directories starting from the specified roots, collecting file paths that match the given suffix while respecting cancellation and budget constraints.
+    /// </summary>
+    /// <param name="roots">The collection of roots.</param>
+    /// <param name="suffix">The suffix.</param>
+    /// <param name="deferredCopyFolders">The collection of deferred copy folders.</param>
+    /// <param name="budget">The budget.</param>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>A collection of list items.</returns>
+    /// <exception cref="IOException">Thrown when an error occurs during execution.</exception>
     private static List<string> Walk(IEnumerable<string> roots, string suffix, List<string>? deferredCopyFolders, ref int budget, CancellationToken cancellationToken)
     {
         var found = new List<string>();

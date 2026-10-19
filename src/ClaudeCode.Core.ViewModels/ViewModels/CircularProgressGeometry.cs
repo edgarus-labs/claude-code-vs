@@ -11,7 +11,13 @@ namespace ClaudeCode.Core.ViewModels;
 /// </summary>
 public static class CircularProgressGeometry
 {
+    /// <summary>
+    /// The default radius.
+    /// </summary>
     public const double DefaultRadius = 6;
+    /// <summary>
+    /// The default thickness.
+    /// </summary>
     public const double DefaultThickness = 2;
 
     /// <summary>

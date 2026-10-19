@@ -10,6 +10,9 @@ using System.Threading.Tasks;
 
 namespace ClaudeCode.Vsix;
 
+/// <summary>
+/// Tracks the currently active editor document and its text view by monitoring window frame activation and text view lifecycle events, exposing whether an active document is available.
+/// </summary>
 internal sealed class ActiveEditorDocumentTracker : IDisposable
 {
     private readonly WindowEvents _windowEvents;
@@ -17,6 +20,9 @@ internal sealed class ActiveEditorDocumentTracker : IDisposable
     private int _activationVersion;
     private bool _disposed;
 
+    /// <summary>
+    /// Initializes a new instance of the ActiveEditorDocumentTracker class, enforcing UI thread affinity and subscribing to the Visual Studio window events to track active frame changes.
+    /// </summary>
     public ActiveEditorDocumentTracker()
     {
         ThreadHelper.ThrowIfNotOnUIThread();
@@ -27,8 +33,16 @@ internal sealed class ActiveEditorDocumentTracker : IDisposable
     /// <summary>Raised on the UI thread whenever the tracked document view changes.</summary>
     public event EventHandler? ActiveDocumentChanged;
 
+    /// <summary>
+    /// Gets a value indicating whether has active document.
+    /// </summary>
     public bool HasActiveDocument => !_disposed && _lastDocumentView?.TextView is { IsClosed: false } && _lastDocumentView.TextBuffer is not null;
 
+    /// <summary>
+    /// Asynchronously initializes the tracker by seeding the last active document view on the main thread, provided no newer editor activation has occurred and the view is a valid text view.
+    /// </summary>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>A task representing the asynchronous operation.</returns>
     public async Task InitializeAsync(CancellationToken cancellationToken)
     {
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
@@ -43,6 +57,11 @@ internal sealed class ActiveEditorDocumentTracker : IDisposable
         }
     }
 
+    /// <summary>
+    /// Asynchronously captures the live, unsaved text of the active editor document on the main thread, returning a snapshot with its normalized full file path, or null if no valid rooted local file document is open or the service has been disposed.
+    /// </summary>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the editor document snapshot?.</returns>
     public async Task<EditorDocumentSnapshot?> CaptureActiveDocumentAsync(CancellationToken cancellationToken)
     {
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
@@ -65,6 +84,10 @@ internal sealed class ActiveEditorDocumentTracker : IDisposable
         return new EditorDocumentSnapshot(Path.GetFullPath(path), view.TextBuffer!.CurrentSnapshot.GetText());
     }
 
+    /// <summary>
+    /// Handles active frame changes on the UI thread by incrementing the activation version and, if the instance has not been disposed, recording the open text view from the new or old frame as the last document view.
+    /// </summary>
+    /// <param name="args">The args.</param>
     private void OnActiveFrameChanged(ActiveFrameChangeEventArgs args)
     {
         ThreadHelper.ThrowIfNotOnUIThread();
@@ -83,6 +106,11 @@ internal sealed class ActiveEditorDocumentTracker : IDisposable
         }
     }
 
+    /// <summary>
+    /// Retrieves the open text document view associated with the specified window frame, returning null if the frame is null, no text view is available, the view is not open, or the frame is torn down during activation.
+    /// </summary>
+    /// <param name="frame">The frame.</param>
+    /// <returns>The document view? result.</returns>
     private static DocumentView? GetOpenTextView(WindowFrame? frame)
     {
         ThreadHelper.ThrowIfNotOnUIThread();
@@ -103,12 +131,21 @@ internal sealed class ActiveEditorDocumentTracker : IDisposable
         }
     }
 
+    /// <summary>
+    /// Determines whether the specified document view has an open text view and a non-null text buffer, ensuring the check runs on the UI thread.
+    /// </summary>
+    /// <param name="view">The view.</param>
+    /// <returns>true if the condition is met; otherwise, false.</returns>
     private static bool IsOpenTextView(DocumentView? view)
     {
         ThreadHelper.ThrowIfNotOnUIThread();
         return view?.TextView is { IsClosed: false } && view.TextBuffer is not null;
     }
 
+    /// <summary>
+    /// Updates the last document view, unsubscribes from the previous view&apos;s Closed event, subscribes to the new view&apos;s Closed event, and raises the ActiveDocumentChanged event if the view is not null and the instance is not disposed.
+    /// </summary>
+    /// <param name="view">The view.</param>
     private void SetLastDocumentView(DocumentView? view)
     {
         ThreadHelper.ThrowIfNotOnUIThread();
@@ -131,6 +168,11 @@ internal sealed class ActiveEditorDocumentTracker : IDisposable
         }
     }
 
+    /// <summary>
+    /// Clears the last document view reference when the associated text view is closed.
+    /// </summary>
+    /// <param name="sender">The sender.</param>
+    /// <param name="args">The args.</param>
     private void OnTextViewClosed(object? sender, EventArgs args)
     {
         ThreadHelper.ThrowIfNotOnUIThread();
@@ -140,6 +182,9 @@ internal sealed class ActiveEditorDocumentTracker : IDisposable
         }
     }
 
+    /// <summary>
+    /// Releases resources and unsubscribes from frame change events.
+    /// </summary>
     public void Dispose()
     {
         ThreadHelper.ThrowIfNotOnUIThread();

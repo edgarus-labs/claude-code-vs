@@ -8,25 +8,49 @@ namespace ClaudeCode.Acp;
 /// every branch is unit-testable.</summary>
 public static class AcpAuthCommandOutcomes
 {
+    /// <summary>
+    /// The login instructions.
+    /// </summary>
     public const string LoginInstructions = "Type /login to try again, run 'claude auth login' in a terminal, or "
         + "'claude-agent-acp --cli auth login' to use the adapter's bundled CLI, then check sign-in again. "
         + "Use the same CLAUDE_CONFIG_DIR environment as Visual Studio and restart Visual Studio after changing it.";
 
+    /// <summary>
+    /// The adapter missing message.
+    /// </summary>
     public const string AdapterMissingMessage = "Install @agentclientprotocol/claude-agent-acp and Node.js 22 or newer, "
         + "or configure its ACP executable path in Tools > Options > Claude Code.";
 
+    /// <summary>
+    /// The logout instructions.
+    /// </summary>
     private const string LogoutInstructions = "Type /logout to try again, or run 'claude-agent-acp --cli auth logout' in a terminal.";
 
+    /// <summary>
+    /// The signed out message.
+    /// </summary>
     public const string SignedOutMessage = "Signed out of Claude Code. This affects the CLI, VS Code and other clients on this machine, not only Visual Studio.";
 
+    /// <summary>
+    /// Gets the adapter missing.
+    /// </summary>
     public static AuthCommandOutcome AdapterMissing { get; } = new AuthCommandOutcome(false, AdapterMissingMessage);
 
+    /// <summary>
+    /// Gets the login could not start.
+    /// </summary>
     public static AuthCommandOutcome LoginCouldNotStart { get; } =
         new AuthCommandOutcome(false, "The sign-in console could not be started. " + AdapterMissingMessage);
 
+    /// <summary>
+    /// Gets the logout could not start.
+    /// </summary>
     public static AuthCommandOutcome LogoutCouldNotStart { get; } =
         new AuthCommandOutcome(false, "The sign-out command could not be started. " + AdapterMissingMessage);
 
+    /// <summary>
+    /// Gets the logout timed out.
+    /// </summary>
     public static AuthCommandOutcome LogoutTimedOut { get; } =
         new AuthCommandOutcome(false, "Sign-out did not finish in time. " + LogoutInstructions);
 
@@ -58,5 +82,10 @@ public static class AcpAuthCommandOutcomes
             : new AuthCommandOutcome(true, SignedOutMessage);
     }
 
+    /// <summary>
+    /// Converts the specified exit code to its string representation using the invariant culture.
+    /// </summary>
+    /// <param name="exitCode">The exit code.</param>
+    /// <returns>The string result.</returns>
     private static string Format(int exitCode) => exitCode.ToString(CultureInfo.InvariantCulture);
 }

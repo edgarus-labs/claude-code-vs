@@ -5,6 +5,9 @@ using System.Threading.Tasks;
 
 namespace ClaudeCode.Contracts;
 
+/// <summary>
+/// Defines a contract for authentication operations including sign-in, sign-out, and state management.
+/// </summary>
 public interface IAcpAuthService
 {
     AuthState CurrentState { get; }

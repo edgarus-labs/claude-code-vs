@@ -7,6 +7,13 @@ namespace ClaudeCode.Contracts;
 /// <summary>A desktop rectangle in physical screen pixels, right/bottom exclusive like the Win32 <c>RECT</c> it is built from.</summary>
 public readonly struct ScreenRect : IEquatable<ScreenRect>
 {
+    /// <summary>
+    /// Initializes a new instance of the ScreenRect struct with the specified left, top, right, and bottom edge coordinates.
+    /// </summary>
+    /// <param name="left">The left.</param>
+    /// <param name="top">The top.</param>
+    /// <param name="right">The right.</param>
+    /// <param name="bottom">The bottom.</param>
     public ScreenRect(int left, int top, int right, int bottom)
     {
         Left = left;
@@ -15,12 +22,24 @@ public readonly struct ScreenRect : IEquatable<ScreenRect>
         Bottom = bottom;
     }
 
+    /// <summary>
+    /// Gets the left.
+    /// </summary>
     public int Left { get; }
 
+    /// <summary>
+    /// Gets the top.
+    /// </summary>
     public int Top { get; }
 
+    /// <summary>
+    /// Gets the right.
+    /// </summary>
     public int Right { get; }
 
+    /// <summary>
+    /// Gets the bottom.
+    /// </summary>
     public int Bottom { get; }
 
     /// <summary>The width in pixels; zero or negative for an empty rectangle.</summary>
@@ -40,11 +59,25 @@ public readonly struct ScreenRect : IEquatable<ScreenRect>
     public bool Contains(ScreenRect other) =>
         !other.IsEmpty && (other.Left >= Left) && (other.Top >= Top) && (other.Right <= Right) && (other.Bottom <= Bottom);
 
+    /// <summary>
+    /// Determines whether the current ScreenRect instance is equal to the specified ScreenRect instance by comparing their Left, Top, Right, and Bottom properties.
+    /// </summary>
+    /// <param name="other">The other.</param>
+    /// <returns>true if the operation succeeded; otherwise, false.</returns>
     public bool Equals(ScreenRect other) =>
         (Left == other.Left) && (Top == other.Top) && (Right == other.Right) && (Bottom == other.Bottom);
 
+    /// <summary>
+    /// Determines whether the specified object is equal to the current ScreenRect instance.
+    /// </summary>
+    /// <param name="obj">The obj.</param>
+    /// <returns>true if the operation succeeded; otherwise, false.</returns>
     public override bool Equals(object? obj) => obj is ScreenRect other && Equals(other);
 
+    /// <summary>
+    /// Calculates a hash code based on the combined values of Left, Top, Right, and Bottom properties.
+    /// </summary>
+    /// <returns>The int result.</returns>
     public override int GetHashCode() => (((((Left * 397) ^ Top) * 397) ^ Right) * 397) ^ Bottom;
 
     /// <summary>Renders the four edges so a failed comparison names the rectangle it got.</summary>

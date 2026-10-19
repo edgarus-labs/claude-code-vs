@@ -15,6 +15,13 @@ public sealed class PlanReviewViewModel : ObservableObject
     private bool _isResolved;
     private string _status = string.Empty;
 
+    /// <summary>
+    /// Initializes a new instance of the PlanReviewViewModel class with the specified markdown content, permission options, and callback actions for handling user choices and reviews.
+    /// </summary>
+    /// <param name="markdown">The markdown.</param>
+    /// <param name="options">The collection of options.</param>
+    /// <param name="choose">The choose.</param>
+    /// <param name="review">The review.</param>
     public PlanReviewViewModel(string markdown, IReadOnlyList<PermissionOption> options, Action<PermissionOption> choose, Action<string> review)
     {
         // Agent-authored and only bounded by the JSON-RPC line cap. PlanDocumentView serialises this
@@ -41,16 +48,34 @@ public sealed class PlanReviewViewModel : ObservableObject
     /// over-long plan ends with the standard truncation notice instead of being rendered whole.</summary>
     public string Markdown { get; }
 
+    /// <summary>
+    /// Gets the collection of options.
+    /// </summary>
     public IReadOnlyList<PermissionOption> Options { get; }
 
+    /// <summary>
+    /// Gets the proceed option.
+    /// </summary>
     public PermissionOption? ProceedOption { get; }
 
+    /// <summary>
+    /// Gets the reject option.
+    /// </summary>
     public PermissionOption? RejectOption { get; }
 
+    /// <summary>
+    /// Gets the proceed command.
+    /// </summary>
     public IRelayCommand ProceedCommand { get; }
 
+    /// <summary>
+    /// Gets the review command.
+    /// </summary>
     public IRelayCommand<string> ReviewCommand { get; }
 
+    /// <summary>
+    /// Gets or sets a value indicating whether is resolved.
+    /// </summary>
     public bool IsResolved
     {
         get => _isResolved;
@@ -71,6 +96,10 @@ public sealed class PlanReviewViewModel : ObservableObject
         private set => SetProperty(ref _status, value);
     }
 
+    /// <summary>
+    /// Updates the status and marks the item as resolved.
+    /// </summary>
+    /// <param name="status">The status.</param>
     internal void MarkResolved(string status)
     {
         Status = status;

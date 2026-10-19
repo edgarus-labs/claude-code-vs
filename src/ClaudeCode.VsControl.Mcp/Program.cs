@@ -6,10 +6,21 @@ using System.Threading.Tasks;
 
 namespace ClaudeCode.VsControl.Mcp;
 
+/// <summary>
+/// Provides the console application entry point, which parses the pipe argument from the command line and starts processing.
+/// </summary>
 public static class Program
 {
+    /// <summary>
+    /// The pipe argument name.
+    /// </summary>
     private const string _pipeArgumentName = "--pipe";
 
+    /// <summary>
+    /// Asynchronously runs the Visual Studio control MCP server over standard input and output, connecting it to the specified named pipe and returning 0 on normal completion or 1 when the required pipe argument is missing or invalid.
+    /// </summary>
+    /// <param name="args">The collection of args.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the int.</returns>
     public static async Task<int> Main(string[] args)
     {
         string? pipeName = ParsePipeArgument(args);
@@ -50,6 +61,11 @@ public static class Program
         return 0;
     }
 
+    /// <summary>
+    /// Parses the command-line arguments to extract the value of the pipe argument, supporting both the &quot;--pipe value&quot; and &quot;--pipe=value&quot; forms, and returns null if the argument is absent or has no following value.
+    /// </summary>
+    /// <param name="args">The collection of args.</param>
+    /// <returns>The string? result.</returns>
     public static string? ParsePipeArgument(string[] args)
     {
         const string equalsPrefix = _pipeArgumentName + "=";

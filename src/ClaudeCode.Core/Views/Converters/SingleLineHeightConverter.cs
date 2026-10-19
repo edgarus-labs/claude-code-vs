@@ -10,6 +10,14 @@ namespace ClaudeCode.Core.Views.Converters;
 /// box stay centered on the text while it is still a single line, at any font size.</summary>
 public sealed class SingleLineHeightConverter : IMultiValueConverter
 {
+    /// <summary>
+    /// Converts a font size and font family into a line height by multiplying the family&apos;s line spacing by the font size and adding an optional padding value, returning NaN to defer to automatic sizing when inputs are invalid.
+    /// </summary>
+    /// <param name="values">The collection of values.</param>
+    /// <param name="targetType">The target type.</param>
+    /// <param name="parameter">The parameter.</param>
+    /// <param name="culture">The culture.</param>
+    /// <returns>The object result.</returns>
     public object Convert(object[] values, Type targetType, object parameter, CultureInfo culture)
     {
         if (values is null || values.Length < 2 || values[0] is not double fontSize || values[1] is not FontFamily family)
@@ -22,5 +30,14 @@ public sealed class SingleLineHeightConverter : IMultiValueConverter
         return Math.Ceiling(family.LineSpacing * fontSize + padding);
     }
 
+    /// <summary>
+    /// Converts a value back to multiple source types, which is not supported and always throws a NotSupportedException.
+    /// </summary>
+    /// <param name="value">The value.</param>
+    /// <param name="targetTypes">The collection of target types.</param>
+    /// <param name="parameter">The parameter.</param>
+    /// <param name="culture">The culture.</param>
+    /// <returns>A collection of object items.</returns>
+    /// <exception cref="NotSupportedException">Thrown when an error occurs during execution.</exception>
     public object[] ConvertBack(object value, Type[] targetTypes, object parameter, CultureInfo culture) => throw new NotSupportedException();
 }

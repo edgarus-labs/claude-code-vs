@@ -88,6 +88,10 @@ public sealed class ChatToolWindowPane : ToolWindowPane
         _view.Resources["ChatBrandImage"] = image;
     }
 
+    /// <summary>
+    /// Handles the theme changed event by refreshing the application&apos;s visual theme to reflect the newly selected settings.
+    /// </summary>
+    /// <param name="e">The e.</param>
     private void OnThemeChanged(ThemeChangedEventArgs e) => RefreshTheme();
 
     private void OnClassificationFormatMappingChanged(object sender, EventArgs e) => RefreshTheme();
@@ -111,12 +115,19 @@ public sealed class ChatToolWindowPane : ToolWindowPane
         }
     }
 
+    /// <summary>
+    /// Asynchronously switches to the Visual Studio main UI thread and reapplies the current theme colors to the extension&apos;s UI elements.
+    /// </summary>
+    /// <returns>The system.threading.tasks.task result.</returns>
     private async System.Threading.Tasks.Task RefreshThemeAsync()
     {
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
         ApplyTheme();
     }
 
+    /// <summary>
+    /// Applies the Visual Studio chat theme to the view on the UI thread and refreshes the transcript&apos;s WebView2 content so it reflects current WPF theme resources.
+    /// </summary>
     private void ApplyTheme()
     {
         ThreadHelper.ThrowIfNotOnUIThread();
@@ -130,6 +141,11 @@ public sealed class ChatToolWindowPane : ToolWindowPane
         _view.RefreshTranscriptTheme();
     }
 
+    /// <summary>
+    /// Asynchronously displays the specified plan in the plan window while handling any potential errors.
+    /// </summary>
+    /// <param name="sender">The sender.</param>
+    /// <param name="plan">The plan.</param>
     private void OnPlanReviewRequested(object? sender, PlanReviewViewModel plan)
     {
         if (_disposed || Package is not ClaudeCodePackage package) return;
@@ -140,6 +156,10 @@ public sealed class ChatToolWindowPane : ToolWindowPane
         }).FileAndForget("claudecode/showplan");
     }
 
+    /// <summary>
+    /// Releases unmanaged resources and optionally releases managed resources.
+    /// </summary>
+    /// <param name="disposing">The disposing.</param>
     protected override void Dispose(bool disposing)
     {
         if (disposing && !_disposed)

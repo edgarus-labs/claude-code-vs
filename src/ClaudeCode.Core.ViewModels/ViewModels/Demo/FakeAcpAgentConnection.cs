@@ -101,9 +101,20 @@ public sealed class FakeAcpAgentConnection : IAcpAgentConnection
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// Asynchronously rejects a remote control state change for the specified session, as remote control is unavailable in the demo connection and an InvalidOperationException is returned.
+    /// </summary>
+    /// <param name="sessionId">The unique identifier of the session.</param>
+    /// <param name="enabled">The enabled.</param>
+    /// <param name="name">The name.</param>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the remote control state.</returns>
     public Task<RemoteControlState> SetRemoteControlAsync(string sessionId, bool enabled, string? name, CancellationToken cancellationToken) =>
         Task.FromException<RemoteControlState>(new InvalidOperationException("Remote Control is not available in the demo connection."));
 
+    /// <summary>
+    /// Occurs when session update.
+    /// </summary>
     public event EventHandler<SessionUpdateEventArgs>? SessionUpdate;
 
     // FakeAcpAgentConnection is a scripted demo/fallback double: it never asks the client to read or
@@ -111,17 +122,36 @@ public sealed class FakeAcpAgentConnection : IAcpAgentConnection
     // unexpectedly. These five events are required by IAcpAgentConnection and legitimately unused
     // here, not dead code.
 #pragma warning disable CS0067
+    /// <summary>
+    /// Occurs when permission requested.
+    /// </summary>
     public event EventHandler<PermissionRequestEventArgs>? PermissionRequested;
 
+    /// <summary>
+    /// Occurs when elicitation requested.
+    /// </summary>
     public event EventHandler<ElicitationRequestEventArgs>? ElicitationRequested;
 
+    /// <summary>
+    /// Occurs when file read requested.
+    /// </summary>
     public event EventHandler<FileReadRequestEventArgs>? FileReadRequested;
 
+    /// <summary>
+    /// Occurs when file write requested.
+    /// </summary>
     public event EventHandler<FileWriteRequestEventArgs>? FileWriteRequested;
 
+    /// <summary>
+    /// Occurs when disconnected.
+    /// </summary>
     public event EventHandler<Exception?>? Disconnected;
 #pragma warning restore CS0067
 
+    /// <summary>
+    /// Asynchronously releases resources by returning a completed default ValueTask, as no unmanaged or asynchronous cleanup is required for this instance.
+    /// </summary>
+    /// <returns>A value task representing the asynchronous operation.</returns>
     public ValueTask DisposeAsync() => default;
 
     private static IEnumerable<string> SplitIntoChunks(string text)

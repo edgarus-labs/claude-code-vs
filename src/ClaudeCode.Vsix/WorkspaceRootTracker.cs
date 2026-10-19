@@ -12,6 +12,9 @@ internal sealed class WorkspaceRootTracker
     // and a stale read there spawns the agent in the previous project's directory.
     private volatile string? _root;
 
+    /// <summary>
+    /// Gets the root.
+    /// </summary>
     public string? Root => _root;
 
     /// <summary>Raised on the UI thread after <see cref="Root"/> is updated. Deliberately fires for
@@ -19,6 +22,10 @@ internal sealed class WorkspaceRootTracker
     /// whether an unchanged root still matters to it.</summary>
     public event EventHandler? Changed;
 
+    /// <summary>
+    /// Updates the root path and raises the Changed event to notify subscribers of the modification.
+    /// </summary>
+    /// <param name="root">The root.</param>
     public void Update(string? root)
     {
         _root = root;

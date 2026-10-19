@@ -13,14 +13,35 @@ public sealed partial class ChatSessionStateTests
 {
     private static readonly string[] AdvertisedEfforts = { "low", "medium", "high", "xhigh", "max" };
 
+    /// <summary>
+    /// Provides a test double for IEffortClassifier that records classification requests and returns configurable effort levels for each prompt.
+    /// </summary>
     private sealed class FakeEffortClassifier : IEffortClassifier
     {
+        /// <summary>
+        /// Gets the collection of prompts.
+        /// </summary>
         public List<string> Prompts { get; } = [];
+        /// <summary>
+        /// Gets the collection of tokens.
+        /// </summary>
         public List<CancellationToken> Tokens { get; } = [];
+        /// <summary>
+        /// Gets or sets the handler.
+        /// </summary>
         public Func<string, Task<EffortLevel>> Handler { get; set; } = _ => Task.FromResult(EffortLevel.Medium);
         // Set for a judge that, like the real one, ends when its token is cancelled.
+        /// <summary>
+        /// Gets or sets the token handler.
+        /// </summary>
         public Func<string, CancellationToken, Task<EffortLevel>>? TokenHandler { get; set; }
 
+        /// <summary>
+        /// Asynchronously classifies the specified prompt into an effort level by invoking the token-aware handler when configured, otherwise falling back to the default handler, while recording the prompt and cancellation token.
+        /// </summary>
+        /// <param name="prompt">The prompt.</param>
+        /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+        /// <returns>A task representing the asynchronous operation. The task result contains the effort level.</returns>
         public Task<EffortLevel> ClassifyAsync(string prompt, CancellationToken cancellationToken)
         {
             Prompts.Add(prompt);

@@ -6,6 +6,9 @@ using System.Text;
 
 namespace ClaudeCode.Core.ViewModels;
 
+/// <summary>
+/// Represents a view model for a chat message containing role, text content, images, tool calls, and metadata such as pending status, duration, and token usage.
+/// </summary>
 public sealed class ChatMessageViewModel : ObservableObject
 {
     /// <param name="isPending">True for a message sent while an earlier turn is still in
@@ -25,6 +28,9 @@ public sealed class ChatMessageViewModel : ObservableObject
         }
     }
 
+    /// <summary>
+    /// Gets the role.
+    /// </summary>
     public ChatRole Role { get; }
 
     private static int _nextId;
@@ -55,6 +61,9 @@ public sealed class ChatMessageViewModel : ObservableObject
     /// anyone outside can flip back.</summary>
     public void MarkSent() => IsPending = false;
 
+    /// <summary>
+    /// Gets the text.
+    /// </summary>
     public string Text => _text ??= _textBuilder.ToString();
 
     private int? _durationSeconds;
@@ -88,11 +97,18 @@ public sealed class ChatMessageViewModel : ObservableObject
         set => SetProperty(ref _tokensUsed, value);
     }
 
+    /// <summary>
+    /// Gets the tool calls.
+    /// </summary>
     public ObservableCollection<ToolCallCardViewModel> ToolCalls { get; } = new ObservableCollection<ToolCallCardViewModel>();
 
     /// <summary>Text and tool calls in the order they actually happened - see <see cref="ChatMessagePart"/>.</summary>
     public ObservableCollection<ChatMessagePart> Parts { get; } = new ObservableCollection<ChatMessagePart>();
 
+    /// <summary>
+    /// Appends the specified text chunk to the message content while enforcing the markdown length limit, truncating the input and appending a truncation notice once the limit is exceeded, and raising change notification for the Text property.
+    /// </summary>
+    /// <param name="chunk">The chunk.</param>
     public void AppendText(string chunk)
     {
         if (_isTruncated || string.IsNullOrEmpty(chunk))

@@ -52,6 +52,13 @@ public sealed class ElicitationRequestViewModel : ObservableObject
     private bool _submitted;
     private int _currentStep;
 
+    /// <summary>
+    /// Initializes a new instance of the ElicitationRequestViewModel class with the specified message, fields, and response callback, validating parameters and setting up navigation commands.
+    /// </summary>
+    /// <param name="message">The message.</param>
+    /// <param name="fields">The collection of fields.</param>
+    /// <param name="respond">The respond.</param>
+    /// <exception cref="ArgumentNullException">Thrown when an error occurs during execution.</exception>
     public ElicitationRequestViewModel(string message, IReadOnlyList<ElicitationField> fields, Action<ElicitationAnswer> respond)
     {
         if (fields is null)
@@ -78,8 +85,14 @@ public sealed class ElicitationRequestViewModel : ObservableObject
         _nextCommand = new RelayCommand(GoNext, () => CanGoNext);
     }
 
+    /// <summary>
+    /// Gets the message.
+    /// </summary>
     public string Message { get; }
 
+    /// <summary>
+    /// Gets the collection of fields.
+    /// </summary>
     public IReadOnlyList<ElicitationFieldViewModel> Fields { get; }
 
     /// <summary>One line telling the user that the form was cut down to <see cref="MaxFields"/>, or
@@ -89,6 +102,9 @@ public sealed class ElicitationRequestViewModel : ObservableObject
     /// form", so the user has to be able to see which form they are accepting on.</summary>
     public string? TruncationNotice { get; }
 
+    /// <summary>
+    /// Gets the submit command.
+    /// </summary>
     public ICommand SubmitCommand { get; }
 
     /// <summary>Dismisses the form without answering it - the user's only way to refuse a question
@@ -108,6 +124,9 @@ public sealed class ElicitationRequestViewModel : ObservableObject
     /// choice field plus the free-text companions that follow it.</summary>
     public int StepCount => _steps.Count;
 
+    /// <summary>
+    /// Gets a value indicating whether has multiple steps.
+    /// </summary>
     public bool HasMultipleSteps => _steps.Count > 1;
 
     /// <summary>"Question 2 of 3" for a stepped form, or null when there is nothing to step through -
@@ -116,8 +135,14 @@ public sealed class ElicitationRequestViewModel : ObservableObject
         ? string.Format(CultureInfo.InvariantCulture, "Question {0} of {1}", CurrentStepNumber, StepCount)
         : null;
 
+    /// <summary>
+    /// Gets a value indicating whether can go back.
+    /// </summary>
     public bool CanGoBack => _currentStep > 0;
 
+    /// <summary>
+    /// Gets a value indicating whether can go next.
+    /// </summary>
     public bool CanGoNext => _currentStep + 1 < _steps.Count;
 
     /// <summary>True when the card should offer Send: the user is on the last question, or there is
@@ -132,8 +157,14 @@ public sealed class ElicitationRequestViewModel : ObservableObject
     /// there anyway.</summary>
     public ICommand NextCommand => _nextCommand;
 
+    /// <summary>
+    /// Navigates to the previous step in the workflow.
+    /// </summary>
     private void GoBack() => MoveTo(_currentStep - 1);
 
+    /// <summary>
+    /// Advances the current step to the next position in the sequence.
+    /// </summary>
     private void GoNext() => MoveTo(_currentStep + 1);
 
     /// <summary>Groups the (already bounded and truncated) fields into the questions the user is
@@ -231,6 +262,11 @@ public sealed class ElicitationRequestViewModel : ObservableObject
         _respond(new ElicitationAnswer(ElicitationAction.Decline, NoContent));
     }
 
+    /// <summary>
+    /// Retrieves the selected option value from a single-select field, returning it as a single-element array or an empty array if no selection exists.
+    /// </summary>
+    /// <param name="field">The field.</param>
+    /// <returns>A collection of string items.</returns>
     private static string[] SingleSelectValue(ElicitationFieldViewModel field)
     {
         // ElicitationFieldViewModel keeps at most one option selected for a single-select field, so
@@ -239,12 +275,22 @@ public sealed class ElicitationRequestViewModel : ObservableObject
         return selected is null ? Array.Empty<string>() : new[] { selected.Value };
     }
 
+    /// <summary>
+    /// Trims the text value and returns it as a single-element array if non-empty, or an empty array if empty.
+    /// </summary>
+    /// <param name="field">The field.</param>
+    /// <returns>A collection of string items.</returns>
     private static string[] TextValue(ElicitationFieldViewModel field)
     {
         string trimmed = field.TextValue.Trim();
         return trimmed.Length == 0 ? Array.Empty<string>() : new[] { trimmed };
     }
 
+    /// <summary>
+    /// Generates a human-readable description of withheld fields based on the specified count.
+    /// </summary>
+    /// <param name="withheld">The withheld.</param>
+    /// <returns>The string? result.</returns>
     private static string? DescribeWithheldFields(int withheld) => withheld switch
     {
         <= 0 => null,

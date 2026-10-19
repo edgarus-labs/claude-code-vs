@@ -353,6 +353,15 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         return new NewSessionResult(sessionId, ParseConfigOptions(obj));
     }
 
+    /// <summary>
+    /// Asynchronously sends a session/set_config_option request to update a session configuration value and returns the refreshed configuration options, disconnecting and disposing the session if the request fails without an acknowledgement.
+    /// </summary>
+    /// <param name="sessionId">The unique identifier of the session.</param>
+    /// <param name="configId">The unique identifier of the config.</param>
+    /// <param name="value">The value.</param>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the iread only list.</returns>
+    /// <exception cref="AcpProtocolException">Thrown when an error occurs during execution.</exception>
     public async Task<IReadOnlyList<SessionConfigOption>> SetSessionConfigOptionAsync(string sessionId, string configId, string value, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -386,6 +395,13 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
     }
 
+    /// <summary>
+    /// Asynchronously sends a prompt composed of the specified content blocks to the agent session via the ACP &quot;session/prompt&quot; request, returns the terminal stop reason once the turn completes, and raises the TurnEnded session update.
+    /// </summary>
+    /// <param name="sessionId">The unique identifier of the session.</param>
+    /// <param name="content">The collection of content.</param>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the string.</returns>
     public async Task<string> SendPromptAsync(string sessionId, IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken)
     {
         var promptArray = new JsonArray();
@@ -408,6 +424,12 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         return stopReason;
     }
 
+    /// <summary>
+    /// Asynchronously sends a session/cancel notification for the specified session and resolves any outstanding permission requests and elicitation forms for that session as cancelled, even if the notification fails to send.
+    /// </summary>
+    /// <param name="sessionId">The unique identifier of the session.</param>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>A task representing the asynchronous operation.</returns>
     public async Task CancelAsync(string sessionId, CancellationToken cancellationToken)
     {
         // session/cancel is a notification (fire-and-forget); the in-flight session/prompt call for this
@@ -433,8 +455,18 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
     }
 
+    /// <summary>
+    /// Asynchronously disposes the instance by delegating to the overload that applies the configured graceful shutdown timeout.
+    /// </summary>
+    /// <returns>A value task representing the asynchronous operation.</returns>
     public ValueTask DisposeAsync() => DisposeAsync(_gracefulShutdownTimeout);
 
+    /// <summary>
+    /// Asynchronously disposes the ACP agent connection by closing standard input to signal EOF, waiting up to the specified timeout for graceful exit, forcibly terminating the process and its descendant processes if necessary, and throwing a TimeoutException if the stderr subscriber fails to complete during shutdown.
+    /// </summary>
+    /// <param name="gracefulShutdownTimeout">The graceful shutdown timeout.</param>
+    /// <returns>A value task representing the asynchronous operation.</returns>
+    /// <exception cref="TimeoutException">Thrown when an error occurs during execution.</exception>
     internal async ValueTask DisposeAsync(TimeSpan gracefulShutdownTimeout)
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -503,6 +535,12 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
     }
 
+    /// <summary>
+    /// Asynchronously waits for the specified process to exit, returning when the process terminates or when the timeout elapses, whichever occurs first.
+    /// </summary>
+    /// <param name="process">The process.</param>
+    /// <param name="timeout">The timeout.</param>
+    /// <returns>A task representing the asynchronous operation.</returns>
     private static async Task WaitForExitAsync(Process process, TimeSpan timeout)
     {
         if (process.HasExited)
@@ -528,6 +566,10 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
     }
 
+    /// <summary>
+    /// Forcibly terminates the specified process if it is still running, silently ignoring cases where the process has already exited or no longer has an associated live process.
+    /// </summary>
+    /// <param name="process">The process.</param>
     private static void TerminateProcess(Process process)
     {
         try
@@ -547,6 +589,11 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
     }
 
+    /// <summary>
+    /// Tracks a pending permission request for the specified session, adding it to the collection of pending permissions or setting an exception if a permission failure has occurred.
+    /// </summary>
+    /// <param name="sessionId">The unique identifier of the session.</param>
+    /// <param name="args">The args.</param>
     private void TrackPendingPermission(string sessionId, PermissionRequestEventArgs args)
     {
         lock (_permissionGate)
@@ -567,6 +614,11 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
     }
 
+    /// <summary>
+    /// Removes the specified permission request from the pending permissions collection for the given session.
+    /// </summary>
+    /// <param name="sessionId">The unique identifier of the session.</param>
+    /// <param name="args">The args.</param>
     private void UntrackPendingPermission(string sessionId, PermissionRequestEventArgs args)
     {
         lock (_permissionGate)
@@ -582,6 +634,10 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
     }
 
+    /// <summary>
+    /// Cancels all pending permissions for the specified session by setting their results to the cancelled permission option.
+    /// </summary>
+    /// <param name="sessionId">The unique identifier of the session.</param>
     private void CancelPendingPermissions(string sessionId)
     {
         lock (_permissionGate)
@@ -596,6 +652,10 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
     }
 
+    /// <summary>
+    /// Fails all pending permissions by setting the failure cause and propagating the exception to all pending permission requests.
+    /// </summary>
+    /// <param name="cause">The cause.</param>
     private void FailAllPendingPermissions(Exception cause)
     {
         lock (_permissionGate)
@@ -611,6 +671,11 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
     }
 
+    /// <summary>
+    /// Tracks pending elicitation requests for a given session, adding them to the session&apos;s collection or setting an exception if an elicitation failure has occurred.
+    /// </summary>
+    /// <param name="sessionId">The unique identifier of the session.</param>
+    /// <param name="args">The args.</param>
     private void TrackPendingElicitation(string sessionId, ElicitationRequestEventArgs args)
     {
         lock (_elicitationGate)
@@ -631,6 +696,11 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
     }
 
+    /// <summary>
+    /// Removes the specified elicitation request from the pending queue for the given session, and cleans up the session entry if no more requests remain.
+    /// </summary>
+    /// <param name="sessionId">The unique identifier of the session.</param>
+    /// <param name="args">The args.</param>
     private void UntrackPendingElicitation(string sessionId, ElicitationRequestEventArgs args)
     {
         lock (_elicitationGate)
@@ -646,6 +716,10 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
     }
 
+    /// <summary>
+    /// Cancels all pending elicitations for the specified session by setting their results to a cancellation response.
+    /// </summary>
+    /// <param name="sessionId">The unique identifier of the session.</param>
     private void CancelPendingElicitations(string sessionId)
     {
         lock (_elicitationGate)
@@ -660,6 +734,10 @@ public sealed partial class AcpProcessConnection : IAcpAgentConnection
         }
     }
 
+    /// <summary>
+    /// Fails all pending elicitations by setting the specified exception as the failure cause and propagating it to all pending responses.
+    /// </summary>
+    /// <param name="cause">The cause.</param>
     private void FailAllPendingElicitations(Exception cause)
     {
         lock (_elicitationGate)

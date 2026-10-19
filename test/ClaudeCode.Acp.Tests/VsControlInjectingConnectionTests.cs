@@ -202,6 +202,13 @@ public sealed class VsControlInjectingConnectionTests
 
         public Task InitializeAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
+        /// <summary>
+        /// Asynchronously creates a new session in the specified working directory, records the provided MCP server configurations, and returns the initial session result, or throws the preconfigured failure if one is set.
+        /// </summary>
+        /// <param name="cwd">The cwd.</param>
+        /// <param name="mcpServers">The collection of mcp servers.</param>
+        /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+        /// <returns>A task representing the asynchronous operation. The task result contains the new session result.</returns>
         public Task<NewSessionResult> NewSessionAsync(string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken)
         {
             LastMcpServers = mcpServers;
@@ -209,9 +216,23 @@ public sealed class VsControlInjectingConnectionTests
             return Task.FromResult(new NewSessionResult("new", Array.Empty<SessionConfigOption>()));
         }
 
+        /// <summary>
+        /// Asynchronously returns an empty list of session summaries, as no session enumeration is currently implemented for the optional working directory filter.
+        /// </summary>
+        /// <param name="cwd">The cwd.</param>
+        /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+        /// <returns>A task representing the asynchronous operation. The task result contains the iread only list.</returns>
         public Task<IReadOnlyList<SessionSummary>> ListSessionsAsync(string? cwd, CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<SessionSummary>>(Array.Empty<SessionSummary>());
 
+        /// <summary>
+        /// Loads a session with the specified identifier and working directory, records the supplied MCP server configurations, and returns a new session result, or throws the configured load failure if one is set.
+        /// </summary>
+        /// <param name="sessionId">The unique identifier of the session.</param>
+        /// <param name="cwd">The cwd.</param>
+        /// <param name="mcpServers">The collection of mcp servers.</param>
+        /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+        /// <returns>A task representing the asynchronous operation. The task result contains the new session result.</returns>
         public Task<NewSessionResult> LoadSessionAsync(string sessionId, string cwd, IReadOnlyList<McpServerConfig>? mcpServers, CancellationToken cancellationToken)
         {
             LastMcpServers = mcpServers;
@@ -219,31 +240,82 @@ public sealed class VsControlInjectingConnectionTests
             return Task.FromResult(new NewSessionResult(sessionId, Array.Empty<SessionConfigOption>()));
         }
 
+        /// <summary>
+        /// Asynchronously sets the value of the specified configuration option for a session and returns the updated session configuration options, currently yielding an empty collection.
+        /// </summary>
+        /// <param name="sessionId">The unique identifier of the session.</param>
+        /// <param name="configId">The unique identifier of the config.</param>
+        /// <param name="value">The value.</param>
+        /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+        /// <returns>A task representing the asynchronous operation. The task result contains the iread only list.</returns>
         public Task<IReadOnlyList<SessionConfigOption>> SetSessionConfigOptionAsync(string sessionId, string configId, string value, CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<SessionConfigOption>>(Array.Empty<SessionConfigOption>());
 
+        /// <summary>
+        /// Asynchronously sends the specified content blocks as a prompt to the given session and returns a stop reason of &quot;end_turn&quot; to indicate the turn has completed.
+        /// </summary>
+        /// <param name="sessionId">The unique identifier of the session.</param>
+        /// <param name="content">The collection of content.</param>
+        /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+        /// <returns>A task representing the asynchronous operation. The task result contains the string.</returns>
         public Task<string> SendPromptAsync(string sessionId, IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken) => Task.FromResult("end_turn");
 
+        /// <summary>
+        /// Asynchronously cancels the session identified by the specified session ID; this implementation performs no operation and returns a completed task.
+        /// </summary>
+        /// <param name="sessionId">The unique identifier of the session.</param>
+        /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+        /// <returns>A task representing the asynchronous operation.</returns>
         public Task CancelAsync(string sessionId, CancellationToken cancellationToken) => Task.CompletedTask;
 
+        /// <summary>
+        /// Asynchronously rejects the remote control state change request for the specified session by returning a faulted task with a NotSupportedException, indicating that remote control is not supported by this implementation.
+        /// </summary>
+        /// <param name="sessionId">The unique identifier of the session.</param>
+        /// <param name="enabled">The enabled.</param>
+        /// <param name="name">The name.</param>
+        /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+        /// <returns>A task representing the asynchronous operation. The task result contains the remote control state.</returns>
         public Task<RemoteControlState> SetRemoteControlAsync(string sessionId, bool enabled, string? name, CancellationToken cancellationToken) =>
             Task.FromException<RemoteControlState>(new NotSupportedException());
 
         /// <summary>Net handlers currently attached across all six events; zero means the decorator detached.</summary>
         public int HandlerCount { get; private set; }
 
+        /// <summary>
+        /// Occurs when session update.
+        /// </summary>
         public event EventHandler<SessionUpdateEventArgs>? SessionUpdate { add => HandlerCount++; remove => HandlerCount--; }
 
+        /// <summary>
+        /// Occurs when permission requested.
+        /// </summary>
         public event EventHandler<PermissionRequestEventArgs>? PermissionRequested { add => HandlerCount++; remove => HandlerCount--; }
 
+        /// <summary>
+        /// Occurs when elicitation requested.
+        /// </summary>
         public event EventHandler<ElicitationRequestEventArgs>? ElicitationRequested { add => HandlerCount++; remove => HandlerCount--; }
 
+        /// <summary>
+        /// Occurs when file read requested.
+        /// </summary>
         public event EventHandler<FileReadRequestEventArgs>? FileReadRequested { add => HandlerCount++; remove => HandlerCount--; }
 
+        /// <summary>
+        /// Occurs when file write requested.
+        /// </summary>
         public event EventHandler<FileWriteRequestEventArgs>? FileWriteRequested { add => HandlerCount++; remove => HandlerCount--; }
 
+        /// <summary>
+        /// Occurs when disconnected.
+        /// </summary>
         public event EventHandler<Exception?>? Disconnected { add => HandlerCount++; remove => HandlerCount--; }
 
+        /// <summary>
+        /// Asynchronously releases resources by returning a completed ValueTask without performing any additional cleanup work.
+        /// </summary>
+        /// <returns>A value task representing the asynchronous operation.</returns>
         public ValueTask DisposeAsync() => default;
     }
 }

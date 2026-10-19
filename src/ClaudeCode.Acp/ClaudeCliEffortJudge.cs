@@ -23,14 +23,29 @@ namespace ClaudeCode.Acp;
 /// </summary>
 public sealed class ClaudeCliEffortJudge : IEffortClassifier
 {
+    /// <summary>
+    /// The default timeout.
+    /// </summary>
     public static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(15);
+    /// <summary>
+    /// The judge model.
+    /// </summary>
     public const string JudgeModel = "haiku";
+    /// <summary>
+    /// The parse retries.
+    /// </summary>
     private const int ParseRetries = 2;
     // A reply longer than this is discarded whole by the bounded reader, so it reads as an empty one.
     // The CLI is given no output cap of its own: a capped reply that runs over makes it fail instead
     // of returning the label it already wrote first.
+    /// <summary>
+    /// The max reply chars.
+    /// </summary>
     private const int MaxReplyChars = 16 * 1024;
     // Bound on the retained stderr, which is drained so the CLI cannot block on a full pipe, and then dropped.
+    /// <summary>
+    /// The max drained stderr chars.
+    /// </summary>
     private const int MaxDrainedStderrChars = 4 * 1024;
     private static readonly Encoding Utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
 
@@ -45,6 +60,13 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
         if (_timeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(timeout), timeout, "The judgment deadline must be positive.");
     }
 
+    /// <summary>
+    /// Asynchronously classifies the effort level required for a user prompt by rendering and sanitizing the message off the calling thread before delegating to the judge model.
+    /// </summary>
+    /// <param name="prompt">The prompt.</param>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the effort level.</returns>
+    /// <exception cref="ArgumentNullException">Thrown when an error occurs during execution.</exception>
     public async Task<EffortLevel> ClassifyAsync(string prompt, CancellationToken cancellationToken)
     {
         if (prompt is null) throw new ArgumentNullException(nameof(prompt));
@@ -55,6 +77,15 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
 
     // Judges an already rendered user turn. ClassifyAsync bounds a message to a few KB, so this is
     // also how a test hands the judge more than any pipe buffer holds.
+    /// <summary>
+    /// Asynchronously evaluates the effort level of a user&apos;s turn by classifying the message and handling retries and timeouts.
+    /// </summary>
+    /// <param name="user">The user.</param>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the effort level.</returns>
+    /// <exception cref="InvalidDataException">Thrown when an error occurs during execution.</exception>
+    /// <exception cref="InvalidOperationException">Thrown when an error occurs during execution.</exception>
+    /// <exception cref="TimeoutException">Thrown when an error occurs during execution.</exception>
     internal async Task<EffortLevel> JudgeAsync(string user, CancellationToken cancellationToken)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -87,6 +118,12 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
     // Resolving the adapter probes the filesystem in code that cannot observe the token (an
     // unreachable path blocks until the OS gives up), so the deadline is enforced by not waiting for
     // it rather than by asking it to stop.
+    /// <summary>
+    /// Asynchronously executes the specified task while enforcing a cancellation deadline, ensuring the task completes before the deadline expires.
+    /// </summary>
+    /// <param name="work">The work.</param>
+    /// <param name="deadline">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the t.</returns>
     private static async Task<T> WithinDeadlineAsync<T>(Task<T> work, CancellationToken deadline)
     {
         var expired = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -103,6 +140,12 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
         return await work.ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Constructs and returns a list of command-line arguments for the specified executable, including model configuration, system prompt, and fixed parameters.
+    /// </summary>
+    /// <param name="executable">The executable.</param>
+    /// <param name="system">The system.</param>
+    /// <returns>A collection of iread only list items.</returns>
     internal static IReadOnlyList<string> Arguments(AcpExecutableSpec executable, string system)
     {
         var arguments = new List<string>(executable.Arguments)
@@ -120,6 +163,15 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
         return arguments;
     }
 
+    /// <summary>
+    /// Asynchronously executes an external process with the specified parameters and returns its output.
+    /// </summary>
+    /// <param name="executable">The executable.</param>
+    /// <param name="system">The system.</param>
+    /// <param name="user">The user.</param>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the string.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when an error occurs during execution.</exception>
     private static async Task<string> RunAsync(AcpExecutableSpec executable, string system, string user, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -230,6 +282,10 @@ public sealed class ClaudeCliEffortJudge : IEffortClassifier
         }
     }
 
+    /// <summary>
+    /// Terminates the specified process if it is still running, ignoring any errors that occur during termination.
+    /// </summary>
+    /// <param name="process">The process.</param>
     private static void Terminate(Process process)
     {
         try

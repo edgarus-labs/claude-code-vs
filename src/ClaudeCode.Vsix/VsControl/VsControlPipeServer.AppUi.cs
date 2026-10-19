@@ -716,6 +716,13 @@ internal sealed partial class VsControlPipeServer
         && (imagePath.EndsWith(@"\devenv.exe", StringComparison.OrdinalIgnoreCase)
             || string.Equals(imagePath, "devenv.exe", StringComparison.OrdinalIgnoreCase));
 
+    /// <summary>
+    /// Locates exactly one UI Automation element within the specified window by runtime ID, automation ID, or name, and throws an InvalidOperationException if the selector is ambiguous or no matching element is found.
+    /// </summary>
+    /// <param name="hwnd">The hwnd.</param>
+    /// <param name="args">The args.</param>
+    /// <returns>The automation element result.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when an error occurs during execution.</exception>
     private static AutomationElement FindElement(IntPtr hwnd, JObject args)
     {
         var runtimeId = args["runtimeId"]?.Value<string>();
@@ -781,6 +788,14 @@ internal sealed partial class VsControlPipeServer
         return null;
     }
 
+    /// <summary>
+    /// Retrieves the specified UI Automation control pattern from the element, throwing an InvalidOperationException that lists the supported patterns if the pattern is not available.
+    /// </summary>
+    /// <param name="element">The element.</param>
+    /// <param name="pattern">The pattern.</param>
+    /// <param name="action">The action.</param>
+    /// <returns>The t result.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when an error occurs during execution.</exception>
     private static T RequirePattern<T>(AutomationElement element, AutomationPattern pattern, string action) where T : BasePattern
     {
         if (element.TryGetCurrentPattern(pattern, out var found) && found is T typed)
@@ -794,6 +809,14 @@ internal sealed partial class VsControlPipeServer
 
     // Live (Current) reads rather than a CacheRequest: TreeWalker.GetFirstChild/GetNextSibling do not
     // populate the active request for the elements they return, so cached reads throw on every child.
+    /// <summary>
+    /// Converts a UI Automation element and its control-view descendants into a JSON node, capturing runtime identity, state, supported actions, and bounds, while enforcing depth and budget limits and flagging the tree as truncated when descendants are omitted.
+    /// </summary>
+    /// <param name="element">The element.</param>
+    /// <param name="depth">The depth.</param>
+    /// <param name="maxDepth">The max depth.</param>
+    /// <param name="budget">The budget.</param>
+    /// <returns>The jobject result.</returns>
     private static JObject ElementToJson(AutomationElement element, int depth, int maxDepth, ElementBudget budget)
     {
         var current = element.Current;
@@ -873,6 +896,11 @@ internal sealed partial class VsControlPipeServer
         return node;
     }
 
+    /// <summary>
+    /// Builds a JSON representation of a UI Automation element, including its runtime ID, control type, name, automation ID, enabled state, and any supported pattern states such as toggle, value, selection, and expand/collapse.
+    /// </summary>
+    /// <param name="element">The element.</param>
+    /// <returns>The jobject result.</returns>
     private static JObject DescribeElement(AutomationElement element)
     {
         var current = element.Current;
@@ -892,11 +920,26 @@ internal sealed partial class VsControlPipeServer
         return json;
     }
 
+    /// <summary>
+    /// Formats the specified runtime identifier array as a dot-separated string, returning an empty string when the array is null.
+    /// </summary>
+    /// <param name="runtimeId">The unique identifier of the runtime.</param>
+    /// <returns>The string result.</returns>
     private static string FormatRuntimeId(int[]? runtimeId) => runtimeId is null ? string.Empty : string.Join(".", runtimeId);
 
+    /// <summary>
+    /// Returns a friendly name for the specified control type by stripping the &quot;ControlType.&quot; prefix from its programmatic name, or &quot;Unknown&quot; if the control type is null.
+    /// </summary>
+    /// <param name="controlType">The control type.</param>
+    /// <returns>The string result.</returns>
     private static string ControlTypeName(ControlType? controlType) =>
         controlType?.ProgrammaticName.Replace("ControlType.", string.Empty) ?? "Unknown";
 
+    /// <summary>
+    /// Returns a null JSON value if the input string is null or empty; otherwise, returns a new JSON value containing the string.
+    /// </summary>
+    /// <param name="value">The value.</param>
+    /// <returns>The jvalue result.</returns>
     private static JValue NullIfEmpty(string? value) => string.IsNullOrEmpty(value) ? JValue.CreateNull() : new JValue(value);
 
     /// <summary>
@@ -910,10 +953,20 @@ internal sealed partial class VsControlPipeServer
     private static string CapValue(string? value) =>
         VsDebuggerChannelRules.TruncateDebuggeeValue(value, _maxElementValueChars);
 
+    /// <summary>
+    /// Converts a System.Windows.Rect to a JObject, returning an empty JObject if the rectangle is empty, otherwise containing the rectangle&apos;s coordinates and dimensions.
+    /// </summary>
+    /// <param name="rect">The rect.</param>
+    /// <returns>The jobject result.</returns>
     private static JObject RectToJson(System.Windows.Rect rect) => rect.IsEmpty
         ? new JObject()
         : new JObject { ["x"] = (int)rect.X, ["y"] = (int)rect.Y, ["width"] = (int)rect.Width, ["height"] = (int)rect.Height };
 
+    /// <summary>
+    /// Converts a NativeMethods.RECT structure to a JObject containing the rectangle&apos;s position and dimensions.
+    /// </summary>
+    /// <param name="rect">The rect.</param>
+    /// <returns>The jobject result.</returns>
     private static JObject RectToJson(NativeMethods.RECT rect) => new JObject
     {
         ["x"] = rect.Left,
@@ -922,6 +975,10 @@ internal sealed partial class VsControlPipeServer
         ["height"] = rect.Bottom - rect.Top,
     };
 
+    /// <summary>
+    /// Enumerates all top-level windows in the system and returns their handles.
+    /// </summary>
+    /// <returns>A collection of list items.</returns>
     private static List<IntPtr> EnumerateTopLevelWindows()
     {
         var handles = new List<IntPtr>();
@@ -929,6 +986,11 @@ internal sealed partial class VsControlPipeServer
         return handles;
     }
 
+    /// <summary>
+    /// Retrieves the window text associated with the specified window handle.
+    /// </summary>
+    /// <param name="hwnd">The hwnd.</param>
+    /// <returns>The string result.</returns>
     private static string GetWindowText(IntPtr hwnd)
     {
         var buffer = new char[512];
@@ -936,6 +998,11 @@ internal sealed partial class VsControlPipeServer
         return new string(buffer, 0, Math.Max(0, length));
     }
 
+    /// <summary>
+    /// Retrieves the class name of the specified window handle.
+    /// </summary>
+    /// <param name="hwnd">The hwnd.</param>
+    /// <returns>The string result.</returns>
     private static string GetClassName(IntPtr hwnd)
     {
         var buffer = new char[256];
@@ -943,16 +1010,34 @@ internal sealed partial class VsControlPipeServer
         return new string(buffer, 0, Math.Max(0, length));
     }
 
+    /// <summary>
+    /// Represents a collection of platform invoke methods for interacting with native Windows APIs.
+    /// </summary>
     private static class NativeMethods
     {
         public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
+        /// <summary>
+        /// Represents a rectangle defined by its left, top, right, and bottom coordinates.
+        /// </summary>
         [StructLayout(LayoutKind.Sequential)]
         public struct RECT
         {
+            /// <summary>
+            /// The left.
+            /// </summary>
             public int Left;
+            /// <summary>
+            /// The top.
+            /// </summary>
             public int Top;
+            /// <summary>
+            /// The right.
+            /// </summary>
             public int Right;
+            /// <summary>
+            /// The bottom.
+            /// </summary>
             public int Bottom;
         }
 

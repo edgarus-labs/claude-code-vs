@@ -9,12 +9,22 @@ using System.Threading.Tasks;
 
 namespace ClaudeCode.Vsix.Connections;
 
+/// <summary>
+/// Represents a factory for creating and managing connections to the ClaudeCode agent with the specified configuration options.
+/// </summary>
 internal sealed class ClaudeCodeConnectionFactory : IAcpAgentConnectionFactory
 {
     private readonly Func<ClaudeCodeOptionsPage> _optionsProvider;
     private readonly Func<string?> _workingDirectoryProvider;
     private readonly VsControlSessionRegistry _vsControlSessionRegistry;
 
+    /// <summary>
+    /// Initializes a new instance of the ClaudeCodeConnectionFactory class with the specified providers and registry, validating that none are null.
+    /// </summary>
+    /// <param name="optionsProvider">The options provider.</param>
+    /// <param name="workingDirectoryProvider">The working directory provider.</param>
+    /// <param name="vsControlSessionRegistry">The vs control session registry.</param>
+    /// <exception cref="ArgumentNullException">Thrown when an error occurs during execution.</exception>
     public ClaudeCodeConnectionFactory(
         Func<ClaudeCodeOptionsPage> optionsProvider,
         Func<string?> workingDirectoryProvider,
@@ -25,6 +35,12 @@ internal sealed class ClaudeCodeConnectionFactory : IAcpAgentConnectionFactory
         _vsControlSessionRegistry = vsControlSessionRegistry ?? throw new ArgumentNullException(nameof(vsControlSessionRegistry));
     }
 
+    /// <summary>
+    /// Asynchronously establishes a connection to the Claude ACP agent by resolving the adapter executable, launching the process, and returning the connection object.
+    /// </summary>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the iacp agent connection.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when an error occurs during execution.</exception>
     public async Task<IAcpAgentConnection> ConnectAsync(CancellationToken cancellationToken)
     {
         // GetDialogPage (behind _optionsProvider) is UI-thread affine: read the option values here,

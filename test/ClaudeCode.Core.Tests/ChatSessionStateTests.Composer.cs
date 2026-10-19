@@ -1110,6 +1110,11 @@ public sealed partial class ChatSessionStateTests
     {
         private readonly Dictionary<string, Queue<TaskCompletionSource<string>>> _pending = [];
 
+        /// <summary>
+        /// Enqueues a new pending completion source keyed by the text of the first text block in the content, and returns its task so the caller can await a response released for that prompt.
+        /// </summary>
+        /// <param name="content">The collection of content.</param>
+        /// <returns>A task representing the asynchronous operation. The task result contains the string.</returns>
         public Task<string> Handle(IReadOnlyList<ContentBlock> content)
         {
             // Keyed by the prompt's text alone, so a prompt carrying attachments is released the same way.
@@ -1123,6 +1128,11 @@ public sealed partial class ChatSessionStateTests
         /// <summary>Returns the oldest pending prompt with this text, with the agent's stop reason.</summary>
         public void Complete(string text, string stopReason = "end_turn") => _pending[text].Dequeue().SetResult(stopReason);
 
+        /// <summary>
+        /// Faults the oldest pending request associated with the specified text by setting the provided exception on its completion source.
+        /// </summary>
+        /// <param name="text">The text.</param>
+        /// <param name="error">The error.</param>
         public void Fail(string text, Exception error) => _pending[text].Dequeue().SetException(error);
     }
 

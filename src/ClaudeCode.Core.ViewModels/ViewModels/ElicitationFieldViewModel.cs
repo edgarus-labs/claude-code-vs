@@ -10,6 +10,12 @@ namespace ClaudeCode.Core.ViewModels;
 /// invariant for its options: a single-select field never holds more than one selected option.</summary>
 public sealed class ElicitationFieldViewModel : ObservableObject
 {
+    /// <summary>
+    /// Initializes a new instance of the ElicitationFieldViewModel class with the specified field and display text budget, validating the field parameter and initializing properties with truncated text and options.
+    /// </summary>
+    /// <param name="field">The field.</param>
+    /// <param name="budget">The budget.</param>
+    /// <exception cref="ArgumentNullException">Thrown when an error occurs during execution.</exception>
     internal ElicitationFieldViewModel(ElicitationField field, ElicitationRequestViewModel.DisplayTextBudget budget)
     {
         if (field is null)
@@ -28,12 +34,24 @@ public sealed class ElicitationFieldViewModel : ObservableObject
             .ToList();
     }
 
+    /// <summary>
+    /// Gets the key.
+    /// </summary>
     public string Key { get; }
 
+    /// <summary>
+    /// Gets the title.
+    /// </summary>
     public string? Title { get; }
 
+    /// <summary>
+    /// Gets the description.
+    /// </summary>
     public string? Description { get; }
 
+    /// <summary>
+    /// Gets the kind.
+    /// </summary>
     public ElicitationFieldKind Kind { get; }
 
     /// <summary>Fixed for the lifetime of the form; only each option's <see cref="ElicitationOptionViewModel.IsSelected"/> changes.</summary>

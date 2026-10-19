@@ -12,6 +12,9 @@ public enum EffortLevel
     High = 2,
 }
 
+/// <summary>
+/// Provides extension methods for converting effort level values into the string representation expected by the agent.
+/// </summary>
 public static class EffortLevelExtensions
 {
     /// <summary>The value the agent uses for this level: the one place a level becomes a string, so

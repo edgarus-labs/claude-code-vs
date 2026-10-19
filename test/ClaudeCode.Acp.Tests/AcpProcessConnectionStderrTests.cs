@@ -85,10 +85,20 @@ public sealed class AcpProcessConnectionStderrTests
         }
     }
 
+    /// <summary>
+    /// Represents a private trace listener that captures written trace messages into a thread-safe collection for later inspection in tests.
+    /// </summary>
     private sealed class CollectingTraceListener : TraceListener
     {
+        /// <summary>
+        /// Gets the messages.
+        /// </summary>
         public ConcurrentBag<string> Messages { get; } = new ConcurrentBag<string>();
 
+        /// <summary>
+        /// Writes the specified message to the in-memory collection of messages, ignoring null values.
+        /// </summary>
+        /// <param name="message">The message.</param>
         public override void Write(string? message)
         {
             if (message is not null)
@@ -97,6 +107,10 @@ public sealed class AcpProcessConnectionStderrTests
             }
         }
 
+        /// <summary>
+        /// Writes the specified message to the output followed by a line terminator, delegating to the base write operation.
+        /// </summary>
+        /// <param name="message">The message.</param>
         public override void WriteLine(string? message) => Write(message);
     }
 }

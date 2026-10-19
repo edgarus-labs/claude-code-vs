@@ -5,6 +5,9 @@ using System.Threading.Tasks;
 
 namespace ClaudeCode.Core.ViewModels;
 
+/// <summary>
+/// Defines a contract for managing chat session operations including document handling, authentication, and remote control capabilities.
+/// </summary>
 public interface IChatSessionServices
 {
     IAcpAgentConnectionFactory ConnectionFactory { get; }
@@ -12,6 +15,8 @@ public interface IChatSessionServices
     IAcpAuthService AuthService { get; }
 
     IUsageService UsageService { get; }
+
+    IAcpAdapterInstaller? AdapterInstaller { get; }
 
     string? WorkspaceRoot { get; }
 
@@ -62,4 +67,6 @@ public interface IChatSessionServices
     /// other clients), not only Visual Studio. Returns false if the user declines or cancels.
     /// </summary>
     Task<bool> ConfirmSignOutEverywhereAsync(CancellationToken cancellationToken);
+
+    void CopyToClipboard(string text);
 }

@@ -11,6 +11,9 @@ namespace ClaudeCode.Acp;
 /// </summary>
 public static class AcpLauncherWrap
 {
+    /// <summary>
+    /// The package entry suffix.
+    /// </summary>
     private const string PackageEntrySuffix = "/@agentclientprotocol/claude-agent-acp/dist/index.js";
 
     /// <summary>

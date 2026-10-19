@@ -13,6 +13,12 @@ namespace ClaudeCode.Vsix;
 /// </summary>
 internal static class EditorCaret
 {
+    /// <summary>
+    /// Moves the caret of the specified text view to the start of the given one-based line number, clamping out-of-range values to the buffer&apos;s valid line range, and scrolls the view to make that line visible.
+    /// </summary>
+    /// <param name="textView">The text view.</param>
+    /// <param name="textBuffer">The text buffer.</param>
+    /// <param name="line">The line.</param>
     internal static void MoveToLine(IWpfTextView textView, ITextBuffer textBuffer, int line)
     {
         var snapshot = textBuffer.CurrentSnapshot;

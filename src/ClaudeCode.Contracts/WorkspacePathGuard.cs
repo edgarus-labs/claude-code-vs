@@ -195,8 +195,19 @@ public static class WorkspacePathGuard
     internal static string LongPathSafe(string path) =>
         path.Length < MaxPath || path.StartsWith(@"\\", StringComparison.Ordinal) ? path : @"\\?\" + path;
 
+    /// <summary>
+    /// Determines whether the specified character is a path separator recognized on Windows, which is either a backslash or a forward slash.
+    /// </summary>
+    /// <param name="value">The value.</param>
+    /// <returns>true if the condition is met; otherwise, false.</returns>
     private static bool IsWindowsSeparator(char value) => value == '\\' || value == '/';
 
+    /// <summary>
+    /// Attempts to resolve the final path for the specified path, returning true if successful and setting the finalPath parameter to the resolved path.
+    /// </summary>
+    /// <param name="path">The path.</param>
+    /// <param name="finalPath">The final path.</param>
+    /// <returns>true if the condition is met; otherwise, false.</returns>
     private static bool TryGetFinalPath(string path, out string finalPath)
     {
         finalPath = string.Empty;
@@ -241,10 +252,25 @@ public static class WorkspacePathGuard
         return true;
     }
 
+    /// <summary>
+    /// The file share read write delete.
+    /// </summary>
     private const uint FileShareReadWriteDelete = 0x00000001 | 0x00000002 | 0x00000004;
+    /// <summary>
+    /// The open existing.
+    /// </summary>
     private const uint OpenExisting = 3;
+    /// <summary>
+    /// The file flag backup semantics.
+    /// </summary>
     private const uint FileFlagBackupSemantics = 0x02000000;
+    /// <summary>
+    /// The max path.
+    /// </summary>
     private const int MaxPath = 260;
+    /// <summary>
+    /// The invalid file attributes.
+    /// </summary>
     private const uint InvalidFileAttributes = 0xFFFFFFFF;
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, ExactSpelling = true)]
@@ -267,6 +293,12 @@ public static class WorkspacePathGuard
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, ExactSpelling = true)]
     private static extern uint GetFileAttributesW(string lpFileName);
 
+    /// <summary>
+    /// Converts the specified path to a UTF-8 encoded byte array with a null terminator, throwing an ArgumentException if the path contains a null character.
+    /// </summary>
+    /// <param name="path">The path.</param>
+    /// <returns>A collection of byte items.</returns>
+    /// <exception cref="ArgumentException">Thrown when an error occurs during execution.</exception>
     internal static byte[] GetUnixPathBytes(string path)
     {
         if (path.IndexOf('\0') >= 0) throw new ArgumentException("Filesystem paths cannot contain NUL.", nameof(path));

@@ -11,6 +11,13 @@ public sealed class ElicitationOptionViewModel : ObservableObject
 {
     private readonly ElicitationFieldViewModel _owner;
 
+    /// <summary>
+    /// Initializes a new instance of the ElicitationOptionViewModel class with the specified elicitation option, owner, and display text budget, validating the owner parameter and truncating label and description text as needed.
+    /// </summary>
+    /// <param name="option">The option.</param>
+    /// <param name="owner">The owner.</param>
+    /// <param name="budget">The budget.</param>
+    /// <exception cref="ArgumentNullException">Thrown when an error occurs during execution.</exception>
     internal ElicitationOptionViewModel(ElicitationOption option, ElicitationFieldViewModel owner, ElicitationRequestViewModel.DisplayTextBudget budget)
     {
         _owner = owner ?? throw new ArgumentNullException(nameof(owner));
@@ -22,12 +29,21 @@ public sealed class ElicitationOptionViewModel : ObservableObject
     /// <summary>The identifier sent back to the agent - never truncated for display.</summary>
     public string Value { get; }
 
+    /// <summary>
+    /// Gets the label.
+    /// </summary>
     public string Label { get; }
 
+    /// <summary>
+    /// Gets the description.
+    /// </summary>
     public string? Description { get; }
 
     private bool _isSelected;
 
+    /// <summary>
+    /// Gets or sets a value indicating whether is selected.
+    /// </summary>
     public bool IsSelected
     {
         get => _isSelected;

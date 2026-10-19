@@ -110,18 +110,52 @@ public sealed class JsonRpcConnectionBackpressureTests
         public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
             _inner.ReadAsync(buffer, cancellationToken);
 
+        /// <summary>
+        /// Sets the current position within the underlying stream by delegating the seek operation to the wrapped inner stream.
+        /// </summary>
+        /// <param name="offset">The offset.</param>
+        /// <param name="origin">The origin.</param>
+        /// <returns>The long result.</returns>
         public override long Seek(long offset, SeekOrigin origin) => _inner.Seek(offset, origin);
 
+        /// <summary>
+        /// Sets the length of the underlying stream by delegating the operation to the wrapped inner stream.
+        /// </summary>
+        /// <param name="value">The value.</param>
         public override void SetLength(long value) => _inner.SetLength(value);
 
+        /// <summary>
+        /// Writes a sequence of bytes from the specified buffer to the underlying inner stream, starting at the given offset and spanning the specified number of bytes.
+        /// </summary>
+        /// <param name="buffer">The collection of buffer.</param>
+        /// <param name="offset">The offset.</param>
+        /// <param name="count">The count.</param>
         public override void Write(byte[] buffer, int offset, int count) => _inner.Write(buffer, offset, count);
 
+        /// <summary>
+        /// Asynchronously writes a specified number of bytes from the buffer, starting at the given offset, to the underlying stream.
+        /// </summary>
+        /// <param name="buffer">The collection of buffer.</param>
+        /// <param name="offset">The offset.</param>
+        /// <param name="count">The count.</param>
+        /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+        /// <returns>A task representing the asynchronous operation.</returns>
         public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
             _inner.WriteAsync(buffer, offset, count, cancellationToken);
 
+        /// <summary>
+        /// Asynchronously writes the specified bytes to the underlying stream by delegating the operation to the wrapped inner stream.
+        /// </summary>
+        /// <param name="buffer">The buffer.</param>
+        /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+        /// <returns>A value task representing the asynchronous operation.</returns>
         public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default) =>
             _inner.WriteAsync(buffer, cancellationToken);
 
+        /// <summary>
+        /// Releases the wrapper&apos;s disposed state while deliberately leaving the underlying inner stream open, so that closing this wrapper does not reliably unblock an in-flight write.
+        /// </summary>
+        /// <param name="disposing">The disposing.</param>
         protected override void Dispose(bool disposing)
         {
             // Deliberately does NOT dispose/complete the inner stream - simulating a Stream type

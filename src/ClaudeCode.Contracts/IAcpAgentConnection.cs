@@ -5,6 +5,9 @@ using System.Threading.Tasks;
 
 namespace ClaudeCode.Contracts;
 
+/// <summary>
+/// Defines a contract for managing asynchronous connections to ACP agents, including session management and prompt execution.
+/// </summary>
 public interface IAcpAgentConnection : IAsyncDisposable
 {
     bool IsInitialized { get; }

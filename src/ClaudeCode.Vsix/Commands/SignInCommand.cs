@@ -6,9 +6,17 @@ using System.Threading.Tasks;
 
 namespace ClaudeCode.Vsix.Commands;
 
+/// <summary>
+/// Represents a command to authenticate a user with the provided credentials.
+/// </summary>
 [Command(PackageGuids.ClaudeCodeCommandSetString, PackageIds.SignInCommand)]
 internal sealed class SignInCommand : BaseCommand<SignInCommand>
 {
+    /// <summary>
+    /// Asynchronously executes the CLI sign-in process, displaying progress and handling success, cancellation, or failure scenarios.
+    /// </summary>
+    /// <param name="e">The e.</param>
+    /// <returns>A task representing the asynchronous operation.</returns>
     protected override async Task ExecuteAsync(OleMenuCmdEventArgs e)
     {
         var authService = ClaudeCodeServices.AuthService;
@@ -38,6 +46,10 @@ internal sealed class SignInCommand : BaseCommand<SignInCommand>
         }
     }
 
+    /// <summary>
+    /// Enables or disables the command based on whether the authentication service is currently signing in.
+    /// </summary>
+    /// <param name="e">The e.</param>
     protected override void BeforeQueryStatus(EventArgs e)
     {
         Command.Enabled = ClaudeCodeServices.AuthService?.CurrentState != AuthState.SigningIn;
