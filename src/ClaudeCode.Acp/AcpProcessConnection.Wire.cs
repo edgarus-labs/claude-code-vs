@@ -611,6 +611,11 @@ public sealed partial class AcpProcessConnection
             && GetOptionalString(claudeCode, "toolName") is "Agent" or "Task",
     };
 
+    /// <summary>
+    /// Parses a tool call status string into the corresponding ToolCallStatus value, defaulting to Pending for null or unrecognized input.
+    /// </summary>
+    /// <param name="status">The status.</param>
+    /// <returns>The tool call status result.</returns>
     private static ToolCallStatus ParseToolCallStatus(string? status) => status switch
     {
         "pending" => ToolCallStatus.Pending,
@@ -620,6 +625,11 @@ public sealed partial class AcpProcessConnection
         _ => ToolCallStatus.Pending,
     };
 
+    /// <summary>
+    /// Parses a JSON array of tool call content nodes into a read-only list of ToolCallContent instances, skipping any non-object entries and returning an empty collection when the input is null or empty.
+    /// </summary>
+    /// <param name="array">The array.</param>
+    /// <returns>A collection of iread only list items.</returns>
     private static IReadOnlyList<ToolCallContent> ParseToolCallContentArray(JsonArray? array)
     {
         if (array is null || array.Count == 0)
@@ -639,6 +649,12 @@ public sealed partial class AcpProcessConnection
         return list;
     }
 
+    /// <summary>
+    /// Parses tool call location entries and search result metadata to extract a read-only list of distinct file paths, returning an empty collection when none are found.
+    /// </summary>
+    /// <param name="locations">The locations.</param>
+    /// <param name="meta">The meta.</param>
+    /// <returns>A collection of iread only list items.</returns>
     private static IReadOnlyList<string> ParseToolCallLocationPaths(JsonArray? locations, JsonObject? meta)
     {
         var list = new List<string>();
@@ -662,6 +678,11 @@ public sealed partial class AcpProcessConnection
     // _meta.claudeCode.toolResponse - `filenames` for Glob and Grep's file
     // modes, and for Grep's default content mode only "path:line:text" lines (count mode:
     // "path:count"). Other tools' toolResponse has other shapes and is not read here.
+    /// <summary>
+    /// Extracts file paths from the PostToolUse metadata of Glob and Grep tool responses and appends them to the supplied list.
+    /// </summary>
+    /// <param name="meta">The meta.</param>
+    /// <param name="paths">The collection of paths.</param>
     private static void AddSearchResultPaths(JsonObject? meta, List<string> paths)
     {
         if (meta?["claudeCode"] is not JsonObject claudeCode
@@ -699,6 +720,11 @@ public sealed partial class AcpProcessConnection
     // carry no path to take.
     private static readonly Regex GrepLinePathPrefix = new Regex(@"^(.+?):\d+(?::|\r?$)", RegexOptions.CultureInvariant);
 
+    /// <summary>
+    /// Parses a JSON object representing ACP tool call content into a ToolCallContent, mapping diff entries to path and old/new text, rendering embedded terminal references as a readable placeholder, and extracting text from content blocks.
+    /// </summary>
+    /// <param name="obj">The obj.</param>
+    /// <returns>The tool call content result.</returns>
     private static ToolCallContent ParseToolCallContent(JsonObject obj)
     {
         string type = GetOptionalString(obj, "type") ?? "content";
@@ -726,6 +752,11 @@ public sealed partial class AcpProcessConnection
         }
     }
 
+    /// <summary>
+    /// Extracts plain text from an MCP content block, returning the text for &quot;text&quot; blocks, the URI for &quot;resource_link&quot; blocks, and null for unsupported block types such as images, audio, or embedded resources.
+    /// </summary>
+    /// <param name="block">The block.</param>
+    /// <returns>The string? result.</returns>
     private static string? ExtractTextFromContentBlock(JsonObject block) => GetOptionalString(block, "type") switch
     {
         "text" => GetOptionalString(block, "text"),
@@ -736,6 +767,12 @@ public sealed partial class AcpProcessConnection
 
     // ---- outbound: client -> agent prompt content ----
 
+    /// <summary>
+    /// Converts a strongly typed content block into its JSON wire representation for transmission to the agent, and throws a NotSupportedException for unrecognized block types.
+    /// </summary>
+    /// <param name="block">The block.</param>
+    /// <returns>The json object result.</returns>
+    /// <exception cref="NotSupportedException">Thrown when an error occurs during execution.</exception>
     private static JsonObject ToWireContentBlock(ContentBlock block) => block switch
     {
         ContentBlock.Text t => new JsonObject { ["type"] = "text", ["text"] = t.Value },
@@ -745,6 +782,11 @@ public sealed partial class AcpProcessConnection
         _ => throw new NotSupportedException($"Unsupported ContentBlock type: {block.GetType()}"),
     };
 
+    /// <summary>
+    /// Converts an embedded text resource to a JSON object with type, URI, text, and optional MIME type.
+    /// </summary>
+    /// <param name="resource">The resource.</param>
+    /// <returns>The json object result.</returns>
     private static JsonObject ToWireEmbeddedTextResource(ContentBlock.EmbeddedTextResource resource)
     {
         var contents = new JsonObject { ["uri"] = resource.Uri, ["text"] = resource.Text };
@@ -756,6 +798,11 @@ public sealed partial class AcpProcessConnection
         return new JsonObject { ["type"] = "resource", ["resource"] = contents };
     }
 
+    /// <summary>
+    /// Constructs a JSON array containing server configurations, including environment variables and command arguments.
+    /// </summary>
+    /// <param name="servers">The collection of servers.</param>
+    /// <returns>The json array result.</returns>
     private static JsonArray BuildMcpServersArray(IReadOnlyList<McpServerConfig>? servers)
     {
         var array = new JsonArray();
@@ -790,6 +837,13 @@ public sealed partial class AcpProcessConnection
         return array;
     }
 
+    /// <summary>
+    /// Validates and parses session configuration options from a JSON response, throwing an AcpProtocolException for invalid or missing data.
+    /// </summary>
+    /// <param name="response">The response.</param>
+    /// <param name="required">The required.</param>
+    /// <returns>A collection of iread only list items.</returns>
+    /// <exception cref="AcpProtocolException">Thrown when an error occurs during execution.</exception>
     private static IReadOnlyList<SessionConfigOption> ParseConfigOptions(JsonObject response, bool required = false)
     {
         JsonArray configOptions;
@@ -864,6 +918,12 @@ public sealed partial class AcpProcessConnection
         return result;
     }
 
+    /// <summary>
+    /// Validates and parses a JSON node into a SessionConfigValue object, throwing an AcpProtocolException if the node is not a valid JSON object.
+    /// </summary>
+    /// <param name="node">The node.</param>
+    /// <returns>The session config value result.</returns>
+    /// <exception cref="AcpProtocolException">Thrown when an error occurs during execution.</exception>
     private static SessionConfigValue ParseConfigValue(JsonNode? node)
     {
         var value = node as JsonObject ?? throw new AcpProtocolException("Invalid session config value.");
@@ -872,15 +932,41 @@ public sealed partial class AcpProcessConnection
 
     // ---- small JSON accessor helpers ----
 
+    /// <summary>
+    /// Validates that the specified JSON node is a JSON object and throws an exception if it is not.
+    /// </summary>
+    /// <param name="node">The node.</param>
+    /// <param name="context">The context.</param>
+    /// <returns>The json object result.</returns>
+    /// <exception cref="AcpRemoteException">Thrown when an error occurs during execution.</exception>
     private static JsonObject RequireObject(JsonNode? node, string context) =>
         node as JsonObject ?? throw new AcpRemoteException(-32602, $"Invalid params for {context}: expected a JSON object.");
 
+    /// <summary>
+    /// Retrieves the required string property from the JSON object, throwing an exception if the property is missing or invalid.
+    /// </summary>
+    /// <param name="obj">The obj.</param>
+    /// <param name="property">The property.</param>
+    /// <returns>The string result.</returns>
+    /// <exception cref="AcpProtocolException">Thrown when an error occurs during execution.</exception>
     private static string GetRequiredString(JsonObject obj, string property) =>
         GetOptionalString(obj, property) ?? throw new AcpProtocolException($"Missing or invalid required '{property}' field.");
 
+    /// <summary>
+    /// Attempts to retrieve an optional string value from a JSON object property.
+    /// </summary>
+    /// <param name="obj">The obj.</param>
+    /// <param name="property">The property.</param>
+    /// <returns>The string? result.</returns>
     private static string? GetOptionalString(JsonObject obj, string property) =>
         obj.TryGetPropertyValue(property, out var node) && node is JsonValue value && value.TryGetValue<string>(out var s) ? s : null;
 
+    /// <summary>
+    /// Attempts to retrieve an optional integer value from a JSON object property, supporting int, long, and double types, and returns null if the property is missing or not convertible.
+    /// </summary>
+    /// <param name="obj">The obj.</param>
+    /// <param name="property">The property.</param>
+    /// <returns>The int? result.</returns>
     private static int? GetOptionalInt(JsonObject obj, string property)
     {
         if (!obj.TryGetPropertyValue(property, out var node) || node is not JsonValue value)

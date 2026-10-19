@@ -2,8 +2,14 @@ using System.Collections.Generic;
 
 namespace ClaudeCode.VsControl.Mcp;
 
+/// <summary>
+/// Provides a static catalog of the Visual Studio control tool definitions available for registration and discovery.
+/// </summary>
 public static class VsControlToolCatalog
 {
+    /// <summary>
+    /// Gets the collection of tools.
+    /// </summary>
     public static IReadOnlyList<VsControlToolDefinition> Tools { get; } = new List<VsControlToolDefinition>
     {
         new(

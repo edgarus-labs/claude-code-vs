@@ -62,6 +62,13 @@ internal sealed class AcpAuthService : IAcpAuthService
         return state == AuthState.SignedIn;
     }
 
+    /// <summary>
+    /// Asynchronously verifies native Claude CLI sign-in status without reading or modifying credentials, returning normally when authenticated and otherwise updating the authentication state and throwing an InvalidOperationException with login guidance.
+    /// </summary>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <param name="progress">The progress.</param>
+    /// <returns>A task representing the asynchronous operation.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when an error occurs during execution.</exception>
     public async Task SignInAsync(CancellationToken cancellationToken, IProgress<string>? progress = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -99,6 +106,11 @@ internal sealed class AcpAuthService : IAcpAuthService
         throw new InvalidOperationException(detail);
     }
 
+    /// <summary>
+    /// Signs out of the Visual Studio extension by resetting its displayed authentication state to signed out, leaving the shared native Claude credentials unchanged.
+    /// </summary>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>A task representing the asynchronous operation.</returns>
     public Task SignOutAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -107,6 +119,12 @@ internal sealed class AcpAuthService : IAcpAuthService
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// Asynchronously launches a visible console window running the ACP adapter&apos;s interactive login flow, then re-probes the sign-in status and returns the resulting authentication outcome.
+    /// </summary>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <param name="progress">The progress.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the auth command outcome.</returns>
     public async Task<AuthCommandOutcome> LaunchInteractiveLoginAsync(CancellationToken cancellationToken, IProgress<string>? progress = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -130,6 +148,11 @@ internal sealed class AcpAuthService : IAcpAuthService
         return AcpAuthCommandOutcomes.ForLogin(CurrentState, exitCode.Value);
     }
 
+    /// <summary>
+    /// Asynchronously launches a bounded, hidden `auth logout` process for the resolved ACP adapter, returning the resulting outcome and transitioning the cached authentication state to signed out on success.
+    /// </summary>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the auth command outcome.</returns>
     public async Task<AuthCommandOutcome> LaunchInteractiveLogoutAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -169,6 +192,11 @@ internal sealed class AcpAuthService : IAcpAuthService
         return outcome;
     }
 
+    /// <summary>
+    /// Asynchronously resolves the ACP executable specification by switching to the UI thread to read the configured adapter path override, falling back to the default executable resolution when no override is set.
+    /// </summary>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the acp executable spec?.</returns>
     private async Task<AcpExecutableSpec?> ResolveExecutableAsync(CancellationToken cancellationToken)
     {
         // The options callback uses GetDialogPage, which is UI-thread affine.
@@ -269,6 +297,12 @@ internal sealed class AcpAuthService : IAcpAuthService
         }
     }
 
+    /// <summary>
+    /// Attempts to start the specified process and returns a value indicating success, logging an error to the activity log if the start fails or throws a Win32 or invalid operation exception.
+    /// </summary>
+    /// <param name="process">The process.</param>
+    /// <param name="description">The description.</param>
+    /// <returns>true if the condition is met; otherwise, false.</returns>
     private static bool TryStart(Process process, string description)
     {
         try
@@ -288,6 +322,12 @@ internal sealed class AcpAuthService : IAcpAuthService
         return false;
     }
 
+    /// <summary>
+    /// Asynchronously reads the stream content while maintaining a bounded tail of the specified maximum characters.
+    /// </summary>
+    /// <param name="reader">The reader.</param>
+    /// <param name="maxCharacters">The max characters.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the string.</returns>
     private static async Task<string> ReadBoundedTailAsync(StreamReader reader, int maxCharacters)
     {
         var buffer = new char[1024];
@@ -305,6 +345,12 @@ internal sealed class AcpAuthService : IAcpAuthService
         return output.ToString();
     }
 
+    /// <summary>
+    /// Asynchronously reads the native authentication status by executing the specified executable and parsing the output.
+    /// </summary>
+    /// <param name="executable">The executable.</param>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the auth state.</returns>
     private static async Task<AuthState> ReadNativeStatusAsync(AcpExecutableSpec executable, CancellationToken cancellationToken)
     {
         var arguments = AcpAuthCliArguments.Status(executable);
@@ -382,6 +428,12 @@ internal sealed class AcpAuthService : IAcpAuthService
         }
     }
 
+    /// <summary>
+    /// Asynchronously reads the status output from the specified stream reader, appending the content to a string builder until the end of the stream is reached or the maximum character limit is exceeded.
+    /// </summary>
+    /// <param name="reader">The reader.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the string.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when an error occurs during execution.</exception>
     private static async Task<string> ReadStatusOutputAsync(StreamReader reader)
     {
         const int maxCharacters = 64 * 1024;
@@ -403,6 +455,10 @@ internal sealed class AcpAuthService : IAcpAuthService
 
     // .NET Framework lacks Kill(entireProcessTree). Target only this freshly spawned process and
     // its native CLI child, never other Claude processes or user sessions.
+    /// <summary>
+    /// Asynchronously terminates the specified process and its native CLI child process using taskkill.exe, with a fallback to direct process termination if the cleanup fails.
+    /// </summary>
+    /// <param name="process">The process.</param>
     private static void KillProcessTree(Process process)
     {
         try
@@ -448,6 +504,11 @@ internal sealed class AcpAuthService : IAcpAuthService
         }
     }
 
+    /// <summary>
+    /// Updates the current authentication state and invokes the StateChanged event with the new state and optional detail.
+    /// </summary>
+    /// <param name="state">The state.</param>
+    /// <param name="detail">The detail.</param>
     private void SetState(AuthState state, string? detail = null)
     {
         lock (_stateLock)

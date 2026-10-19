@@ -13,7 +13,13 @@ namespace ClaudeCode.Core.ViewModels;
 /// </summary>
 public static class ToolDisplayName
 {
+    /// <summary>
+    /// The mcp prefix.
+    /// </summary>
     private const string McpPrefix = "mcp__";
+    /// <summary>
+    /// The mcp separator.
+    /// </summary>
     private const string McpSeparator = "__";
 
     /// <summary>
@@ -98,6 +104,11 @@ public static class ToolDisplayName
         return string.Join("\n", lines).Trim();
     }
 
+    /// <summary>
+    /// Truncates the input string to the maximum display length while preserving surrogate pairs and appending an ellipsis.
+    /// </summary>
+    /// <param name="value">The value.</param>
+    /// <returns>The string result.</returns>
     private static string Cap(string value)
     {
         if (value.Length <= MaxDisplayLength)
@@ -192,9 +203,19 @@ public static class ToolDisplayName
         }
     }
 
+    /// <summary>
+    /// Determines whether the specified word is an acronym by checking if it is longer than one character and consists entirely of uppercase letters.
+    /// </summary>
+    /// <param name="word">The word.</param>
+    /// <returns>true if the condition is met; otherwise, false.</returns>
     private static bool IsAcronym(string word) =>
         word.Length > 1 && IsAllUpper(word);
 
+    /// <summary>
+    /// Determines whether the specified word contains only uppercase characters.
+    /// </summary>
+    /// <param name="word">The word.</param>
+    /// <returns>true if the condition is met; otherwise, false.</returns>
     private static bool IsAllUpper(string word)
     {
         foreach (char c in word)
@@ -208,6 +229,11 @@ public static class ToolDisplayName
         return true;
     }
 
+    /// <summary>
+    /// Capitalizes the first character of the input string while preserving the rest of the characters.
+    /// </summary>
+    /// <param name="word">The word.</param>
+    /// <returns>The string result.</returns>
     private static string Capitalize(string word) =>
         word.Length == 0 ? word : char.ToUpperInvariant(word[0]) + word.Substring(1);
 }

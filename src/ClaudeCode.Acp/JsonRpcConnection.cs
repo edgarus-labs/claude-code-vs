@@ -384,6 +384,13 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
         return WriteMessageAsync(envelope, CancellationToken.None);
     }
 
+    /// <summary>
+    /// Writes a JSON-RPC 2.0 error response with the specified error code and message, correlated to the given request identifier, to the underlying transport.
+    /// </summary>
+    /// <param name="id">The unique identifier.</param>
+    /// <param name="code">The code.</param>
+    /// <param name="message">The message.</param>
+    /// <returns>A task representing the asynchronous operation.</returns>
     private Task WriteErrorResponseAsync(WireId id, int code, string message)
     {
         var envelope = new JsonObject
@@ -396,6 +403,12 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
         return WriteMessageAsync(envelope, CancellationToken.None);
     }
 
+    /// <summary>
+    /// Attempts to extract a numeric correlation identifier from a JSON node, accepting integer, floating-point, or numeric string representations and returning the parsed value through an output parameter.
+    /// </summary>
+    /// <param name="idNode">The id node.</param>
+    /// <param name="id">The unique identifier.</param>
+    /// <returns>true if the condition is met; otherwise, false.</returns>
     private static bool TryGetCorrelationId(JsonNode? idNode, out long id)
     {
         id = 0;
@@ -419,6 +432,10 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
         return value.TryGetValue<string>(out var asString) && long.TryParse(asString, out id);
     }
 
+    /// <summary>
+    /// Faults all pending asynchronous requests by removing them from the pending collection and setting each associated task&apos;s exception to the specified cause.
+    /// </summary>
+    /// <param name="cause">The cause.</param>
     private void FailAllPending(Exception cause)
     {
         foreach (long key in _pending.Keys.ToArray())
@@ -430,6 +447,10 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Asynchronously disposes the JSON-RPC connection by signaling end-of-input to the remote peer, cancelling outstanding operations, failing pending requests, and waiting a bounded grace period for the message pump to complete before releasing the input stream.
+    /// </summary>
+    /// <returns>A value task representing the asynchronous operation.</returns>
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -500,6 +521,10 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Increments the active operation counter under a lock, throwing an OperationCanceledException if the instance has already been disposed.
+    /// </summary>
+    /// <exception cref="OperationCanceledException">Thrown when an error occurs during execution.</exception>
     private void BeginOperation()
     {
         lock (_operationGate)
@@ -513,6 +538,9 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Decrements the active operation counter under a lock and, when no operations remain, disposes the write lock, inbound request throttle, and cancellation token source.
+    /// </summary>
     private void EndOperation()
     {
         lock (_operationGate)
@@ -526,17 +554,31 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Represents a compact, immutable identifier for a wire in a graph, combining a numeric key with a text-based node reference to distinguish its source and destination endpoints.
+    /// </summary>
     private readonly struct WireId
     {
         private readonly long _numeric;
         private readonly string? _text;
 
+        /// <summary>
+        /// Initializes a new instance of the WireId struct with the specified numeric and text identifier values.
+        /// </summary>
+        /// <param name="numeric">The numeric.</param>
+        /// <param name="text">The text.</param>
         private WireId(long numeric, string? text)
         {
             _numeric = numeric;
             _text = text;
         }
 
+        /// <summary>
+        /// Creates a WireId from a JSON node, supporting numeric or string identifiers, and throws an exception for invalid formats.
+        /// </summary>
+        /// <param name="node">The node.</param>
+        /// <returns>The wire id result.</returns>
+        /// <exception cref="AcpProtocolException">Thrown when an error occurs during execution.</exception>
         public static WireId FromNode(JsonNode? node)
         {
             if (node is JsonValue value)
@@ -560,6 +602,10 @@ internal sealed class JsonRpcConnection : IAsyncDisposable
             throw new AcpProtocolException("JSON-RPC request id must be a number or a string.");
         }
 
+        /// <summary>
+        /// Converts the internal value to a JsonValue representation, creating either a text or numeric JSON node as appropriate.
+        /// </summary>
+        /// <returns>The json value result.</returns>
         public JsonValue ToNode() => _text is not null ? JsonValue.Create(_text)! : JsonValue.Create(_numeric)!;
     }
 }

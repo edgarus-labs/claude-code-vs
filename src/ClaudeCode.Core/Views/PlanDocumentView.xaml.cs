@@ -300,6 +300,11 @@ public partial class PlanDocumentView : UserControl, IDisposable
 
     private void ReviewCancel_Click(object sender, RoutedEventArgs e) => ReviewPanel.Visibility = Visibility.Collapsed;
 
+    /// <summary>
+    /// Handles the review send action by forwarding non-empty reviewer comments to the current plan&apos;s review command if it is executable, otherwise displaying a notice and preserving the typed text.
+    /// </summary>
+    /// <param name="sender">The sender.</param>
+    /// <param name="e">The e.</param>
     private void ReviewSend_Click(object sender, RoutedEventArgs e)
     {
         var comments = ReviewBox.Text;
@@ -323,6 +328,11 @@ public partial class PlanDocumentView : UserControl, IDisposable
     // replace it on screen, but when that one times out - or a new plan hides it - the persistent
     // text comes back instead of the line collapsing. Used for the viewer-lost states, which last
     // for the rest of the window's life while the Proceed/Review header stays live.
+    /// <summary>
+    /// Displays a transient or persistent notice in the plan status area, updating the text, making it visible, announcing the change to screen readers, and restarting the auto-hide timer only for transient notices.
+    /// </summary>
+    /// <param name="message">The message.</param>
+    /// <param name="persistent">The persistent.</param>
     private void ShowNotice(string message, bool persistent = false)
     {
         if (_disposed) return; // never restart the timer after its Tick handler is gone
@@ -335,6 +345,9 @@ public partial class PlanDocumentView : UserControl, IDisposable
         if (!persistent) _noticeTimer.Start();
     }
 
+    /// <summary>
+    /// Stops the notice timer and either restores the persistent notice text or collapses the plan notice element if no persistent notice is set.
+    /// </summary>
     private void HideNotice()
     {
         _noticeTimer.Stop();
@@ -347,8 +360,16 @@ public partial class PlanDocumentView : UserControl, IDisposable
         PlanNotice.Visibility = Visibility.Collapsed;
     }
 
+    /// <summary>
+    /// Handles the notice timer&apos;s tick event by hiding the currently displayed notice.
+    /// </summary>
+    /// <param name="sender">The sender.</param>
+    /// <param name="e">The e.</param>
     private void OnNoticeTimerTick(object? sender, EventArgs e) => HideNotice();
 
+    /// <summary>
+    /// Releases the resources used by the plan view, detaching event handlers, stopping the notice timer, and suppressing finalization.
+    /// </summary>
     public void Dispose()
     {
         if (_disposed) return;

@@ -18,6 +18,10 @@ public sealed class ElementBudget
 {
     private int _remaining;
 
+    /// <summary>
+    /// Initializes a new instance of the ElementBudget class with the specified number of nodes.
+    /// </summary>
+    /// <param name="nodes">The nodes.</param>
     public ElementBudget(int nodes) => _remaining = nodes;
 
     /// <summary>True once at least one node has been left out of the walk.</summary>

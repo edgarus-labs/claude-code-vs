@@ -3,12 +3,30 @@ using System.Collections.Generic;
 
 namespace ClaudeCode.Core.ViewModels;
 
+/// <summary>
+/// Represents a utility for building and comparing text differences with configurable alignment constraints.
+/// </summary>
 internal static class DiffBuilder
 {
+    /// <summary>
+    /// The max alignment cells.
+    /// </summary>
     private const long _maxAlignmentCells = 2_000_000;
 
+    /// <summary>
+    /// Generates a read-only list of diff line view models comparing the old and new text.
+    /// </summary>
+    /// <param name="oldText">The old text.</param>
+    /// <param name="newText">The new text.</param>
+    /// <returns>A collection of iread only list items.</returns>
     public static IReadOnlyList<DiffLineViewModel> Build(string oldText, string newText) => BuildCore(oldText, newText);
 
+    /// <summary>
+    /// Constructs a list of line-by-line differences between two text inputs, handling trailing newlines consistently and applying the longest common subsequence algorithm for optimal diff generation.
+    /// </summary>
+    /// <param name="oldText">The old text.</param>
+    /// <param name="newText">The new text.</param>
+    /// <returns>A collection of list items.</returns>
     private static List<DiffLineViewModel> BuildCore(string oldText, string newText)
     {
         // A terminating "\n" ends the last line rather than starting an empty one - but only when
@@ -83,6 +101,11 @@ internal static class DiffBuilder
         return result;
     }
 
+    /// <summary>
+    /// Determines whether the specified text ends with a newline character.
+    /// </summary>
+    /// <param name="text">The text.</param>
+    /// <returns>true if the operation succeeded; otherwise, false.</returns>
     private static bool EndsWithNewline(string text) => text.Length > 0 && text[text.Length - 1] == '\n';
 
     // Hands back the raw split array plus the number of leading entries that are real lines. The
@@ -90,6 +113,13 @@ internal static class DiffBuilder
     // not an in-place operation: it allocates a second full-size array and copies every element,
     // which every diff of a normally terminated file would pay. Entries at or past "count" are
     // not lines and must not be read.
+    /// <summary>
+    /// Splits the input text into lines while preserving line endings and returning the count of valid lines.
+    /// </summary>
+    /// <param name="text">The text.</param>
+    /// <param name="stripTerminator">The strip terminator.</param>
+    /// <param name="count">The count.</param>
+    /// <returns>A collection of string items.</returns>
     private static string[] SplitLines(string text, bool stripTerminator, out int count)
     {
         if (string.IsNullOrEmpty(text))

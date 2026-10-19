@@ -4,8 +4,17 @@ using System.Collections.Generic;
 
 namespace ClaudeCode.Core.ViewModels;
 
+/// <summary>
+/// Represents a view model containing tool call content details including text, path, and diff information.
+/// </summary>
 public sealed class ToolCallContentViewModel
 {
+    /// <summary>
+    /// Initializes a new instance of the ToolCallContentViewModel class with the specified content and optional diff lines, validating the content parameter and processing the text and diff information accordingly.
+    /// </summary>
+    /// <param name="content">The content.</param>
+    /// <param name="diffLines">The collection of diff lines.</param>
+    /// <exception cref="ArgumentNullException">Thrown when an error occurs during execution.</exception>
     public ToolCallContentViewModel(ToolCallContent content, IReadOnlyList<DiffLineViewModel>? diffLines = null)
     {
         if (content is null)
@@ -19,12 +28,24 @@ public sealed class ToolCallContentViewModel
         DiffLines = IsDiff ? diffLines ?? DiffBuilder.Build(content.OldText ?? string.Empty, content.NewText ?? string.Empty) : Array.Empty<DiffLineViewModel>();
     }
 
+    /// <summary>
+    /// Gets the text.
+    /// </summary>
     public string? Text { get; }
 
+    /// <summary>
+    /// Gets the path.
+    /// </summary>
     public string? Path { get; }
 
+    /// <summary>
+    /// Gets a value indicating whether is diff.
+    /// </summary>
     public bool IsDiff { get; }
 
+    /// <summary>
+    /// Gets the collection of diff lines.
+    /// </summary>
     public IReadOnlyList<DiffLineViewModel> DiffLines { get; }
 
     private static readonly char[] _infoStringDisallowedChars = { ' ', '\t', '`' };
@@ -132,6 +153,14 @@ public sealed class ToolCallContentViewModel
         return false;
     }
 
+    /// <summary>
+    /// Determines whether the specified text segment represents a closing fence line by validating the backtick count and trailing whitespace.
+    /// </summary>
+    /// <param name="text">The text.</param>
+    /// <param name="start">The start.</param>
+    /// <param name="end">The end.</param>
+    /// <param name="openingFenceLength">The opening fence length.</param>
+    /// <returns>true if the condition is met; otherwise, false.</returns>
     private static bool IsClosingFenceLine(string text, int start, int end, int openingFenceLength)
     {
         var index = start;

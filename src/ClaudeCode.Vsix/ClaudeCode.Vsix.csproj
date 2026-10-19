@@ -77,11 +77,7 @@
     <PropertyGroup>
       <GeneratedProductVersionFile>$(IntermediateOutputPath)GeneratedProductVersion.cs</GeneratedProductVersionFile>
     </PropertyGroup>
-    <WriteLinesToFile
-        File="$(GeneratedProductVersionFile)"
-        Lines="namespace ClaudeCode.Vsix%3B internal static class GeneratedProductVersion { internal const string Value = &quot;$(Version)&quot;%3B }"
-        Overwrite="true"
-        WriteOnlyWhenDifferent="true" />
+    <WriteLinesToFile File="$(GeneratedProductVersionFile)" Lines="namespace ClaudeCode.Vsix%3B internal static class GeneratedProductVersion { internal const string Value = &quot;$(Version)&quot;%3B }" Overwrite="true" WriteOnlyWhenDifferent="true" />
     <ItemGroup>
       <Compile Include="$(GeneratedProductVersionFile)" />
       <FileWrites Include="$(GeneratedProductVersionFile)" />
@@ -89,16 +85,17 @@
   </Target>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.VisualStudio.SDK" Version="17.13.40008" ExcludeAssets="runtime" />
+    <PackageReference Include="MessagePack" Version="3.1.12" />
+    <PackageReference Include="Microsoft.VisualStudio.SDK" Version="17.14.40265" ExcludeAssets="runtime" />
     <PackageReference Include="Microsoft.VSSDK.BuildTools" Version="18.5.40034" PrivateAssets="all" />
     <PackageReference Include="Community.VisualStudio.Toolkit.17" Version="17.0.551" />
-    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
-    <PackageReference Include="EnvDTE" Version="17.13.40008" />
-    <PackageReference Include="EnvDTE80" Version="17.13.40008" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+    <PackageReference Include="EnvDTE" Version="17.14.40260" />
+    <PackageReference Include="EnvDTE80" Version="17.14.40260" />
     <!-- StackFrame2 (file/line of debugger stack frames) for the VS control debugger tools. -->
-    <PackageReference Include="EnvDTE90a" Version="17.13.40008" />
-    <PackageReference Include="Microsoft.VisualStudio.Text.UI" Version="17.13.226" />
-    <PackageReference Include="Microsoft.VisualStudio.Text.Logic" Version="17.13.226" />
+    <PackageReference Include="EnvDTE90a" Version="17.14.40260" />
+    <PackageReference Include="Microsoft.VisualStudio.Text.UI" Version="17.14.249" />
+    <PackageReference Include="Microsoft.VisualStudio.Text.Logic" Version="17.14.249" />
   </ItemGroup>
 
   <ItemGroup>
@@ -126,12 +123,9 @@
   </ItemGroup>
 
   <Target Name="PublishVsControlMcp" BeforeTargets="AssignTargetPaths;GetVsixSourceItems">
-    <MSBuild Projects="..\ClaudeCode.VsControl.Mcp\ClaudeCode.VsControl.Mcp.csproj"
-             Targets="Publish"
-             Properties="Configuration=$(Configuration);PublishDir=$(MSBuildThisFileDirectory)obj\$(Configuration)\VsControlMcpPublish\;SelfContained=false" />
+    <MSBuild Projects="..\ClaudeCode.VsControl.Mcp\ClaudeCode.VsControl.Mcp.csproj" Targets="Publish" Properties="Configuration=$(Configuration);PublishDir=$(MSBuildThisFileDirectory)obj\$(Configuration)\VsControlMcpPublish\;SelfContained=false" />
     <ItemGroup>
-      <VsControlMcpPublishedFile Include="$(MSBuildThisFileDirectory)obj\$(Configuration)\VsControlMcpPublish\**\*.*"
-                                 Exclude="$(MSBuildThisFileDirectory)obj\$(Configuration)\VsControlMcpPublish\**\*.pdb" />
+      <VsControlMcpPublishedFile Include="$(MSBuildThisFileDirectory)obj\$(Configuration)\VsControlMcpPublish\**\*.*" Exclude="$(MSBuildThisFileDirectory)obj\$(Configuration)\VsControlMcpPublish\**\*.pdb" />
       <!-- Content is required for IncludeInVSIX. Link supplies the output TargetPath and, with
            VSIXSubPath unset, the VS SDK derives the archive directory from Link. Preserve the
            publish layout under VsControlMcp so sidecar dependencies never replace host assemblies. -->
@@ -147,8 +141,7 @@
        into this extension's output or offer them to the VSIX packaging targets. -->
   <Target Name="ExcludeReferenceDebugSymbols" AfterTargets="ResolveReferences">
     <ItemGroup>
-      <ReferenceCopyLocalPaths Remove="@(ReferenceCopyLocalPaths)"
-                               Condition="'%(ReferenceCopyLocalPaths.Extension)' == '.pdb'" />
+      <ReferenceCopyLocalPaths Remove="@(ReferenceCopyLocalPaths)" Condition="'%(ReferenceCopyLocalPaths.Extension)' == '.pdb'" />
     </ItemGroup>
   </Target>
 
@@ -159,10 +152,7 @@
        runtime assets on their owning PackageReference. -->
   <Target Name="ExcludeStrayVsixAssemblies" AfterTargets="GetVsixSourceItems">
     <ItemGroup>
-      <VSIXSourceItem Remove="@(VSIXSourceItem)"
-                       Condition="'%(Extension)' == '.pdb'
-                                  or '%(Filename)%(Extension)' == 'Microsoft.VisualStudio.Linux.ConnectionManager.Store.dll'
-                                  or '%(Filename)%(Extension)' == 'System.Text.Encodings.Web.dll'" />
+      <VSIXSourceItem Remove="@(VSIXSourceItem)" Condition="'%(Extension)' == '.pdb'&#xA;                                  or '%(Filename)%(Extension)' == 'Microsoft.VisualStudio.Linux.ConnectionManager.Store.dll'&#xA;                                  or '%(Filename)%(Extension)' == 'System.Text.Encodings.Web.dll'" />
     </ItemGroup>
   </Target>
 
@@ -219,12 +209,10 @@
   <!-- Finish SDK/NuGet imports first: BuildTools initializes VSToolsPath, and the .NET SDK
        initializes the build dependency properties that the VS SDK must extend for packaging. -->
   <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
-  <Import Project="$(VSToolsPath)\VSSDK\Microsoft.VsSDK.targets"
-          Condition="'$(VsSdkBuildTargetsImported)' != 'true' and Exists('$(VSToolsPath)\VSSDK\Microsoft.VsSDK.targets')" />
+  <Import Project="$(VSToolsPath)\VSSDK\Microsoft.VsSDK.targets" Condition="'$(VsSdkBuildTargetsImported)' != 'true' and Exists('$(VSToolsPath)\VSSDK\Microsoft.VsSDK.targets')" />
 
   <Target Name="RequireVsixPackagingTargets" BeforeTargets="PrepareForBuild" Condition="'$(DesignTimeBuild)' != 'true'">
-    <Error Condition="'$(VsSdkBuildTargetsImported)' != 'true'"
-           Text="VSIX packaging targets are unavailable. Restore Microsoft.VSSDK.BuildTools and build with Visual Studio desktop MSBuild. Expected: $(VSToolsPath)\VSSDK\Microsoft.VsSDK.targets" />
+    <Error Condition="'$(VsSdkBuildTargetsImported)' != 'true'" Text="VSIX packaging targets are unavailable. Restore Microsoft.VSSDK.BuildTools and build with Visual Studio desktop MSBuild. Expected: $(VSToolsPath)\VSSDK\Microsoft.VsSDK.targets" />
   </Target>
 
 </Project>

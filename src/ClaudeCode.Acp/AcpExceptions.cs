@@ -4,8 +4,17 @@ using System.Text.RegularExpressions;
 
 namespace ClaudeCode.Acp;
 
+/// <summary>
+/// Represents an exception thrown when an error occurs during remote ACP (Advanced Configuration and Power Interface) operations, containing the error code, remote data, and formatted error message.
+/// </summary>
 public sealed class AcpRemoteException : Exception
 {
+    /// <summary>
+    /// Initializes a new instance of the AcpRemoteException class with the specified error code, message, and optional remote data.
+    /// </summary>
+    /// <param name="code">The code.</param>
+    /// <param name="message">The message.</param>
+    /// <param name="data">The data.</param>
     public AcpRemoteException(int code, string message, JsonNode? data = null)
         : base(FormatMessage(message, data))
     {
@@ -13,6 +22,9 @@ public sealed class AcpRemoteException : Exception
         RemoteData = data;
     }
 
+    /// <summary>
+    /// Gets the code.
+    /// </summary>
     public int Code { get; }
 
     /// <summary>
@@ -22,6 +34,12 @@ public sealed class AcpRemoteException : Exception
     /// </summary>
     public JsonNode? RemoteData { get; }
 
+    /// <summary>
+    /// Formats the error message by redacting sensitive information and appending error details when available.
+    /// </summary>
+    /// <param name="message">The message.</param>
+    /// <param name="data">The data.</param>
+    /// <returns>The string result.</returns>
     private static string FormatMessage(string message, JsonNode? data)
     {
         string summary = Redact(message, 256);
@@ -55,9 +73,20 @@ public sealed class AcpRemoteException : Exception
         return summary;
     }
 
+    /// <summary>
+    /// Attempts to read and return a string value from the specified JSON object using the provided key, returning null if the key is not found or the value is not a string.
+    /// </summary>
+    /// <param name="data">The data.</param>
+    /// <param name="key">The key.</param>
+    /// <returns>The string? result.</returns>
     private static string? ReadString(JsonObject data, string key) =>
         data[key] is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
 
+    /// <summary>
+    /// Determines whether the specified error kind is recognized as a known error type.
+    /// </summary>
+    /// <param name="kind">The kind.</param>
+    /// <returns>true if the condition is met; otherwise, false.</returns>
     private static bool IsKnownErrorKind(string? kind) => kind switch
     {
         "authentication_failed" or "oauth_org_not_allowed" or "account_on_hold" or
@@ -71,6 +100,12 @@ public sealed class AcpRemoteException : Exception
     private static readonly char[] _lineBreakChars = { '\r', '\n' };
     private static readonly char[] _jsonStartChars = { '{', '[' };
 
+    /// <summary>
+    /// Redacts sensitive information from the input text while preserving the first line and structured data markers.
+    /// </summary>
+    /// <param name="text">The text.</param>
+    /// <param name="limit">The limit.</param>
+    /// <returns>The string result.</returns>
     private static string Redact(string text, int limit)
     {
         // Bound work before applying expressions, and hide all later lines (often SDK stderr/stack).

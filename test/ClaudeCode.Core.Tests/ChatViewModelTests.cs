@@ -541,15 +541,29 @@ public sealed class ChatViewModelTests
         Assert.True(condition());
     }
 
+    /// <summary>
+    /// Provides a test double implementation of IUsageService that counts usage retrieval calls and returns a configurable usage percentage, reset time, or failure.
+    /// </summary>
     private sealed class CountingUsageService : IUsageService
     {
         private int _calls;
+        /// <summary>
+        /// Gets or sets the percent.
+        /// </summary>
         public int Percent { get; set; } = 10;
+        /// <summary>
+        /// Gets or sets the resets at.
+        /// </summary>
         public DateTimeOffset? ResetsAt { get; set; }
         /// <summary>Thrown synchronously from the next fetches while set - the harsher of the two
         /// ways an <see cref="IUsageService"/> can fail on a caller.</summary>
         public Exception? Failure { get; set; }
 
+        /// <summary>
+        /// Asynchronously retrieves a usage snapshot containing a single session limit, incrementing the call counter and rethrowing any configured failure.
+        /// </summary>
+        /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+        /// <returns>A task representing the asynchronous operation. The task result contains the usage snapshot?.</returns>
         public Task<UsageSnapshot?> GetUsageAsync(CancellationToken cancellationToken)
         {
             Interlocked.Increment(ref _calls);
@@ -561,6 +575,11 @@ public sealed class ChatViewModelTests
             });
         }
 
+        /// <summary>
+        /// Asynchronously polls for up to two seconds until the usage fetch counter reaches the expected count, and asserts that at least that many usage fetches have occurred.
+        /// </summary>
+        /// <param name="expected">The expected.</param>
+        /// <returns>A task representing the asynchronous operation.</returns>
         public async Task WaitForCallsAsync(int expected)
         {
             for (var i = 0; i < 200 && Volatile.Read(ref _calls) < expected; i++) await Task.Delay(10);

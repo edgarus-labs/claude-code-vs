@@ -32,6 +32,11 @@ internal sealed class VsAttentionNotifier : IDisposable
         _icon.BalloonTipClosed += (_, __) => HideIcon();
     }
 
+    /// <summary>
+    /// Displays a balloon notification with the specified title and message through the Visual Studio notify icon, unless the component is disposed or Visual Studio is currently in the foreground.
+    /// </summary>
+    /// <param name="title">The title.</param>
+    /// <param name="message">The message.</param>
     public void Notify(string title, string message)
     {
         ThreadHelper.ThrowIfNotOnUIThread();
@@ -40,6 +45,10 @@ internal sealed class VsAttentionNotifier : IDisposable
         _icon.ShowBalloonTip(8000, title, string.IsNullOrWhiteSpace(message) ? " " : message, ToolTipIcon.None);
     }
 
+    /// <summary>
+    /// Determines.
+    /// </summary>
+    /// <returns>true if the condition is met; otherwise, false.</returns>
     private static bool IsVisualStudioForeground()
     {
         var foreground = GetForegroundWindow();
@@ -49,6 +58,11 @@ internal sealed class VsAttentionNotifier : IDisposable
         return pid == (uint)current.Id;
     }
 
+    /// <summary>
+    /// Handles a balloon notification click by hiding the notification icon, then asynchronously restoring and foregrounding the Visual Studio main window and activating the chat window, logging any failure to the ActivityLog.
+    /// </summary>
+    /// <param name="sender">The sender.</param>
+    /// <param name="e">The e.</param>
     private void OnBalloonClicked(object? sender, EventArgs e)
     {
         HideIcon();
@@ -78,11 +92,18 @@ internal sealed class VsAttentionNotifier : IDisposable
 #pragma warning restore VSSDK007
     }
 
+    /// <summary>
+    /// Hides the tray icon by setting its visibility to false, provided the owning component has not been disposed.
+    /// </summary>
     private void HideIcon()
     {
         if (!_disposed) _icon.Visible = false;
     }
 
+    /// <summary>
+    /// Loads the notifier icon from the assembly&apos;s Resources folder, resizes it to 32x32, and returns a managed copy that owns its native handle, or null if the file is missing or loading fails.
+    /// </summary>
+    /// <returns>The icon? result.</returns>
     private static Icon? LoadIcon()
     {
         try
@@ -116,6 +137,9 @@ internal sealed class VsAttentionNotifier : IDisposable
         return null;
     }
 
+    /// <summary>
+    /// Releases the tray icon resources by hiding the NotifyIcon, disposing it, and disposing the owned icon if one was created; subsequent calls have no effect.
+    /// </summary>
     public void Dispose()
     {
         if (_disposed) return;
@@ -126,6 +150,9 @@ internal sealed class VsAttentionNotifier : IDisposable
         _ownedIcon?.Dispose();
     }
 
+    /// <summary>
+    /// The sw restore.
+    /// </summary>
     private const int SW_RESTORE = 9;
 
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();

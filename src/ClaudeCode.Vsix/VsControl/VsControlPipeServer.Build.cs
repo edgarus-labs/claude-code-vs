@@ -16,8 +16,17 @@ namespace ClaudeCode.Vsix.VsControl;
 /// <summary>Build, Error List and Output window methods of the VS control channel.</summary>
 internal sealed partial class VsControlPipeServer
 {
+    /// <summary>
+    /// The default output chars.
+    /// </summary>
     private const int _defaultOutputChars = 20_000;
+    /// <summary>
+    /// The max output chars.
+    /// </summary>
     private const int _maxOutputChars = 200_000;
+    /// <summary>
+    /// The max build error rows.
+    /// </summary>
     private const int _maxBuildErrorRows = 1_000;
 
     // The server-side backstop that keeps a build Visual Studio never reports completion for from
@@ -120,6 +129,13 @@ internal sealed partial class VsControlPipeServer
         }
     }
 
+    /// <summary>
+    /// Asynchronously constructs a JSON object containing build result details including action type, success status, and diagnostic counts.
+    /// </summary>
+    /// <param name="succeeded">The succeeded.</param>
+    /// <param name="action">The action.</param>
+    /// <param name="projectName">The project name.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the jobject.</returns>
     private static async Task<JObject> DescribeBuildResultAsync(bool succeeded, BuildAction action, string? projectName = null)
     {
         var (errorCount, warningCount) = await CountBuildDiagnosticsAsync(projectName);
@@ -132,6 +148,12 @@ internal sealed partial class VsControlPipeServer
         };
     }
 
+    /// <summary>
+    /// Parses the build action from the provided arguments and returns the corresponding BuildAction enum value.
+    /// </summary>
+    /// <param name="args">The args.</param>
+    /// <returns>The build action result.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when an error occurs during execution.</exception>
     private static BuildAction ParseBuildAction(JObject args)
     {
         var action = args["action"]?.Value<string>();
@@ -141,6 +163,12 @@ internal sealed partial class VsControlPipeServer
         throw new InvalidOperationException($"Unknown build action '{action}'; use build, rebuild or clean.");
     }
 
+    /// <summary>
+    /// Asynchronously searches for and returns the project with the specified name, or throws an exception if no matching project is found.
+    /// </summary>
+    /// <param name="projectName">The project name.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the community.visual studio.toolkit.project.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when an error occurs during execution.</exception>
     private static async Task<Community.VisualStudio.Toolkit.Project> FindProjectAsync(string projectName)
     {
         foreach (var candidate in await VS.Solutions.GetAllProjectsAsync())
@@ -154,6 +182,12 @@ internal sealed partial class VsControlPipeServer
         throw new InvalidOperationException($"No project named '{projectName}' is loaded in the solution.");
     }
 
+    /// <summary>
+    /// Asynchronously retrieves and filters build errors based on severity, returning a JSON object containing the errors and a flag indicating if the list was truncated.
+    /// </summary>
+    /// <param name="args">The args.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the jobject.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when an error occurs during execution.</exception>
     private static async Task<JObject> GetBuildErrorsAsync(JObject args)
     {
         var severityFilter = args["severity"]?.Value<string>();

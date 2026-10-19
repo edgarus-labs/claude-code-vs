@@ -10,6 +10,9 @@ using Xunit;
 
 namespace ClaudeCode.VsControl.Mcp.Tests;
 
+/// <summary>
+/// Provides a scoped environment for temporarily setting a pipe token value, restoring the previous state when disposed.
+/// </summary>
 [CollectionDefinition("Pipe token environment", DisableParallelization = true)]
 public sealed class PipeTokenEnvironmentScope
 {
@@ -18,6 +21,9 @@ public sealed class PipeTokenEnvironmentScope
 [Collection("Pipe token environment")]
 public sealed class PipeTokenEnvironmentTests
 {
+    /// <summary>
+    /// The token variable.
+    /// </summary>
     private const string TokenVariable = "CLAUDECODE_VSCONTROL_TOKEN";
 
     [Theory]

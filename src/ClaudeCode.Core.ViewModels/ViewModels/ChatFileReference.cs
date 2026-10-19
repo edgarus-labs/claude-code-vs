@@ -678,6 +678,11 @@ public static class ChatFileReference
 
     // What a reference shows: the final segment of the path. The full path the agent wrote goes
     // into the href, where it is used for navigation only.
+    /// <summary>
+    /// Returns the final segment of the specified path, which serves as the display name for a link while the full path is retained for navigation.
+    /// </summary>
+    /// <param name="path">The path.</param>
+    /// <returns>The string result.</returns>
     private static string FileName(string path) => path.Substring(LastSeparatorIndex(path) + 1);
 
     /// <summary>
@@ -719,8 +724,19 @@ public static class ChatFileReference
         return builder.ToString();
     }
 
+    /// <summary>
+    /// Determines whether the specified character is a link text escape character, which is one of &apos;[&apos;, &apos;]&apos;, or &apos;_&apos;.
+    /// </summary>
+    /// <param name="c">The c.</param>
+    /// <returns>true if the condition is met; otherwise, false.</returns>
     private static bool IsLinkTextEscape(char c) => c == '[' || c == ']' || c == '_';
 
+    /// <summary>
+    /// Builds a relative link URL containing the encoded path query parameter and, when a line number is provided, appends it as an invariant-culture line query parameter.
+    /// </summary>
+    /// <param name="path">The path.</param>
+    /// <param name="line">The line.</param>
+    /// <returns>The string result.</returns>
     private static string BuildHref(string path, int? line)
     {
         var href = LinkPrefix + "path=" + EncodePathValue(path);
@@ -788,5 +804,10 @@ public static class ChatFileReference
         return builder.ToString();
     }
 
+    /// <summary>
+    /// Determines whether the specified character is one of the RFC 2396 &quot;mark&quot; characters (!, *, &apos;, (, or )) that are permitted unescaped in URI unreserved sets.
+    /// </summary>
+    /// <param name="c">The c.</param>
+    /// <returns>true if the condition is met; otherwise, false.</returns>
     private static bool IsRfc2396Mark(char c) => c == '!' || c == '*' || c == '\'' || c == '(' || c == ')';
 }

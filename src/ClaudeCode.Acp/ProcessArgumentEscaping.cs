@@ -3,8 +3,16 @@ using System.Text;
 
 namespace ClaudeCode.Acp;
 
+/// <summary>
+/// Provides helper methods for escaping and assembling command-line arguments passed to external processes.
+/// </summary>
 public static class ProcessArgumentEscaping
 {
+    /// <summary>
+    /// Converts a sequence of command-line arguments into a single properly escaped and space-delimited arguments string.
+    /// </summary>
+    /// <param name="arguments">The collection of arguments.</param>
+    /// <returns>The string result.</returns>
     public static string ToArgumentsString(IEnumerable<string> arguments)
     {
         var builder = new StringBuilder();
@@ -16,6 +24,11 @@ public static class ProcessArgumentEscaping
         return builder.ToString();
     }
 
+    /// <summary>
+    /// Appends a command-line argument to the specified StringBuilder, separating it from any existing content with a space and escaping quotes and backslashes per Windows command-line parsing rules, wrapping the argument in double quotes when it is empty or contains whitespace or quotes.
+    /// </summary>
+    /// <param name="builder">The builder.</param>
+    /// <param name="argument">The argument.</param>
     private static void AppendArgument(StringBuilder builder, string argument)
     {
         if (builder.Length != 0)
@@ -71,6 +84,11 @@ public static class ProcessArgumentEscaping
         builder.Append('"');
     }
 
+    /// <summary>
+    /// Determines whether the specified string is free of whitespace characters and double-quote characters, returning false if either is found.
+    /// </summary>
+    /// <param name="s">The s.</param>
+    /// <returns>true if the operation succeeded; otherwise, false.</returns>
     private static bool ContainsNoWhitespaceOrQuotes(string s)
     {
         foreach (char c in s)

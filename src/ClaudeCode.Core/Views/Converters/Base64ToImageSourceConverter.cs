@@ -12,8 +12,19 @@ namespace ClaudeCode.Core.Views.Converters;
 /// as-is rather than scaled up.</summary>
 public sealed class Base64ToImageSourceConverter : IValueConverter
 {
+    /// <summary>
+    /// The thumbnail decode width.
+    /// </summary>
     private const int ThumbnailDecodeWidth = 160;
 
+    /// <summary>
+    /// Converts a Base64-encoded string to a resized BitmapImage while maintaining aspect ratio and capping dimensions to prevent excessive memory usage.
+    /// </summary>
+    /// <param name="value">The value.</param>
+    /// <param name="targetType">The target type.</param>
+    /// <param name="parameter">The parameter.</param>
+    /// <param name="culture">The culture.</param>
+    /// <returns>The object? result.</returns>
     public object? Convert(object value, Type targetType, object parameter, CultureInfo culture)
     {
         if (value is not string base64 || base64.Length == 0) return null;
@@ -56,5 +67,14 @@ public sealed class Base64ToImageSourceConverter : IValueConverter
         }
     }
 
+    /// <summary>
+    /// Throws a NotSupportedException to indicate that the conversion from the specified value to the target type is not supported.
+    /// </summary>
+    /// <param name="value">The value.</param>
+    /// <param name="targetType">The target type.</param>
+    /// <param name="parameter">The parameter.</param>
+    /// <param name="culture">The culture.</param>
+    /// <returns>The object result.</returns>
+    /// <exception cref="NotSupportedException">Thrown when an error occurs during execution.</exception>
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) => throw new NotSupportedException();
 }

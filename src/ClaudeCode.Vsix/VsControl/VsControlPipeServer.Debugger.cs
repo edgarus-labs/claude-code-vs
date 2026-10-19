@@ -290,6 +290,11 @@ internal sealed partial class VsControlPipeServer
         return new JObject { ["breakpoints"] = BreakpointsToJson(debugger.Breakpoints) };
     }
 
+    /// <summary>
+    /// Converts the specified Visual Studio breakpoints into a JSON array, capturing each breakpoint&apos;s file, line, enabled state, condition, hit count, and function name, and must be called on the UI thread.
+    /// </summary>
+    /// <param name="breakpoints">The breakpoints.</param>
+    /// <returns>The jarray result.</returns>
     private static JArray BreakpointsToJson(Breakpoints breakpoints)
     {
         ThreadHelper.ThrowIfNotOnUIThread();
@@ -310,6 +315,14 @@ internal sealed partial class VsControlPipeServer
         return result;
     }
 
+    /// <summary>
+    /// Asynchronously executes a debugger step (continue, over, into, or out) on the main thread and waits for the debugger to re-enter break mode or report a timeout, returning a JSON result that describes the landed break position and whether the wait timed out.
+    /// </summary>
+    /// <param name="args">The args.</param>
+    /// <param name="step">The step.</param>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the jobject.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when an error occurs during execution.</exception>
     private static async Task<JObject> StepAsync(JObject args, DebuggerStep step, CancellationToken cancellationToken)
     {
         var debugger = await GetDebuggerAsync();
@@ -359,6 +372,12 @@ internal sealed partial class VsControlPipeServer
         return DescribeDebugger(debugger, mode, timedOut: VsDebuggerChannelRules.BreakWaitTimedOut(ToMode(mode)));
     }
 
+    /// <summary>
+    /// Asynchronously waits for the Visual Studio debugger to enter break mode within the specified timeout and returns a description of the debugger state, indicating whether the wait timed out.
+    /// </summary>
+    /// <param name="args">The args.</param>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the jobject.</returns>
     private static async Task<JObject> WaitForBreakAsync(JObject args, CancellationToken cancellationToken)
     {
         var timeoutMs = ReadWaitMs(args, "timeoutMs", 10_000);
@@ -368,6 +387,10 @@ internal sealed partial class VsControlPipeServer
         return DescribeDebugger(debugger, mode, timedOut: VsDebuggerChannelRules.BreakWaitTimedOut(ToMode(mode)));
     }
 
+    /// <summary>
+    /// Asynchronously captures the current debugger thread&apos;s call stack in break mode, returning a JSON object containing the thread identifier, thread name, indexed stack frames limited to the configured maximum, and a flag indicating whether the stack was truncated.
+    /// </summary>
+    /// <returns>A task representing the asynchronous operation. The task result contains the jobject.</returns>
     private static async Task<JObject> GetCallStackAsync()
     {
         var debugger = await GetDebuggerAsync();
@@ -400,6 +423,11 @@ internal sealed partial class VsControlPipeServer
         };
     }
 
+    /// <summary>
+    /// Asynchronously retrieves the local variables of the specified stack frame from the paused debuggee, selecting that frame as the active context and capping the enumeration by count and time limits.
+    /// </summary>
+    /// <param name="args">The args.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the jobject.</returns>
     private static async Task<JObject> GetLocalsAsync(JObject args)
     {
         var frameIndex = args["frameIndex"]?.Value<int?>() ?? 0;
@@ -510,6 +538,11 @@ internal sealed partial class VsControlPipeServer
         return result;
     }
 
+    /// <summary>
+    /// Converts a Visual Studio debugger expression into a JSON object containing its name, type, truncated value, and validity state, and must be called on the UI thread.
+    /// </summary>
+    /// <param name="expression">The expression.</param>
+    /// <returns>The jobject result.</returns>
     private static JObject ExpressionToJson(Expression expression)
     {
         ThreadHelper.ThrowIfNotOnUIThread();
@@ -522,6 +555,11 @@ internal sealed partial class VsControlPipeServer
         };
     }
 
+    /// <summary>
+    /// Verifies that the debugger is in break mode, throwing an exception if it is not.
+    /// </summary>
+    /// <param name="debugger">The debugger.</param>
+    /// <exception cref="InvalidOperationException">Thrown when an error occurs during execution.</exception>
     private static void RequireBreakMode(Debugger debugger)
     {
         ThreadHelper.ThrowIfNotOnUIThread();
@@ -566,6 +604,14 @@ internal sealed partial class VsControlPipeServer
         }
     }
 
+    /// <summary>
+    /// Asynchronously polls the debugger&apos;s current mode until the specified condition is met, a timeout occurs, or the debugger session ends.
+    /// </summary>
+    /// <param name="debugger">The debugger.</param>
+    /// <param name="done">The done.</param>
+    /// <param name="timeoutMs">The timeout ms.</param>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the dbg debug mode.</returns>
     private static async Task<dbgDebugMode> WaitForModeAsync(Debugger debugger, Func<dbgDebugMode, bool> done, int timeoutMs, CancellationToken cancellationToken)
     {
         var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
@@ -670,6 +716,11 @@ internal sealed partial class VsControlPipeServer
         return result;
     }
 
+    /// <summary>
+    /// Converts the debugger&apos;s debugged processes to a JSON array containing process IDs and names.
+    /// </summary>
+    /// <param name="debugger">The debugger.</param>
+    /// <returns>The jarray result.</returns>
     private static JArray DebuggedProcessesToJson(Debugger debugger)
     {
         ThreadHelper.ThrowIfNotOnUIThread();
@@ -693,6 +744,11 @@ internal sealed partial class VsControlPipeServer
         return processes;
     }
 
+    /// <summary>
+    /// Converts a stack frame to a JSON object containing function name, module, language, file name, and line number information.
+    /// </summary>
+    /// <param name="frame">The frame.</param>
+    /// <returns>The jobject result.</returns>
     private static JObject FrameToJson(StackFrame frame)
     {
         ThreadHelper.ThrowIfNotOnUIThread();
@@ -740,6 +796,11 @@ internal sealed partial class VsControlPipeServer
         _ => VsDebuggerChannelRules.Mode.Design,
     };
 
+    /// <summary>
+    /// Converts the specified debug event reason to its corresponding string representation.
+    /// </summary>
+    /// <param name="reason">The reason.</param>
+    /// <returns>The string result.</returns>
     private static string BreakReasonName(dbgEventReason reason) => reason switch
     {
         dbgEventReason.dbgEventReasonBreakpoint => "breakpoint",
@@ -756,11 +817,26 @@ internal sealed partial class VsControlPipeServer
         _ => "none",
     };
 
+    /// <summary>
+    /// Retrieves and validates the wait time in milliseconds from the specified property in the JSON object, clamping it to the specified minimum and maximum values.
+    /// </summary>
+    /// <param name="args">The args.</param>
+    /// <param name="propertyName">The property name.</param>
+    /// <param name="defaultMs">The default ms.</param>
+    /// <param name="minMs">The min ms.</param>
+    /// <returns>The int result.</returns>
     private static int ReadWaitMs(JObject args, string propertyName, int defaultMs, int minMs = 0)
     {
         return VsDebuggerChannelRules.ClampWaitMs(args[propertyName]?.Value<int?>(), defaultMs, minMs, _maxWaitMs);
     }
 
+    /// <summary>
+    /// Validates and parses a required integer property from a JSON object, throwing an exception if the property is missing or invalid.
+    /// </summary>
+    /// <param name="args">The args.</param>
+    /// <param name="propertyName">The property name.</param>
+    /// <returns>The int result.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when an error occurs during execution.</exception>
     private static int RequireInt(JObject args, string propertyName)
     {
         var value = args[propertyName]?.Value<int?>();

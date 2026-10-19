@@ -10,6 +10,9 @@ namespace ClaudeCode.Acp.Tests;
 
 public sealed class EffortJudgePromptTests
 {
+    /// <summary>
+    /// Gets the collection of level names.
+    /// </summary>
     private static string[] LevelNames => Enum.GetNames<EffortLevel>();
 
     // Auto's ceiling is High: the judge is offered exactly the EffortLevel labels, nothing above.

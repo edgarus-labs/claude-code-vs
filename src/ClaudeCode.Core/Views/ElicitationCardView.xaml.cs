@@ -11,6 +11,9 @@ namespace ClaudeCode.Core.Views;
 /// code here announces a newly arrived form to assistive technology, which XAML cannot do.</summary>
 public partial class ElicitationCardView : UserControl
 {
+    /// <summary>
+    /// Initializes a new instance of the ElicitationCardView class, loading its XAML components and subscribing to the DataContextChanged event to respond to data context updates.
+    /// </summary>
     public ElicitationCardView()
     {
         InitializeComponent();

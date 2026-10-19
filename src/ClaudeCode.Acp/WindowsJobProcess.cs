@@ -325,48 +325,135 @@ internal sealed class WindowsJobProcess : IDisposable
         internal IntPtr AttributeList;
     }
 
+    /// <summary>
+    /// Represents the identifiers and handles of a process and its thread, such as those returned by native process-creation APIs.
+    /// </summary>
     [StructLayout(LayoutKind.Sequential)]
     private struct ProcessInformation
     {
+        /// <summary>
+        /// The process.
+        /// </summary>
         internal IntPtr Process;
+        /// <summary>
+        /// The thread.
+        /// </summary>
         internal IntPtr Thread;
+        /// <summary>
+        /// The process id.
+        /// </summary>
         internal int ProcessId;
+        /// <summary>
+        /// The thread id.
+        /// </summary>
         internal int ThreadId;
     }
 
+    /// <summary>
+    /// Represents the basic limit information for a Windows job object, including per-process and per-job user-mode time limits, working set bounds, active process count, CPU affinity, and priority and scheduling class settings, as used with the JOBOBJECT_BASIC_LIMIT_INFORMATION native structure.
+    /// </summary>
     [StructLayout(LayoutKind.Sequential)]
     private struct JobBasicLimitInformation
     {
+        /// <summary>
+        /// The per process user time limit.
+        /// </summary>
         internal long PerProcessUserTimeLimit;
+        /// <summary>
+        /// The per job user time limit.
+        /// </summary>
         internal long PerJobUserTimeLimit;
+        /// <summary>
+        /// The limit flags.
+        /// </summary>
         internal uint LimitFlags;
+        /// <summary>
+        /// The minimum working set size.
+        /// </summary>
         internal UIntPtr MinimumWorkingSetSize;
+        /// <summary>
+        /// The maximum working set size.
+        /// </summary>
         internal UIntPtr MaximumWorkingSetSize;
+        /// <summary>
+        /// The active process limit.
+        /// </summary>
         internal uint ActiveProcessLimit;
+        /// <summary>
+        /// The affinity.
+        /// </summary>
         internal UIntPtr Affinity;
+        /// <summary>
+        /// The priority class.
+        /// </summary>
         internal uint PriorityClass;
+        /// <summary>
+        /// The scheduling class.
+        /// </summary>
         internal uint SchedulingClass;
     }
 
+    /// <summary>
+    /// Represents the cumulative read, write, and other I/O operation and transfer counters for a process, as returned by the Windows IO counters API.
+    /// </summary>
     [StructLayout(LayoutKind.Sequential)]
     private struct IoCounters
     {
+        /// <summary>
+        /// The read operation count.
+        /// </summary>
         internal ulong ReadOperationCount;
+        /// <summary>
+        /// The write operation count.
+        /// </summary>
         internal ulong WriteOperationCount;
+        /// <summary>
+        /// The other operation count.
+        /// </summary>
         internal ulong OtherOperationCount;
+        /// <summary>
+        /// The read transfer count.
+        /// </summary>
         internal ulong ReadTransferCount;
+        /// <summary>
+        /// The write transfer count.
+        /// </summary>
         internal ulong WriteTransferCount;
+        /// <summary>
+        /// The other transfer count.
+        /// </summary>
         internal ulong OtherTransferCount;
     }
 
+    /// <summary>
+    /// Represents the extended limit information for a Windows job object, including basic limits, I/O counters, and process and job memory limits and peak usage values, as used with the JOBOBJECT_EXTENDED_LIMIT_INFORMATION native structure.
+    /// </summary>
     [StructLayout(LayoutKind.Sequential)]
     private struct JobExtendedLimitInformation
     {
+        /// <summary>
+        /// The basic limit information.
+        /// </summary>
         internal JobBasicLimitInformation BasicLimitInformation;
+        /// <summary>
+        /// The io info.
+        /// </summary>
         internal IoCounters IoInfo;
+        /// <summary>
+        /// The process memory limit.
+        /// </summary>
         internal UIntPtr ProcessMemoryLimit;
+        /// <summary>
+        /// The job memory limit.
+        /// </summary>
         internal UIntPtr JobMemoryLimit;
+        /// <summary>
+        /// The peak process memory used.
+        /// </summary>
         internal UIntPtr PeakProcessMemoryUsed;
+        /// <summary>
+        /// The peak job memory used.
+        /// </summary>
         internal UIntPtr PeakJobMemoryUsed;
     }
 

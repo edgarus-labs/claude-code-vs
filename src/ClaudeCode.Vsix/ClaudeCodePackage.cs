@@ -62,16 +62,17 @@ public sealed class ClaudeCodePackage : AsyncPackage
         _workspaceRootTracker.Update(ComputeWorkspaceRoot(currentSolution?.FullPath));
 
         var connectionFactory = new ClaudeCodeConnectionFactory(GetOptions, GetWorkspaceRoot, _vsControlSessionRegistry);
+        var adapterInstaller = new VsAcpAdapterInstaller(GetOptions);
 
         ClaudeCodeServices.ConnectionFactory = connectionFactory;
         ClaudeCodeServices.AuthService = _authService;
         ClaudeCodeServices.UsageService = usageService;
+        ClaudeCodeServices.AdapterInstaller = adapterInstaller;
         ClaudeCodeServices.GetWorkspaceRoot = GetWorkspaceRoot;
 
         ClaudeCode.Core.Views.ChatPanelView.ServicesFactory =
             () => new VsChatSessionServices(ClaudeCodeServices.ConnectionFactory!, ClaudeCodeServices.AuthService!, ClaudeCodeServices.UsageService!, _workspaceRootTracker, editorDocumentTracker,
-                ReadRemoteControlAtStartup, effortClassifier);
-
+                ReadRemoteControlAtStartup, effortClassifier, ClaudeCodeServices.AdapterInstaller);
         await this.RegisterCommandsAsync();
     }
 
@@ -93,6 +94,7 @@ public sealed class ClaudeCodePackage : AsyncPackage
         var resolved = await Task.Run(() => string.IsNullOrWhiteSpace(overridePath)
             ? AcpExecutableResolver.TryResolveDefault()
             : AcpExecutableResolver.TryResolve(overridePath), cancellationToken).ConfigureAwait(false);
+
         return resolved ?? throw new InvalidOperationException(
             "The Claude ACP adapter could not be resolved, so Auto effort cannot ask its judge. Install it with "
             + "'npm install -g @agentclientprotocol/claude-agent-acp' or set Tools > Options > Claude Code > ACP executable path.");
@@ -119,6 +121,10 @@ public sealed class ClaudeCodePackage : AsyncPackage
         }
     }
 
+    /// <summary>
+    /// Releases the package&apos;s UI-thread resources, unsubscribes solution event handlers, and clears extension-scoped service globals when disposing, then delegates to the base implementation.
+    /// </summary>
+    /// <param name="disposing">The disposing.</param>
     protected override void Dispose(bool disposing)
     {
         if (disposing)
@@ -153,6 +159,10 @@ public sealed class ClaudeCodePackage : AsyncPackage
         base.Dispose(disposing);
     }
 
+    /// <summary>
+    /// Retrieves the Claude Code options dialog page from the package, which must be called on the UI thread.
+    /// </summary>
+    /// <returns>The claude code options page result.</returns>
     internal ClaudeCodeOptionsPage GetOptions()
     {
         ThreadHelper.ThrowIfNotOnUIThread();
@@ -171,6 +181,7 @@ public sealed class ClaudeCodePackage : AsyncPackage
             return JoinableTaskFactory.Run(async () =>
             {
                 await JoinableTaskFactory.SwitchToMainThreadAsync();
+
                 return GetOptions().RemoteControlAtStartup;
             });
         }
@@ -180,17 +191,22 @@ public sealed class ClaudeCodePackage : AsyncPackage
         }
     }
 
+    /// <summary>
+    /// Retrieves the root directory path of the current workspace from the workspace root tracker, or null if no workspace root has been set.
+    /// </summary>
+    /// <returns>The string? result.</returns>
     private string? GetWorkspaceRoot() => _workspaceRootTracker.Root;
 
-    private void OnSolutionOpened(Solution? solution)
-    {
-        _workspaceRootTracker.Update(ComputeWorkspaceRoot(solution?.FullPath));
-    }
+    /// <summary>
+    /// Updates the workspace root tracker with the root path computed from the opened solution&apos;s full path, or clears it when no solution is provided.
+    /// </summary>
+    /// <param name="solution">The solution.</param>
+    private void OnSolutionOpened(Solution? solution) => _workspaceRootTracker.Update(ComputeWorkspaceRoot(solution?.FullPath));
 
-    private void OnSolutionClosed()
-    {
-        _workspaceRootTracker.Update(null);
-    }
+    /// <summary>
+    /// Clears the tracked workspace root by updating the workspace root tracker with a null value when the solution is closed.
+    /// </summary>
+    private void OnSolutionClosed() => _workspaceRootTracker.Update(null);
 
     /// Pure so it can be exercised without a live VS host; not itself VS-SDK dependent.
     internal static string? ComputeWorkspaceRoot(string? solutionFullPath) =>

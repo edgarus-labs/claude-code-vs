@@ -722,6 +722,9 @@ public sealed partial class ChatSessionStateTests
 
         public override void Post(SendOrPostCallback callback, object? state) => _callbacks.Enqueue(() => callback(state));
 
+        /// <summary>
+        /// Synchronously executes all queued callbacks on this synchronization context, temporarily making it the current context and restoring the previous context afterward.
+        /// </summary>
         public void Drain()
         {
             var previous = Current;
@@ -737,15 +740,45 @@ public sealed partial class ChatSessionStateTests
         }
     }
 
+    /// <summary>
+    /// Provides an advisory-mode implementation of IAcpAuthService that tracks authentication state and delegates sign-in and sign-out operations to interactive login flows.
+    /// </summary>
     private sealed class AdvisoryAuthService(AuthState state) : IAcpAuthService
     {
+        /// <summary>
+        /// Gets the current state.
+        /// </summary>
         public AuthState CurrentState => state;
+        /// <summary>
+        /// Occurs when state changed.
+        /// </summary>
         public event EventHandler<AuthStateChangedEventArgs>? StateChanged { add { } remove { } }
+        /// <summary>
+        /// Asynchronously indicates whether the current user is signed in, always returning false in this implementation.
+        /// </summary>
+        /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+        /// <returns>A task representing the asynchronous operation. The task result is true if successful; otherwise, false.</returns>
         public Task<bool> IsSignedInAsync(CancellationToken cancellationToken) => Task.FromResult(false);
+        /// <summary>
+        /// Asynchronously signs in the user and reports optional progress through the supplied &lt;c&gt;IProgress&lt;string&gt;&lt;/c&gt;; this implementation is a no-op that completes immediately without performing authentication.
+        /// </summary>
+        /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+        /// <param name="progress">The progress.</param>
+        /// <returns>A task representing the asynchronous operation.</returns>
         public Task SignInAsync(CancellationToken cancellationToken, IProgress<string>? progress = null) => Task.CompletedTask;
+        /// <summary>
+        /// Asynchronously signs out the current user, returning a completed task as a no-op since no session state needs to be cleared.
+        /// </summary>
+        /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+        /// <returns>A task representing the asynchronous operation.</returns>
         public Task SignOutAsync(CancellationToken cancellationToken) => Task.CompletedTask;
         public Task<AuthCommandOutcome> LaunchInteractiveLoginAsync(CancellationToken cancellationToken, IProgress<string>? progress = null) =>
             Task.FromResult(new AuthCommandOutcome(true, "Signed in."));
+        /// <summary>
+        /// Returns a completed task containing a successful authentication command outcome, indicating that the interactive sign-out was reported as complete without performing any asynchronous work.
+        /// </summary>
+        /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+        /// <returns>A task representing the asynchronous operation. The task result contains the auth command outcome.</returns>
         public Task<AuthCommandOutcome> LaunchInteractiveLogoutAsync(CancellationToken cancellationToken) =>
             Task.FromResult(new AuthCommandOutcome(true, "Signed out."));
     }

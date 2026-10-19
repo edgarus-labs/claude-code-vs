@@ -57,6 +57,15 @@ public sealed class VsControlPipeClient : IAsyncDisposable
     private Task? _readLoopTask;
     private int _disposed;
 
+    /// <summary>
+    /// Initializes a new instance of the VsControlPipeClient class with the specified pipe name, optional timeouts, and handshake token, validating that the pipe name and a nonempty single-line handshake token are provided.
+    /// </summary>
+    /// <param name="pipeName">The pipe name.</param>
+    /// <param name="connectTimeout">The connect timeout.</param>
+    /// <param name="requestTimeout">The request timeout.</param>
+    /// <param name="buildTimeout">The build timeout.</param>
+    /// <param name="handshakeToken">The handshake token.</param>
+    /// <exception cref="ArgumentException">Thrown when an error occurs during execution.</exception>
     public VsControlPipeClient(
         string pipeName,
         TimeSpan? connectTimeout = null,
@@ -81,6 +90,13 @@ public sealed class VsControlPipeClient : IAsyncDisposable
         _lifetimeToken = _lifetimeSource.Token;
     }
 
+    /// <summary>
+    /// Asynchronously sends a VS control request over the connected pipe, correlates the response by request identifier, and enforces operation-specific timeouts and cancellation, retiring the transport if a write fails.
+    /// </summary>
+    /// <param name="request">The request containing the operation data.</param>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the vs control response.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when an error occurs during execution.</exception>
     public async Task<VsControlResponse> SendAsync(VsControlRequest request, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
@@ -163,6 +179,11 @@ public sealed class VsControlPipeClient : IAsyncDisposable
     // reopen the solution a second time. Every method that does have a server-side bound is bounded
     // below _requestTimeout: 45 s mode waits, 60 s debug launch wait, 15 s stop, 5 s evaluations,
     // 5 s UI-automation actions.
+    /// <summary>
+    /// Determines whether the specified MSBuild or Visual Studio DTE method is one of the long-running operations that must be granted the extended request budget rather than the standard server-side timeout.
+    /// </summary>
+    /// <param name="method">The method.</param>
+    /// <returns>true if the operation succeeded; otherwise, false.</returns>
     private static bool UsesLongOperationBudget(string method)
         => method is _buildSolutionMethod
             or _buildProjectMethod
@@ -170,6 +191,12 @@ public sealed class VsControlPipeClient : IAsyncDisposable
             or _openSolutionMethod
             or _addProjectToSolutionMethod;
 
+    /// <summary>
+    /// Asynchronously establishes a private, current-user-only named pipe connection to the Visual Studio control host, performs the authentication handshake, and starts the background read loop, throwing a TimeoutException if the connection cannot be made within the configured timeout.
+    /// </summary>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>A task representing the asynchronous operation.</returns>
+    /// <exception cref="TimeoutException">Thrown when an error occurs during execution.</exception>
     private async Task EnsureConnectedAsync(CancellationToken cancellationToken)
     {
         await _connectLock.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -236,6 +263,12 @@ public sealed class VsControlPipeClient : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Asynchronously reads newline-delimited JSON responses from the VS control pipe, completes the matching pending requests, and on disconnect faults outstanding requests and tears down the connection state if the pipe is still current.
+    /// </summary>
+    /// <param name="pipe">The pipe.</param>
+    /// <param name="reader">The reader.</param>
+    /// <returns>A task representing the asynchronous operation.</returns>
     private async Task ReadLoopAsync(NamedPipeClientStream pipe, StreamReader reader)
     {
         Exception? failure = null;
@@ -314,6 +347,10 @@ public sealed class VsControlPipeClient : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Disposes the specified resource if it is non-null, suppressing any IOException or ObjectDisposedException that occurs when the remote pipe endpoint has already closed.
+    /// </summary>
+    /// <param name="disposable">The disposable.</param>
     private static void DisposeQuietly(IDisposable? disposable)
     {
         try
@@ -331,6 +368,9 @@ public sealed class VsControlPipeClient : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Releases the pipe, writer, and reader resources quietly, then clears their references to reset the connection state.
+    /// </summary>
     private void DisposeConnectionState()
     {
         DisposeQuietly(_pipe);
@@ -341,6 +381,10 @@ public sealed class VsControlPipeClient : IAsyncDisposable
         _pipe = null;
     }
 
+    /// <summary>
+    /// Asynchronously disposes the client by cancelling its lifetime, acquiring the connect and write locks to wait for in-flight handshakes and writes, tearing down connection state, awaiting the read loop, and releasing all synchronization resources.
+    /// </summary>
+    /// <returns>A value task representing the asynchronous operation.</returns>
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)

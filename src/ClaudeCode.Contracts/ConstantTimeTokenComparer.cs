@@ -11,6 +11,12 @@ namespace ClaudeCode.Contracts;
 /// </summary>
 public static class ConstantTimeTokenComparer
 {
+    /// <summary>
+    /// Determines whether two strings are equal using a constant-time comparison that examines every character regardless of mismatches, helping to mitigate timing attacks.
+    /// </summary>
+    /// <param name="received">The received.</param>
+    /// <param name="expected">The expected.</param>
+    /// <returns>true if the operation succeeded; otherwise, false.</returns>
     public static bool Equals(string? received, string expected)
     {
         if (received is null)

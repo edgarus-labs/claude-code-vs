@@ -277,6 +277,11 @@ public sealed class WorkspacePathLease : IDisposable
 
     private int DirectoryHandle => _directories[_directories.Count - 1].DangerousGetHandle().ToInt32();
 
+    /// <summary>
+    /// Opens and pins each directory segment of the specified workspace path from the filesystem root downward, storing the resulting handles so that path traversal is secured against symbolic link substitution.
+    /// </summary>
+    /// <param name="parent">The parent.</param>
+    /// <exception cref="UnauthorizedAccessException">Thrown when an error occurs during execution.</exception>
     private void OpenDirectories(string parent)
     {
         string root = Path.GetPathRoot(parent)!;
@@ -303,12 +308,23 @@ public sealed class WorkspacePathLease : IDisposable
         }
     }
 
+    /// <summary>
+    /// Opens a handle to the specified Windows directory without following reparse points, using a long-path-safe form of the path, and verifies the resulting handle before returning it.
+    /// </summary>
+    /// <param name="path">The path.</param>
+    /// <returns>The safe file handle result.</returns>
     private static SafeFileHandle OpenWindowsDirectory(string path)
     {
         var handle = CreateFileW(WorkspacePathGuard.LongPathSafe(path), 0, 1, IntPtr.Zero, 3, BackupSemantics | OpenReparsePoint, IntPtr.Zero);
         return VerifyWindowsHandle(handle, directory: true);
     }
 
+    /// <summary>
+    /// Opens a handle to the workspace leaf file without following symbolic links or reparse points, using share-mode flags that permit host editor access on Windows (withholding delete sharing when acquiring a document lease) and O_NOFOLLOW semantics on Unix, returning null when the file does not exist.
+    /// </summary>
+    /// <param name="document">The document.</param>
+    /// <returns>The safe file handle? result.</returns>
+    /// <exception cref="UnauthorizedAccessException">Thrown when an error occurs during execution.</exception>
     private SafeFileHandle? OpenLeaf(bool document)
     {
         if (_windows)
@@ -334,6 +350,13 @@ public sealed class WorkspacePathLease : IDisposable
         return new SafeFileHandle(new IntPtr(fd), ownsHandle: true);
     }
 
+    /// <summary>
+    /// Validates that a Windows file handle refers to an ordinary file or directory rather than a reparse point, disposing the handle and throwing if validation fails.
+    /// </summary>
+    /// <param name="handle">The handle.</param>
+    /// <param name="directory">The directory.</param>
+    /// <returns>The safe file handle result.</returns>
+    /// <exception cref="UnauthorizedAccessException">Thrown when an error occurs during execution.</exception>
     private static SafeFileHandle VerifyWindowsHandle(SafeFileHandle handle, bool directory)
     {
         if (handle.IsInvalid)
@@ -352,13 +375,25 @@ public sealed class WorkspacePathLease : IDisposable
         return handle;
     }
 
+    /// <summary>
+    /// Creates an IOException wrapping the message and the most recent Win32 error code as its inner Win32Exception.
+    /// </summary>
+    /// <param name="message">The message.</param>
+    /// <returns>The ioexception result.</returns>
     private static IOException NativeIOException(string message) => new IOException(message, new Win32Exception(Marshal.GetLastWin32Error()));
 
+    /// <summary>
+    /// Throws an ObjectDisposedException if the workspace path lease has already been disposed.
+    /// </summary>
+    /// <exception cref="ObjectDisposedException">Thrown when an error occurs during execution.</exception>
     private void ThrowIfDisposed()
     {
         if (_disposed) throw new ObjectDisposedException(nameof(WorkspacePathLease));
     }
 
+    /// <summary>
+    /// Releases the underlying file and all tracked directory resources in reverse order of acquisition, ensuring disposal occurs only once.
+    /// </summary>
     public void Dispose()
     {
         if (_disposed) return;
@@ -367,40 +402,121 @@ public sealed class WorkspacePathLease : IDisposable
         for (int i = _directories.Count - 1; i >= 0; i--) _directories[i].Dispose();
     }
 
+    /// <summary>
+    /// The generic read.
+    /// </summary>
     private const uint GenericRead = 0x80000000;
+    /// <summary>
+    /// The backup semantics.
+    /// </summary>
     private const uint BackupSemantics = 0x02000000;
+    /// <summary>
+    /// The open reparse point.
+    /// </summary>
     private const uint OpenReparsePoint = 0x00200000;
+    /// <summary>
+    /// The file share read write.
+    /// </summary>
     private const uint FileShareReadWrite = 0x00000001 | 0x00000002;
+    /// <summary>
+    /// The file share read write delete.
+    /// </summary>
     private const uint FileShareReadWriteDelete = 0x00000001 | 0x00000002 | 0x00000004;
+    /// <summary>
+    /// The open write only.
+    /// </summary>
     private const int OpenWriteOnly = 1;
+    /// <summary>
+    /// The open create.
+    /// </summary>
     private const int OpenCreate = 0x40;
+    /// <summary>
+    /// The open exclusive.
+    /// </summary>
     private const int OpenExclusive = 0x80;
+    /// <summary>
+    /// The open non block.
+    /// </summary>
     private const int OpenNonBlock = 0x800;
+    /// <summary>
+    /// The open directory.
+    /// </summary>
     private const int OpenDirectory = 0x10000;
+    /// <summary>
+    /// The open no follow.
+    /// </summary>
     private const int OpenNoFollow = 0x20000;
+    /// <summary>
+    /// The open close on exec.
+    /// </summary>
     private const int OpenCloseOnExec = 0x80000;
 
+    /// <summary>
+    /// Represents the Win32 SECURITY_ATTRIBUTES structure that specifies a security descriptor and whether a handle is inheritable by child processes.
+    /// </summary>
     [StructLayout(LayoutKind.Sequential)]
     private struct SecurityAttributes
     {
+        /// <summary>
+        /// The length.
+        /// </summary>
         public uint Length;
+        /// <summary>
+        /// The descriptor.
+        /// </summary>
         public IntPtr Descriptor;
+        /// <summary>
+        /// The inherit handle.
+        /// </summary>
         [MarshalAs(UnmanagedType.Bool)]
         public bool InheritHandle;
     }
 
+    /// <summary>
+    /// Represents file system metadata including timestamps, size, and indexing information.
+    /// </summary>
     [StructLayout(LayoutKind.Sequential)]
     private struct FileInformation
     {
+        /// <summary>
+        /// The attributes.
+        /// </summary>
         public uint Attributes;
+        /// <summary>
+        /// The creation time.
+        /// </summary>
         public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+        /// <summary>
+        /// The last access time.
+        /// </summary>
         public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+        /// <summary>
+        /// The last write time.
+        /// </summary>
         public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+        /// <summary>
+        /// The volume serial number.
+        /// </summary>
         public uint VolumeSerialNumber;
+        /// <summary>
+        /// The file size high.
+        /// </summary>
         public uint FileSizeHigh;
+        /// <summary>
+        /// The file size low.
+        /// </summary>
         public uint FileSizeLow;
+        /// <summary>
+        /// The number of links.
+        /// </summary>
         public uint NumberOfLinks;
+        /// <summary>
+        /// The file index high.
+        /// </summary>
         public uint FileIndexHigh;
+        /// <summary>
+        /// The file index low.
+        /// </summary>
         public uint FileIndexLow;
     }
 

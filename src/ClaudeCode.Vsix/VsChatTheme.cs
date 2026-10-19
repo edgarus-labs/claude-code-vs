@@ -10,6 +10,10 @@ namespace ClaudeCode.Vsix;
 /// view's resources override its merged standalone fallback dictionary).</summary>
 internal static class VsChatTheme
 {
+    /// <summary>
+    /// Applies the Visual Studio theme-derived and fixed brush resources, including chat background, foreground, subtle, border, input, popup, hover, selection, user bubble, and diff colors, to the specified framework element on the UI thread.
+    /// </summary>
+    /// <param name="view">The view.</param>
     public static void Apply(FrameworkElement view)
     {
         ThreadHelper.ThrowIfNotOnUIThread();
@@ -78,6 +82,10 @@ internal static class VsChatTheme
         }
     }
 
+    /// <summary>
+    /// Retrieves the Visual Studio component model service from the global service provider, returning null if it is unavailable.
+    /// </summary>
+    /// <returns>The microsoft.visual studio.component model host.icomponent model? result.</returns>
     private static Microsoft.VisualStudio.ComponentModelHost.IComponentModel? GetComponentModel()
     {
         ThreadHelper.ThrowIfNotOnUIThread();
@@ -85,6 +93,10 @@ internal static class VsChatTheme
             as Microsoft.VisualStudio.ComponentModelHost.IComponentModel;
     }
 
+    /// <summary>
+    /// Applies Visual Studio editor classification foreground colors to the specified view&apos;s resources so the transcript matches the current editor theme, falling back to the built-in palette and logging a warning if theming cannot be retrieved.
+    /// </summary>
+    /// <param name="view">The view.</param>
     private static void ApplyEditorSyntaxColors(FrameworkElement view)
     {
         ThreadHelper.ThrowIfNotOnUIThread();
@@ -120,6 +132,15 @@ internal static class VsChatTheme
         }
     }
 
+    /// <summary>
+    /// Creates a frozen solid color brush from the specified ARGB components and stores it in the view&apos;s resource dictionary under the given key.
+    /// </summary>
+    /// <param name="view">The view.</param>
+    /// <param name="key">The key.</param>
+    /// <param name="a">The a.</param>
+    /// <param name="r">The r.</param>
+    /// <param name="g">The g.</param>
+    /// <param name="b">The b.</param>
     private static void SetFixedBrush(FrameworkElement view, string key, byte a, byte r, byte g, byte b)
     {
         var brush = new SolidColorBrush(Color.FromArgb(a, r, g, b));
@@ -127,6 +148,13 @@ internal static class VsChatTheme
         view.Resources[key] = brush;
     }
 
+    /// <summary>
+    /// Sets a frozen SolidColorBrush, derived from a themed Visual Studio color with the specified alpha channel, in the view&apos;s resource dictionary under the given key.
+    /// </summary>
+    /// <param name="view">The view.</param>
+    /// <param name="key">The key.</param>
+    /// <param name="themeKey">The theme key.</param>
+    /// <param name="alpha">The alpha.</param>
     private static void SetDerivedBrush(FrameworkElement view, string key, ThemeResourceKey themeKey, byte alpha)
     {
         var color = VSColorTheme.GetThemedColor(themeKey);
@@ -135,6 +163,12 @@ internal static class VsChatTheme
         view.Resources[key] = brush;
     }
 
+    /// <summary>
+    /// Sets a frozen SolidColorBrush, created from the Visual Studio themed color associated with the specified theme resource key, into the view&apos;s resource dictionary under the given key.
+    /// </summary>
+    /// <param name="view">The view.</param>
+    /// <param name="key">The key.</param>
+    /// <param name="themeKey">The theme key.</param>
     private static void SetBrush(FrameworkElement view, string key, ThemeResourceKey themeKey)
     {
         var color = VSColorTheme.GetThemedColor(themeKey);

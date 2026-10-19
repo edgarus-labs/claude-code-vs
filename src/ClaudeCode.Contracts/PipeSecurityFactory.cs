@@ -13,6 +13,12 @@ namespace ClaudeCode.Contracts;
 /// </summary>
 public static class PipeSecurityFactory
 {
+    /// <summary>
+    /// Creates a PipeSecurity object with access rules allowing only the current Windows user the specified pipe access rights.
+    /// </summary>
+    /// <param name="rights">The rights.</param>
+    /// <returns>The pipe security result.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when an error occurs during execution.</exception>
     public static PipeSecurity CreateCurrentUserOnly(PipeAccessRights rights)
     {
         using var identity = WindowsIdentity.GetCurrent();

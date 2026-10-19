@@ -14,6 +14,9 @@ namespace ClaudeCode.Acp.Tests;
 /// </summary>
 public sealed class PipeHandshakeLineReaderTests
 {
+    /// <summary>
+    /// The cap.
+    /// </summary>
     private const int _cap = 512;
 
     [Fact]
@@ -80,12 +83,27 @@ public sealed class PipeHandshakeLineReaderTests
         private readonly string _content;
         private int _position;
 
+        /// <summary>
+        /// Initializes a new instance of the CountingReader class with the specified string content to read from.
+        /// </summary>
+        /// <param name="content">The content.</param>
         public CountingReader(string content) => _content = content;
 
+        /// <summary>
+        /// Gets or sets the chars read.
+        /// </summary>
         public int CharsRead { get; private set; }
 
+        /// <summary>
+        /// Returns the next character in the stream without advancing the position, or -1 if at the end of the stream.
+        /// </summary>
+        /// <returns>The int result.</returns>
         public override int Peek() => _position >= _content.Length ? -1 : _content[_position];
 
+        /// <summary>
+        /// Reads the next character from the content buffer and advances the position, returning -1 when the end of the buffer is reached.
+        /// </summary>
+        /// <returns>The int result.</returns>
         public override int Read()
         {
             if (_position >= _content.Length)
@@ -97,6 +115,13 @@ public sealed class PipeHandshakeLineReaderTests
             return _content[_position++];
         }
 
+        /// <summary>
+        /// Reads up to the specified number of characters from the underlying content into the buffer, advancing the current position and updating the total characters read.
+        /// </summary>
+        /// <param name="buffer">The collection of buffer.</param>
+        /// <param name="index">The index.</param>
+        /// <param name="count">The count.</param>
+        /// <returns>The int result.</returns>
         public override int Read(char[] buffer, int index, int count)
         {
             var available = Math.Min(count, _content.Length - _position);

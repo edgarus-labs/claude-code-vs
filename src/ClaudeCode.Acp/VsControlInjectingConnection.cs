@@ -160,36 +160,70 @@ public sealed class VsControlInjectingConnection : IAcpAgentConnection
         }
     }
 
+    /// <summary>
+    /// Forwards the session update event to subscribers, provided the instance has not been disposed.
+    /// </summary>
+    /// <param name="sender">The sender.</param>
+    /// <param name="e">The e.</param>
     private void OnSessionUpdate(object? sender, SessionUpdateEventArgs e)
     {
         if (Volatile.Read(ref _disposed) == 0) SessionUpdate?.Invoke(this, e);
     }
 
+    /// <summary>
+    /// Forwards a permission request event to subscribers via the PermissionRequested event, but only while the instance has not been disposed.
+    /// </summary>
+    /// <param name="sender">The sender.</param>
+    /// <param name="e">The e.</param>
     private void OnPermissionRequested(object? sender, PermissionRequestEventArgs e)
     {
         if (Volatile.Read(ref _disposed) == 0) PermissionRequested?.Invoke(this, e);
     }
 
+    /// <summary>
+    /// Raises the ElicitationRequested event with the specified event arguments, provided the instance has not been disposed.
+    /// </summary>
+    /// <param name="sender">The sender.</param>
+    /// <param name="e">The e.</param>
     private void OnElicitationRequested(object? sender, ElicitationRequestEventArgs e)
     {
         if (Volatile.Read(ref _disposed) == 0) ElicitationRequested?.Invoke(this, e);
     }
 
+    /// <summary>
+    /// Raises the FileReadRequested event with the specified arguments if the instance has not been disposed.
+    /// </summary>
+    /// <param name="sender">The sender.</param>
+    /// <param name="e">The e.</param>
     private void OnFileReadRequested(object? sender, FileReadRequestEventArgs e)
     {
         if (Volatile.Read(ref _disposed) == 0) FileReadRequested?.Invoke(this, e);
     }
 
+    /// <summary>
+    /// Forwards the file write request to subscribers of the FileWriteRequested event if the instance has not been disposed.
+    /// </summary>
+    /// <param name="sender">The sender.</param>
+    /// <param name="e">The e.</param>
     private void OnFileWriteRequested(object? sender, FileWriteRequestEventArgs e)
     {
         if (Volatile.Read(ref _disposed) == 0) FileWriteRequested?.Invoke(this, e);
     }
 
+    /// <summary>
+    /// Raises the Disconnected event with the specified exception details, provided the instance has not been disposed.
+    /// </summary>
+    /// <param name="sender">The sender.</param>
+    /// <param name="e">The e.</param>
     private void OnDisconnected(object? sender, Exception? e)
     {
         if (Volatile.Read(ref _disposed) == 0) Disconnected?.Invoke(this, e);
     }
 
+    /// <summary>
+    /// Asynchronously disposes the wrapper by detaching all inner session event handlers, ending any active correlated sessions, and disposing the underlying client, with idempotent protection against repeated disposal.
+    /// </summary>
+    /// <returns>A value task representing the asynchronous operation.</returns>
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;

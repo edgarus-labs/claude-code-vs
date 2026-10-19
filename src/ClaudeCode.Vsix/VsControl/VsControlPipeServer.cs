@@ -279,6 +279,10 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Asynchronously collects the file paths, dirty state, and active status of all open document windows in Visual Studio and returns them as a JSON object.
+    /// </summary>
+    /// <returns>A task representing the asynchronous operation. The task result contains the jobject.</returns>
     private static async Task<JObject> ListOpenDocumentsAsync()
     {
         var frames = await VS.Windows.GetAllDocumentWindowsAsync();
@@ -304,6 +308,12 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         return new JObject { ["documents"] = documents };
     }
 
+    /// <summary>
+    /// Asynchronously opens the specified workspace document in the Visual Studio editor, optionally positions the caret at a requested line, and returns an empty result object.
+    /// </summary>
+    /// <param name="args">The args.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the jobject.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when an error occurs during execution.</exception>
     private async Task<JObject> OpenDocumentAsync(JObject args)
     {
         var path = RequireString(args, "path");
@@ -325,6 +335,10 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         return new JObject();
     }
 
+    /// <summary>
+    /// Asynchronously retrieves a JSON representation of the active Visual Studio document, including its file path, full text, and current selection or caret offsets, or a JSON null if no eligible document is open.
+    /// </summary>
+    /// <returns>A task representing the asynchronous operation. The task result contains the jtoken.</returns>
     private static async Task<JToken> GetActiveDocumentAsync()
     {
         var view = await VS.Documents.GetActiveDocumentViewAsync();
@@ -358,6 +372,10 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         };
     }
 
+    /// <summary>
+    /// Asynchronously retrieves the current text selection from the active document view as a JSON object containing the file path, selected text, and 1-based start and end line numbers, or a JSON null if no document or text view is available.
+    /// </summary>
+    /// <returns>A task representing the asynchronous operation. The task result contains the jtoken.</returns>
     private static async Task<JToken> GetSelectionAsync()
     {
         var view = await VS.Documents.GetActiveDocumentViewAsync();
@@ -379,6 +397,12 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         };
     }
 
+    /// <summary>
+    /// Asynchronously replaces the current selection in the specified document with the supplied text, throwing an InvalidOperationException if the document cannot be opened or the edit is rejected by a read-only buffer or another extension.
+    /// </summary>
+    /// <param name="args">The args.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the jobject.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when an error occurs during execution.</exception>
     private async Task<JObject> ReplaceSelectionAsync(JObject args)
     {
         var path = RequireString(args, "path");
@@ -423,6 +447,10 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         return new JObject();
     }
 
+    /// <summary>
+    /// Asynchronously switches to the main thread, invokes the Visual Studio &quot;File.SaveAll&quot; command to save all open documents, and returns an empty JObject.
+    /// </summary>
+    /// <returns>A task representing the asynchronous operation. The task result contains the jobject.</returns>
     private static async Task<JObject> SaveAllAsync()
     {
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
@@ -476,6 +504,12 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Asynchronously retrieves language-service error diagnostics for a workspace document, opening the document if necessary, and returns them as a JSON object containing line, column, message, severity, and source for each error tag.
+    /// </summary>
+    /// <param name="args">The args.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the jobject.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when an error occurs during execution.</exception>
     private async Task<JObject> GetDiagnosticsAsync(JObject args)
     {
         var path = RequireString(args, "path");
@@ -515,6 +549,12 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         return new JObject { ["diagnostics"] = diagnostics };
     }
 
+    /// <summary>
+    /// Asynchronously executes an allow-listed Visual Studio command on the main thread through the DTE automation object, throwing an exception if the command is not permitted or fails to run.
+    /// </summary>
+    /// <param name="args">The args.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the jobject.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when an error occurs during execution.</exception>
     private static async Task<JObject> RunCommandAsync(JObject args)
     {
         var commandName = RequireString(args, "commandName");
@@ -550,6 +590,11 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
             ? new InvalidOperationException("Visual Studio is busy, try again.")
             : new InvalidOperationException(failureMessage);
 
+    /// <summary>
+    /// Asynchronously adds an existing file to the specified project and returns the project name and file path.
+    /// </summary>
+    /// <param name="args">The args.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains the jobject.</returns>
     private async Task<JObject> AddFileToProjectAsync(JObject args)
     {
         var projectName = RequireString(args, "projectName");
@@ -637,6 +682,10 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         return await GetSolutionInfoAsync();
     }
 
+    /// <summary>
+    /// Asynchronously retrieves the current solution path and project details, returning them as a JSON object.
+    /// </summary>
+    /// <returns>A task representing the asynchronous operation. The task result contains the jobject.</returns>
     private static async Task<JObject> GetSolutionInfoAsync()
     {
         var solution = await VS.Solutions.GetCurrentSolutionAsync();
@@ -662,6 +711,10 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         };
     }
 
+    /// <summary>
+    /// Asynchronously retrieves all error items from the Visual Studio Error List tool window and returns them as a read-only list.
+    /// </summary>
+    /// <returns>A task representing the asynchronous operation. The task result contains the iread only list.</returns>
     private static async Task<IReadOnlyList<ErrorItem>> GetErrorListItemsAsync()
     {
         var dte = await VS.GetRequiredServiceAsync<DTE, DTE2>();
@@ -705,6 +758,11 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         return (errorCount, warningCount);
     }
 
+    /// <summary>
+    /// Converts a Visual Studio build error level to its corresponding severity string representation.
+    /// </summary>
+    /// <param name="level">The level.</param>
+    /// <returns>The string result.</returns>
     private static string ErrorLevelToSeverity(vsBuildErrorLevel level) => level switch
     {
         vsBuildErrorLevel.vsBuildErrorLevelHigh => "error",
@@ -712,9 +770,21 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         _ => "message",
     };
 
+    /// <summary>
+    /// Converts the specified error type to its corresponding severity level, returning &quot;warning&quot; if the error type contains &quot;warning&quot; (case-insensitive) and &quot;error&quot; otherwise.
+    /// </summary>
+    /// <param name="errorType">The error type.</param>
+    /// <returns>The string result.</returns>
     private static string ErrorTypeToSeverity(string errorType) =>
         errorType.IndexOf("warning", StringComparison.OrdinalIgnoreCase) >= 0 ? "warning" : "error";
 
+    /// <summary>
+    /// Retrieves the specified string property from the JSON object and throws an exception if the property is missing or empty.
+    /// </summary>
+    /// <param name="args">The args.</param>
+    /// <param name="propertyName">The property name.</param>
+    /// <returns>The string result.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when an error occurs during execution.</exception>
     private static string RequireString(JObject args, string propertyName)
     {
         var value = args[propertyName]?.Value<string>();
@@ -726,6 +796,10 @@ internal sealed partial class VsControlPipeServer : IAsyncDisposable
         return value!;
     }
 
+    /// <summary>
+    /// Asynchronously cancels operations, disposes resources, and awaits completion of listening tasks.
+    /// </summary>
+    /// <returns>A value task representing the asynchronous operation.</returns>
     public async ValueTask DisposeAsync()
     {
         _cts.Cancel();

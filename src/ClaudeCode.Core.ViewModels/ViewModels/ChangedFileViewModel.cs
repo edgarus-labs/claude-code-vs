@@ -15,6 +15,15 @@ public sealed class ChangedFileViewModel : ObservableObject
     private int _removedLines;
     private bool _canRevert = true;
 
+    /// <summary>
+    /// Initializes a new instance of the ChangedFileViewModel class with the specified file path, original text, accept and reject actions, and optional tool call identifier, throwing an ArgumentNullException if the file path is null.
+    /// </summary>
+    /// <param name="fullPath">The full path.</param>
+    /// <param name="originalText">The original text.</param>
+    /// <param name="accept">The accept.</param>
+    /// <param name="reject">The reject.</param>
+    /// <param name="createdByToolCallId">The unique identifier of the created by tool call.</param>
+    /// <exception cref="ArgumentNullException">Thrown when an error occurs during execution.</exception>
     public ChangedFileViewModel(string fullPath, string? originalText, Func<ChangedFileViewModel, Task> accept, Func<ChangedFileViewModel, Task> reject, string? createdByToolCallId)
     {
         FullPath = fullPath ?? throw new ArgumentNullException(nameof(fullPath));
@@ -25,13 +34,22 @@ public sealed class ChangedFileViewModel : ObservableObject
         RejectCommand = new AsyncRelayCommand(() => reject(this), () => CanRevert);
     }
 
+    /// <summary>
+    /// Gets the full path.
+    /// </summary>
     public string FullPath { get; }
 
+    /// <summary>
+    /// Gets the name.
+    /// </summary>
     public string Name { get; }
 
     /// <summary>Content before the agent's first write, or null when the agent created the file.</summary>
     public string? OriginalText { get; private set; }
 
+    /// <summary>
+    /// Gets a value indicating whether is new.
+    /// </summary>
     public bool IsNew => OriginalText is null;
 
     /// <summary>The tool call whose notification created this row, or null when a client-side file
@@ -70,27 +88,46 @@ public sealed class ChangedFileViewModel : ObservableObject
         RejectCommand.NotifyCanExecuteChanged();
     }
 
+    /// <summary>
+    /// Marks the current state as not revertable and raises the revertability changed notification if the state actually changed.
+    /// </summary>
     internal void MarkNotRevertable()
     {
         if (TryMarkNotRevertable()) NotifyRevertabilityChanged();
     }
 
+    /// <summary>
+    /// Gets or sets the added lines.
+    /// </summary>
     public int AddedLines
     {
         get => _addedLines;
         private set => SetProperty(ref _addedLines, value);
     }
 
+    /// <summary>
+    /// Gets or sets the removed lines.
+    /// </summary>
     public int RemovedLines
     {
         get => _removedLines;
         private set => SetProperty(ref _removedLines, value);
     }
 
+    /// <summary>
+    /// Gets the accept command.
+    /// </summary>
     public IAsyncRelayCommand AcceptCommand { get; }
 
+    /// <summary>
+    /// Gets the reject command.
+    /// </summary>
     public IAsyncRelayCommand RejectCommand { get; }
 
+    /// <summary>
+    /// Recalculates the added and removed line counts by comparing the original text against the provided current text, storing the results in the AddedLines and RemovedLines properties.
+    /// </summary>
+    /// <param name="currentText">The current text.</param>
     public void UpdateCounts(string? currentText)
     {
         var (added, removed) = CountLineChanges(OriginalText, currentText ?? string.Empty);
@@ -99,6 +136,12 @@ public sealed class ChangedFileViewModel : ObservableObject
     }
 
     // Multiset line diff: cheap, order-insensitive, and good enough for a "+12 −3" badge.
+    /// <summary>
+    /// Calculates the number of lines added and removed between the original and current text using an order-insensitive multiset comparison of line occurrences.
+    /// </summary>
+    /// <param name="originalText">The original text.</param>
+    /// <param name="currentText">The current text.</param>
+    /// <returns>The (int added, int removed) result.</returns>
     private static (int Added, int Removed) CountLineChanges(string? originalText, string currentText)
     {
         var remaining = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -122,6 +165,11 @@ public sealed class ChangedFileViewModel : ObservableObject
 
     // An empty file has no lines at all; string.Split would report one empty line and inflate the badge.
     // Likewise, a file ending in a standard newline must not count the trailing empty segment as an extra line.
+    /// <summary>
+    /// Splits the specified text into its individual lines, returning no lines for null or empty input and ignoring a single trailing newline so that it is not counted as an extra empty line.
+    /// </summary>
+    /// <param name="text">The text.</param>
+    /// <returns>A collection of ienumerable items.</returns>
     private static IEnumerable<string> SplitLines(string? text)
     {
         if (text is null || text.Length == 0) yield break;

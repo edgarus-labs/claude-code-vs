@@ -17,6 +17,9 @@ namespace ClaudeCode.Acp.Tests;
 // `claude-agent-acp --cli -p`, which records what it was asked and answers per scenario.
 public sealed class ClaudeCliEffortJudgeTests : IDisposable
 {
+    /// <summary>
+    /// The fake adapter.
+    /// </summary>
     private const string FakeAdapter = """
         const fs = require('fs');
         const [mode, log] = process.argv.slice(2, 4);
@@ -66,6 +69,9 @@ public sealed class ClaudeCliEffortJudgeTests : IDisposable
     private readonly string _directory = Path.Combine(Path.GetTempPath(), "effort-judge-" + Guid.NewGuid().ToString("N"));
     private readonly string _script;
     private readonly string _log;
+    /// <summary>
+    /// Gets the pid file.
+    /// </summary>
     private string _pidFile => _log + ".pid";
 
     public ClaudeCliEffortJudgeTests()

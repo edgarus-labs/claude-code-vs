@@ -10,18 +10,35 @@ namespace ClaudeCode.Core.Tests;
 
 public sealed partial class ChatSessionStateTests
 {
+    /// <summary>
+    /// Provides a temporary file system workspace rooted in a uniquely named directory that is recursively deleted when disposed.
+    /// </summary>
     private sealed class TempWorkspace : IDisposable
     {
+        /// <summary>
+        /// Gets the root.
+        /// </summary>
         public string Root { get; }
 
+        /// <summary>
+        /// Initializes a new instance of the TempWorkspace class by creating a uniquely named directory under the system temporary folder and setting the Root property to its path.
+        /// </summary>
         public TempWorkspace()
         {
             Root = Path.Combine(Path.GetTempPath(), "cc-vs-workspace-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(Root);
         }
 
+        /// <summary>
+        /// Combines the specified relative path with the root directory to produce a full path located beneath it.
+        /// </summary>
+        /// <param name="relative">The relative.</param>
+        /// <returns>The string result.</returns>
         public string PathUnder(string relative) => Path.Combine(Root, relative);
 
+        /// <summary>
+        /// Recursively deletes the temporary directory at the Root path and silently ignores I/O or access failures that occur during cleanup.
+        /// </summary>
         public void Dispose()
         {
             try { Directory.Delete(Root, recursive: true); }
