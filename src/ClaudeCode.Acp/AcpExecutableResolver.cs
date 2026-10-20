@@ -128,7 +128,7 @@ public static class AcpExecutableResolver
     /// <param name="executablePath">The executable path.</param>
     /// <returns>The acp executable spec? result.</returns>
     public static AcpExecutableSpec? TryResolve(string executablePath) =>
-        TryResolve(executablePath, Environment.GetEnvironmentVariable("PATH"));
+        TryResolve(executablePath, GetDefaultSearchPath());
 
     /// <summary>
     /// Attempts to resolve an ACP executable specification from the given path, validating file existence and path format, and returns null if the path is invalid or the file does not exist.

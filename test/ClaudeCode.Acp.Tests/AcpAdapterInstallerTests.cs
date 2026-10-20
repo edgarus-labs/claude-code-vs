@@ -8,6 +8,7 @@ using Xunit;
 
 namespace ClaudeCode.Acp.Tests;
 
+[Collection("Process current directory")]
 public sealed class AcpAdapterInstallerTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "claude acp & %installer% " + Guid.NewGuid().ToString("N"));
@@ -111,6 +112,37 @@ public sealed class AcpAdapterInstallerTests : IDisposable
         bool result = await installer.InstallAdapterAsync(null, CancellationToken.None);
 
         Assert.False(result);
+    }
+
+    [Fact]
+    public async Task DefaultSearchPath_UsesSystemSearchPathForReadinessAndInstall()
+    {
+        string adapterName = OperatingSystem.IsWindows() ? "claude-agent-acp.exe" : "claude-agent-acp";
+        string npmName = OperatingSystem.IsWindows() ? "npm.cmd" : "npm";
+        string adapter = CreateFile(Path.Combine("default-bin", adapterName));
+        string npm = CreateFile(Path.Combine("default-bin", npmName));
+        string binDir = Path.GetDirectoryName(adapter)!;
+        string? originalPath = Environment.GetEnvironmentVariable("PATH");
+        try
+        {
+            Environment.SetEnvironmentVariable("PATH", binDir + Path.PathSeparator + originalPath);
+            string? executedFile = null;
+            var installer = new AcpAdapterInstaller(
+                searchPath: null,
+                processRunner: (file, args, progress, ct) =>
+                {
+                    executedFile = file;
+                    return Task.FromResult(0);
+                });
+
+            Assert.Equal(AdapterReadiness.Ready, installer.CheckReadiness());
+            Assert.True(await installer.InstallAdapterAsync(null, CancellationToken.None));
+            Assert.Equal(npm, executedFile);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PATH", originalPath);
+        }
     }
 
     private string CreateFile(string relativePath)

@@ -39,18 +39,19 @@ public sealed class AcpAdapterInstaller : IAcpAdapterInstaller
     /// <returns>The adapter readiness result.</returns>
     public AdapterReadiness CheckReadiness(string? configuredPath = null)
     {
-        if (!string.IsNullOrWhiteSpace(configuredPath) && AcpExecutableResolver.TryResolve(configuredPath!, _searchPath) is not null)
+        string searchPath = _searchPath ?? AcpExecutableResolver.GetDefaultSearchPath();
+        if (!string.IsNullOrWhiteSpace(configuredPath) && AcpExecutableResolver.TryResolve(configuredPath!, searchPath) is not null)
         {
             return AdapterReadiness.Ready;
         }
 
-        if (AcpExecutableResolver.TryResolveDefault(_searchPath) is not null)
+        if (AcpExecutableResolver.TryResolveDefault(searchPath) is not null)
         {
             return AdapterReadiness.Ready;
         }
 
-        if (AcpExecutableResolver.FindNpmOnPath(_searchPath) is not null
-            || AcpExecutableResolver.FindNodeOnPath(_searchPath) is not null)
+        if (AcpExecutableResolver.FindNpmOnPath(searchPath) is not null
+            || AcpExecutableResolver.FindNodeOnPath(searchPath) is not null)
         {
             return AdapterReadiness.MissingAdapter;
         }
@@ -68,8 +69,9 @@ public sealed class AcpAdapterInstaller : IAcpAdapterInstaller
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        string? npm = AcpExecutableResolver.FindNpmOnPath(_searchPath);
-        string? node = AcpExecutableResolver.FindNodeOnPath(_searchPath);
+        string searchPath = _searchPath ?? AcpExecutableResolver.GetDefaultSearchPath();
+        string? npm = AcpExecutableResolver.FindNpmOnPath(searchPath);
+        string? node = AcpExecutableResolver.FindNodeOnPath(searchPath);
 
         string fileName;
         string[] arguments;
@@ -138,6 +140,12 @@ public sealed class AcpAdapterInstaller : IAcpAdapterInstaller
             },
             EnableRaisingEvents = true,
         };
+
+        string defaultSearchPath = AcpExecutableResolver.GetDefaultSearchPath();
+        if (!string.IsNullOrWhiteSpace(defaultSearchPath))
+        {
+            process.StartInfo.EnvironmentVariables["PATH"] = defaultSearchPath;
+        }
 
         var exited = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         process.Exited += (_, __) => exited.TrySetResult(true);
