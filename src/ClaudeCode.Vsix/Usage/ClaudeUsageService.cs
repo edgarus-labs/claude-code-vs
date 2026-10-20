@@ -107,7 +107,7 @@ internal sealed class ClaudeUsageService : IUsageService
                 return null;
             }
 
-            string? nodePath = AcpExecutableResolver.FindNodeOnPath(Environment.GetEnvironmentVariable("PATH"));
+            string? nodePath = AcpExecutableResolver.FindNodeOnPath(AcpExecutableResolver.GetDefaultSearchPath());
             if (nodePath is null)
             {
                 return null;
