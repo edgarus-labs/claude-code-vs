@@ -36,8 +36,8 @@
       },
       "Microsoft.Bcl.AsyncInterfaces": {
         "type": "Transitive",
-        "resolved": "10.0.13",
-        "contentHash": "PEC80XidOaP1vyHWiSIOHOfh6MpkFln/gkLXKaSmjrAdBSwcAaowvOaVBKvnb+HAb2UTGrZqROajIKMVFu2jdw=="
+        "resolved": "10.0.10",
+        "contentHash": "TFI6OKYE1XZz4SGuTSH70c6SBdPpFktXsoa1gCxTr3mKrhmXirnvaS0tKz+J3ZWICEAmMpEGn59nO4ICtUpQXA=="
       },
       "Microsoft.CodeCoverage": {
         "type": "Transitive",
@@ -100,7 +100,7 @@
       "EdgarusLabs.ClaudeCode.Contracts": {
         "type": "Project",
         "dependencies": {
-          "Microsoft.Bcl.AsyncInterfaces": "[10.0.13, )"
+          "Microsoft.Bcl.AsyncInterfaces": "[10.0.10, )"
         }
       },
       "EdgarusLabs.ClaudeCode.Core.ViewModels": {
