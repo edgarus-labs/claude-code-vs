@@ -11,5 +11,7 @@ public interface IAcpAdapterInstaller
 {
     AdapterReadiness CheckReadiness(string? configuredPath = null);
 
+    Task<string?> GetRuntimeWarningAsync(string? configuredPath = null, CancellationToken cancellationToken = default);
+
     Task<bool> InstallAdapterAsync(IProgress<string>? progress, CancellationToken cancellationToken);
 }

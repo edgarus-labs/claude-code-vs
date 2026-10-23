@@ -18,7 +18,8 @@ public static class AcpAuthCommandOutcomes
     /// <summary>
     /// The adapter missing message.
     /// </summary>
-    public const string AdapterMissingMessage = "Install @agentclientprotocol/claude-agent-acp and Node.js 22 or newer, "
+    public const string AdapterMissingMessage = "Install @agentclientprotocol/claude-agent-acp and Node.js "
+        + NodeRuntimePolicy.PatchedReleases + " or newer (security fix for CVE-2026-111497), "
         + "or configure its ACP executable path in Tools > Options > Claude Code.";
 
     /// <summary>

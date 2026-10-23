@@ -31,7 +31,19 @@ internal sealed class VsAcpAdapterInstaller : IAcpAdapterInstaller
     /// </summary>
     /// <param name="configuredPath">The configured path.</param>
     /// <returns>The adapter readiness result.</returns>
-    public AdapterReadiness CheckReadiness(string? configuredPath = null)
+    public AdapterReadiness CheckReadiness(string? configuredPath = null) => _inner.CheckReadiness(ResolveConfiguredPath(configuredPath));
+
+    /// <summary>
+    /// Probes the Node.js runtime of the adapter resolved from the specified path, falling back to the configured options when none is provided.
+    /// The options page is read before the first await so the call may start on the UI thread.
+    /// </summary>
+    /// <param name="configuredPath">The configured path.</param>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>The warning text, or null when the runtime is supported or cannot be determined.</returns>
+    public Task<string?> GetRuntimeWarningAsync(string? configuredPath = null, CancellationToken cancellationToken = default) =>
+        _inner.GetRuntimeWarningAsync(ResolveConfiguredPath(configuredPath), cancellationToken);
+
+    private string? ResolveConfiguredPath(string? configuredPath)
     {
         string? path = configuredPath;
         if (string.IsNullOrWhiteSpace(path))
@@ -45,7 +57,7 @@ internal sealed class VsAcpAdapterInstaller : IAcpAdapterInstaller
             }
         }
 
-        return _inner.CheckReadiness(path);
+        return path;
     }
 
     /// <summary>

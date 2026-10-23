@@ -145,6 +145,135 @@ public sealed class AcpAdapterInstallerTests : IDisposable
         }
     }
 
+    [Theory]
+    [InlineData("v22.23.3", true)]
+    [InlineData("v20.19.5", true)]
+    [InlineData("v22.23.4", false)]
+    [InlineData("v24.22.1", false)]
+    [InlineData("v27.0.0", false)]
+    public async Task GetRuntimeWarningAsync_ProbesResolvedNodeAndAppliesPolicy(string reportedVersion, bool expectWarning)
+    {
+        var (script, node) = CreateNodeAdapter();
+        string? executedFile = null;
+        string[]? executedArgs = null;
+
+        var installer = new AcpAdapterInstaller(Path.GetDirectoryName(node)!, (file, args, progress, ct) =>
+        {
+            executedFile = file;
+            executedArgs = args;
+            progress?.Report(reportedVersion);
+
+            return Task.FromResult(0);
+        });
+
+        string? warning = await installer.GetRuntimeWarningAsync(script, CancellationToken.None);
+
+        Assert.Equal(node, executedFile);
+        Assert.Equal(new[] { "--version" }, executedArgs);
+        Assert.Equal(expectWarning, warning is not null);
+        if (expectWarning)
+        {
+            Assert.Contains(reportedVersion.TrimStart('v'), warning);
+        }
+    }
+
+    [Fact]
+    public async Task GetRuntimeWarningAsync_WhenProbeFails_DoesNotWarn()
+    {
+        var (script, node) = CreateNodeAdapter();
+        var installer = new AcpAdapterInstaller(Path.GetDirectoryName(node)!, (file, args, progress, ct) =>
+        {
+            progress?.Report("v20.19.5");
+
+            return Task.FromResult(1);
+        });
+
+        Assert.Null(await installer.GetRuntimeWarningAsync(script, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task GetRuntimeWarningAsync_WhenProbeThrows_DoesNotWarn()
+    {
+        var (script, node) = CreateNodeAdapter();
+        var installer = new AcpAdapterInstaller(
+            Path.GetDirectoryName(node)!,
+            (file, args, progress, ct) => throw new InvalidOperationException("cannot start"));
+
+        Assert.Null(await installer.GetRuntimeWarningAsync(script, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task GetRuntimeWarningAsync_WhenProbeOutputIsNotAVersion_DoesNotWarn()
+    {
+        var (script, node) = CreateNodeAdapter();
+        var installer = new AcpAdapterInstaller(Path.GetDirectoryName(node)!, (file, args, progress, ct) =>
+        {
+            progress?.Report("something unexpected");
+
+            return Task.FromResult(0);
+        });
+
+        Assert.Null(await installer.GetRuntimeWarningAsync(script, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task GetRuntimeWarningAsync_WhenCallerCancels_Throws()
+    {
+        var (script, node) = CreateNodeAdapter();
+        using var cts = new CancellationTokenSource();
+        var installer = new AcpAdapterInstaller(Path.GetDirectoryName(node)!, (file, args, progress, ct) =>
+        {
+            cts.Cancel();
+            ct.ThrowIfCancellationRequested();
+
+            return Task.FromResult(0);
+        });
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => installer.GetRuntimeWarningAsync(script, cts.Token));
+    }
+
+    [Fact]
+    public async Task GetRuntimeWarningAsync_WhenAdapterIsNativeExecutable_DoesNotProbeNode()
+    {
+        string adapterName = OperatingSystem.IsWindows() ? "claude-agent-acp.exe" : "claude-agent-acp";
+        string adapter = CreateFile(Path.Combine("native", adapterName));
+        string node = CreateFile(Path.Combine("native", OperatingSystem.IsWindows() ? "node.exe" : "node"));
+        bool probed = false;
+        var installer = new AcpAdapterInstaller(Path.GetDirectoryName(node)!, (file, args, progress, ct) =>
+        {
+            probed = true;
+
+            return Task.FromResult(0);
+        });
+
+        Assert.Null(await installer.GetRuntimeWarningAsync(adapter, CancellationToken.None));
+        Assert.False(probed);
+    }
+
+    [Fact]
+    public async Task GetRuntimeWarningAsync_WhenAdapterNotResolvable_DoesNotProbeNode()
+    {
+        string node = CreateFile(Path.Combine("bare", OperatingSystem.IsWindows() ? "node.exe" : "node"));
+        bool probed = false;
+        var installer = new AcpAdapterInstaller(Path.GetDirectoryName(node)!, (file, args, progress, ct) =>
+        {
+            probed = true;
+
+            return Task.FromResult(0);
+        });
+
+        Assert.Null(await installer.GetRuntimeWarningAsync(null, CancellationToken.None));
+        Assert.False(probed);
+    }
+
+    private (string Script, string Node) CreateNodeAdapter()
+    {
+        string script = CreateFile(Path.Combine("lib", "node_modules", "@agentclientprotocol", "claude-agent-acp", "dist", "index.js"));
+        string node = CreateFile(Path.Combine("nodebin", OperatingSystem.IsWindows() ? "node.exe" : "node"));
+
+        return (script, node);
+    }
+
     private string CreateFile(string relativePath)
     {
         string path = Path.Combine(_root, relativePath);

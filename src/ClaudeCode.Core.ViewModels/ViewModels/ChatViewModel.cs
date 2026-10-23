@@ -1034,7 +1034,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
             ResetTranscriptState();
             var teardownStatus = StatusMessage;
             await InitializeCoreAsync(_lifetime.Token).ConfigureAwait(true);
-            if (!_disposed && !string.IsNullOrEmpty(teardownStatus) && StatusMessage != teardownStatus)
+            if (!_disposed && !string.IsNullOrEmpty(teardownStatus) && StatusMessage?.Contains(teardownStatus!) != true)
             {
                 StatusMessage = string.IsNullOrEmpty(StatusMessage) ? teardownStatus : teardownStatus + " " + StatusMessage;
             }
@@ -1448,6 +1448,7 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         }
 
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
+        Task<string?> runtimeWarning = Task.FromResult<string?>(null);
         try
         {
             IsConnecting = true;
@@ -1461,6 +1462,8 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
 
                     return;
                 }
+
+                runtimeWarning = FindRuntimeWarningAsync(_services.AdapterInstaller, linked.Token);
             }
             else
             {
@@ -1495,6 +1498,29 @@ public sealed class ChatViewModel : ObservableObject, IDisposable
         finally
         {
             RunEachStepReportingFailures(() => IsConnecting = false);
+            var warning = await runtimeWarning.ConfigureAwait(true);
+            if (!_disposed && !string.IsNullOrEmpty(warning) && StatusMessage?.Contains(warning!) != true)
+            {
+                AppendStatus(warning!);
+            }
+        }
+    }
+
+    private async Task<string?> FindRuntimeWarningAsync(IAcpAdapterInstaller installer, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await installer.GetRuntimeWarningAsync(null, cancellationToken).ConfigureAwait(true);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return null;
+        }
+        catch (Exception ex)
+        {
+            LogFailure("Checking the Node.js runtime failed.", ex);
+
+            return null;
         }
     }
 
