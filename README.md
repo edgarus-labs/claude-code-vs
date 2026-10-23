@@ -57,7 +57,7 @@ adapter's advertised capabilities — this is not a claim of feature parity with
 
 - Visual Studio 2022 or 2026, with the **.NET 8.0 Runtime (Long Term Support)** individual component
   installed (see [Installing and debugging](#installing-and-debugging)).
-- [Node.js](https://nodejs.org) 22 or newer.
+- [Node.js](https://nodejs.org) 22.23.4, 24.22.1 or 26.12.1 or newer (earlier releases bundle a Brotli decoder affected by CVE-2026-111497).
 - The [Claude Code CLI](https://docs.claude.com/en/docs/claude-code) signed in (`claude auth login`).
 
 ## Getting started
