@@ -55,6 +55,66 @@ public sealed class ChatViewModelAdapterTests
     }
 
     [Fact]
+    public async Task InitializeAsync_WhenRuntimeWarningReported_ShowsItAndStillConnects()
+    {
+        var connection = new RecordingAcpAgentConnection();
+        var factory = new SingleConnectionFactory(connection);
+        var installer = new FakeAcpAdapterInstaller { RuntimeWarning = "Node.js 20.19.5 is affected by CVE-2026-111497." };
+        var services = new StubChatSessionServices(factory, new AlwaysSignedInAuthService())
+        {
+            AdapterInstaller = installer
+        };
+
+        using var vm = new ChatViewModel(services);
+        await vm.InitializeAsync();
+
+        Assert.True(connection.IsInitialized);
+        Assert.Contains("CVE-2026-111497", vm.StatusMessage);
+        Assert.False(vm.IsNodeMissing);
+        Assert.False(vm.IsAdapterMissing);
+    }
+
+    [Fact]
+    public async Task InitializeAsync_WhenCalledAgainWithSameRuntimeWarning_ShowsItOnce()
+    {
+        const string warning = "Node.js 20.19.5 is affected by CVE-2026-111497.";
+        var connection = new RecordingAcpAgentConnection();
+        var factory = new SingleConnectionFactory(connection);
+        var installer = new FakeAcpAdapterInstaller { RuntimeWarning = warning };
+        var services = new StubChatSessionServices(factory, new AlwaysSignedInAuthService())
+        {
+            AdapterInstaller = installer
+        };
+
+        using var vm = new ChatViewModel(services);
+        await vm.InitializeAsync();
+        Assert.Equal(warning, vm.StatusMessage);
+
+        await vm.InitializeAsync();
+        await vm.InitializeAsync();
+
+        Assert.Equal(warning, vm.StatusMessage);
+    }
+
+    [Fact]
+    public async Task InitializeAsync_WhenRuntimeSupported_ShowsNoStatus()
+    {
+        var connection = new RecordingAcpAgentConnection();
+        var factory = new SingleConnectionFactory(connection);
+        var installer = new FakeAcpAdapterInstaller { RuntimeWarning = null };
+        var services = new StubChatSessionServices(factory, new AlwaysSignedInAuthService())
+        {
+            AdapterInstaller = installer
+        };
+
+        using var vm = new ChatViewModel(services);
+        await vm.InitializeAsync();
+
+        Assert.True(connection.IsInitialized);
+        Assert.Null(vm.StatusMessage);
+    }
+
+    [Fact]
     public async Task InstallAdapterCommand_WhenSuccessful_InstallsAndInitializesConnection()
     {
         var connection = new RecordingAcpAgentConnection();

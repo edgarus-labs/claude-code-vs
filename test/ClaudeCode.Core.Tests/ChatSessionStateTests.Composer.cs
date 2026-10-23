@@ -387,6 +387,79 @@ public sealed partial class ChatSessionStateTests
         Assert.Empty(vm.Messages);
     }
 
+    // The queued-message notice and the runtime warning are each reported once: the workspace switch
+    // keeps the notice from the teardown, and signed out afterwards there is no new session to clear it.
+    [Fact]
+    public async Task WorkspaceSwitch_DiscardingAQueuedMessage_WhileSignedOutAfterwards_ShowsNoticeAndRuntimeWarningOnce()
+    {
+        const string notice = "A queued message was not sent.";
+        const string warning = "Node.js 20.19.5 is affected by CVE-2026-111497.";
+        var firstTurn = new TaskCompletionSource<bool>();
+        var releaseGate = new TaskCompletionSource<bool>();
+        var connection = new RecordingAcpAgentConnection
+        {
+            PromptHandler = _ => firstTurn.Task,
+            DisposeHandler = () => releaseGate.Task,
+        };
+        bool signedIn = true;
+        var auth = new RecordingAuthService(AuthState.SignedOut) { IsSignedInHandler = _ => Task.FromResult(signedIn) };
+        var services = new StubChatSessionServices(new SingleConnectionFactory(connection), auth, workspaceRoot: @"C:\ProjectA")
+        {
+            AdapterInstaller = new FakeAcpAdapterInstaller { RuntimeWarning = warning },
+        };
+        using var vm = new ChatViewModel(services);
+        await vm.Initialization;
+
+        vm.InputText = "for project A";
+        var firstSend = vm.SendAsync();
+        vm.InputText = "queued while on project A";
+        await vm.SendAsync();
+        Assert.Single(vm.Messages, message => message.Role == ChatRole.User && message.Text == "queued while on project A");
+
+        // Every published status, in order, with the end-of-switch notification (CanConfigure is the
+        // last thing SwitchWorkspaceAsync raises, after it has merged the teardown status).
+        var published = new List<string?>();
+        var switchEnded = new List<int>();
+        vm.PropertyChanged += (_, e) =>
+        {
+            lock (published)
+            {
+                if (e.PropertyName == nameof(ChatViewModel.StatusMessage))
+                {
+                    published.Add(vm.StatusMessage);
+                }
+                else if (e.PropertyName == "CanConfigure")
+                {
+                    switchEnded.Add(published.Count);
+                }
+            }
+        };
+
+        signedIn = false;
+        services.SetWorkspaceRoot(@"C:\ProjectB");
+        firstTurn.SetResult(true);
+        await firstSend;
+        releaseGate.SetResult(true);
+        string expected = notice + " " + warning;
+        await WaitUntilAsync(() =>
+        {
+            lock (published)
+            {
+                int shown = published.IndexOf(expected);
+
+                return shown >= 0 && switchEnded.Any(count => count > shown);
+            }
+        });
+
+        lock (published)
+        {
+            Assert.All(published, status => Assert.False(
+                status is not null && status.IndexOf(notice, StringComparison.Ordinal) != status.LastIndexOf(notice, StringComparison.Ordinal),
+                "the queued-message notice was published twice: " + status));
+            Assert.Equal(expected, vm.StatusMessage);
+        }
+    }
+
     // A queued message belongs to the session it was typed into. When that session dies the message
     // can never be delivered, so it must not linger in the transcript: the bubble goes with it and
     // the user is told, because they wrote it and it is now gone.

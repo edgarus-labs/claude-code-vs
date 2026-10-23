@@ -20,7 +20,7 @@ public sealed class ClaudeCodeOptionsPage : DialogPage
     /// </summary>
     [Category("Claude Code")]
     [DisplayName("ACP executable path")]
-    [Description("Optional fully qualified path to the @agentclientprotocol/claude-agent-acp executable, Windows npm shim, or package dist/index.js. Leave blank to find claude-agent-acp on PATH. Requires Node.js 22 or newer for npm installations; the native Claude CLI alone is not an ACP adapter.")]
+    [Description("Optional fully qualified path to the @agentclientprotocol/claude-agent-acp executable, Windows npm shim, or package dist/index.js. Leave blank to find claude-agent-acp on PATH. Requires Node.js " + NodeRuntimePolicy.PatchedReleases + " or newer (security fix for CVE-2026-111497) for npm installations; the native Claude CLI alone is not an ACP adapter.")]
     [Editor(typeof(FileNameEditor), typeof(UITypeEditor))]
     public string CliExecutablePath { get; set; } = string.Empty;
 

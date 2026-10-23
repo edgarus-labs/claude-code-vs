@@ -1,5 +1,6 @@
 using ClaudeCode.Contracts;
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Threading;
@@ -16,6 +17,7 @@ public sealed class AcpAdapterInstaller : IAcpAdapterInstaller
     /// The package name.
     /// </summary>
     private const string _packageName = "@agentclientprotocol/claude-agent-acp";
+    private static readonly TimeSpan _versionProbeTimeout = TimeSpan.FromSeconds(5);
     private readonly string? _searchPath;
     private readonly Func<string, string[], IProgress<string>?, CancellationToken, Task<int>> _processRunner;
 
@@ -57,6 +59,52 @@ public sealed class AcpAdapterInstaller : IAcpAdapterInstaller
         }
 
         return AdapterReadiness.MissingNodeOrNpm;
+    }
+
+    /// <summary>
+    /// Probes the Node.js runtime the resolved adapter would launch with and returns a warning when its version lacks the CVE-2026-111497 fix.
+    /// Returns null when the adapter does not run on Node.js, or when the version cannot be determined (probe failure, timeout or unexpected output).
+    /// </summary>
+    /// <param name="configuredPath">The configured path.</param>
+    /// <param name="cancellationToken">The cancellation token to monitor for cancellation requests.</param>
+    /// <returns>The warning text, or null.</returns>
+    public async Task<string?> GetRuntimeWarningAsync(string? configuredPath = null, CancellationToken cancellationToken = default)
+    {
+        string searchPath = _searchPath ?? AcpExecutableResolver.GetDefaultSearchPath();
+        AcpExecutableSpec? spec = await Task.Run(() =>
+            (!string.IsNullOrWhiteSpace(configuredPath) ? AcpExecutableResolver.TryResolve(configuredPath!, searchPath) : null)
+            ?? AcpExecutableResolver.TryResolveDefault(searchPath), cancellationToken).ConfigureAwait(false);
+        if (spec is null || spec.Arguments.Count == 0)
+        {
+            return null;
+        }
+
+        var output = new LineCollector();
+        using var probe = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        probe.CancelAfter(_versionProbeTimeout);
+        try
+        {
+            int exitCode = await _processRunner(spec.FileName, ["--version"], output, probe.Token).ConfigureAwait(false);
+            if (exitCode != 0)
+            {
+                return null;
+            }
+        }
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            // Timeout or a runtime that cannot start: the version is unknown, which never blocks.
+            return null;
+        }
+
+        foreach (string line in output.Lines)
+        {
+            if (NodeRuntimePolicy.TryParseVersion(line, out _))
+            {
+                return NodeRuntimePolicy.GetWarning(line);
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -190,6 +238,31 @@ public sealed class AcpAdapterInstaller : IAcpAdapterInstaller
             }
 
             throw;
+        }
+    }
+
+    private sealed class LineCollector : IProgress<string>
+    {
+        private readonly object _gate = new object();
+        private readonly List<string> _lines = new List<string>();
+
+        public string[] Lines
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _lines.ToArray();
+                }
+            }
+        }
+
+        public void Report(string value)
+        {
+            lock (_gate)
+            {
+                _lines.Add(value);
+            }
         }
     }
 }

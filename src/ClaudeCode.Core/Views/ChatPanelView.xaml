@@ -723,7 +723,7 @@
                 BorderBrush="{DynamicResource ChatBorderBrush}" BorderThickness="1"
                 Visibility="{Binding IsNodeMissing, Converter={StaticResource BoolToVisibilityConverter}}">
           <StackPanel>
-            <TextBlock Text="Node.js 22 or newer is required to run the Claude ACP adapter, but npm was not found in PATH."
+            <TextBlock Text="Node.js 22.23.4, 24.22.1 or 26.12.1 or newer (security fix for CVE-2026-111497) is required to run the Claude ACP adapter, but npm was not found in PATH."
                        TextWrapping="Wrap" Margin="0,0,0,8" />
             <WrapPanel Orientation="Horizontal">
               <Button Content="Copy winget command" Margin="0,0,8,4" Style="{StaticResource ChatButtonStyle}"

@@ -28,6 +28,11 @@ internal sealed class FakeAcpAdapterInstaller : IAcpAdapterInstaller
 
     public AdapterReadiness CheckReadiness(string? configuredPath = null) => CurrentReadiness;
 
+    public string? RuntimeWarning { get; set; }
+
+    public Task<string?> GetRuntimeWarningAsync(string? configuredPath = null, CancellationToken cancellationToken = default) =>
+        Task.FromResult(RuntimeWarning);
+
     /// <summary>
     /// Asynchronously installs the adapter by invoking the configured install handler, increments the install counter, and returns true when no handler is configured.
     /// </summary>

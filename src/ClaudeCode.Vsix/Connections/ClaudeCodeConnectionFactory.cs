@@ -62,7 +62,8 @@ internal sealed class ClaudeCodeConnectionFactory : IAcpAgentConnectionFactory
             if (resolved is null)
             {
                 throw new InvalidOperationException(
-                    "The Claude ACP adapter could not be resolved. Install Node.js 22 or newer and run "
+                    "The Claude ACP adapter could not be resolved. Install Node.js " + NodeRuntimePolicy.PatchedReleases
+                    + " or newer (security fix for CVE-2026-111497) and run "
                     + "'npm install -g @agentclientprotocol/claude-agent-acp', then restart Visual Studio "
                     + "so it inherits the updated PATH. Alternatively, set Tools > Options > Claude Code > "
                     + "ACP executable path to the installed claude-agent-acp executable, npm shim, or package dist/index.js. "
