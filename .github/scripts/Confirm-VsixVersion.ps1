@@ -67,12 +67,15 @@ try {
     try {
         $manifest = [xml](Read-EntryText $zip 'extension.vsixmanifest')
         $pkgdef = Read-EntryText $zip $pkgdefEntryName
-        $assemblyEntry = $zip.GetEntry($assemblyEntryName)
-        if (-not $assemblyEntry) {
+        if (-not $zip.GetEntry($assemblyEntryName)) {
             throw "'$VsixPath' has no $assemblyEntryName."
         }
-        $assemblyPath = Join-Path $extracted $assemblyEntryName
-        [IO.Compression.ZipFileExtensions]::ExtractToFile($assemblyEntry, $assemblyPath)
+        $assemblies = @()
+        foreach ($entry in $zip.Entries | Where-Object { $_.Name -clike 'EdgarusLabs.ClaudeCode.*.dll' }) {
+            $path = Join-Path $extracted "$($assemblies.Count).dll"
+            [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $path)
+            $assemblies += @{ Name = $entry.FullName; Path = $path }
+        }
     }
     finally { $zip.Dispose() }
 
@@ -87,21 +90,23 @@ try {
         $mismatches += "Installed product version '$productId' in $pkgdefEntryName is not '$version'."
     }
 
-    $assemblyVersion = [Reflection.AssemblyName]::GetAssemblyName($assemblyPath).Version.ToString()
-    if ($assemblyVersion -cne $numericVersion) {
-        $mismatches += "$assemblyEntryName assembly version '$assemblyVersion' is not '$numericVersion'."
-    }
+    foreach ($assembly in $assemblies) {
+        $assemblyVersion = [Reflection.AssemblyName]::GetAssemblyName($assembly.Path).Version.ToString()
+        if ($assemblyVersion -cne $numericVersion) {
+            $mismatches += "$($assembly.Name) assembly version '$assemblyVersion' is not '$numericVersion'."
+        }
 
-    $attributes = Get-AssemblyAttributeValues $assemblyPath
-    $fileVersion = "$($attributes['AssemblyFileVersionAttribute'])"
-    if ($fileVersion -cne $numericVersion) {
-        $mismatches += "$assemblyEntryName file version '$fileVersion' is not '$numericVersion'."
-    }
+        $attributes = Get-AssemblyAttributeValues $assembly.Path
+        $fileVersion = "$($attributes['AssemblyFileVersionAttribute'])"
+        if ($fileVersion -cne $numericVersion) {
+            $mismatches += "$($assembly.Name) file version '$fileVersion' is not '$numericVersion'."
+        }
 
-    # The .NET SDK appends '+<source revision>' to the informational version; the version before it must match.
-    $informationalVersion = "$($attributes['AssemblyInformationalVersionAttribute'])"
-    if ($informationalVersion -cne $version -and -not $informationalVersion.StartsWith("$version+", [StringComparison]::Ordinal)) {
-        $mismatches += "$assemblyEntryName informational version '$informationalVersion' is not '$version'."
+        # The .NET SDK appends '+<source revision>' to the informational version; the version before it must match.
+        $informationalVersion = "$($attributes['AssemblyInformationalVersionAttribute'])"
+        if ($informationalVersion -cne $version -and -not $informationalVersion.StartsWith("$version+", [StringComparison]::Ordinal)) {
+            $mismatches += "$($assembly.Name) informational version '$informationalVersion' is not '$version'."
+        }
     }
 }
 finally {

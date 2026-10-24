@@ -30,6 +30,7 @@ function New-TestVsix([hashtable] $Case) {
         FileVersion          = '1.7.0.0'
         InformationalVersion = '1.7.0+0123456789abcdef'
         ProductId            = '1.7.0'
+        SidecarAssemblyVersion = '1.7.0.0'
         IncludeAssembly      = $true
     }
     foreach ($key in @($values.Keys)) {
@@ -60,6 +61,9 @@ function New-TestVsix([hashtable] $Case) {
             New-TestAssembly -Path $assemblyPath -AssemblyVersion $values.AssemblyVersion -FileVersion $values.FileVersion -InformationalVersion $values.InformationalVersion
             [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $assemblyPath, 'EdgarusLabs.ClaudeCode.Vsix.dll') | Out-Null
         }
+        $sidecarPath = Join-Path $directory 'sidecar.dll'
+        New-TestAssembly -Path $sidecarPath -AssemblyVersion $values.SidecarAssemblyVersion -FileVersion '1.7.0.0' -InformationalVersion '1.7.0'
+        [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $sidecarPath, 'VsControlMcp/EdgarusLabs.ClaudeCode.VsControl.Mcp.dll') | Out-Null
     }
     finally { $zip.Dispose() }
     $vsixPath
@@ -75,6 +79,7 @@ $cases = @(
     @{ Name = 'Reject stale file version'; Tag = 'v1.7.0'; FileVersion = '0.2.0.0'; Error = "file version '0.2.0.0'" },
     @{ Name = 'Reject informational version for another version'; Tag = 'v1.7.0'; InformationalVersion = '1.7.0.1'; Error = "informational version '1.7.0.1'" },
     @{ Name = 'Reject stale installed product version'; Tag = 'v1.7.0'; ProductId = '0.2.0'; Error = "installed product version '0.2.0'" },
+    @{ Name = 'Reject stale version of another first-party assembly'; Tag = 'v1.7.0'; SidecarAssemblyVersion = '0.2.0.0'; Error = "VsControlMcp/EdgarusLabs.ClaudeCode.VsControl.Mcp.dll assembly version '0.2.0.0'" },
     @{ Name = 'Reject package without the extension assembly'; Tag = 'v1.7.0'; IncludeAssembly = $false; Error = 'EdgarusLabs.ClaudeCode.Vsix.dll' },
     @{ Name = 'Reject tag that is not vX.Y.Z'; Tag = 'v1.7'; FileName = 'edgarus-labs.claude-code.vs.v1.7.vsix'; Error = 'vX.Y.Z' }
 )
