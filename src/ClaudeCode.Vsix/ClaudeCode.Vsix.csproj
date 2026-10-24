@@ -9,10 +9,11 @@
     <AssemblyName>EdgarusLabs.ClaudeCode.Vsix</AssemblyName>
     <UseWpf>true</UseWpf>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
-    <!-- Overridden by CI on tagged releases: dotnet build -p:Version=1.2.3. Also drives AssemblyVersion/
-         AssemblyFileVersion/AssemblyInformationalVersion via GenerateAssemblyInfo, and the vsixmanifest
-         Identity Version is patched to match by the release workflow so the tag version is what Visual
-         Studio's Extensions/Updates dialog actually displays. -->
+    <!-- Overridden by CI on tagged releases: msbuild -p:Version=1.2.3. Also drives AssemblyVersion/
+         AssemblyFileVersion/AssemblyInformationalVersion via GenerateAssemblyInfo, the vsixmanifest
+         Identity Version (through the GetVsixVersion target below), the installed-product version and
+         the .vsix file name, so the tag version is what Visual Studio's Extensions/Updates dialog
+         actually displays. -->
     <Version Condition="'$(Version)' == ''">0.2.0</Version>
 
     <!-- VSIX / VS SDK project shape -->
@@ -26,8 +27,8 @@
     <CtoCacheFile>obj\$(Configuration)\net48\mergeCto.cache</CtoCacheFile>
     <CreateTemplateManifestsCacheFile>obj\$(Configuration)\net48\createTemplateManifests.cache</CreateTemplateManifestsCacheFile>
     <IntermediateVsixManifest>obj\$(Configuration)\net48\extension.vsixmanifest</IntermediateVsixManifest>
-    <TargetVsixContainerName>EdgarusLabs.ClaudeCode.v$(Version).vsix</TargetVsixContainerName>
-    <TargetVsixContainer>bin\$(Configuration)\net48\EdgarusLabs.ClaudeCode.v$(Version).vsix</TargetVsixContainer>
+    <TargetVsixContainerName>edgarus-labs.claude-code.vs.v$(Version).vsix</TargetVsixContainerName>
+    <TargetVsixContainer>bin\$(Configuration)\net48\$(TargetVsixContainerName)</TargetVsixContainer>
     <!-- Keep the pkgdef input aligned with the packaged assembly output. -->
     <CreatePkgDefAssemblyToProcess>bin\$(Configuration)\net48\EdgarusLabs.ClaudeCode.Vsix.dll</CreatePkgDefAssemblyToProcess>
     <GeneratePkgDefFile>true</GeneratePkgDefFile>
@@ -83,6 +84,10 @@
       <FileWrites Include="$(GeneratedProductVersionFile)" />
     </ItemGroup>
   </Target>
+
+  <!-- source.extension.vsixmanifest reads Identity/@Version from this target
+       (Version="|%CurrentProject%;GetVsixVersion|") instead of keeping its own copy of $(Version). -->
+  <Target Name="GetVsixVersion" Returns="$(Version)" />
 
   <ItemGroup>
     <PackageReference Include="MessagePack" Version="3.1.12" />
